@@ -1,0 +1,46 @@
+From 66cfbf73084442f155744c9c27b9c69bbe3e4c33 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: .2byte, .4byte and .8byte
+
+They are lexed as preprocessing numbers because they start with a dot
+and a digit; map them to the .short/.long/.quad handlers.
+---
+ tccasm.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index 0b9066a..7c01e96 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1297,14 +1297,22 @@ static int tcc_assemble_internal(TCCState *s1, int do_preprocess, int global)
+             const char *p;
+             int n;
+             p = tokc.str.data;
+-            n = strtoul(p, (char **)&p, 10);
+-            if (*p != '\0')
+-                expect("':'");
+-            /* new local label */
+-            asm_new_label(s1, asm_get_local_label_name(s1, n), 1);
+-            next();
+-            skip(':');
+-            goto redo;
++            if (p[0] == '.' && (p[1] == '2' || p[1] == '4' || p[1] == '8')
++                && !strcmp(p + 2, "byte")) {
++                /* ".2byte", ".4byte" and ".8byte" are lexed as numbers */
++                tok = p[1] == '2' ? TOK_ASMDIR_short
++                    : p[1] == '4' ? TOK_ASMDIR_long : TOK_ASMDIR_quad;
++                asm_parse_directive(s1, global);
++            } else {
++                n = strtoul(p, (char **)&p, 10);
++                if (*p != '\0')
++                    expect("':'");
++                /* new local label */
++                asm_new_label(s1, asm_get_local_label_name(s1, n), 1);
++                next();
++                skip(':');
++                goto redo;
++            }
+         } else if (tok >= TOK_IDENT) {
+             /* instruction or label */
+             opcode = tok;

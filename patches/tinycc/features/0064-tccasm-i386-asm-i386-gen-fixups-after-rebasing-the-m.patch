@@ -1,0 +1,165 @@
+From cebc2f45808278a9b201c735e55f1d74e0aa0157 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:04:25 +0300
+Subject: [PATCH] tccasm, i386-asm, i386-gen: fixups after rebasing the m16
+ work
+
+* tccasm: a named label defined later in the file is known in the
+  second pass too (asm_pass_lookup searches the previous pass's
+  definitions), for ".skip 32 - (.Lret1 - 1f)" in entry_64.S; and
+  "sym - 1f" with a forward label of the current section is a
+  PC-relative value like with a defined label (".byte start_of_setup-1f"
+  in the boot header).
+* i386-asm: gen_expr8/gen_expr16 take the PC-relative convention of
+  gen_expr32 (-<label offset>, relative to the section); verified: a
+  file of .long/.word/.byte "sym - label" expressions across sections
+  links to the same bytes as GNU as's, for ELF64 and ELF32.
+* i386-gen: gen_struct_fill (inline memset for a constant size, as on
+  x86_64) since the i386 target now has TCC_TARGET_NATIVE_STRUCT_COPY.
+* x86_64-asm: one lretq entry.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ i386-asm.c   | 13 +++++++++++--
+ i386-gen.c   | 25 +++++++++++++++++++++++++
+ tccasm.c     | 20 ++++++++++++++++++--
+ x86_64-asm.h |  1 -
+ 4 files changed, 54 insertions(+), 5 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index d44ab19..6648da6 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -550,14 +550,23 @@ static void gen_expr_small(ExprValue *pe, int size, int pcrel)
+         g(v);
+ }
+ 
++/* .word/.byte: a PC-relative expression ("sym - 1f") carries -<label
++   offset> in pe->v, relative to the section (gen_expr32 convention);
++   gen_expr_small takes the displacement from the end of the field */
+ ST_FUNC void gen_expr16(ExprValue *pe)
+ {
+-    gen_expr_small(pe, 2, pe->pcrel);
++    ExprValue e = *pe;
++    if (e.pcrel)
++        e.v += ind + 2;
++    gen_expr_small(&e, 2, e.pcrel);
+ }
+ 
+ ST_FUNC void gen_expr8(ExprValue *pe)
+ {
+-    gen_expr_small(pe, 1, pe->pcrel);
++    ExprValue e = *pe;
++    if (e.pcrel)
++        e.v += ind + 1;
++    gen_expr_small(&e, 1, e.pcrel);
+ }
+ 
+ /* A symbol a displacement can be computed against at assembly time: a
+diff --git a/i386-gen.c b/i386-gen.c
+index 1c270d0..e9702a8 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -82,6 +82,7 @@ enum {
+    (the Linux boot code has no libc) */
+ #define TCC_TARGET_NATIVE_STRUCT_COPY
+ ST_FUNC void gen_struct_copy(int size);
++ST_FUNC void gen_struct_fill(int size);
+ 
+ /******************************************************/
+ #else /* ! TARGET_DEFS_ONLY */
+@@ -1541,6 +1542,30 @@ ST_FUNC void gen_struct_copy(int size)
+     vpop();
+ }
+ 
++/* vtop[-1] = destination pointer, vtop = the byte value: the inline
++   expansion of memset(dst, c, size) for a constant size (tccgen.c);
++   %edi and %ecx are saved like in gen_struct_copy */
++ST_FUNC void gen_struct_fill(int size)
++{
++    int rd, rv;
++    gv2(RC_INT, RC_INT);
++    rd = vtop[-1].r & VT_VALMASK;
++    rv = vtop[0].r & VT_VALMASK;
++    o66(), g(0x57); /* push %edi */
++    o66(), g(0x51); /* push %ecx */
++    o66(), o(0x89), g(0xc0 | (rd << 3) | 7); /* mov rd, %edi */
++    if (rv != TREG_EAX)
++        o66(), o(0x89), g(0xc0 | (rv << 3) | 0); /* mov rv, %eax */
++    if (size) {
++        o66(), oad(0xb9, size); /* mov $size, %ecx */
++        o67(), o(0xaaf3); /* rep stosb */
++    }
++    o66(), g(0x59); /* pop %ecx */
++    o66(), g(0x5f); /* pop %edi */
++    vpop();
++    vpop();
++}
++
+ /* end of X86 code generator */
+ /*************************************************************/
+ #endif
+diff --git a/tccasm.c b/tccasm.c
+index 23daaca..d5167c6 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -88,7 +88,9 @@ static void asm_pass_predict(Sym *sym, int label)
+     }
+ }
+ 
+-/* section and value of an asm symbol: defined, or predicted */
++/* section and value of an asm symbol: defined, predicted (a numeric
++   local label), or a named label the previous pass saw defined later
++   (".skip 32 - (.Lret1 - 1f)" in the kernel's entry code) */
+ static int asm_pass_lookup(Sym *sym, int *sh_num, int *value)
+ {
+     ElfSym *esym = elfsym(sym);
+@@ -102,6 +104,12 @@ static int asm_pass_lookup(Sym *sym, int *sh_num, int *value)
+             *sh_num = asm_pass.pred[i]->sh_num, *value = asm_pass.pred[i]->value;
+             return 1;
+         }
++    if (asm_pass.pass >= 2)
++        for (i = 0; i < asm_pass.nb_defs; i++)
++            if (asm_pass.defs[i]->sym == sym && asm_pass.defs[i]->is_local != 1) {
++                *sh_num = asm_pass.defs[i]->sh_num, *value = asm_pass.defs[i]->value;
++                return 1;
++            }
+     return 0;
+ }
+ 
+@@ -573,7 +581,7 @@ static void asm_expr_logic(TCCState *s1, ExprValue *pe)
+ 
+ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ {
+-    int op;
++    int op, s2, v2;
+     ExprValue e2;
+ 
+     asm_expr_logic(s1, pe);
+@@ -613,6 +621,14 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		    pe->v += (int)(0 - esym2->st_value);
+ 		    pe->pcrel = 1;
+ 		    e2.sym = NULL;
++		} else if (asm_pass.pass >= 2 && e2.sym && asm_pass_lookup(e2.sym, &s2, &v2)
++			   && s2 == cur_text_section->sh_num
++			   && !(esym1 && esym1->st_shndx == s2)) {
++		    /* the same with a label defined later in this section
++		       (".byte start_of_setup-1f" in the kernel's boot header) */
++		    pe->v += (int)(0 - v2);
++		    pe->pcrel = 1;
++		    e2.sym = NULL;
+ 		} else if (asm_pass_resolve(pe, &e2)) {
+ 		    /* labels defined later in an inline asm statement */
+ 		} else {
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 82b9607..6cb9369 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -322,7 +322,6 @@ ALT(DEF_ASM_OP1(retw, 0xc2, 0, 0, OPT_IM16))
+     DEF_ASM_OP0(lretw, 0xcb)
+     DEF_ASM_OP0(lretq, 0x48cb)
+ ALT(DEF_ASM_OP1(lret, 0xca, 0, 0, OPT_IM16))
+-    DEF_ASM_OP0(lretq, 0x48cb)
+ ALT(DEF_ASM_OP1(lretq, 0x48ca, 0, 0, OPT_IM16))
+ ALT(DEF_ASM_OP1(lretl, 0xca, 0, 0, OPT_IM16))
+ ALT(DEF_ASM_OP1(lretw, 0xca, 0, 0, OPT_IM16))

@@ -1,0 +1,292 @@
+From eefef734d8b27af9a89458085e552b4130698f13 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: two-pass assembly of inline asm for forward label
+ differences
+
+GNU as resolves differences of labels that are only defined later in
+the statement (".byte 775f-774f", the ".skip" padding of the Linux
+kernel's ALTERNATIVE() macros) by relaxation; tcc's single pass failed
+with "invalid operation with label".
+
+Assemble the statement once with such differences as 0 while recording
+where the labels get defined, roll the output back (section data and
+relocations, but not the symbol and string tables, whose entries are
+referenced by index) and assemble again with the recorded values until
+the positions are stable (at most 8 passes).  Debug line entries
+emitted during a discarded pass are lost with the data.
+---
+ tccasm.c | 216 ++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 206 insertions(+), 10 deletions(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index eb24e3a..89e15bf 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -23,6 +23,190 @@
+ #ifdef CONFIG_TCC_ASM
+ 
+ static Section *last_text_section; /* to handle .previous asm directive */
++
++/* ------------------------------------------------------------------ */
++/* Two-pass assembly of an inline asm statement.
++
++   GNU as resolves differences of labels that are only defined later in
++   the statement (".byte 775f-774f", or the ".skip" padding of the Linux
++   kernel's ALTERNATIVE() macros) by relaxation.  tcc instead assembles
++   the statement once, records where the labels get defined, discards
++   the output and assembles the statement again using these values,
++   until the label positions do not change any more. */
++
++typedef struct AsmPassLabel {
++    Sym *sym;
++    int label, is_local, sh_num, value;
++} AsmPassLabel;
++
++static struct {
++    int pass;                 /* 0: single pass, 1: recording, >= 2: replay */
++    int need_more;            /* pass 1 met an unresolvable forward difference */
++    AsmPassLabel **defs;      /* label definitions of the previous pass */
++    int nb_defs;
++    AsmPassLabel **cur;       /* label definitions of this pass */
++    int nb_cur;
++    AsmPassLabel **pred;      /* predicted values of forward references */
++    int nb_pred;
++    /* snapshot for the rollback */
++    unsigned long *offsets;   /* data_offset of each section and of its relocs */
++    int nb_sections, ind;
++    Section *text, *last_text;
++} asm_pass;
++
++static void asm_pass_record(Sym *sym, int label, int is_local, int sh_num, int value)
++{
++    AsmPassLabel *d;
++    if (!asm_pass.pass)
++        return;
++    d = tcc_mallocz(sizeof *d);
++    d->sym = sym, d->label = label, d->is_local = is_local;
++    d->sh_num = sh_num, d->value = value;
++    dynarray_add(&asm_pass.cur, &asm_pass.nb_cur, d);
++}
++
++/* replay pass: predict the value a forward reference to the local label
++   'label' will get, from the definitions recorded by the previous pass */
++static void asm_pass_predict(Sym *sym, int label)
++{
++    int i;
++    if (asm_pass.pass < 2)
++        return;
++    for (i = 0; i < asm_pass.nb_pred; i++)
++        if (asm_pass.pred[i]->sym == sym)
++            return;
++    /* the next definition of 'label' after those already seen in this pass */
++    for (i = asm_pass.nb_cur; i < asm_pass.nb_defs; i++) {
++        AsmPassLabel *d = asm_pass.defs[i];
++        if (d->label == label) {
++            AsmPassLabel *p = tcc_mallocz(sizeof *p);
++            *p = *d, p->sym = sym;
++            dynarray_add(&asm_pass.pred, &asm_pass.nb_pred, p);
++            return;
++        }
++    }
++}
++
++/* section and value of an asm symbol: defined, or predicted */
++static int asm_pass_lookup(Sym *sym, int *sh_num, int *value)
++{
++    ElfSym *esym = elfsym(sym);
++    int i;
++    if (esym && esym->st_shndx != SHN_UNDEF) {
++        *sh_num = esym->st_shndx, *value = esym->st_value;
++        return 1;
++    }
++    for (i = 0; i < asm_pass.nb_pred; i++)
++        if (asm_pass.pred[i]->sym == sym) {
++            *sh_num = asm_pass.pred[i]->sh_num, *value = asm_pass.pred[i]->value;
++            return 1;
++        }
++    return 0;
++}
++
++/* resolve 'pe->sym - e2->sym' with labels defined later in the statement;
++   returns 0 if that is impossible (an error unless in pass 1) */
++static int asm_pass_resolve(ExprValue *pe, ExprValue *e2)
++{
++    int s1, v1, s2, v2;
++    if (asm_pass_lookup(pe->sym, &s1, &v1) && asm_pass_lookup(e2->sym, &s2, &v2)
++        && s1 == s2 && s1 != SHN_UNDEF) {
++        pe->v += v1 - v2;
++        pe->sym = NULL;
++        return 1;
++    }
++    if (asm_pass.pass == 1) {
++        /* the output of this pass is discarded: use 0 and ask for a replay */
++        asm_pass.need_more = 1;
++        pe->sym = NULL;
++        return 1;
++    }
++    return 0;
++}
++
++static void asm_pass_start(TCCState *s1)
++{
++    int i;
++    asm_pass.pass = 1;
++    asm_pass.need_more = 0;
++    asm_pass.nb_sections = s1->nb_sections;
++    asm_pass.offsets = tcc_malloc(sizeof *asm_pass.offsets * 2 * s1->nb_sections);
++    for (i = 1; i < s1->nb_sections; i++) {
++        Section *s = s1->sections[i];
++        asm_pass.offsets[2 * i] = s->data_offset;
++        asm_pass.offsets[2 * i + 1] = s->reloc ? s->reloc->data_offset : 0;
++    }
++    asm_pass.ind = ind;
++    asm_pass.text = cur_text_section;
++    asm_pass.last_text = last_text_section;
++}
++
++/* discard everything the last pass emitted */
++static void asm_pass_rollback(TCCState *s1)
++{
++    int i;
++    for (i = 1; i < s1->nb_sections; i++) {
++        Section *s = s1->sections[i];
++        /* only what the assembler emits: not the symbol and string tables */
++        if (s->sh_type == SHT_SYMTAB || s->sh_type == SHT_STRTAB
++            || s->sh_type == SHT_HASH || s->sh_type == SHT_GNU_HASH
++            || s->sh_type == SHT_DYNSYM)
++            continue;
++        if (i < asm_pass.nb_sections) {
++            s->data_offset = asm_pass.offsets[2 * i];
++            if (s->reloc)
++                s->reloc->data_offset = asm_pass.offsets[2 * i + 1];
++        } else {
++            s->data_offset = 0; /* section created by the pass */
++        }
++    }
++    cur_text_section = asm_pass.text;
++    ind = asm_pass.ind;
++    last_text_section = asm_pass.last_text;
++    /* labels defined by the pass become undefined again (numeric local
++       labels are simply defined as new symbols by the next pass) */
++    for (i = 0; i < asm_pass.nb_cur; i++) {
++        AsmPassLabel *d = asm_pass.cur[i];
++        if (d->is_local != 1) {
++            ElfSym *esym = elfsym(d->sym);
++            if (esym)
++                esym->st_shndx = SHN_UNDEF;
++            d->sym->type.t |= VT_EXTERN;
++        }
++    }
++}
++
++/* after each pass: returns 1 if the statement must be assembled again */
++static int asm_pass_next(TCCState *s1)
++{
++    int i, again;
++    if (asm_pass.pass == 1) {
++        again = asm_pass.need_more;
++    } else {
++        /* converged when the labels got the values predicted for them */
++        again = asm_pass.nb_cur != asm_pass.nb_defs;
++        for (i = 0; !again && i < asm_pass.nb_cur; i++)
++            again = asm_pass.cur[i]->sh_num != asm_pass.defs[i]->sh_num
++                 || asm_pass.cur[i]->value != asm_pass.defs[i]->value;
++        if (again && asm_pass.pass >= 8)
++            tcc_error("cannot resolve the forward label references");
++    }
++    dynarray_reset(&asm_pass.defs, &asm_pass.nb_defs);
++    dynarray_reset(&asm_pass.pred, &asm_pass.nb_pred);
++    if (again) {
++        asm_pass_rollback(s1);
++        asm_pass.defs = asm_pass.cur, asm_pass.nb_defs = asm_pass.nb_cur;
++        asm_pass.cur = NULL, asm_pass.nb_cur = 0;
++        asm_pass.pass++;
++        return 1;
++    }
++    /* done: keep the output of the last pass */
++    dynarray_reset(&asm_pass.cur, &asm_pass.nb_cur);
++    tcc_free(asm_pass.offsets), asm_pass.offsets = NULL;
++    asm_pass.pass = 0;
++    return 0;
++}
++/* ------------------------------------------------------------------ */
+ static int asmgoto_n;
+ 
+ static int tcc_assemble_internal(TCCState *s1, int do_preprocess, int global);
+@@ -133,7 +317,14 @@ static Sym* asm_section_sym(TCCState *s1, Section *sec)
+     snprintf(buf, sizeof buf, "L.%s", sec->name);
+     label = tok_alloc_const(buf);
+     sym = asm_label_find(label);
+-    return sym ? sym : asm_new_label1(s1, label, 1, sec->sh_num, 0);
++    if (!sym) {
++        /* not a label definition of the statement (see asm_pass) */
++        int pass = asm_pass.pass;
++        asm_pass.pass = 0;
++        sym = asm_new_label1(s1, label, 1, sec->sh_num, 0);
++        asm_pass.pass = pass;
++    }
++    return sym;
+ }
+ 
+ /* We do not use the C expression parser to handle symbols. Maybe the
+@@ -166,6 +357,7 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+                     /* if the last label is defined, then define a new one */
+ 		    sym = asm_label_push(label);
+                 }
++                asm_pass_predict(sym, label);
+             }
+ 	    pe->v = 0;
+ 	    pe->sym = sym;
+@@ -339,19 +531,19 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		ElfSym *esym1, *esym2;
+ 		esym1 = elfsym(pe->sym);
+ 		esym2 = elfsym(e2.sym);
+-		if (!esym2)
+-		    goto cannot_relocate;
+-		if (esym1 && esym1->st_shndx == esym2->st_shndx
++		if (esym1 && esym2 && esym1->st_shndx == esym2->st_shndx
+ 		    && esym1->st_shndx != SHN_UNDEF) {
+ 		    /* we also accept defined symbols in the same section */
+ 		    pe->v += (int)(esym1->st_value - esym2->st_value);
+ 		    pe->sym = NULL;
+-		} else if (esym2->st_shndx == cur_text_section->sh_num) {
++		} else if (esym2 && esym2->st_shndx == cur_text_section->sh_num) {
+ 		    /* When subtracting a defined symbol in current section
+ 		       this actually makes the value PC-relative.  */
+ 		    pe->v += (int)(0 - esym2->st_value);
+ 		    pe->pcrel = 1;
+ 		    e2.sym = NULL;
++		} else if (asm_pass_resolve(pe, &e2)) {
++		    /* labels defined later in an inline asm statement */
+ 		} else {
+ cannot_relocate:
+ 		    tcc_error("invalid operation with label");
+@@ -451,6 +643,7 @@ static Sym* asm_new_label1(TCCState *s1, int label, int is_local,
+     esym->st_value = value;
+     if (is_local != 2)
+         sym->type.t &= ~VT_EXTERN;
++    asm_pass_record(sym, label, is_local, sh_num, value);
+     return sym;
+ }
+ 
+@@ -1155,11 +1348,14 @@ static void tcc_assemble_inline(TCCState *s1, const char *str, int len, int glob
+     int dolid = set_idnum('$', 0);
+ #endif
+ 
+-    tcc_open_bf(s1, ":asm:", len);
+-    memcpy(file->buffer, str, len);
+-    macro_ptr = NULL;
+-    tcc_assemble_internal(s1, 0, global);
+-    tcc_close();
++    asm_pass_start(s1);
++    do {
++        tcc_open_bf(s1, ":asm:", len);
++        memcpy(file->buffer, str, len);
++        macro_ptr = NULL;
++        tcc_assemble_internal(s1, 0, global);
++        tcc_close();
++    } while (asm_pass_next(s1));
+ 
+ #if !defined(TCC_TARGET_RISCV64) && !defined(TCC_TARGET_X86_64)
+     set_idnum('$', dolid);

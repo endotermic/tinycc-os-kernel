@@ -1,0 +1,26 @@
+# REUSE specification 3.3 (https://reuse.software): the license of every path that has no
+# SPDX header of its own.  Files with a header are covered by the header.  The fetched
+# sources (src/), build trees and outputs are not part of the repository.
+version = 1
+SPDX-PackageName = "tinycc-os-kernel"
+SPDX-PackageSupplier = "Nikolajs Agafonovs"
+
+# Everything original: scripts, tools/tld, kernels/, userland/, boot/, docs, series files.
+[[annotations]]
+path = ["**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Nikolajs Agafonovs"
+SPDX-License-Identifier = "BSD-2-Clause"
+
+# Patches are derivative works of the component they modify and carry its license.
+[[annotations]]
+path = ["patches/linux/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The Linux kernel authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = ["patches/tinycc/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The Tiny C Compiler authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "LGPL-2.1-or-later"

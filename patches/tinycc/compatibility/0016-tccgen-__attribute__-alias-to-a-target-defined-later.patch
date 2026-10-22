@@ -1,0 +1,92 @@
+From 1f53c742cbce93aa388688a1eab99e2d936591b0 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccgen: __attribute__((alias)) to a target defined later in
+ the unit
+
+Aliases whose target is not defined yet are collected and resolved
+after everything has been emitted (resolve_pending_aliases(), called
+from tccgen_compile()); an undefined target is reported with
+tcc_error_noabort().  Previously this was "unsupported forward
+__alias__ attribute".
+---
+ tccgen.c | 44 ++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 36 insertions(+), 8 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 4b0cd80..cf7c978 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -146,6 +146,7 @@ static void parse_expr_type(CType *type);
+ static void init_putv(init_params *p, CType *type, unsigned long c);
+ static void decl_initializer(init_params *p, CType *type, unsigned long c, int flags);
+ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r, int has_init, int v, int scope);
++static void resolve_pending_aliases(void);
+ static int decl(int l);
+ static void expr_eq(void);
+ static void vpush_type_size(CType *type, int *a);
+@@ -421,6 +422,7 @@ ST_FUNC int tccgen_compile(TCCState *s1)
+     next();
+     decl(VT_CONST);
+     gen_inline_functions(s1);
++    resolve_pending_aliases();
+     check_vstack();
+     /* end of translation unit info */
+ #if TCC_EH_FRAME
+@@ -431,6 +433,29 @@ ST_FUNC int tccgen_compile(TCCState *s1)
+     return 0;
+ }
+ 
++/* __attribute__((alias("target"))) with a target defined later in the
++   compilation unit: resolved once everything has been emitted */
++typedef struct PendingAlias { int v, target; } PendingAlias;
++static PendingAlias **pending_aliases;
++static int nb_pending_aliases;
++
++static void resolve_pending_aliases(void)
++{
++    int i;
++    for (i = 0; i < nb_pending_aliases; i++) {
++        PendingAlias *pa = pending_aliases[i];
++        Sym *ts = sym_find(pa->target);
++        ElfSym *esym = ts ? elfsym(ts) : NULL;
++        if (!esym || esym->st_shndx == SHN_UNDEF)
++            tcc_error_noabort("alias target '%s' of '%s' is not defined",
++                      get_tok_str(pa->target, NULL), get_tok_str(pa->v, NULL));
++        else
++            put_extern_sym2(sym_find(pa->v), esym->st_shndx,
++                            esym->st_value, esym->st_size, 1);
++    }
++    dynarray_reset(&pending_aliases, &nb_pending_aliases);
++}
++
+ ST_FUNC void tccgen_finish(TCCState *s1)
+ {
+     tcc_debug_end(s1); /* just in case of errors: free memory */
+@@ -9097,15 +9122,18 @@ static int decl(int l)
+ 
+                     if (ad.alias_target && l == VT_CONST) {
+                         /* Aliases need to be emitted when their target symbol
+-                           is emitted, even if perhaps unreferenced.
+-                           We only support the case where the base is already
+-                           defined, otherwise we would need deferring to emit
+-                           the aliases until the end of the compile unit.  */
++                           is emitted, even if perhaps unreferenced.  If the
++                           target is not defined yet, the alias is resolved
++                           at the end of the compilation unit (see
++                           resolve_pending_aliases()). */
+                         esym = elfsym(sym_find(ad.alias_target));
+-                        if (!esym)
+-                            tcc_error("unsupported forward __alias__ attribute");
+-                        put_extern_sym2(sym_find(v), esym->st_shndx,
+-                                        esym->st_value, esym->st_size, 1);
++                        if (!esym || esym->st_shndx == SHN_UNDEF) {
++                            PendingAlias *pa = tcc_malloc(sizeof *pa);
++                            pa->v = v, pa->target = ad.alias_target;
++                            dynarray_add(&pending_aliases, &nb_pending_aliases, pa);
++                        } else
++                            put_extern_sym2(sym_find(v), esym->st_shndx,
++                                            esym->st_value, esym->st_size, 1);
+                     }
+                 }
+                 if (tok != ',') {

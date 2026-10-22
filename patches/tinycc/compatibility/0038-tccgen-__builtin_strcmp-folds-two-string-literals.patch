@@ -1,0 +1,105 @@
+From 5a3d86b205af47fc2c2ba637641157ba7a31fa95 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: __builtin_strcmp folds two string literals
+
+GCC folds __builtin_strcmp of two literals to a constant and code
+selects with it (the Linux kernel's vruntime_cmp()).  Fold to -1/0/1,
+otherwise call strcmp(); the arguments are saved as tokens and
+replayed.
+---
+ tccgen.c | 52 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tcctok.h |  3 +++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 717d822..9487eb0 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6016,6 +6016,58 @@ ST_FUNC void unary(void)
+             vtop->r = REG_IRET;
+         }
+         break;
++    case TOK_builtin_strcmp:
++        {
++            /* two string literals are folded (the kernel's vruntime_cmp()
++               selects code with it), anything else is a call to strcmp() */
++            TokenString *a1, *a2;
++            CString s1, s2;
++            int f1, f2, i;
++            next();
++            skip('(');
++            skip_or_save_block(&a1);
++            skip(',');
++            skip_or_save_block(&a2);
++            if (tok != ')')
++                expect("')'");
++            unget_tok(0);
++            cstr_new(&s1), cstr_new(&s2);
++            for (i = 0; i < 2; i++) {
++                int *f = i ? &f2 : &f1;
++                begin_macro(i ? a2 : a1, 0);
++                next();
++                *f = tok == TOK_STR;
++                if (*f) {
++                    cstr_cat(i ? &s2 : &s1, tokc.str.data, 0); /* with the NUL */
++                    next();
++                    *f = tok == TOK_EOF;
++                }
++                end_macro();
++            }
++            if (f1 && f2) {
++                n = strcmp(s1.data, s2.data);
++                vpushi(n < 0 ? -1 : n > 0);
++                next(); /* ')' */
++                skip(')');
++            } else {
++                vpush_helper_func(TOK_strcmp);
++                for (i = 0; i < 2; i++) {
++                    begin_macro(i ? a2 : a1, 0);
++                    next();
++                    expr_eq();
++                    end_macro();
++                }
++                next(); /* ')' */
++                skip(')');
++                vcheck_cmp();
++                gfunc_call(2);
++                vpushi(0);
++                vtop->r = REG_IRET;
++            }
++            cstr_free(&s1), cstr_free(&s2);
++            tok_str_free(a1), tok_str_free(a2);
++        }
++        break;
+     case TOK_builtin_strlen:
+         /* a string literal is folded (needed in constant expressions),
+            anything else is a call to strlen() */
+diff --git a/tcctok.h b/tcctok.h
+index bf8b12a..2b09264 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -180,6 +180,7 @@
+      DEF(TOK_builtin_expect, "__builtin_expect")
+      DEF(TOK_builtin_unreachable, "__builtin_unreachable")
+      DEF(TOK_builtin_strlen, "__builtin_strlen")
++     DEF(TOK_builtin_strcmp, "__builtin_strcmp")
+      /* keep the order: kind = (tok - TOK_builtin_clz) / 3, width = % 3 */
+      DEF(TOK_builtin_clz, "__builtin_clz")
+      DEF(TOK_builtin_clzl, "__builtin_clzl")
+@@ -246,6 +247,7 @@
+      DEF(TOK_memmove, "memmove")
+      DEF(TOK_memset, "memset")
+      DEF(TOK_strlen, "strlen")
++     DEF(TOK_strcmp, "strcmp")
+      DEF(TOK___divdi3, "__divdi3")
+      DEF(TOK___moddi3, "__moddi3")
+      DEF(TOK___udivdi3, "__udivdi3")
+@@ -271,6 +273,7 @@
+      DEF(TOK_memmove8, "__aeabi_memmove8")
+      DEF(TOK_memset, "__aeabi_memset")
+      DEF(TOK_strlen, "strlen")
++     DEF(TOK_strcmp, "strcmp")
+      DEF(TOK___aeabi_ldivmod, "__aeabi_ldivmod")
+      DEF(TOK___aeabi_uldivmod, "__aeabi_uldivmod")
+      DEF(TOK___aeabi_idivmod, "__aeabi_idivmod")

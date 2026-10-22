@@ -1,0 +1,29 @@
+From 36350cfd43a24f294a9563482bb52839966119ed Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] i386-asm: a segment register name as a prefix on the same
+ line
+
+"ds clflush %0" or "cs nop": emit the segment prefix byte and continue
+with the instruction as a new statement, like lock/rep.
+---
+ i386-asm.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index bc45c25..e8ad984 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -701,6 +701,12 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+     /* one-line things like "rep stosb" instead of only "rep\nstosb" */
+     if (opcode >= TOK_ASM_wait && opcode <= TOK_ASM_repnz)
+         unget_tok(';');
++    /* a segment register name used as an instruction prefix ("ds clflush %0") */
++    if (opcode >= TOK_ASM_es && opcode <= TOK_ASM_gs && tok != ';' && tok != TOK_LINEFEED) {
++        g(segment_prefixes[opcode - TOK_ASM_es]);
++        unget_tok(';'); /* the instruction follows as a new statement */
++        return;
++    }
+ 
+     /* get operands */
+     pop = ops;

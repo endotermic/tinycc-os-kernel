@@ -1,0 +1,79 @@
+From ea381ed85b849ab4870627a8c94363c0e624b20b Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: GCC global register variables
+
+"register unsigned long current_stack_pointer asm("rsp");" at file
+scope was treated as a tentative global definition: every object
+defined a global "rsp" in .bss (hundreds of multiple-definition
+errors at link time) and reads returned the memory contents.
+
+tcc has no register-resident variables, so such a declaration becomes
+a static per-unit slot (VT_STATIC, VT_EXTERN cleared) that every read
+first refreshes from the register ("mov %rsp, slot(%rip)"); stores and
+asm operands use the slot like local register variables.  An asm label
+that is not a register name is an error.  Limitation: a C store
+updates only the slot, not the register.
+---
+ tccgen.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 73ff63f..ead8511 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -1220,6 +1220,7 @@ static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
+     sa->dllexport |= sa1->dllexport;
+     sa->nodecorate |= sa1->nodecorate;
+     sa->dllimport |= sa1->dllimport;
++    sa->regvar |= sa1->regvar;
+ }
+ 
+ /* Merge function attributes.  */
+@@ -4988,6 +4989,9 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
+             next();
+             break;
+         case TOK_REGISTER:
++            ad->a.regvar = 1;
++            next();
++            break;
+         case TOK_AUTO:
+             next();
+             break;
+@@ -6363,6 +6367,15 @@ special_math_val:
+                 vtop->r |= VT_LVAL;
+                 indir();
+             }
++#endif
++#ifdef CONFIG_TCC_ASM
++            if (s->a.regvar && s->asm_label && !nocode_wanted) {
++                /* global register variable: refresh the slot from the
++                   register before it is read (see decl0) */
++                int reg = asm_parse_regvar(s->asm_label);
++                if (reg >= 0)
++                    store(reg, vtop);
++            }
+ #endif
+         } else if (r == VT_CONST && IS_ENUM_VAL(s->type.t)) {
+             vtop->c.i = s->enum_val;
+@@ -9178,6 +9191,20 @@ static int decl(int l)
+                     if (tok == '=')
+                         has_init = 1;
+ 
++#ifdef CONFIG_TCC_ASM
++                    if (ad.a.regvar && ad.asm_label && l == VT_CONST
++                        && (type.t & VT_BTYPE) != VT_FUNC && !(type.t & VT_ARRAY)) {
++                        /* GCC global register variable, e.g.
++                           "register unsigned long sp asm("rsp");".  tcc has
++                           no register-resident variables: it gets a static
++                           per-unit slot that every read (unary()) refreshes
++                           from the register first.  Stores and asm operands
++                           use the slot, like local register variables. */
++                        if (asm_parse_regvar(ad.asm_label) < 0)
++                            tcc_error("register name expected for a global register variable");
++                        type.t = (type.t & ~VT_EXTERN) | VT_STATIC;
++                    }
++#endif
+                     if (((type.t & VT_EXTERN) && (!has_init || l != VT_CONST))
+ 		        || (type.t & VT_BTYPE) == VT_FUNC
+                         /* as with GCC, uninitialized global arrays with no size

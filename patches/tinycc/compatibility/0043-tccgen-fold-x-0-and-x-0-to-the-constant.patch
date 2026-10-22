@@ -1,0 +1,31 @@
+From 8c0d71223cef67715d0553de53d8604afe2427ba Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: fold "x & 0" and "x * 0" to the constant
+
+With a non-constant x (outside constant expressions) x stays
+evaluated (a volatile x is loaded) and the result is 0, which lets
+"flags & FEATURE_BIT" with a disabled feature's bit of 0 fold and the
+code it guards disappear.
+---
+ tccgen.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 9ed21bf..5d6bfa7 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -2489,6 +2489,13 @@ static void gen_opic(int op)
+                 vtop->c.i = 0;
+             vswap();
+             vtop--;
++        } else if (c2 && (op == '&' || op == '*') && l2 == 0 && !CONST_WANTED) {
++            /* x & 0, x * 0: x stays evaluated, the result is the constant
++               (lets "p->flags & 0" from a disabled feature fold) */
++            vswap();
++            if (vtop->type.t & VT_VOLATILE)
++                gv(RC_INT);
++            vpop();
+         } else if (c2 && (((op == '*' || op == '/' || op == TOK_UDIV ||
+                           op == TOK_PDIV) &&
+                            l2 == 1) ||

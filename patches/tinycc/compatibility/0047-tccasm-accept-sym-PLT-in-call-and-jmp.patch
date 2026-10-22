@@ -1,0 +1,49 @@
+From cd18d73d5f08e1bdf2fac4bbbae09ca84f45dc32 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccasm: accept "sym@PLT" in call and jmp
+
+musl's hand-written x86_64 assembly and gcc -fPIC output use the
+suffix; call/jmp already get a PLT-capable relocation, so it only has
+to be accepted.  Any other "@suffix" is a clear "unsupported symbol
+suffix" error instead of a syntax error.  asmtest.S gains the two
+forms.
+---
+ tccasm.c        | 10 ++++++++++
+ tests/asmtest.S |  2 ++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index e48a4e4..ac586fa 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -463,6 +463,16 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+ 		pe->pcrel = 0;
+             }
+             next();
++            /* 'sym@PLT' (musl's hand-written asm, gcc -fPIC output):
++               call/jmp already get a PLT-capable relocation, so the
++               suffix only has to be accepted. */
++            if (tok == '@') {
++                next();
++                if (tok < TOK_IDENT || strcmp(get_tok_str(tok, NULL), "PLT"))
++                    tcc_error("unsupported symbol suffix '@%s'",
++                              get_tok_str(tok, &tokc));
++                next();
++            }
+         } else {
+             tcc_error("bad expression syntax [%s]", get_tok_str(tok, &tokc));
+         }
+diff --git a/tests/asmtest.S b/tests/asmtest.S
+index 7f31ce5..ae4b157 100644
+--- a/tests/asmtest.S
++++ b/tests/asmtest.S
+@@ -313,6 +313,8 @@ call L4
+ call *%eax
+ #else
+ call *%rax
++call L4@PLT
++jmp L4@PLT
+ #endif
+ call *0x1000
+ call func1

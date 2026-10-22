@@ -1,0 +1,52 @@
+From bceaff48245e1ba56c64e2ea94ad485e0416a0a3 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:18:38 +0300
+Subject: [PATCH] x86_64-asm: lretq, movabs, movabsq, ud1 and sysretl
+
+The kernel's arch/x86/boot/startup/la57toggle.S returns far with
+lretq; arch/x86/lib/{memset_64,hweight}.S load 64-bit constants with
+movabs/movabsq (always the 10-byte REX.W B8+r imm64 form, like GNU as);
+arch/x86/entry/entry.S marks unreachable code with "ud1 (%edx), %rdi"
+(0F B9 /r); entry_64.S returns to 32-bit user space with sysretl (the
+plain 0F 07 form).  Encodings byte-compared with GNU as.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ x86_64-asm.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index aa2e995..f5848e7 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -121,6 +121,7 @@ ALT(DEF_ASM_OP2(lzcntw, 0xf30fbd, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT
+ 
+      DEF_ASM_OP0(syscall, 0x0f05)
+      DEF_ASM_OP0(sysret, 0x0f07)
++     DEF_ASM_OP0(sysretl, 0x0f07)
+      DEF_ASM_OP0L(sysretq, 0x480f07, 0, 0)
+      DEF_ASM_OP0(ud2, 0x0f0b)
+ 
+@@ -138,6 +139,9 @@ ALT(DEF_ASM_OP2(movb, 0x8a, 0, OPC_MODRM | OPC_BWLX, OPT_EA | OPT_REG, OPT_REG))
+ ALT(DEF_ASM_OP2(movb, 0xb0, 0, OPC_REG | OPC_BWLX, OPT_IM, OPT_REG))
+ ALT(DEF_ASM_OP2(mov,  0xb8, 0, OPC_REG, OPT_IM64, OPT_REG64))
+ ALT(DEF_ASM_OP2(movq, 0xb8, 0, OPC_REG, OPT_IM64, OPT_REG64))
++    /* movabs: always the 64-bit immediate form */
++    DEF_ASM_OP2(movabs,  0xb8, 0, OPC_REG, OPT_IM64, OPT_REG64)
++    DEF_ASM_OP2(movabsq, 0xb8, 0, OPC_REG, OPT_IM64, OPT_REG64)
+ ALT(DEF_ASM_OP2(movb, 0xc6, 0, OPC_MODRM | OPC_BWLX, OPT_IM, OPT_REG | OPT_EA))
+ 
+ ALT(DEF_ASM_OP2(movw, 0x8c, 0, OPC_MODRM | OPC_WLX, OPT_SEG, OPT_EA | OPT_REG))
+@@ -261,8 +265,12 @@ ALT(DEF_ASM_OP1(setob, 0x0f90, 0, OPC_MODRM | OPC_TEST, OPT_REG8 | OPT_EA))
+     DEF_ASM_OP0(retq, 0xc3)
+ ALT(DEF_ASM_OP1(retq, 0xc2, 0, 0, OPT_IM16))
+ ALT(DEF_ASM_OP1(ret, 0xc2, 0, 0, OPT_IM16))
++    /* ud1 r/m, r (the kernel's reachability annotation "ud1 (%edx), %rdi") */
++    DEF_ASM_OP2(ud1, 0x0fb9, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT_REGW)
+     DEF_ASM_OP0(lret, 0xcb)
+ ALT(DEF_ASM_OP1(lret, 0xca, 0, 0, OPT_IM16))
++    DEF_ASM_OP0(lretq, 0x48cb)
++ALT(DEF_ASM_OP1(lretq, 0x48ca, 0, 0, OPT_IM16))
+ 
+ ALT(DEF_ASM_OP1(jo, 0x70, 0, OPC_TEST, OPT_DISP8))
+     DEF_ASM_OP1(loopne, 0xe0, 0, 0, OPT_DISP8)

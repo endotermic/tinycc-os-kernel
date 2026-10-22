@@ -1,0 +1,89 @@
+From 6642abeaf919b5575c36f5aa4994115d257d242e Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:32:57 +0300
+Subject: [PATCH] include: a limits.h for code that makes tcc claim to be GCC
+
+With __GNUC__ defined (-D__GNUC__=4, as code written for gcc may need:
+the Linux kernel's tools/include relies on __GNUC__ for __must_be_array
+and friends), glibc's <limits.h> #include_next's the compiler's own
+limits.h, which GCC has and tcc had not: "include file 'limits.h' not
+found".  Provide one that defines GCC's guard and includes the C
+library's file.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/limits.h | 47 +++++++++++++++++++++++++++++++++++++++++++++++
+ tcc.c            |  5 ++++-
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+ create mode 100644 include/limits.h
+
+diff --git a/include/limits.h b/include/limits.h
+new file mode 100644
+index 0000000..bc9d092
+--- /dev/null
++++ b/include/limits.h
+@@ -0,0 +1,47 @@
++/* limits.h: the C limits, as GCC's own limits.h provides them.
++
++   glibc's <limits.h> defines them itself only when the compiler is not
++   GCC; with __GNUC__ defined (as code written for gcc may need) it
++   expects the compiler's file to define them and #include_next's it,
++   looking for GCC's _GCC_LIMITS_H_ guard.  This file is found first on
++   the include path (it may even be there twice, through -I and -B, so
++   it has no guard of its own and always passes on to the next one), and
++   the C library's file adds the POSIX limits. */
++#ifndef _GCC_LIMITS_H_
++#define _GCC_LIMITS_H_
++
++#define CHAR_BIT 8
++#define SCHAR_MAX 127
++#define SCHAR_MIN (-128)
++#define UCHAR_MAX 255
++#ifdef __CHAR_UNSIGNED__
++#define CHAR_MIN 0
++#define CHAR_MAX UCHAR_MAX
++#else
++#define CHAR_MIN SCHAR_MIN
++#define CHAR_MAX SCHAR_MAX
++#endif
++#define SHRT_MAX 32767
++#define SHRT_MIN (-32768)
++#define USHRT_MAX 65535
++#define INT_MAX 2147483647
++#define INT_MIN (-INT_MAX - 1)
++#define UINT_MAX 4294967295U
++#if __SIZEOF_LONG__ == 8
++#define LONG_MAX 9223372036854775807L
++#define ULONG_MAX 18446744073709551615UL
++#else
++#define LONG_MAX 2147483647L
++#define ULONG_MAX 4294967295UL
++#endif
++#define LONG_MIN (-LONG_MAX - 1L)
++#define LLONG_MAX 9223372036854775807LL
++#define LLONG_MIN (-LLONG_MAX - 1LL)
++#define ULLONG_MAX 18446744073709551615ULL
++#define LONG_LONG_MAX LLONG_MAX
++#define LONG_LONG_MIN LLONG_MIN
++#define ULONG_LONG_MAX ULLONG_MAX
++#define MB_LEN_MAX 16
++
++#endif /* _GCC_LIMITS_H_ */
++#include_next <limits.h>
+diff --git a/tcc.c b/tcc.c
+index 0f5b9d8..11bf6be 100644
+--- a/tcc.c
++++ b/tcc.c
+@@ -403,8 +403,11 @@ redo:
+ 
+     if (s->run_test) {
+         t = 0;
+-    } else if (s->output_type == TCC_OUTPUT_PREPROCESS || s->asm_text_only) {
++    } else if (s->output_type == TCC_OUTPUT_PREPROCESS) {
+         ;
++    } else if (s->asm_text_only) {
++        if (0 == ret && s->gen_deps && s->outfile)
++            gen_makedeps(s, s->outfile, s->deps_outfile);
+     } else if (0 == ret) {
+         if (s->output_type == TCC_OUTPUT_MEMORY) {
+ #ifdef TCC_IS_NATIVE

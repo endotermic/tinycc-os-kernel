@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# flex - stand-in for flex in the self-hosting image: Kbuild runs "$(LEX) -o<out> -L <in>.l" for
+# scripts/kconfig/lexer.l; the generated lexer was made on the host (flex) and shipped in
+# $KCONFIG_PREGEN (/usr/share/tinycc-os-kernel/kconfig), so copy it.
+D=${KCONFIG_PREGEN:-/usr/share/tinycc-os-kernel/kconfig}
+out= in=
+for a; do case $a in --version) echo "flex 2.6.4 (tinycc-os-kernel stand-in: pre-generated files from $D)"; exit 0;; -o*) out=${a#-o};; -*) ;; *) in=$a;; esac; done
+[ -n "$out" ] && [ -n "$in" ] || { echo "flex (stand-in): expected -o<out> <in>.l" >&2; exit 2; }
+src=$D/$(basename "$in" .l).lex.c
+[ -f "$src" ] || { echo "flex (stand-in): no pre-generated $src" >&2; exit 1; }
+exec cp "$src" "$out"

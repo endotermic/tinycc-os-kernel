@@ -1,0 +1,40 @@
+From 3da8c5e3e8bcc84f8cb29f040619b9ea1dfc81fd Mon Sep 17 00:00:00 2001
+From: tinycc-os-kernel <tinycc-os-kernel@localhost>
+Date: Thu, 22 Oct 2026 13:27:27 +0300
+Subject: [PATCH] tccgen: a named section is aligned like its contents, not the
+ pointer size
+
+new_section() gives every section the pointer size as alignment "for
+gcc/pcc compatibility"; GNU as, which is what gcc's output goes
+through, aligns a section to the largest alignment of its contents.
+The difference shows in the kernel's per-cpu "cache hot" data: every
+variable has a section of its own (.data..percpu..hot..<name>, sorted
+by alignment by the linker script) and the one-byte and two-byte
+variables came out 8-byte aligned, so the nine of them took 72 bytes
+where gcc's take 55 and the linker script's ASSERT(... <= 64,
+"percpu cache hot data too large") failed in the CONFIG_SMP build.
+Start a section created by a section attribute at alignment 1; the
+objects placed in it raise it (section_add), as the assembler already
+does for sections created by .section directives.
+---
+ tccgen.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 53553cb..5ab6133 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -4080,6 +4080,13 @@ redo:
+             n = tcc_state->nb_sections;
+             ad->section = find_section(tcc_state, astr);
+             ad->new_section = n < tcc_state->nb_sections;
++            /* like GNU as, the alignment of a named section is that of
++               its contents (section_add raises it), not the pointer size
++               new_section starts with: the kernel packs one-byte and
++               two-byte per-cpu variables of their own sections into one
++               cache line and asserts the sum in its linker script */
++            if (ad->new_section)
++                ad->section->sh_addralign = 1;
+             skip(')');
+             break;
+         case TOK_ALIAS1:

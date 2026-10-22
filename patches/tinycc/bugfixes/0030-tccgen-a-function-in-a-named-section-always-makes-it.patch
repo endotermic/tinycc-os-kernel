@@ -1,0 +1,32 @@
+From dbf8d43c52d09566abfa8891e29cbde67e66894e Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: a function in a named section always makes it
+ executable
+
+The section flags were only set when the function definition created
+the section.  A prior declaration carrying the section attribute had
+already created it as a data section, so code ended up in a
+non-executable section (objtool skipped .noinstr.text and .init.text:
+"bad .discard.annotate_insn entry").  OR the text flags in
+unconditionally.
+---
+ tccgen.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index c27c447..73ff63f 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9118,8 +9118,9 @@ static int decl(int l)
+                     cur_text_section = text_section;
+                     if (ad.section) {
+                         cur_text_section = ad.section;
+-                        if (ad.new_section)
+-                            ad.section->sh_flags = text_section->sh_flags;
++                        /* code: executable, even if a prior declaration
++                           already created the section */
++                        ad.section->sh_flags |= text_section->sh_flags;
+                     }
+                     gen_function(sym);
+                 }

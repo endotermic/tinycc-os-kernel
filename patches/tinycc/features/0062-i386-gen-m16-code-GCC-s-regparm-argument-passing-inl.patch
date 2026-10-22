@@ -1,0 +1,664 @@
+From 3acf2019a187f7a6b1fc611daec60c24a2c54f42 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:49:50 +0300
+Subject: [PATCH] i386-gen: -m16 code, GCC's regparm argument passing, inline
+ struct copies
+
+-m16 (GCC's -m16, GNU as .code16gcc): the generated code is the 32-bit
+code with the 0x66 prefix on every 32-bit operation (including push/pop/
+call/ret/jmp/jcc/leave), the 0x67 prefix on every memory operand and no
+0x66 on 16-bit operations; the prolog grows by its three prefixes.
+Inline asm pushes/pops of operand registers and the flag-output movzbl
+get their prefixes too (i386-asm.c).
+
+regparm(N) / -mregparm=N follow GCC's assignment: the arguments are taken
+in order, an integer, pointer, long long or structure argument of w
+dwords goes into the next w of %eax, %edx, %ecx while enough remain, the
+first argument that does not fit and everything after it goes on the
+stack, floating point arguments are on the stack and take no register;
+a structure return pointer is the first argument (in %eax, not popped
+by the callee); variadic functions are left on the stack (tccgen, the
+-mregparm default).  Indirect calls of regparm functions go through
+memory ("call *disp(%ebp)"), since the three allocatable registers all
+carry arguments.
+
+Structure assignments are copied inline with rep movsl (saving %esi,
+%edi and %ecx around it) instead of calling memmove: the boot code has
+no libc.
+
+Verified: tests/m16-check.sh codegen (the 20 arch/x86/boot/*.c files
+compiled with -m16 and -m32 disassemble to the same instruction
+streams) and regparm (gcc-compiled and tcc-compiled callers/callees
+with 12 argument-passing cases call each other correctly in 32-bit
+static binaries); make test passes.
+---
+ i386-gen.c | 264 ++++++++++++++++++++++++++++++++++++++++++++++++-----
+ tccgen.c   |   7 ++
+ 2 files changed, 249 insertions(+), 22 deletions(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index 018165b..1c270d0 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -78,6 +78,11 @@ enum {
+    at caller side (for interfacing with non-TCC compilers) */
+ #define PROMOTE_RET
+ 
++/* structure copies are inlined (rep movsl) rather than calls to memmove
++   (the Linux boot code has no libc) */
++#define TCC_TARGET_NATIVE_STRUCT_COPY
++ST_FUNC void gen_struct_copy(int size);
++
+ /******************************************************/
+ #else /* ! TARGET_DEFS_ONLY */
+ /******************************************************/
+@@ -105,6 +110,31 @@ ST_DATA const int reg_classes[NB_REGS] = {
+ 
+ static unsigned long func_sub_sp_offset;
+ static int func_ret_sub;
++
++/* -m16 (GCC's -m16, GNU as .code16gcc): the code runs in a 16-bit code
++   segment, so it is ordinary 32-bit code where every 32-bit operation
++   carries the 0x66 operand-size prefix, every memory operand the 0x67
++   address-size prefix, and 16-bit operations drop the 0x66 they have in
++   32-bit code.  o66()/o67() emit the prefixes; byte and x87 operations
++   have no operand size. */
++#define M16 (tcc_state->m16)
++static void o66(void) { if (M16) g(0x66); }
++static void o67(void) { if (M16) g(0x67); }
++/* the operand size prefix of an opcode given to gen_modrm()/store():
++   returns the opcode without the 0x66 of a 16-bit operation */
++static int gen_opsize16(int opc)
++{
++    int b;
++    if (!M16)
++        return opc;
++    b = opc & 0xff;
++    if (b == 0x66)
++        return opc >> 8;
++    if (!(b == 0x88 || b == 0x8a || b == 0x86 || b == 0xc6 || b == 0xf6 || b == 0xfe
++          || (b >= 0xd8 && b <= 0xdf)))
++        g(0x66);
++    return opc;
++}
+ #ifdef CONFIG_TCC_BCHECK
+ static addr_t func_bound_offset;
+ static unsigned long func_bound_ind;
+@@ -241,6 +271,8 @@ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+ {
+     int op_reg = REG_VALUE(op_r2) << 3;
+ 
++    o67(); /* all memory operands use 32-bit addressing */
++    opc = gen_opsize16(opc);
+     if ((r & VT_SYM) && (sym->type.t & VT_TLS)) {
+ #ifdef TCC_TARGET_PE
+         Sym *s2 = external_global_sym(TOK___tls_index, &int_type);
+@@ -381,6 +413,7 @@ ST_FUNC void load(int r, SValue *sv)
+             }
+ #endif
+         } else if (v == VT_CONST) {
++            o66();
+             o(0xb8 + r); /* mov $xx, r */
+             gen_addr32(fr, sv->sym, fc);
+         } else if (v == VT_LOCAL) {
+@@ -388,6 +421,7 @@ ST_FUNC void load(int r, SValue *sv)
+                 /* lea xxx(%ebp), r */
+                 gen_modrm(0x8d, r, VT_LOCAL, sv->sym, fc);
+             } else {
++                o66();
+                 o(0x89);
+                 o(0xe8 + r); /* mov %ebp, r */
+             }
+@@ -395,14 +429,18 @@ ST_FUNC void load(int r, SValue *sv)
+             o(0x0f); /* setxx %br */
+             o(fc);
+             o(0xc0 + r);
++            o66();
+             o(0xc0b60f + r * 0x90000); /* movzbl %al, %eax */
+         } else if (v == VT_JMP || v == VT_JMPI) {
+             t = v & 1;
++            o66();
+             oad(0xb8 + r, t); /* mov $1, r */
+-            o(0x05eb); /* jmp after */
++            o(M16 ? 0x06eb : 0x05eb); /* jmp after */
+             gsym(fc);
++            o66();
+             oad(0xb8 + r, t ^ 1); /* mov $0, r */
+         } else if (v != r) {
++            o66();
+             o(0x89);
+             o(0xc0 + r + v * 8); /* mov v, r */
+         }
+@@ -453,6 +491,7 @@ ST_FUNC void store(int r, SValue *v)
+     if (fr == VT_CONST || fr == VT_LOCAL || (v->r & VT_LVAL)) {
+         gen_modrm(opc, r, v->r, v->sym, fc);
+     } else if (fr != r) {
++        opc = gen_opsize16(opc);
+ 	o(opc);
+         o(0xc0 + fr + r * 8); /* mov r, fr */
+     }
+@@ -460,6 +499,7 @@ ST_FUNC void store(int r, SValue *v)
+ 
+ static void gadd_sp(int val)
+ {
++    o66();
+     if (val == (signed char)val) {
+         o(0xc483);
+         g(val);
+@@ -479,6 +519,10 @@ static void gen_static_call(int v)
+ }
+ #endif
+ 
++/* set while a regparm function is called: its address may not take a
++   register (they carry the arguments) */
++static int regparm_call;
++
+ /* 'is_jmp' is '1' if it is a jump */
+ static void gcall_or_jmp(int is_jmp)
+ {
+@@ -493,17 +537,45 @@ static void gcall_or_jmp(int is_jmp)
+             return;
+ 	}
+ #endif
++        o66();
+         oad(0xe8 + is_jmp, vtop->c.i - 4); /* call/jmp im */
+         greloc(cur_text_section, vtop->sym, ind - 4, R_386_PC32);
++    } else if (regparm_call && (vtop->r & VT_LVAL)
++               && ((vtop->r & VT_VALMASK) == VT_LOCAL || (vtop->r & VT_VALMASK) == VT_CONST)) {
++        /* call/jmp *mem: the argument registers stay intact */
++        gen_modrm(0xff, 2 + 2 * is_jmp, vtop->r, vtop->sym, vtop->c.i);
+     } else {
+         /* otherwise, indirect call */
+         r = gv(RC_INT);
++        o66();
+         o(0xff); /* call/jmp *r */
+         o(0xd0 + r + (is_jmp << 4));
+     }
+ }
+ 
+ static const uint8_t fastcall_regs[3] = { TREG_EAX, TREG_EDX, TREG_ECX };
++
++/* GCC's regparm(N) register assignment (also the default under
++   -mregparm=N): the arguments are taken in order; an integer, pointer or
++   structure argument of w dwords goes into the next w registers while
++   enough remain, the first one that does not fit and everything after it
++   goes on the stack; floating point arguments are on the stack and do not
++   take registers.  Returns the number of dwords in registers for the
++   argument sizes 'size[]' (in bytes, first argument first). */
++static int regparm_words(int nregs, const int *size, const int *isfloat, int n)
++{
++    int i, w, words = 0;
++    for (i = 0; i < n; i++) {
++        if (isfloat[i])
++            continue;
++        w = (size[i] + 3) / 4;
++        if (w > nregs)
++            break;
++        nregs -= w;
++        words += w;
++    }
++    return words;
++}
+ static const uint8_t fastcallw_regs[2] = { TREG_ECX, TREG_EDX };
+ 
+ /* Return the number of registers needed to return the struct, or 0 if
+@@ -539,7 +611,7 @@ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int
+    parameters and the function address. */
+ ST_FUNC void gfunc_call(int nb_args)
+ {
+-    int size, align, r, args_size, i, func_call;
++    int size, align, r, args_size, i, func_call, regparm_nb;
+     Sym *func_sym;
+ 
+ #ifdef CONFIG_TCC_BCHECK
+@@ -549,6 +621,39 @@ ST_FUNC void gfunc_call(int nb_args)
+ 
+     save_regs(nb_args + 1);
+ 
++    /* the register arguments of a regparm function: the argument list is
++       vtop[-(nb_args-1)] (first) .. vtop[0] (last) */
++    func_sym = vtop[-nb_args].type.ref;
++    func_call = func_sym->f.func_call;
++    regparm_nb = 0;
++    if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3 && nb_args) {
++        int *asize = tcc_malloc(2 * nb_args * sizeof(int)), *isfloat = asize + nb_args;
++        for (i = 0; i < nb_args; i++) {
++            SValue *sv = &vtop[-(nb_args - 1 - i)];
++            asize[i] = (sv->type.t & VT_BTYPE) == VT_LLONG ? 8
++                     : (sv->type.t & VT_BTYPE) == VT_STRUCT ? type_size(&sv->type, &align) : 4;
++            isfloat[i] = is_float(sv->type.t);
++        }
++        regparm_nb = regparm_words(func_call - FUNC_FASTCALL1 + 1, asize, isfloat, nb_args);
++        tcc_free(asize);
++    }
++    /* regparm: %eax, %edx and %ecx carry arguments, so an indirect call
++       needs its address in memory ("call *disp(%ebp)"): a computed
++       address (a function pointer in a structure) gets a stack slot now,
++       while the registers are still free */
++    regparm_call = func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3;
++    if (regparm_call) {
++        SValue *fn = &vtop[-nb_args];
++        if ((fn->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_CONST | VT_SYM)
++            && !((fn->r & VT_LVAL)
++                 && ((fn->r & VT_VALMASK) == VT_LOCAL || (fn->r & VT_VALMASK) == VT_CONST))) {
++            vrott(nb_args + 1);
++            r = gv(RC_INT);
++            save_reg(r);
++            vrotb(nb_args + 1);
++        }
++    }
++
+     args_size = 0;
+     for(i = 0;i < nb_args; i++) {
+         if ((vtop->type.t & VT_BTYPE) == VT_STRUCT) {
+@@ -567,9 +672,11 @@ ST_FUNC void gfunc_call(int nb_args)
+             } else
+ #endif
+             {
++                o66();
+                 oad(0xec81, size); /* sub $xxx, %esp */
+                 /* generate structure store */
+                 r = get_reg(RC_INT);
++                o66();
+                 o(0xe089 + (r << 8)); /* mov %esp, r */
+             }
+             vset(&vtop->type, r | VT_LVAL, 0);
+@@ -584,7 +691,9 @@ ST_FUNC void gfunc_call(int nb_args)
+                 size = 8;
+             else
+                 size = 12;
++            o66();
+             oad(0xec81, size); /* sub $xxx, %esp */
++            o67();
+             if (size == 12)
+                 o(0x7cdb);
+             else
+@@ -598,57 +707,67 @@ ST_FUNC void gfunc_call(int nb_args)
+             r = gv(RC_INT);
+             if ((vtop->type.t & VT_BTYPE) == VT_LLONG) {
+                 size = 8;
++                o66();
+                 o(0x50 + vtop->r2); /* push r */
+             } else {
+                 size = 4;
+             }
++            o66();
+             o(0x50 + r); /* push r */
+             args_size += size;
+         }
+         vtop--;
+     }
+ 
+-    func_sym = vtop->type.ref;
+-    func_call = func_sym->f.func_call;
+     /* fast call case */
+-    if ((func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3) ||
+-        func_call == FUNC_FASTCALLW || func_call == FUNC_THISCALL) {
++    if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3) {
++        /* GCC regparm: the leading arguments were pushed last, pop them
++           into %eax, %edx, %ecx (a structure return pointer counts as the
++           first argument) */
++        for(i = 0; i < regparm_nb; i++) {
++            o66();
++            o(0x58 + fastcall_regs[i]); /* pop r */
++            args_size -= 4;
++        }
++    } else if (func_call == FUNC_FASTCALLW || func_call == FUNC_THISCALL) {
+         int fastcall_nb_regs;
+         const uint8_t *fastcall_regs_ptr;
+         if (func_call == FUNC_FASTCALLW) {
+             fastcall_regs_ptr = fastcallw_regs;
+             fastcall_nb_regs = 2;
+-        } else if (func_call == FUNC_THISCALL) {
++        } else {
+             fastcall_regs_ptr = fastcallw_regs;
+             fastcall_nb_regs = 1;
+-        } else {
+-            fastcall_regs_ptr = fastcall_regs;
+-            fastcall_nb_regs = func_call - FUNC_FASTCALL1 + 1;
+         }
+         for(i = 0;i < fastcall_nb_regs; i++) {
+             if (args_size <= 0)
+                 break;
++            o66();
+             o(0x58 + fastcall_regs_ptr[i]); /* pop r */
+             /* XXX: incorrect for struct/floats */
+             args_size -= 4;
+         }
+     }
+ #if !defined(TCC_TARGET_PE) && !TARGETOS_FreeBSD || TARGETOS_OpenBSD
++    /* the callee pops the structure return pointer, unless it got it in
++       a register (regparm) */
+     else if ((vtop->type.ref->type.t & VT_BTYPE) == VT_STRUCT)
+         args_size -= 4;
+ #endif
+ 
+     gcall_or_jmp(0);
++    regparm_call = 0;
+ 
+     if (args_size && func_call != FUNC_STDCALL && func_call != FUNC_THISCALL && func_call != FUNC_FASTCALLW)
+         gadd_sp(args_size);
+     vtop--;
+ }
+ 
++/* push %ebp; mov %esp,%ebp; sub $n,%esp: 3 prefixes more with -m16 */
+ #ifdef TCC_TARGET_PE
+-#define FUNC_PROLOG_SIZE (10 + !!USE_EBX)
++#define FUNC_PROLOG_SIZE (10 + !!USE_EBX + 3 * !!M16)
+ #else
+-#define FUNC_PROLOG_SIZE (9 + !!USE_EBX)
++#define FUNC_PROLOG_SIZE (9 + !!USE_EBX + 3 * !!M16)
+ #endif
+ 
+ /* generate function prolog of type 't' */
+@@ -656,7 +775,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+ {
+     CType *func_type = &func_sym->type;
+     int addr, align, size, func_call, fastcall_nb_regs;
+-    int param_index, param_addr;
++    int param_index, param_addr, regparm, regparm_stack = 0, regi = 0, w, k;
+     const uint8_t *fastcall_regs_ptr;
+     Sym *sym;
+     CType *type;
+@@ -666,10 +785,12 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+     addr = 8;
+     loc = 0;
+     func_vc = 0;
++    regparm = 0;
+ 
+     if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3) {
+         fastcall_nb_regs = func_call - FUNC_FASTCALL1 + 1;
+         fastcall_regs_ptr = fastcall_regs;
++        regparm = 1; /* GCC's rules, see regparm_words() */
+     } else if (func_call == FUNC_FASTCALLW) {
+         fastcall_nb_regs = 2;
+         fastcall_regs_ptr = fastcallw_regs;
+@@ -693,10 +814,19 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+ #else
+     if ((func_vt.t & VT_BTYPE) == VT_STRUCT) {
+ #endif
+-        /* XXX: fastcall case ? */
+-        func_vc = addr;
+-        addr += 4;
+-        param_index++;
++        if (regparm && fastcall_nb_regs > 0) {
++            /* regparm: the structure return pointer is the first
++               argument, in %eax; the caller does not pop it */
++            loc -= 4;
++            gen_modrm(0x89, fastcall_regs_ptr[regi++], VT_LOCAL, NULL, loc);
++            func_vc = loc;
++            param_index++;
++            fastcall_nb_regs--;
++        } else {
++            func_vc = addr;
++            addr += 4;
++            param_index++;
++        }
+     }
+     /* define parameters */
+     while ((sym = sym->next) != NULL) {
+@@ -709,7 +839,25 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+             size = 4;
+         }
+ #endif
+-        if (param_index < fastcall_nb_regs) {
++        if (regparm) {
++            /* GCC's rules (regparm_words): consecutive registers for the
++               dwords of an integer or structure parameter while they fit,
++               everything from the first one that does not on the stack */
++            w = size / 4;
++            if (is_float(type->t) || regparm_stack || w > fastcall_nb_regs) {
++                if (!is_float(type->t))
++                    regparm_stack = 1;
++                param_addr = addr;
++                addr += size;
++            } else {
++                loc -= size;
++                for (k = 0; k < w; k++)
++                    gen_modrm(0x89, fastcall_regs_ptr[regi + k], VT_LOCAL, NULL, loc + 4 * k);
++                param_addr = loc;
++                regi += w;
++                fastcall_nb_regs -= w;
++            }
++        } else if (param_index < fastcall_nb_regs) {
+             /* save FASTCALL register */
+             loc -= 4;
+             /* movl */
+@@ -727,7 +875,7 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+     if (func_call == FUNC_STDCALL || func_call == FUNC_FASTCALLW || func_call == FUNC_THISCALL)
+         func_ret_sub = addr - 8;
+ #if !defined(TCC_TARGET_PE) && !TARGETOS_FreeBSD || TARGETOS_OpenBSD
+-    else if (func_vc)
++    else if (func_vc > 0) /* the structure return pointer on the stack */
+         func_ret_sub = 4;
+ #endif
+ 
+@@ -754,7 +902,9 @@ ST_FUNC void gfunc_epilog(void)
+     gen_modrm(0x8b, TREG_EBX, VT_LOCAL, NULL, -(v+4));
+ #endif
+ 
++    o66();
+     o(0xc9); /* leave */
++    o66();
+     if (func_ret_sub == 0) {
+         o(0xc3); /* ret */
+     } else {
+@@ -771,7 +921,11 @@ ST_FUNC void gfunc_epilog(void)
+     } else
+ #endif
+     {
+-        o(0xe58955);  /* push %ebp, mov %esp, %ebp */
++        o66();
++        o(0x55);  /* push %ebp */
++        o66();
++        o(0xe589);  /* mov %esp, %ebp */
++        o66();
+         o(0xec81);  /* sub esp, stacksize */
+         gen_le32(v);
+ #ifdef TCC_TARGET_PE
+@@ -787,6 +941,7 @@ ST_FUNC void gfunc_epilog(void)
+ /* generate a jump to a label */
+ ST_FUNC int gjmp(int t)
+ {
++    o66();
+     return gjmp2(0xe9, t);
+ }
+ 
+@@ -799,6 +954,7 @@ ST_FUNC void gjmp_addr(int a)
+         g(0xeb);
+         g(r);
+     } else {
++        o66();
+         oad(0xe9, a - ind - 5);
+     }
+ }
+@@ -831,6 +987,7 @@ ST_FUNC int gjmp_append(int n, int t)
+ 
+ ST_FUNC int gjmp_cond(int op, int t)
+ {
++    o66();
+     g(0x0f);
+     t = gjmp2(op - 16, t);
+     return t;
+@@ -851,6 +1008,7 @@ ST_FUNC void gen_opi(int op)
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i;
++            o66();
+             if (c == (signed char)c) {
+                 /* generate inc and dec for smaller code */
+                 if ((c == 1 || c == -1) && (op == '+' || op == '-')) {
+@@ -869,6 +1027,7 @@ ST_FUNC void gen_opi(int op)
+             gv2(RC_INT, RC_INT);
+             r = vtop[-1].r;
+             fr = vtop[0].r;
++            o66();
+             o((opc << 3) | 0x01);
+             o(0xc0 + r + fr * 8); 
+         }
+@@ -900,6 +1059,7 @@ ST_FUNC void gen_opi(int op)
+         r = vtop[-1].r;
+         fr = vtop[0].r;
+         vtop--;
++        o66();
+         o(0xaf0f); /* imul fr, r */
+         o(0xc0 + fr + r * 8);
+         break;
+@@ -919,6 +1079,7 @@ ST_FUNC void gen_opi(int op)
+             r = gv(RC_INT);
+             vswap();
+             c = vtop->c.i & 0x1f;
++            o66();
+             o(0xc1); /* shl/shr/sar $xxx, r */
+             o(opc | r);
+             g(c);
+@@ -926,6 +1087,7 @@ ST_FUNC void gen_opi(int op)
+             /* we generate the shift in ecx */
+             gv2(RC_INT, RC_ECX);
+             r = vtop[-1].r;
++            o66();
+             o(0xd3); /* shl/shr/sar %cl, r */
+             o(opc | r);
+         }
+@@ -947,16 +1109,23 @@ ST_FUNC void gen_opi(int op)
+         /* save EAX too if used otherwise */
+         save_reg_upstack(TREG_EAX, 1);
+         if (op == TOK_UMULL) {
++            o66();
+             o(0xf7); /* mul fr */
+             o(0xe0 + fr);
+             vtop->r2 = TREG_EDX;
+             r = TREG_EAX;
+         } else {
+             if (op == TOK_UDIV || op == TOK_UMOD) {
+-                o(0xf7d231); /* xor %edx, %edx, div fr, %eax */
++                o66();
++                o(0xd231); /* xor %edx, %edx */
++                o66();
++                o(0xf7); /* div fr, %eax */
+                 o(0xf0 + fr);
+             } else {
+-                o(0xf799); /* cltd, idiv fr, %eax */
++                o66();
++                o(0x99); /* cltd */
++                o66();
++                o(0xf7); /* idiv fr, %eax */
+                 o(0xf8 + fr);
+             }
+             if (op == '%' || op == TOK_UMOD)
+@@ -1100,23 +1269,34 @@ ST_FUNC void gen_cvt_itof(int t)
+     if ((vtop->type.t & VT_BTYPE) == VT_LLONG) {
+         /* signed long long to float/double/long double (unsigned case
+            is handled generically) */
++        o66();
+         o(0x50 + vtop->r2); /* push r2 */
++        o66();
+         o(0x50 + (vtop->r & VT_VALMASK)); /* push r */
++        o67();
+         o(0x242cdf); /* fildll (%esp) */
++        o66();
+         o(0x08c483); /* add $8, %esp */
+         vtop->r2 = VT_CONST;
+     } else if ((vtop->type.t & (VT_BTYPE | VT_UNSIGNED)) == 
+                (VT_INT | VT_UNSIGNED)) {
+         /* unsigned int to float/double/long double */
++        o66();
+         o(0x6a); /* push $0 */
+         g(0x00);
++        o66();
+         o(0x50 + (vtop->r & VT_VALMASK)); /* push r */
++        o67();
+         o(0x242cdf); /* fildll (%esp) */
++        o66();
+         o(0x08c483); /* add $8, %esp */
+     } else {
+         /* int to float/double/long double */
++        o66();
+         o(0x50 + (vtop->r & VT_VALMASK)); /* push r */
++        o67();
+         o(0x2404db); /* fildl (%esp) */
++        o66();
+         o(0x04c483); /* add $4, %esp */
+     }
+     vtop->r2 = VT_CONST;
+@@ -1155,6 +1335,7 @@ ST_FUNC void gen_cvt_csti(int t)
+     r = gv(RC_INT);
+     sz = !(t & VT_UNSIGNED);
+     xl = (t & VT_BTYPE) == VT_SHORT;
++    o66();
+     o(0xc0b60f /* mov[sz] %a[xl], %eax */
+         | (sz << 3 | xl) << 8
+         | (r << 3 | r) << 16
+@@ -1312,15 +1493,54 @@ ST_FUNC void gen_vla_alloc(CType *type, int align) {
+         int r;
+         r = gv(RC_INT); /* allocation size */
+         /* sub r,%rsp */
++        o66();
+         o(0x2b);
+         o(0xe0 | r);
+         /* We align to 16 bytes rather than align */
+         /* and ~15, %esp */
++        o66();
+         o(0xf0e483);
+         vpop();
+     }
+ }
+ 
++/* Structure copy: vtop[-1] is the destination address, vtop[0] the
++   source address (tccgen.c).  %esi, %edi and %ecx are not allocatable
++   registers here, so they are saved around the copy; the direction flag
++   is clear by the ABI. */
++ST_FUNC void gen_struct_copy(int size)
++{
++    int n = size / 4, rd, rs;
++    gv2(RC_INT, RC_INT);
++    rd = vtop[-1].r & VT_VALMASK;
++    rs = vtop[0].r & VT_VALMASK;
++    o66(), g(0x56); /* push %esi */
++    o66(), g(0x57); /* push %edi */
++    o66(), g(0x51); /* push %ecx */
++    o66(), o(0x89), g(0xc0 | (rd << 3) | 7); /* mov rd, %edi */
++    o66(), o(0x89), g(0xc0 | (rs << 3) | 6); /* mov rs, %esi */
++    if (n > 4) {
++        o66(), oad(0xb9, n); /* mov $n, %ecx */
++        o67(), o66(), o(0xa5f3); /* rep movsl */
++    } else {
++        while (n--)
++            o67(), o66(), g(0xa5); /* movsl */
++    }
++    if (size & 2) {
++        o67();
++        if (!M16)
++            g(0x66);
++        g(0xa5); /* movsw */
++    }
++    if (size & 1)
++        o67(), g(0xa4); /* movsb */
++    o66(), g(0x59); /* pop %ecx */
++    o66(), g(0x5f); /* pop %edi */
++    o66(), g(0x5e); /* pop %esi */
++    vpop();
++    vpop();
++}
++
+ /* end of X86 code generator */
+ /*************************************************************/
+ #endif
+diff --git a/tccgen.c b/tccgen.c
+index 7ccb432..d243573 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -5267,6 +5267,13 @@ static int post_type(CType *type, AttributeDef *ad, int storage, int td)
+         }
+         ad->f.func_args = arg_size;
+         ad->f.func_type = l;
++#ifdef TCC_TARGET_I386
++        /* -mregparm=N: the calling convention of every function that
++           does not name one; variadic functions keep their arguments on
++           the stack, as with GCC */
++        if (tcc_state->regparm && !ad->f.func_call && l != FUNC_ELLIPSIS)
++            ad->f.func_call = FUNC_FASTCALL1 + tcc_state->regparm - 1;
++#endif
+         sr->type = *type, s = sr;
+         s->a = ad->a;
+         s->f = ad->f;

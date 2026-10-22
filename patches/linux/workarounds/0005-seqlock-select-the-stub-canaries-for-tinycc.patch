@@ -1,0 +1,39 @@
+From 273b94b7f13490b0a6c1437e3f3d840ccc742ae3 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:18 +0300
+Subject: [PATCH] seqlock: select the stub canaries for tinycc
+
+__scoped_seqlock_bug() and __scoped_seqlock_invalid_target() are
+extern canaries that an optimizing compiler proves unreachable after
+inlining (the ss_done state, the switch on the constant target).
+tinycc does not inline and keeps the references, so under __TINYC__
+use the empty stub for the first (as already done for old GCC, KASAN
+and UBSAN) and an empty static inline for the second.
+
+Assisted-by: LLM
+---
+ include/linux/seqlock.h | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/include/linux/seqlock.h b/include/linux/seqlock.h
+index f865491c4..2f606abff 100644
+--- a/include/linux/seqlock.h
++++ b/include/linux/seqlock.h
+@@ -1257,10 +1257,16 @@ static __always_inline void __scoped_seqlock_cleanup(struct ss_tmp *sst)
+ 		spin_unlock_irqrestore(sst->lock_irqsave, sst->data);
+ }
+ 
++#ifdef __TINYC__
++/* tcc does not inline: the switch on the constant target stays */
++static inline void __scoped_seqlock_invalid_target(void) { }
++#else
+ extern void __scoped_seqlock_invalid_target(void);
++#endif
+ 
+ #if (defined(CONFIG_CC_IS_GCC) && CONFIG_GCC_VERSION < 90000) || \
+-	defined(CONFIG_KASAN) || defined(CONFIG_UBSAN_ALIGNMENT)
++	defined(CONFIG_KASAN) || defined(CONFIG_UBSAN_ALIGNMENT) || \
++	defined(__TINYC__)
+ /*
+  * For some reason some GCC-8 architectures (nios2, alpha) have trouble
+  * determining that the ss_done state is impossible in __scoped_seqlock_next()

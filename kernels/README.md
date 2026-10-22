@@ -1,0 +1,17 @@
+# kernels/
+
+Per-kernel build inputs. `scripts/build.sh` reads `kernels/<name>/` for the kernel named by
+the component; today only `linux/`:
+
+* `minimal.config`: Kconfig fragment applied on top of `make tinyconfig` (x86_64, serial
+  console, VGA/framebuffer console with keyboard, initramfs, the few options the busybox
+  shell needs). The single source of truth
+  for the configuration; `build.sh` reports every line that `olddefconfig` dropped.
+* `tcc.config`: fragment applied only for the tcc build (`SECTION_MISMATCH_WARN_ONLY`,
+  because tcc does not inline `__init`-only `static inline` helpers).
+* `tcc-kcc`: the `CC=` wrapper that presents tcc to Kbuild (GCC identity macros,
+  `-U__OPTIMIZE__`, `-Wunsupported` under `-Werror`, gcc for `.S`/`-m16`/`-m32`/`-S`/vDSO).
+
+Adding a kernel: create `kernels/<name>/` with its configuration and wrapper, a
+`patches/<name>/` series, an entry in `sources.lock`, and a `step_kernel` variant in
+`scripts/build.sh` selected by the component.

@@ -1,0 +1,31 @@
+From 44800104379ecacce82f9553641845ca75896c95 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccgen: resolve plain gotos to a label also reached from
+ cleanup scopes
+
+When a label was the target both of plain forward gotos and of gotos
+leaving a scope with __attribute__((cleanup)) variables, only the
+pending-cleanup list was resolved and the plain jump chain was left
+unpatched, so those jumps went to garbage (objtool: "can't find jump
+dest").  Always gsym() the plain chain after the pending list.
+---
+ tccgen.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index cf7c978..1220fe0 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -7608,8 +7608,9 @@ again:
+ 		    for (pcl = s->next; pcl; pcl = pcl->prev)
+ 		      gsym(pcl->jnext);
+ 		    sym_pop(&s->next, NULL, 0);
+-		} else
+-		  gsym(s->jnext);
++		}
++		/* plain gotos (possibly in addition to the above) */
++		gsym(s->jnext);
+             } else {
+                 s = label_push(&global_label_stack, t, LABEL_DEFINED);
+             }

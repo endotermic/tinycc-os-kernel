@@ -1,0 +1,156 @@
+From 3f238dea0bbd58f460dff97931c2efee726fd30d Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:25:07 +0300
+Subject: [PATCH] tccgen, x86_64-gen: inline memcpy/memset with a constant
+ length
+
+GCC expands memcpy()/memset()/__builtin_memcpy() with a constant
+length inline, and code that is linked without a libc relies on that:
+the kernel's vDSO (lib/vdso/getrandom.c copies with __builtin_memcpy
+of sizeof(u64) and so on, and its Makefile links with --no-undefined).
+tcc called the functions, also for the zero-filling of the gaps of
+local initializers (init_putz).
+
+On x86_64 (TCC_TARGET_NATIVE_STRUCT_COPY), a call of memcpy or memset
+- by either name, including the __builtin_ declarations renamed with
+asm("memcpy") - whose third argument is an integer constant up to 4096
+becomes the existing struct-copy sequence (movsq/movsl/movsw/movsb) or
+"rep stosb" (new gen_struct_fill), with the destination as the value of
+the expression; init_putz uses the same fill.  -fno-builtin and
+-ffreestanding keep the calls (the kernel's real-mode code wants its
+own memcpy), as does bounds checking.
+
+Verified against gcc on a program covering all size classes, the
+return value, nested calls (memcpy(d, memset(a, 1, 8), 8)), a 0-length
+copy with a side-effecting argument, a struct copy and a 4800-byte
+memset (stays a call); vgetrandom.o now has no undefined memcpy/memset;
+make test passes.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ libtcc.c     |  2 ++
+ tcc.h        |  1 +
+ tccgen.c     | 37 +++++++++++++++++++++++++++++++++++++
+ x86_64-gen.c | 22 ++++++++++++++++++++++
+ 4 files changed, 62 insertions(+)
+
+diff --git a/libtcc.c b/libtcc.c
+index 207d670..9d13fc2 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -1726,6 +1726,8 @@ static const FlagDef options_f[] = {
+     { offsetof(TCCState, char_is_unsigned), 0, "unsigned-char" },
+     { offsetof(TCCState, char_is_unsigned), FD_INVERT, "signed-char" },
+     { offsetof(TCCState, nocommon), FD_INVERT, "common" },
++    { offsetof(TCCState, no_builtin), FD_INVERT, "builtin" },
++    { offsetof(TCCState, no_builtin), 0, "freestanding" },
+     { offsetof(TCCState, leading_underscore), 0, "leading-underscore" },
+     { offsetof(TCCState, ms_extensions), 0, "ms-extensions" },
+     { offsetof(TCCState, dollars_in_identifiers), 0, "dollars-in-identifiers" },
+diff --git a/tcc.h b/tcc.h
+index 5503d5a..c38f48d 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -745,6 +745,7 @@ struct TCCState {
+     unsigned char nostdlib; /* if true, no standard libraries are added */
+     unsigned char nostdlib_paths; /* if true, the default paths are not searched for libraries */
+     unsigned char nocommon; /* if true, do not use common symbols for .bss data */
++    unsigned char no_builtin; /* -fno-builtin/-ffreestanding: no inline memcpy/memset */
+     unsigned char static_link; /* if true, static linking is performed */
+     unsigned char rdynamic; /* if true, all symbols are exported */
+     unsigned char symbolic; /* if true, resolve symbols in the current module first */
+diff --git a/tccgen.c b/tccgen.c
+index 79192ab..5598f71 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6616,6 +6616,36 @@ special_math_val:
+ 
+             next();
+             vcheck_cmp(); /* the generators don't like VT_CMP on vtop */
++#ifdef TCC_TARGET_NATIVE_STRUCT_COPY
++            if (nb_args == 3 && !tcc_state->no_builtin
++#ifdef CONFIG_TCC_BCHECK
++                && !tcc_state->do_bounds_check
++#endif
++                && (vtop[-3].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == (VT_CONST | VT_SYM)
++                && ((n = vtop[-3].sym->asm_label ? vtop[-3].sym->asm_label : vtop[-3].sym->v),
++                    n == TOK_memcpy || n == TOK_memset) /* also __builtin_memcpy: asm("memcpy") */
++                && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++                && is_integer_btype(vtop->type.t & VT_BTYPE)
++                && (uint64_t)vtop->c.i <= 4096) {
++                /* memcpy/memset with a constant length are expanded inline,
++                   as GCC does: code linked without a libc (the kernel's vDSO)
++                   relies on it.  -fno-builtin/-ffreestanding keep the call. */
++                int is_set = n == TOK_memset;
++                n = vtop->c.i;
++                vpop();             /* f dst x */
++                vswap();            /* f x dst */
++                vdup();             /* f x dst dst */
++                vrotb(3);           /* f dst dst x */
++                if (is_set)
++                    gen_struct_fill(n);
++                else
++                    gen_struct_copy(n);
++                vswap();            /* dst f */
++                vpop();             /* dst: the result */
++                vtop->type = ret.type;
++                fold = 1;
++            } else
++#endif
+             if (s->f.func_fold && ret_nregs > 0
+                 && (vtop[-nb_args].r & (VT_VALMASK | VT_LVAL | VT_SYM))
+                    == (VT_CONST | VT_SYM)
+@@ -8419,6 +8449,13 @@ static void init_putz(init_params *p, unsigned long c, int size)
+     init_assert(p, c + size);
+     if (p->sec) {
+         /* nothing to do because globals are already set to zero */
++#ifdef TCC_TARGET_NATIVE_STRUCT_COPY
++    } else if (!tcc_state->do_bounds_check) {
++        /* inline, like GCC: no call into a libc the code may not have */
++        vseti(VT_LOCAL, c);
++        vpushi(0);
++        gen_struct_fill(size);
++#endif
+     } else {
+         vpush_helper_func(TOK_memset);
+         vseti(VT_LOCAL, c);
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index d49ea49..651bad0 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -111,6 +111,7 @@ enum {
+ 
+ #define TCC_TARGET_NATIVE_STRUCT_COPY
+ ST_FUNC void gen_struct_copy(int size);
++ST_FUNC void gen_struct_fill(int size);
+ 
+ /******************************************************/
+ #else /* ! TARGET_DEFS_ONLY */
+@@ -2316,6 +2317,27 @@ ST_FUNC void gen_struct_copy(int size)
+     vpop();
+ }
+ 
++/* vtop[-1] = destination pointer, vtop = the byte value: the inline
++   expansion of memset(dst, c, size) for a constant size */
++ST_FUNC void gen_struct_fill(int size)
++{
++#ifdef TCC_TARGET_PE
++    o(0x57); /* push rdi */
++#endif
++    gv2(RC_RDI, RC_RAX);
++    if (size) {
++        vpushi(size);
++        gv(RC_RCX);
++        o(0xaaf3); /* rep stosb */
++        vpop();
++    }
++#ifdef TCC_TARGET_PE
++    o(0x5f); /* pop rdi */
++#endif
++    vpop();
++    vpop();
++}
++
+ /* end of x86-64 code generator */
+ /*************************************************************/
+ #endif /* ! TARGET_DEFS_ONLY */

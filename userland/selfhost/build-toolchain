@@ -1,0 +1,70 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# build-toolchain - rebuild the compiler and the linker from the sources shipped in this
+# image, with the compiler installed here: tcc + i386-tcc from /usr/src/tinycc.tar.gz
+# (tinycc with the project's patches, configured like the one in /usr/bin: static, musl)
+# and tld from /usr/src/tld.tar.gz, both installed into /usr/local, where build-kernel
+# finds them first.  GNU make (/usr/src/make-*.tar.gz) can be rebuilt as well (--make).
+# Usage: build-toolchain [--make] [--test]      Env: WORK (/build), JOBS, TCC (/usr/bin/tcc)
+set -e
+SRC=${SELFHOST_SRC:-/usr/src}
+WORK=${WORK:-/build}
+PREFIX=${PREFIX:-/usr/local}
+JOBS=${JOBS:-$(nproc 2>/dev/null || echo 1)}
+TCC=${TCC:-/usr/bin/tcc}
+with_make= test=
+for a; do case $a in --make) with_make=1;; --test) test=1;; *) echo "usage: build-toolchain [--make] [--test]" >&2; exit 2;; esac; done
+die() { echo "build-toolchain: $*" >&2; exit 1; }
+[ -f "$SRC/tinycc.tar.gz" ] || die "no $SRC/tinycc.tar.gz"
+[ -f "$SRC/tld.tar.gz" ] || die "no $SRC/tld.tar.gz"
+mkdir -p "$WORK"
+if [ -z "$NO_TMPFS" ] && ! grep -q " $WORK " /proc/mounts 2>/dev/null; then
+    mount -t tmpfs -o size=85% tmpfs "$WORK" 2>/dev/null || true
+fi
+cd "$WORK"
+t0=$(date +%s)
+log=$WORK/build-toolchain.log; : >"$log"
+
+echo "== tinycc: unpacking, configure --cc=$TCC (static, musl), make, make cross-i386"
+rm -rf tinycc && tar xzf "$SRC/tinycc.tar.gz"
+cd tinycc
+# the same configuration as the host gave the guest tcc (scripts/build.sh step_guest_tcc),
+# with /usr/local as the prefix; ar is tld's
+./configure --cc="$TCC" --ar=ar --prefix="$PREFIX" --tccdir="$PREFIX/lib/tcc" --config-musl \
+    --sysincludepaths='{B}/include:/usr/include' --libpaths='{B}:/usr/lib' \
+    --crtprefix=/usr/lib --tcc-switches=-static --extra-cflags=-O2 \
+    --config-backtrace=no --config-bcheck=no >>"$log" 2>&1 || { tail -20 "$log"; die "tcc configure failed"; }
+make -j"$JOBS" GITHASH="$(sed -n 's/^#define TCC_GITHASH "\(.*\)"/\1/p' config.h 2>/dev/null)" >>"$log" 2>&1 \
+    || { grep -E 'error' "$log" | head; die "tcc build failed (log: $log)"; }
+make -j"$JOBS" cross-i386 >>"$log" 2>&1 || make i386-tcc >>"$log" 2>&1 \
+    || { grep -E 'error' "$log" | head; die "i386-tcc build failed (log: $log)"; }
+make -s install >>"$log" 2>&1 || die "tcc install failed"
+echo "   $("$PREFIX/bin/tcc" -v), $("$PREFIX/bin/i386-tcc" -v)"
+if [ -n "$test" ]; then
+    echo "== tinycc test suite (make test)"
+    if make -s test >>"$log" 2>&1 && grep -q 'ALL TESTS PASSED' "$log"; then echo "   ALL TESTS PASSED"
+    else echo "   some tests failed (see $log)"; fi
+fi
+cd "$WORK"
+
+echo "== tld: unpacking, compiling with $PREFIX/bin/tcc"
+rm -rf tld && tar xzf "$SRC/tld.tar.gz"
+"$PREFIX/bin/tcc" -std=gnu99 -O2 -o "$PREFIX/bin/tld" tld/*.c >>"$log" 2>&1 || die "tld build failed (log: $log)"
+for t in ld nm objcopy readelf ar strip; do ln -sf tld "$PREFIX/bin/$t"; done
+echo "   $("$PREFIX/bin/ld" -v), $(ls -l "$PREFIX/bin/tld" | awk '{print $5}') bytes"
+
+if [ -n "$with_make" ]; then
+    mt=$(ls "$SRC"/make-*.tar.gz 2>/dev/null | head -1); [ -n "$mt" ] || die "no $SRC/make-*.tar.gz"
+    echo "== GNU make: unpacking, configure CC=$PREFIX/bin/tcc, make"
+    rm -rf make && mkdir make && tar xzf "$mt" -C make --strip-components=1
+    mkdir -p make/b && cd make/b
+    ../configure CC="$PREFIX/bin/tcc" --disable-nls --without-guile --disable-dependency-tracking --disable-load >>"$log" 2>&1 \
+        || { tail -20 "$log"; die "make configure failed"; }
+    make -j"$JOBS" >>"$log" 2>&1 || die "make build failed (log: $log)"
+    cp make "$PREFIX/bin/make"
+    echo "   $("$PREFIX/bin/make" --version | head -1)"
+    cd "$WORK"
+fi
+t1=$(date +%s); el=$((t1 - t0))
+echo "== done in $((el / 60))m$((el % 60))s; installed in $PREFIX/bin: $(ls "$PREFIX/bin" | tr '\n' ' ')"
+echo "   build-kernel now uses $PREFIX/bin/tcc (TCC=/usr/bin/tcc for the shipped one)"

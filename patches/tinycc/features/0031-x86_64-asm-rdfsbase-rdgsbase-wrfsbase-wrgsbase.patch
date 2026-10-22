@@ -1,0 +1,30 @@
+From 087340fb001dae8f2c769be751ce94b31da34bc3 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] x86_64-asm: rdfsbase, rdgsbase, wrfsbase, wrgsbase
+
+F3 0F AE /0../3 with 32- and 64-bit register forms; byte-compared
+with GNU as for eax/rax, ecx/rcx, edx/rdx, r8d/r8 and r15.
+---
+ x86_64-asm.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index d442304..f1abb1e 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -388,6 +388,14 @@ ALT(DEF_ASM_OP1(fstsw, 0xdd, 7, OPC_MODRM | OPC_FWAIT, OPT_EA ))
+        problem with TCC, we don't use extended registers.  */
+     DEF_ASM_OP1(fxsaveq, 0x0fae, 0, OPC_MODRM | OPC_48, OPT_EA )
+     DEF_ASM_OP1(fxrstorq, 0x0fae, 1, OPC_MODRM | OPC_48, OPT_EA )
++    DEF_ASM_OP1(rdfsbase, 0xf30fae, 0, OPC_MODRM, OPT_REG32)
++ALT(DEF_ASM_OP1(rdfsbase, 0xf30fae, 0, OPC_MODRM | OPC_48, OPT_REG64))
++    DEF_ASM_OP1(rdgsbase, 0xf30fae, 1, OPC_MODRM, OPT_REG32)
++ALT(DEF_ASM_OP1(rdgsbase, 0xf30fae, 1, OPC_MODRM | OPC_48, OPT_REG64))
++    DEF_ASM_OP1(wrfsbase, 0xf30fae, 2, OPC_MODRM, OPT_REG32)
++ALT(DEF_ASM_OP1(wrfsbase, 0xf30fae, 2, OPC_MODRM | OPC_48, OPT_REG64))
++    DEF_ASM_OP1(wrgsbase, 0xf30fae, 3, OPC_MODRM, OPT_REG32)
++ALT(DEF_ASM_OP1(wrgsbase, 0xf30fae, 3, OPC_MODRM | OPC_48, OPT_REG64))
+     DEF_ASM_OP1(xsave, 0x0fae, 4, OPC_MODRM, OPT_EA)
+     DEF_ASM_OP1(xsave64, 0x0fae, 4, OPC_MODRM | OPC_48, OPT_EA)
+     DEF_ASM_OP1(xrstor, 0x0fae, 5, OPC_MODRM, OPT_EA)

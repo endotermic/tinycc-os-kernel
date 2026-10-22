@@ -1,0 +1,1365 @@
+From bbd23e350dead5b945e846aca92aeaf5d7bb94fc Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:19:58 +0300
+Subject: [PATCH] tccasm: assemble the Linux kernel's .S files (GNU as
+ compatibility)
+
+The kernel's x86 assembly is written for GNU as and its macro facility;
+to assemble it unchanged:
+
+* Macro bodies and invocation lines are kept as text reconstructed from
+  the preprocessed tokens (blanks preserved, PARSE_FLAG_SPACES; strings
+  as written so that "\@" survives): "\op\()_safe_regs" and tokens
+  pasted with ## stay glued.  Arguments are split like GNU as: blanks
+  or commas, not inside quotes or parentheses, quotes removed
+  (ALTERNATIVE "jmp x", "", FEATURE); keyword arguments name=value;
+  parameters with :req, :vararg and =default (also defaults such as
+  ALT_NOT(X86_FEATURE_ALWAYS)); .exitm; .irpc; .rept re-done on text.
+* Conditionals: .elseif, .ifdef/.ifndef, .ifb/.ifnb, .ifeq/.ifne/
+  .ifge/.ifgt/.ifle/.iflt, .ifeqs/.ifnes, with proper nesting while a
+  false branch is skipped.
+* .incbin (searched in the -I directories too), .comm/.lcomm, .local,
+  .zero, .uleb128/.sleb128, .equ/.equiv, .print/.warning/.err, .loc,
+  .altmacro/.noaltmacro, .protected/.internal; .cfi_* are ignored;
+  ".type name STT_FUNC" without the comma (SYM_FUNC_END).
+* .section: the flags spelled out replace the defaults, which now
+  depend on the name as in GNU as (an unknown name gives no flags),
+  and the @nobits/@note type is honoured (the kernel's .pgtable).
+* .byte/.word with symbols emit 8/16-bit relocations (R_X86_64_8/16,
+  R_386_8/16, the PC-relative ones for "sym - .").
+* Expressions: registers compare by identity (".if \base == %rsp" in
+  the unwind hints); C suffixes on numbers ($0x0700a169U).
+* A whole file is assembled twice when it subtracts labels defined
+  later (the .skip of the ALTERNATIVE macros), like inline asm already
+  was: tccpp's new preprocess_restart() re-reads the file keeping the
+  token table and the symbols but dropping the file's #defines and the
+  include-once cache.
+* tccpp: the type-size macros (__CHAR_BIT__, __SIZEOF_INT__, __LP64__
+  ...) are predefined for assembler files too (asm-generic/bitsperlong.h
+  checks them); a ## paste that does not form one token keeps the text
+  glued without a warning in an asm file, like cpp.
+
+Verified: all x86_64 .S files of the tinyconfig kernel assemble except
+those needing .code32/.code16 switching or AVX; make test passes.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ tcc.h    |   1 +
+ tccasm.c | 859 ++++++++++++++++++++++++++++++++++++++++++++++---------
+ tccpp.c  |  50 +++-
+ tcctok.h |  32 +++
+ 4 files changed, 796 insertions(+), 146 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 5f6db07..5503d5a 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1413,6 +1413,7 @@ ST_FUNC void preprocess(int is_bof);
+ ST_FUNC void next(void);
+ ST_INLN void unget_tok(int last_tok);
+ ST_FUNC void preprocess_start(TCCState *s1, int filetype);
++ST_FUNC void preprocess_restart(TCCState *s1, int filetype, Sym *defs, const char *filename);
+ ST_FUNC void preprocess_end(TCCState *s1);
+ ST_FUNC void tccpp_new(TCCState *s);
+ ST_FUNC void tccpp_delete(TCCState *s);
+diff --git a/tccasm.c b/tccasm.c
+index 2deb463..3e667d0 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -382,6 +382,10 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+     case TOK_PPNUM:
+         p = tokc.str.data;
+         n = strtoull(p, (char **)&p, 0);
++        /* C integer suffixes, as GNU as accepts them ("$0x0700a169U" in
++           the kernel's generated feature masks) */
++        while (*p == 'U' || *p == 'u' || *p == 'L' || *p == 'l')
++            p++;
+         if (*p == 'b' || *p == 'f') {
+             /* backward or forward label */
+             label = asm_get_local_label_name(s1, n);
+@@ -440,6 +444,18 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+         asm_expr(s1, pe);
+         skip(')');
+         break;
++    case '%':
++        /* a register in an expression (".if \base == %rsp" in the kernel's
++           unwind hints): GNU as compares register operands; any value that
++           is unique per register name does */
++        next();
++        if (tok < TOK_IDENT)
++            expect("register name");
++        pe->v = ((uint64_t)1 << 40) + tok;
++        pe->sym = NULL;
++        pe->pcrel = 0;
++        next();
++        break;
+     case '.':
+         pe->v = ind;
+         pe->sym = asm_section_sym(s1, cur_text_section);
+@@ -753,15 +769,21 @@ static void pop_section(TCCState *s1)
+ }
+ 
+ /* ------------------------------------------------------------------ */
+-/* GNU as macros: .macro/.endm/.purgem, .irp/.endr, .if/.ifc/.ifnc/.else/
+-   .endif and .error.  Bodies are kept as text (GNU as semantics are
++/* GNU as macros: .macro/.endm/.purgem/.exitm, .rept, .irp, .irpc, the
++   .if family and .error.  Bodies are kept as text (GNU as semantics are
+    textual: "\param" substitution) and assembled again from a buffer. */
+ 
++#define ASM_MAX_PARAMS 32
++#define ASM_MAX_ARGS 64
++
+ typedef struct AsmMacro {
+     int name;
+     char *body;
+     int nb_params;
+-    int params[16];
++    int params[ASM_MAX_PARAMS];
++    char *defaults[ASM_MAX_PARAMS];
++    unsigned char required[ASM_MAX_PARAMS];
++    int vararg; /* 1 + the index of the ":vararg" parameter, or 0 */
+ } AsmMacro;
+ 
+ static AsmMacro **asm_macros;
+@@ -776,13 +798,21 @@ static AsmMacro *asm_macro_find(int name)
+     return NULL;
+ }
+ 
++static void asm_macro_free(AsmMacro *m)
++{
++    int i;
++    for (i = 0; i < m->nb_params; i++)
++        tcc_free(m->defaults[i]);
++    tcc_free(m->body);
++    tcc_free(m);
++}
++
+ static void asm_macro_delete(int name)
+ {
+     int i;
+     for (i = 0; i < nb_asm_macros; i++)
+         if (asm_macros[i]->name == name) {
+-            tcc_free(asm_macros[i]->body);
+-            tcc_free(asm_macros[i]);
++            asm_macro_free(asm_macros[i]);
+             memmove(asm_macros + i, asm_macros + i + 1,
+                     (nb_asm_macros - i - 1) * sizeof *asm_macros);
+             nb_asm_macros--;
+@@ -797,46 +827,162 @@ ST_FUNC void asm_free_macros(void)
+     tcc_free(asm_macros), asm_macros = NULL;
+ }
+ 
+-/* append the text of the current token */
+-static void asm_text_add_tok(CString *cs)
++/* Text is reconstructed from the (preprocessed) token stream: a blank is
++   kept where the source had one (PARSE_FLAG_SPACES), and inserted where
++   two tokens would otherwise fuse (identifiers and numbers coming from a
++   #define expansion, which carries no blanks). */
++static int asm_tok_need_space(int a, int b)
+ {
++    if (a >= TOK_IDENT || a == TOK_PPNUM)
++        return b >= TOK_IDENT || b == TOK_PPNUM;
++    if (a == '+')
++        return b == '+' || b == TOK_INC;
++    if (a == '-')
++        return b == '-' || b == TOK_DEC;
++    return 0;
++}
++
++/* append the text of the current token; *prev is the previous token */
++static void asm_text_add_tok(CString *cs, int *prev)
++{
++    if (tok == ' ' || tok == '\t') {
++        cstr_ccat(cs, ' ');
++        *prev = ' ';
++        return;
++    }
+     if (tok == TOK_LINEFEED) {
+         cstr_ccat(cs, '\n');
+-    } else {
+-        cstr_cat(cs, get_tok_str(tok, &tokc), -1);
+-        if (tok != '\\') /* keep "\param" together */
+-            cstr_ccat(cs, ' ');
++        *prev = TOK_LINEFEED;
++        return;
+     }
++    if (*prev && *prev != ' ' && *prev != TOK_LINEFEED && asm_tok_need_space(*prev, tok))
++        cstr_ccat(cs, ' ');
++    cstr_cat(cs, get_tok_str(tok, &tokc), -1);
++    *prev = tok;
++}
++
++/* the parse flags for recording text: blanks are returned, strings are
++   kept as written (no escape processing: "\@" must survive) */
++static int asm_text_flags(void)
++{
++    int saved = parse_flags;
++    parse_flags = (parse_flags | PARSE_FLAG_SPACES) & ~PARSE_FLAG_TOK_STR;
++    return saved;
+ }
+ 
+-/* text of the tokens up to ',' (if stop_comma) or the end of the line */
+-static void asm_text_until(CString *cs, int stop_comma)
++/* the text of the rest of the line, from the current token; leaves tok
++   at the end of the line */
++static void asm_line_text(CString *cs)
+ {
+-    while (tok != TOK_LINEFEED && tok != ';' && tok != TOK_EOF
+-           && !(stop_comma && tok == ','))
+-        cstr_cat(cs, get_tok_str(tok, &tokc), -1), next();
++    int saved = asm_text_flags(), prev = 0;
++    while (tok != TOK_LINEFEED && tok != ';' && tok != TOK_EOF) {
++        asm_text_add_tok(cs, &prev);
++        next();
++    }
++    parse_flags = saved;
+     cstr_ccat(cs, 0);
+ }
+ 
+-/* record the lines up to the matching 'end' directive (nesting is
+-   counted with begin1/begin2); leaves tok after the end directive */
+-static void asm_record_block(CString *cs, int begin1, int begin2, int end)
++static int asm_is_block_begin(int t, int end)
++{
++    if (end == TOK_ASMDIR_endm)
++        return t == TOK_ASMDIR_macro;
++    return t == TOK_ASMDIR_irp || t == TOK_ASMDIR_irpc || t == TOK_ASMDIR_rept;
++}
++
++/* record the lines up to the matching 'end' directive (nesting counted);
++   leaves tok after the end directive */
++static void asm_record_block(CString *cs, int end)
+ {
+-    int depth = 1;
++    int depth = 1, prev = TOK_LINEFEED;
++    int saved = asm_text_flags();
+     for (;;) {
+         next();
+         if (tok == TOK_EOF)
+             tcc_error("'%s' expected", get_tok_str(end, NULL));
+-        if (tok == begin1 || tok == begin2)
++        if (asm_is_block_begin(tok, end))
+             depth++;
+         else if (tok == end && --depth == 0)
+             break;
+-        asm_text_add_tok(cs);
++        asm_text_add_tok(cs, &prev);
+     }
++    parse_flags = saved;
+     cstr_ccat(cs, 0);
+     next();
+ }
+ 
++static const char *asm_skip_blanks(const char *p)
++{
++    while (*p == ' ' || *p == '\t')
++        p++;
++    return p;
++}
++
++/* remove the quotes of a quoted string (in place) */
++static void asm_unquote(char *p)
++{
++    int n = strlen(p);
++    if (n >= 2 && p[0] == '"' && p[n - 1] == '"') {
++        memmove(p, p + 1, n - 2);
++        p[n - 2] = 0;
++    }
++}
++
++/* Split arguments like GNU as: separated by blanks or commas, except
++   inside quotes or parentheses; the quotes of a quoted argument go.
++   Returns the number of arguments (strings to free). */
++static int asm_split_args(const char *p, char **args, int max)
++{
++    int n = 0;
++    for (;;) {
++        CString a;
++        int depth = 0;
++        p = asm_skip_blanks(p);
++        if (!*p)
++            break;
++        if (n >= max)
++            tcc_error("too many macro arguments");
++        cstr_new(&a);
++        if (*p == '"') {
++            for (p++; *p && *p != '"'; p++) {
++                if (*p == '\\' && p[1] == '"')
++                    p++;
++                cstr_ccat(&a, *p);
++            }
++            if (*p == '"')
++                p++;
++        } else {
++            while (*p && !((*p == ',' || *p == ' ' || *p == '\t') && depth == 0)) {
++                if (*p == '(' || *p == '[')
++                    depth++;
++                else if ((*p == ')' || *p == ']') && depth > 0)
++                    depth--;
++                else if (*p == '"') {
++                    cstr_ccat(&a, *p++);
++                    while (*p && *p != '"')
++                        cstr_ccat(&a, *p++);
++                    if (!*p)
++                        break;
++                }
++                cstr_ccat(&a, *p++);
++            }
++        }
++        cstr_ccat(&a, 0);
++        args[n++] = tcc_strdup(a.data);
++        cstr_free(&a);
++        p = asm_skip_blanks(p);
++        if (*p == ',')
++            p++;
++    }
++    return n;
++}
++
++static void asm_free_args(char **args, int n)
++{
++    while (n > 0)
++        tcc_free(args[--n]);
++}
++
+ /* substitute "\name", "\@" and "\()" in a body */
+ static void asm_subst(CString *out, const char *p, int nb, const int *names, char **vals)
+ {
+@@ -886,73 +1032,325 @@ static void asm_assemble_text(TCCState *s1, const char *str, int len, int global
+     tok = saved_tok, tokc = saved_tokc;
+ }
+ 
++/* .macro name p1[:req|:vararg][=default] p2 ... : the parameter list */
++static void asm_macro_params(AsmMacro *m, const char *text)
++{
++    char *pieces[ASM_MAX_PARAMS];
++    int n, i;
++
++    n = asm_split_args(text, pieces, ASM_MAX_PARAMS);
++    for (i = 0; i < n; i++) {
++        char *q = pieces[i];
++        int k = 0;
++        while (isid((unsigned char)q[k]) || isnum((unsigned char)q[k]))
++            k++;
++        if (k == 0)
++            tcc_error("invalid macro parameter '%s'", q);
++        m->params[i] = tok_alloc(q, k)->tok;
++        q += k;
++        while (*q == ':') {
++            q++;
++            if (!strncmp(q, "req", 3))
++                m->required[i] = 1, q += 3;
++            else if (!strncmp(q, "vararg", 6))
++                m->vararg = i + 1, q += 6;
++            else
++                tcc_error("invalid macro parameter qualifier ':%s'", q);
++        }
++        if (*q == '=') {
++            q++;
++            asm_unquote(q);
++            m->defaults[i] = tcc_strdup(q);
++        } else if (*q) {
++            tcc_error("invalid macro parameter '%s'", pieces[i]);
++        }
++    }
++    m->nb_params = n;
++    asm_free_args(pieces, n);
++}
++
+ /* a macro invocation: positional or "name=value" arguments */
+ static void asm_macro_call(TCCState *s1, AsmMacro *m, int global)
+ {
+-    char *vals[16];
+-    int i, n = 0;
+-    CString ex;
+-
++    char *args[ASM_MAX_ARGS], *vals[ASM_MAX_PARAMS];
++    int i, j, n, pos = 0;
++    CString line, ex;
++
++    cstr_new(&line);
++    asm_line_text(&line);
++    n = asm_split_args(line.data, args, ASM_MAX_ARGS);
++    cstr_free(&line);
+     memset(vals, 0, sizeof vals);
+-    while (tok != TOK_LINEFEED && tok != ';' && tok != TOK_EOF) {
+-        CString v;
+-        int idx = -1;
+-        if (tok >= TOK_IDENT) {
+-            int name = tok;
+-            next();
+-            if (tok == '=') {
+-                for (i = 0; i < m->nb_params; i++)
+-                    if (m->params[i] == name)
+-                        idx = i;
+-                if (idx < 0)
+-                    tcc_error("unknown macro parameter '%s'", get_tok_str(name, NULL));
+-                next();
+-            } else {
+-                unget_tok(name);
++    for (i = 0; i < n; i++) {
++        char *a = args[i], *val = a;
++        int idx = -1, k = 0;
++        while (isid((unsigned char)a[k]) || isnum((unsigned char)a[k]))
++            k++;
++        if (k && a[k] == '=') {
++            /* keyword argument */
++            for (j = 0; j < m->nb_params; j++) {
++                const char *s = get_tok_str(m->params[j], NULL);
++                if ((int)strlen(s) == k && !memcmp(s, a, k))
++                    idx = j;
+             }
++            if (idx < 0)
++                tcc_error("unknown macro parameter '%.*s'", k, a);
++            val = a + k + 1;
++            asm_unquote(val);
++        } else {
++            idx = pos++;
+         }
+-        if (idx < 0)
+-            idx = n;
+-        if (idx >= 16)
+-            tcc_error("too many macro arguments");
+-        cstr_new(&v);
+-        asm_text_until(&v, 1);
++        if (m->vararg && idx == m->vararg - 1) {
++            /* the rest of the arguments, as given */
++            CString v;
++            cstr_new(&v);
++            for (j = i; j < n; j++)
++                cstr_printf(&v, "%s%s", j > i ? ", " : "", args[j]);
++            cstr_ccat(&v, 0);
++            tcc_free(vals[idx]);
++            vals[idx] = tcc_strdup(v.data);
++            cstr_free(&v);
++            break;
++        }
++        if (idx >= m->nb_params)
++            tcc_error("too many arguments for macro '%s'", get_tok_str(m->name, NULL));
+         tcc_free(vals[idx]);
+-        vals[idx] = tcc_strdup(v.data);
+-        cstr_free(&v);
+-        n = idx + 1;
+-        if (tok == ',')
+-            next();
++        vals[idx] = tcc_strdup(val);
+     }
++    asm_free_args(args, n);
+     for (i = 0; i < m->nb_params; i++)
+-        if (!vals[i])
+-            vals[i] = tcc_strdup("");
++        if (!vals[i]) {
++            if (m->required[i])
++                tcc_error("macro '%s': missing argument '%s'",
++                          get_tok_str(m->name, NULL), get_tok_str(m->params[i], NULL));
++            vals[i] = tcc_strdup(m->defaults[i] ? m->defaults[i] : "");
++        }
+     asm_macro_counter++;
+     cstr_new(&ex);
+     asm_subst(&ex, m->body, m->nb_params, m->params, vals);
+     asm_assemble_text(s1, ex.data, ex.size, global);
+     cstr_free(&ex);
+-    for (i = 0; i < 16; i++)
++    for (i = 0; i < m->nb_params; i++)
+         tcc_free(vals[i]);
+ }
+ 
+-/* skip a false conditional branch: up to .else (unless to_endif) or .endif */
+-static void asm_skip_cond(int to_endif)
++static int asm_is_if_directive(int t)
++{
++    return t == TOK_ASMDIR_if || t == TOK_ASMDIR_ifc || t == TOK_ASMDIR_ifnc
++        || t == TOK_ASMDIR_ifdef || t == TOK_ASMDIR_ifndef
++        || t == TOK_ASMDIR_ifb || t == TOK_ASMDIR_ifnb
++        || t == TOK_ASMDIR_ifeq || t == TOK_ASMDIR_ifne
++        || t == TOK_ASMDIR_ifge || t == TOK_ASMDIR_ifgt
++        || t == TOK_ASMDIR_ifle || t == TOK_ASMDIR_iflt
++        || t == TOK_ASMDIR_ifeqs || t == TOK_ASMDIR_ifnes;
++}
++
++/* skip a false conditional branch: up to .else/.elseif (unless to_endif)
++   or .endif */
++static void asm_skip_cond(TCCState *s1, int to_endif)
+ {
+     int depth = 0;
+     for (;;) {
+         next();
+         if (tok == TOK_EOF)
+             tcc_error("'.endif' expected");
+-        if (tok == TOK_ASMDIR_if || tok == TOK_ASMDIR_ifc || tok == TOK_ASMDIR_ifnc)
++        if (asm_is_if_directive(tok))
+             depth++;
+         else if (tok == TOK_ASMDIR_endif) {
+             if (depth-- == 0)
+                 break;
+-        } else if (tok == TOK_ASMDIR_else && depth == 0 && !to_endif)
+-            break;
++        } else if (depth == 0 && !to_endif) {
++            if (tok == TOK_ASMDIR_else)
++                break;
++            if (tok == TOK_ASMDIR_elseif) {
++                next();
++                if (asm_int_expr(s1))
++                    return; /* taken; tok is at the end of the line */
++                continue;
++            }
++        }
++    }
++    next();
++}
++
++/* the two text operands of .ifc/.ifnc/.ifeqs/.ifnes: up to the first
++   top-level comma, and the rest; quotes removed, blanks trimmed */
++static int asm_cmp_texts(const char *line)
++{
++    char *a, *b, *e;
++    const char *p = line;
++    int depth = 0, eq;
++    while (*p && !(*p == ',' && depth == 0)) {
++        if (*p == '"') {
++            for (p++; *p && *p != '"'; p++);
++            if (!*p)
++                break;
++        } else if (*p == '(')
++            depth++;
++        else if (*p == ')')
++            depth--;
++        p++;
+     }
++    a = tcc_strdup(line);
++    a[p - line] = 0;
++    b = tcc_strdup(*p == ',' ? asm_skip_blanks(p + 1) : "");
++    for (e = a + strlen(a); e > a && (e[-1] == ' ' || e[-1] == '\t'); e--)
++        e[-1] = 0;
++    for (e = b + strlen(b); e > b && (e[-1] == ' ' || e[-1] == '\t'); e--)
++        e[-1] = 0;
++    asm_unquote(a), asm_unquote(b);
++    eq = !strcmp(a, b);
++    tcc_free(a), tcc_free(b);
++    return eq;
++}
++
++/* is the symbol defined (a label, .set or .comm; a mere reference is not) */
++static int asm_symbol_defined(int v)
++{
++    Sym *sym = asm_label_find(v);
++    ElfSym *esym;
++    if (!sym)
++        return 0;
++    esym = elfsym(sym);
++    return esym && esym->st_shndx != SHN_UNDEF;
++}
++
++/* .incbin "file"[,skip[,count]]: the file is searched in the current
++   directory and the -I directories, like GNU as */
++static void asm_incbin(TCCState *s1)
++{
++    char *name, buf[1024];
++    int fd = -1, i, skip = 0, count = -1, n;
++    Section *sec = cur_text_section;
++    uint8_t *ptr;
++
++    if (tok != TOK_STR)
++        expect("file name");
++    name = tcc_strdup(tokc.str.data);
+     next();
++    if (tok == ',') {
++        next();
++        skip = asm_int_expr(s1);
++        if (tok == ',') {
++            next();
++            count = asm_int_expr(s1);
++        }
++    }
++    fd = open(name, O_RDONLY | O_BINARY);
++    for (i = 0; fd < 0 && i < s1->nb_include_paths; i++) {
++        snprintf(buf, sizeof buf, "%s/%s", s1->include_paths[i], name);
++        fd = open(buf, O_RDONLY | O_BINARY);
++    }
++    if (fd < 0)
++        tcc_error(".incbin: cannot open '%s'", name);
++    n = lseek(fd, 0, SEEK_END);
++    if (n < 0 || skip > n)
++        tcc_error(".incbin: cannot read '%s'", name);
++    n -= skip;
++    if (count >= 0 && count < n)
++        n = count;
++    lseek(fd, skip, SEEK_SET);
++    if (sec->sh_type != SHT_NOBITS) {
++        sec->data_offset = ind;
++        ptr = section_ptr_add(sec, n);
++        if (read(fd, ptr, n) != n)
++            tcc_error(".incbin: cannot read '%s'", name);
++    }
++    ind += n;
++    close(fd);
++    tcc_free(name);
++}
++
++/* .comm/.lcomm name, size[, align]: space in .bss */
++static void asm_comm(TCCState *s1, int local)
++{
++    int name, size, align = 1;
++    unsigned long offset;
++    Sym *sym;
++
++    if (tok < TOK_IDENT)
++        expect("symbol");
++    name = tok;
++    next();
++    skip(',');
++    size = asm_int_expr(s1);
++    if (tok == ',') {
++        next();
++        align = asm_int_expr(s1);
++        if (align <= 0 || (align & (align - 1)))
++            tcc_error("alignment must be a positive power of two");
++    } else {
++        /* GNU as: the natural alignment of the size, up to the pointer size */
++        while (align < PTR_SIZE && align < size)
++            align <<= 1;
++    }
++    if (cur_text_section == bss_section)
++        bss_section->data_offset = ind;
++    offset = (bss_section->data_offset + align - 1) & -align;
++    bss_section->data_offset = offset + size;
++    if (bss_section->sh_addralign < align)
++        bss_section->sh_addralign = align;
++    if (cur_text_section == bss_section)
++        ind = bss_section->data_offset;
++    sym = asm_new_label1(s1, name, 0, bss_section->sh_num, offset);
++    elfsym(sym)->st_size = size;
++    if (!local) {
++        sym->type.t &= ~VT_STATIC;
++        update_storage(sym);
++    }
++}
++
++/* .uleb128 / .sleb128 */
++static void asm_leb128(TCCState *s1, int is_signed)
++{
++    for (;;) {
++        int64_t v = asm_int_expr(s1);
++        for (;;) {
++            int b = v & 0x7f;
++            v >>= 7;
++            if (is_signed ? (v == 0 && !(b & 0x40)) || (v == -1 && (b & 0x40)) : v == 0) {
++                g(b);
++                break;
++            }
++            g(b | 0x80);
++        }
++        if (tok != ',')
++            break;
++        next();
++    }
++}
++
++/* .section name[,"flags"[,@type[,entsize]]]: the flags GNU as gives a new
++   section whose flags are not spelled out depend on its name */
++static int asm_section_default_flags(const char *name, int *sh_type)
++{
++    *sh_type = SHT_PROGBITS;
++    if (!strcmp(name, ".text") || !strncmp(name, ".text.", 6)
++        || !strcmp(name, ".init") || !strcmp(name, ".fini"))
++        return SHF_ALLOC | SHF_EXECINSTR;
++    if (!strcmp(name, ".data") || !strncmp(name, ".data.", 6)
++        || !strcmp(name, ".init_array") || !strcmp(name, ".fini_array")
++        || !strcmp(name, ".preinit_array") || !strcmp(name, ".ctors")
++        || !strcmp(name, ".dtors"))
++        return SHF_ALLOC | SHF_WRITE;
++    if (!strcmp(name, ".bss") || !strncmp(name, ".bss.", 5)) {
++        *sh_type = SHT_NOBITS;
++        return SHF_ALLOC | SHF_WRITE;
++    }
++    if (!strcmp(name, ".tdata"))
++        return SHF_ALLOC | SHF_WRITE | SHF_TLS;
++    if (!strcmp(name, ".tbss")) {
++        *sh_type = SHT_NOBITS;
++        return SHF_ALLOC | SHF_WRITE | SHF_TLS;
++    }
++    if (!strcmp(name, ".rodata") || !strncmp(name, ".rodata.", 8)
++        || !strcmp(name, ".rodata1") || !strcmp(name, ".eh_frame"))
++        return SHF_ALLOC;
++    if (!strncmp(name, ".note", 5)) {
++        *sh_type = SHT_NOTE;
++        return 0;
++    }
++    return 0;
+ }
+ 
+ static void asm_parse_directive(TCCState *s1, int global)
+@@ -969,7 +1367,10 @@ static void asm_parse_directive(TCCState *s1, int global)
+     case TOK_ASMDIR_p2align:
+     case TOK_ASMDIR_skip:
+     case TOK_ASMDIR_space:
++    case TOK_ASMDIR_zero:
+         tok1 = tok;
++        if (tok1 == TOK_ASMDIR_zero)
++            tok1 = TOK_ASMDIR_skip;
+         next();
+         n = asm_int_expr(s1);
+         if (tok1 == TOK_ASMDIR_p2align)
+@@ -1111,9 +1512,30 @@ static void asm_parse_directive(TCCState *s1, int global)
+ 		} else if (size == 8) {
+ 		    gen_expr64(&e);
+ #endif
++                } else if (e.sym) {
++                    /* 8- and 16-bit relocations (".word sym-512" in the
++                       kernel's boot header) */
++                    int rtype;
++#ifdef TCC_TARGET_X86_64
++                    rtype = size == 1 ? (e.pcrel ? R_X86_64_PC8 : R_X86_64_8)
++                                      : (e.pcrel ? R_X86_64_PC16 : R_X86_64_16);
++#elif defined TCC_TARGET_I386
++                    rtype = size == 1 ? (e.pcrel ? R_386_PC8 : R_386_8)
++                                      : (e.pcrel ? R_386_PC16 : R_386_16);
++#else
++                    tcc_error("relocation of %d bytes not supported", size);
++#endif
++#if SHT_RELX == SHT_RELA
++                    greloca(sec, e.sym, ind, rtype, e.v);
++                    e.v = 0;
++#else
++                    greloc(sec, e.sym, ind, rtype);
++#endif
++                    if (size == 1)
++                        g(e.v);
++                    else
++                        gen_le16(e.v);
+                 } else {
+-                    if (e.sym)
+-                        expect("constant");
+                     if (size == 1)
+                         g(e.v);
+                     else
+@@ -1162,6 +1584,10 @@ static void asm_parse_directive(TCCState *s1, int global)
+             repeat_buf[5] = 0;
+             repeat_buf[6] = 0;
+             repeat_buf[7] = 0;
++            if (sec->sh_type == SHT_NOBITS) {
++                ind += repeat * size;
++                break;
++            }
+             for(i = 0; i < repeat; i++) {
+                 for(j = 0; j < size; j++) {
+                     g(repeat_buf[j]);
+@@ -1178,23 +1604,13 @@ static void asm_parse_directive(TCCState *s1, int global)
+                 expect("macro name");
+             m->name = tok;
+             next();
+-            /* parameters: name[:req|:vararg][=default], ',' or spaces between */
+-            while (tok >= TOK_IDENT) {
+-                if (m->nb_params >= 16)
+-                    tcc_error("too many macro parameters");
+-                m->params[m->nb_params++] = tok;
++            if (tok == ',')
+                 next();
+-                if (tok == ':')
+-                    next(), next();
+-                if (tok == '=')
+-                    next(), next(); /* single token default: ignored */
+-                if (tok == ',')
+-                    next();
+-            }
+-            if (tok != TOK_LINEFEED && tok != ';')
+-                expect("end of line");
+             cstr_new(&cs);
+-            asm_record_block(&cs, TOK_ASMDIR_macro, -1, TOK_ASMDIR_endm);
++            asm_line_text(&cs);
++            asm_macro_params(m, cs.data);
++            cstr_reset(&cs);
++            asm_record_block(&cs, TOK_ASMDIR_endm);
+             m->body = tcc_strdup(cs.data);
+             cstr_free(&cs);
+             asm_macro_delete(m->name); /* a redefinition replaces */
+@@ -1204,6 +1620,9 @@ static void asm_parse_directive(TCCState *s1, int global)
+     case TOK_ASMDIR_endm:
+         tcc_error("'.endm' without '.macro'");
+         break;
++    case TOK_ASMDIR_endr:
++        tcc_error("'.endr' without '.rept', '.irp' or '.irpc'");
++        break;
+     case TOK_ASMDIR_purgem:
+         next();
+         if (tok < TOK_IDENT)
+@@ -1211,11 +1630,18 @@ static void asm_parse_directive(TCCState *s1, int global)
+         asm_macro_delete(tok);
+         next();
+         break;
++    case TOK_ASMDIR_exitm:
++        /* leave the current expansion: skip to the end of its buffer */
++        while (tok != TOK_EOF)
++            next();
++        break;
+     case TOK_ASMDIR_irp:
++    case TOK_ASMDIR_irpc:
+         {
+             int var, nb = 0, i;
+-            char *items[64];
+-            CString body, ex;
++            char *items[ASM_MAX_ARGS], c[2];
++            CString line, body, ex;
++            tok1 = tok;
+             next();
+             if (tok < TOK_IDENT)
+                 expect("symbol");
+@@ -1223,88 +1649,192 @@ static void asm_parse_directive(TCCState *s1, int global)
+             next();
+             if (tok == ',')
+                 next();
+-            while (tok != TOK_LINEFEED && tok != ';' && tok != TOK_EOF) {
+-                CString it;
+-                if (nb >= 64)
+-                    tcc_error("too many .irp items");
+-                cstr_new(&it);
+-                asm_text_until(&it, 1);
+-                items[nb++] = tcc_strdup(it.data);
+-                cstr_free(&it);
+-                if (tok == ',')
+-                    next();
++            cstr_new(&line);
++            asm_line_text(&line);
++            if (tok1 == TOK_ASMDIR_irp) {
++                nb = asm_split_args(line.data, items, ASM_MAX_ARGS);
++            } else {
++                /* .irpc: one iteration per character of the (unquoted) text */
++                char *p = line.data;
++                asm_unquote(p);
++                p = (char *)asm_skip_blanks(p);
++                for (; *p && nb < ASM_MAX_ARGS; p++) {
++                    c[0] = *p, c[1] = 0;
++                    items[nb++] = tcc_strdup(c);
++                }
+             }
++            cstr_free(&line);
+             cstr_new(&body);
+-            asm_record_block(&body, TOK_ASMDIR_irp, TOK_ASMDIR_rept, TOK_ASMDIR_endr);
++            asm_record_block(&body, TOK_ASMDIR_endr);
+             for (i = 0; i < nb; i++) {
+                 cstr_new(&ex);
+                 asm_subst(&ex, body.data, 1, &var, &items[i]);
+                 asm_assemble_text(s1, ex.data, ex.size, global);
+                 cstr_free(&ex);
+-                tcc_free(items[i]);
+             }
++            asm_free_args(items, nb);
++            cstr_free(&body);
++        }
++        break;
++    case TOK_ASMDIR_rept:
++        {
++            int repeat;
++            CString body;
++            next();
++            repeat = asm_int_expr(s1);
++            cstr_new(&body);
++            asm_record_block(&body, TOK_ASMDIR_endr);
++            while (repeat-- > 0)
++                asm_assemble_text(s1, body.data, body.size - 1, global);
+             cstr_free(&body);
+         }
+         break;
+     case TOK_ASMDIR_ifc:
+     case TOK_ASMDIR_ifnc:
++    case TOK_ASMDIR_ifeqs:
++    case TOK_ASMDIR_ifnes:
+         {
+-            CString a, b;
++            CString line;
+             int eq;
+             tok1 = tok;
+             next();
+-            cstr_new(&a), cstr_new(&b);
+-            asm_text_until(&a, 1);
+-            if (tok == ',')
+-                next();
+-            asm_text_until(&b, 0);
+-            eq = !strcmp(a.data, b.data);
+-            cstr_free(&a), cstr_free(&b);
+-            if (eq != (tok1 == TOK_ASMDIR_ifc))
+-                asm_skip_cond(0);
++            cstr_new(&line);
++            asm_line_text(&line);
++            eq = asm_cmp_texts(line.data);
++            cstr_free(&line);
++            if (eq != (tok1 == TOK_ASMDIR_ifc || tok1 == TOK_ASMDIR_ifeqs))
++                asm_skip_cond(s1, 0);
++        }
++        break;
++    case TOK_ASMDIR_ifb:
++    case TOK_ASMDIR_ifnb:
++        {
++            CString line;
++            int blank;
++            tok1 = tok;
++            next();
++            cstr_new(&line);
++            asm_line_text(&line);
++            blank = *asm_skip_blanks(line.data) == 0;
++            cstr_free(&line);
++            if (blank != (tok1 == TOK_ASMDIR_ifb))
++                asm_skip_cond(s1, 0);
++        }
++        break;
++    case TOK_ASMDIR_ifdef:
++    case TOK_ASMDIR_ifndef:
++        {
++            int defined;
++            tok1 = tok;
++            next();
++            if (tok < TOK_IDENT)
++                expect("symbol");
++            defined = asm_symbol_defined(tok);
++            next();
++            if (defined != (tok1 == TOK_ASMDIR_ifdef))
++                asm_skip_cond(s1, 0);
+         }
+         break;
+     case TOK_ASMDIR_if:
+-        next();
+-        if (!asm_int_expr(s1))
+-            asm_skip_cond(0);
++    case TOK_ASMDIR_ifeq:
++    case TOK_ASMDIR_ifne:
++    case TOK_ASMDIR_ifge:
++    case TOK_ASMDIR_ifgt:
++    case TOK_ASMDIR_ifle:
++    case TOK_ASMDIR_iflt:
++        {
++            int64_t e;
++            int taken;
++            tok1 = tok;
++            next();
++            e = asm_int_expr(s1);
++            switch (tok1) {
++            case TOK_ASMDIR_ifeq: taken = e == 0; break;
++            case TOK_ASMDIR_ifne: taken = e != 0; break;
++            case TOK_ASMDIR_ifge: taken = e >= 0; break;
++            case TOK_ASMDIR_ifgt: taken = e > 0; break;
++            case TOK_ASMDIR_ifle: taken = e <= 0; break;
++            case TOK_ASMDIR_iflt: taken = e < 0; break;
++            default: taken = e != 0; break;
++            }
++            if (!taken)
++                asm_skip_cond(s1, 0);
++        }
+         break;
+     case TOK_ASMDIR_else:
++    case TOK_ASMDIR_elseif:
+         /* the taken branch ends here */
+-        asm_skip_cond(1);
++        asm_skip_cond(s1, 1);
+         break;
+     case TOK_ASMDIR_endif:
+         next();
+         break;
+     case TOK_ASMDIR_error:
++    case TOK_ASMDIR_err:
+         next();
+         if (tok == TOK_STR)
+             tcc_error("%s", (char *)tokc.str.data);
+         tcc_error(".error directive");
+         break;
+-    case TOK_ASMDIR_rept:
+-        {
+-            int repeat;
+-            TokenString *init_str;
++    case TOK_ASMDIR_warning:
++        next();
++        if (tok == TOK_STR) {
++            tcc_warning("%s", (char *)tokc.str.data);
+             next();
+-            repeat = asm_int_expr(s1);
+-            init_str = tok_str_alloc();
+-            while (next(), tok != TOK_ASMDIR_endr) {
+-                if (tok == CH_EOF)
+-                    tcc_error("we at end of file, .endr not found");
+-                tok_str_add_tok(init_str);
+-            }
+-            tok_str_add(init_str, TOK_EOF);
+-            begin_macro(init_str, 1);
+-            while (repeat-- > 0) {
+-                tcc_assemble_internal(s1, (parse_flags & PARSE_FLAG_PREPROCESS),
+-				      global);
+-                macro_ptr = init_str->str;
+-            }
+-            end_macro();
++        } else
++            tcc_warning(".warning directive");
++        break;
++    case TOK_ASMDIR_print:
++        next();
++        if (tok == TOK_STR) {
++            printf("%s\n", (char *)tokc.str.data);
+             next();
+-            break;
+         }
++        break;
++    case TOK_ASMDIR_incbin:
++        next();
++        asm_incbin(s1);
++        break;
++    case TOK_ASMDIR_comm:
++    case TOK_ASMDIR_lcomm:
++        tok1 = tok;
++        next();
++        asm_comm(s1, tok1 == TOK_ASMDIR_lcomm);
++        break;
++    case TOK_ASMDIR_uleb128:
++    case TOK_ASMDIR_sleb128:
++        tok1 = tok;
++        next();
++        asm_leb128(s1, tok1 == TOK_ASMDIR_sleb128);
++        break;
++    case TOK_ASMDIR_altmacro:
++    case TOK_ASMDIR_noaltmacro:
++        next();
++        break;
++    case TOK_ASMDIR_loc:
++        skip_to_eol(0);
++        break;
++    case TOK_ASMDIR_equ:
++    case TOK_ASMDIR_equiv:
++        next();
++        tok1 = tok;
++        next();
++        if (tok != ',')
++            expect("','");
++        set_symbol(s1, tok1);
++        break;
++    case TOK_ASMDIR_local:
++        do {
++            Sym *sym;
++            next();
++            if (tok < TOK_IDENT)
++                expect("identifier");
++            sym = get_asm_sym(tok, NULL);
++            sym->type.t |= VT_STATIC;
++            update_storage(sym);
++            next();
++        } while (tok == ',');
++        break;
+     case TOK_ASMDIR_org:
+         {
+ 	    ExprValue e;
+@@ -1338,6 +1868,8 @@ static void asm_parse_directive(TCCState *s1, int global)
+     case TOK_ASMDIR_global:
+     case TOK_ASMDIR_weak:
+     case TOK_ASMDIR_hidden:
++    case TOK_ASMDIR_protected:
++    case TOK_ASMDIR_internal:
+ 	tok1 = tok;
+ 	do { 
+             Sym *sym;
+@@ -1345,12 +1877,16 @@ static void asm_parse_directive(TCCState *s1, int global)
+ 	    if (tok < TOK_IDENT)
+ 		expect("identifier");
+             sym = get_asm_sym(tok, NULL);
+-	    if (tok1 != TOK_ASMDIR_hidden)
++	    if (tok1 == TOK_ASMDIR_globl || tok1 == TOK_ASMDIR_global || tok1 == TOK_ASMDIR_weak)
+                 sym->type.t &= ~VT_STATIC;
+             if (tok1 == TOK_ASMDIR_weak)
+                 sym->a.weak = 1;
+ 	    else if (tok1 == TOK_ASMDIR_hidden)
+ 	        sym->a.visibility = STV_HIDDEN;
++	    else if (tok1 == TOK_ASMDIR_protected)
++	        sym->a.visibility = STV_PROTECTED;
++	    else if (tok1 == TOK_ASMDIR_internal)
++	        sym->a.visibility = STV_INTERNAL;
+             update_storage(sym);
+             next();
+ 	} while (tok == ',');
+@@ -1468,7 +2004,8 @@ static void asm_parse_directive(TCCState *s1, int global)
+ 		expect("identifier");
+             sym = get_asm_sym(tok, NULL);
+             next();
+-            skip(',');
++            if (tok == ',') /* GNU as also accepts ".type name STT_FUNC" */
++                next();
+             if (tok == TOK_STR) {
+                 newtype = tokc.str.data;
+             } else {
+@@ -1501,10 +2038,9 @@ static void asm_parse_directive(TCCState *s1, int global)
+         {
+             char sname[256];
+ 	    int old_nb_section = s1->nb_sections;
+-            int flags = SHF_ALLOC, entsize = 0;
++            int flags, entsize = 0, sh_type;
+ 
+ 	    tok1 = tok;
+-            /* XXX: support more options */
+             next();
+             sname[0] = '\0';
+             while (tok != ';' && tok != TOK_LINEFEED && tok != ',') {
+@@ -1514,13 +2050,17 @@ static void asm_parse_directive(TCCState *s1, int global)
+                     pstrcat(sname, sizeof(sname), get_tok_str(tok, NULL));
+                 next();
+             }
++            flags = asm_section_default_flags(sname, &sh_type);
+             if (tok == ',') {
+                 const char *p;
+-                /* skip section options */
+                 next();
+                 if (tok != TOK_STR)
+                     expect("string constant");
++                /* GNU as: spelled-out flags replace the defaults */
++                flags = 0;
+                 for (p = tokc.str.data; *p; ++p) {
++                    if (*p == 'a')
++                        flags |= SHF_ALLOC;
+                     if (*p == 'w')
+                         flags |= SHF_WRITE;
+                     if (*p == 'x')
+@@ -1529,12 +2069,22 @@ static void asm_parse_directive(TCCState *s1, int global)
+                         flags |= SHF_MERGE;
+                     if (*p == 'S')
+                         flags |= SHF_STRINGS;
++                    if (*p == 'T')
++                        flags |= SHF_TLS;
+                 }
+                 next();
+                 if (tok == ',') {
++                    const char *t;
+                     next();
+                     if (tok == '@' || tok == '%')
+                         next();
++                    t = get_tok_str(tok, NULL);
++                    if (!strcmp(t, "nobits"))
++                        sh_type = SHT_NOBITS;
++                    else if (!strcmp(t, "note"))
++                        sh_type = SHT_NOTE;
++                    else if (!strcmp(t, "progbits"))
++                        sh_type = SHT_PROGBITS;
+                     next();
+                     /* entry size of a mergeable section:
+                        .section name,"aM",@progbits,<entsize> */
+@@ -1554,11 +2104,8 @@ static void asm_parse_directive(TCCState *s1, int global)
+ 	       sets alignment to PTR_SIZE.  The assembler behaves different. */
+ 	    if (old_nb_section != s1->nb_sections) {
+ 	        cur_text_section->sh_addralign = 1;
+-                /* Make .init and .fini sections executable by default.
+-                   GAS does so, too, and musl relies on it. */
+-                if (!strcmp(sname, ".init") || !strcmp(sname, ".fini"))
+-                    flags |= SHF_EXECINSTR;
+ 	        cur_text_section->sh_flags = flags;
++                cur_text_section->sh_type = sh_type;
+                 cur_text_section->sh_entsize = entsize;
+             }
+         }
+@@ -1728,6 +2275,11 @@ static int tcc_assemble_internal(TCCState *s1, int do_preprocess, int global)
+         } else if (tok >= TOK_IDENT) {
+             /* instruction or label */
+             opcode = tok;
++            if (!memcmp(get_tok_str(tok, NULL), ".cfi_", 5)) {
++                /* call frame information: not supported, ignored */
++                skip_to_eol(0);
++                goto redo;
++            }
+             next();
+             if (tok == ':') {
+                 /* new label */
+@@ -1744,7 +2296,7 @@ static int tcc_assemble_internal(TCCState *s1, int do_preprocess, int global)
+             }
+         }
+         /* end of line */
+-        if (tok != ';' && tok != TOK_LINEFEED)
++        if (tok != ';' && tok != TOK_LINEFEED && tok != TOK_EOF)
+             expect("end of line");
+         parse_flags &= ~PARSE_FLAG_LINEFEED; /* XXX: suppress that hack */
+     }
+@@ -1753,17 +2305,32 @@ static int tcc_assemble_internal(TCCState *s1, int do_preprocess, int global)
+     return 0;
+ }
+ 
+-/* Assemble the current file */
++/* Assemble the current file.  Like an inline asm statement, a file whose
++   expressions subtract labels defined later (".skip 744f-743f...", the
++   kernel's ALTERNATIVE macros) is assembled twice: the second pass reads
++   the file again knowing where the labels are. */
+ ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess)
+ {
+     int ret;
++    Sym *defs = define_stack;
++    char *filename = NULL;
++
+     tcc_debug_start(s1);
+     /* default section is text */
+     cur_text_section = text_section;
+     ind = cur_text_section->data_offset;
+     nocode_wanted = 0;
+-    ret = tcc_assemble_internal(s1, do_preprocess, 1);
+-    cur_text_section->data_offset = ind;
++    asm_pass_start(s1);
++    for (;;) {
++        ret = tcc_assemble_internal(s1, do_preprocess, 1);
++        cur_text_section->data_offset = ind;
++        if (!asm_pass_next(s1))
++            break;
++        if (!filename)
++            filename = tcc_strdup(file->filename);
++        preprocess_restart(s1, do_preprocess ? AFF_TYPE_ASMPP : AFF_TYPE_ASM, defs, filename);
++    }
++    tcc_free(filename);
+     tcc_debug_end(s1);
+     return ret;
+ }
+@@ -2107,8 +2674,13 @@ ST_FUNC void asm_instr(void)
+     /* We don't allow switching section within inline asm to
+        bleed out to surrounding code.  */
+     sec = cur_text_section;
+-    /* assemble the string with tcc internal assembler */
+-    tcc_assemble_inline(tcc_state, astr.data, astr.size - 1, 0);
++    if (tcc_state->asm_text_only) {
++        /* -S: the statement's text, operands substituted */
++        fprintf(tcc_state->ppfp, "%s\n", (char *)astr.data);
++    } else {
++        /* assemble the string with tcc internal assembler */
++        tcc_assemble_inline(tcc_state, astr.data, astr.size - 1, 0);
++    }
+     cstr_free_s(&astr);
+     if (sec != cur_text_section) {
+         tcc_warning("inline asm tries to change current section");
+@@ -2150,8 +2722,11 @@ ST_FUNC void asm_global_instr(void)
+     cur_text_section = text_section;
+     ind = cur_text_section->data_offset;
+ 
+-    /* assemble the string with tcc internal assembler */
+-    tcc_assemble_inline(tcc_state, astr->data, astr->size - 1, 1);
++    if (tcc_state->asm_text_only)
++        fprintf(tcc_state->ppfp, "%s\n", (char *)astr->data);
++    else
++        /* assemble the string with tcc internal assembler */
++        tcc_assemble_inline(tcc_state, astr->data, astr->size - 1, 1);
+     
+     cur_text_section->data_offset = ind;
+ 
+diff --git a/tccpp.c b/tccpp.c
+index 0b88f75..7978494 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3199,8 +3199,10 @@ static inline int *macro_twosharps(const int *ptr0)
+                 tok_str_add2(&macro_str1, tok, &tokc);
+                 if (*file->buf_ptr == 0)
+                     break;
+-                tok_str_add(&macro_str1, ' ');
+                 l = file->buf_ptr - file->buffer;
++                if (parse_flags & PARSE_FLAG_ASM_FILE)
++                    continue; /* like cpp for assembler: the text stays as pasted (".L_size_##\name") */
++                tok_str_add(&macro_str1, ' ');
+                 tcc_warning("pasting \"%.*s\" and \"%s\" does not give a valid"
+                     " preprocessing token", l - n, file->buffer + n, file->buf_ptr);
+             }
+@@ -3699,7 +3701,23 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
+       putdef(cs, "__leading_underscore");
+     cstr_printf(cs, "#define __SIZEOF_POINTER__ %d\n", PTR_SIZE);
+     cstr_printf(cs, "#define __SIZEOF_LONG__ %d\n", LONG_SIZE);
+-    if (!is_asm) {
++    if (is_asm) {
++      /* the type-size macros GNU cpp also defines for assembler files
++         (the Linux kernel's asm-generic/bitsperlong.h tests
++         __CHAR_BIT__ * __SIZEOF_LONG__) */
++      cstr_cat(cs,
++        "#define __CHAR_BIT__ 8\n"
++        "#define __SIZEOF_SHORT__ 2\n"
++        "#define __SIZEOF_INT__ 4\n"
++        "#define __SIZEOF_LONG_LONG__ 8\n"
++        "#define __ORDER_LITTLE_ENDIAN__ 1234\n"
++        "#define __ORDER_BIG_ENDIAN__ 4321\n"
++        "#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__\n", -1);
++      if (PTR_SIZE == 8 && LONG_SIZE == 8)
++        putdef(cs, "__LP64__");
++      else if (PTR_SIZE == 4)
++        putdef(cs, "__ILP32__");
++    } else {
+       putdef(cs, "__STDC__");
+       cstr_printf(cs, "#define __STDC_HOSTED__ %d\n", s1->nostdlib ? 0 : 1);
+       cstr_printf(cs, "#define __STDC_VERSION__ %dL\n", s1->cversion);
+@@ -3715,11 +3733,12 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
+     cstr_printf(cs, "#define __BASE_FILE__ \"%s\"\n", file->filename);
+ }
+ 
+-ST_FUNC void preprocess_start(TCCState *s1, int filetype)
++static void preprocess_start1(TCCState *s1, int filetype, int is_new)
+ {
+     int is_asm = !!(filetype & (AFF_TYPE_ASM|AFF_TYPE_ASMPP));
+ 
+-    tccpp_new(s1);
++    if (is_new)
++        tccpp_new(s1);
+ 
+     s1->include_stack_ptr = s1->include_stack;
+     s1->ifdef_stack_ptr = s1->ifdef_stack;
+@@ -3750,6 +3769,29 @@ ST_FUNC void preprocess_start(TCCState *s1, int filetype)
+     parse_flags = is_asm ? PARSE_FLAG_ASM_FILE : 0;
+ }
+ 
++ST_FUNC void preprocess_start(TCCState *s1, int filetype)
++{
++    preprocess_start1(s1, filetype, 1);
++}
++
++/* Read the file 'filename' again from its beginning (the assembler's
++   second pass): the files, the macro definitions since 'defs' and the
++   include-once cache go, the token table and the symbols stay. */
++ST_FUNC void preprocess_restart(TCCState *s1, int filetype, Sym *defs, const char *filename)
++{
++    while (macro_stack)
++        end_macro();
++    macro_ptr = NULL;
++    while (file)
++        tcc_close();
++    free_defines(defs);
++    dynarray_reset(&s1->cached_includes, &s1->nb_cached_includes);
++    memset(s1->cached_includes_hash, 0, sizeof s1->cached_includes_hash);
++    if (tcc_open(s1, filename) < 0)
++        tcc_error("cannot read '%s' again for the second assembler pass", filename);
++    preprocess_start1(s1, filetype, 0);
++}
++
+ /* cleanup from error/setjmp */
+ ST_FUNC void preprocess_end(TCCState *s1)
+ {
+diff --git a/tcctok.h b/tcctok.h
+index 7ba4f59..f5af9b8 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -460,6 +460,38 @@
+  DEF_ASMDIR(else)
+  DEF_ASMDIR(endif)
+  DEF_ASMDIR(error)
++ DEF_ASMDIR(incbin)
++ DEF_ASMDIR(elseif)
++ DEF_ASMDIR(ifdef)
++ DEF_ASMDIR(ifndef)
++ DEF_ASMDIR(ifb)
++ DEF_ASMDIR(ifnb)
++ DEF_ASMDIR(ifeq)
++ DEF_ASMDIR(ifne)
++ DEF_ASMDIR(ifge)
++ DEF_ASMDIR(ifgt)
++ DEF_ASMDIR(ifle)
++ DEF_ASMDIR(iflt)
++ DEF_ASMDIR(ifeqs)
++ DEF_ASMDIR(ifnes)
++ DEF_ASMDIR(exitm)
++ DEF_ASMDIR(irpc)
++ DEF_ASMDIR(altmacro)
++ DEF_ASMDIR(noaltmacro)
++ DEF_ASMDIR(local)
++ DEF_ASMDIR(comm)
++ DEF_ASMDIR(lcomm)
++ DEF_ASMDIR(zero)
++ DEF_ASMDIR(uleb128)
++ DEF_ASMDIR(sleb128)
++ DEF_ASMDIR(equ)
++ DEF_ASMDIR(equiv)
++ DEF_ASMDIR(print)
++ DEF_ASMDIR(warning)
++ DEF_ASMDIR(err)
++ DEF_ASMDIR(loc)
++ DEF_ASMDIR(protected)
++ DEF_ASMDIR(internal)
+  DEF_ASMDIR(section)    /* must be last directive */
+ 
+ #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64

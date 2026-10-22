@@ -1,0 +1,30 @@
+From afd98666c4345f2914fb836e00534a8c9746e6f0 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:19 +0300
+Subject: [PATCH] dma-direct: check CONFIG_ARCH_HAS_DMA_SET_UNCACHED before
+ set_uncached
+
+set_uncached is a local that can only be true when
+CONFIG_ARCH_HAS_DMA_SET_UNCACHED is enabled.  Make that explicit in the
+condition so that a compiler which does not propagate the constant
+through the variable still drops the arch_dma_set_uncached() call.
+No functional change.
+
+Assisted-by: LLM
+---
+ kernel/dma/direct.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/dma/direct.c b/kernel/dma/direct.c
+index da665ca22..1615e9dc4 100644
+--- a/kernel/dma/direct.c
++++ b/kernel/dma/direct.c
+@@ -326,7 +326,7 @@ void *dma_direct_alloc(struct device *dev, size_t size,
+ 
+ 	memset(cpu_addr, 0, size);
+ 
+-	if (set_uncached) {
++	if (IS_ENABLED(CONFIG_ARCH_HAS_DMA_SET_UNCACHED) && set_uncached) {
+ 		void *uncached_cpu_addr;
+ 
+ 		arch_dma_prep_coherent(page, size);

@@ -1,0 +1,122 @@
+From 196c88bc30d6d44ae4acb203a2a6daf543cff01e Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:31:00 +0300
+Subject: [PATCH] x86/boot: make the video mode setting code optional
+
+The real-mode setup code switches the screen to the mode asked for with
+vga= (or chosen in the vga=ask menu) through the BIOS: video.c's menu
+and screen save/restore, video-mode.c, and the VGA, VESA and BIOS mode
+drivers.  Built with GCC -Os that is about 5 KB of a 19 KB setup; a
+compiler that generates larger code (tinycc, about twice the size)
+needs 11 KB for it and the setup no longer fits in the 32 KB the boot
+protocol allows.
+
+Add X86_BOOT_VIDEO_MODES (default y, hidden unless EXPERT) and build
+the mode setting only with it.  Without it, set_video() just records
+the firmware's text mode in screen_info as before (store_mode_params()
+with a VGA-class adapter assumed, which is what a 64-bit machine has),
+so the console works; vga= has no effect, and a boot loader that sets a
+graphics mode itself (GRUB's gfxpayload) still provides the framebuffer.
+
+Assisted-by: LLM
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig       | 15 +++++++++++++++
+ arch/x86/boot/Makefile |  9 +++++----
+ arch/x86/boot/video.c  | 20 ++++++++++++++++++++
+ 3 files changed, 40 insertions(+), 4 deletions(-)
+
+diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
+index 15fd9ec5e..be0c03eed 100644
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -983,6 +983,21 @@ config BOOT_VESA_SUPPORT
+ 	  If true, at least one selected framebuffer driver can take advantage
+ 	  of VESA video modes set at an early boot stage via the vga= parameter.
+ 
++config X86_BOOT_VIDEO_MODES
++	bool "Video mode selection in the real-mode boot code" if EXPERT
++	default y
++	help
++	  The real-mode setup code can switch the screen to a VGA text mode or
++	  a VESA mode given with the vga= parameter (vga=ask shows a menu),
++	  using the BIOS, and it reads the EDID through VESA.
++
++	  Without this the setup code only records the firmware's text mode
++	  for the kernel's console; vga= has no effect.  The setup image is
++	  about 11 KB smaller, which matters because it must fit in 32 KB and
++	  compilers other than GCC can generate larger code.
++
++	  If unsure, say Y.
++
+ config MAXSMP
+ 	bool "Enable Maximum number of SMP Processors and NUMA Nodes"
+ 	depends on X86_64 && SMP && DEBUG_KERNEL
+diff --git a/arch/x86/boot/Makefile b/arch/x86/boot/Makefile
+index 3f9fb3698..78c759a39 100644
+--- a/arch/x86/boot/Makefile
++++ b/arch/x86/boot/Makefile
+@@ -23,16 +23,17 @@ subdir-		:= compressed
+ setup-y		+= a20.o bioscall.o cmdline.o copy.o cpu.o cpuflags.o cpucheck.o
+ setup-y		+= early_serial_console.o edd.o header.o main.o memory.o
+ setup-y		+= pm.o pmjump.o printf.o regs.o string.o tty.o video.o
+-setup-y		+= video-mode.o version.o
++setup-y		+= version.o
+ setup-$(CONFIG_X86_APM_BOOT) += apm.o
++setup-$(CONFIG_X86_BOOT_VIDEO_MODES) += video-mode.o
+ 
+ # The link order of the video-*.o modules can matter.  In particular,
+ # video-vga.o *must* be listed first, followed by video-vesa.o.
+ # Hardware-specific drivers should follow in the order they should be
+ # probed, and video-bios.o should typically be last.
+-setup-y		+= video-vga.o
+-setup-y		+= video-vesa.o
+-setup-y		+= video-bios.o
++setup-$(CONFIG_X86_BOOT_VIDEO_MODES) += video-vga.o
++setup-$(CONFIG_X86_BOOT_VIDEO_MODES) += video-vesa.o
++setup-$(CONFIG_X86_BOOT_VIDEO_MODES) += video-bios.o
+ 
+ targets		+= $(setup-y)
+ hostprogs	+= mkcpustr
+diff --git a/arch/x86/boot/video.c b/arch/x86/boot/video.c
+index 0641c8c46..6e06a5705 100644
+--- a/arch/x86/boot/video.c
++++ b/arch/x86/boot/video.c
+@@ -17,6 +17,17 @@
+ #include "video.h"
+ #include "vesa.h"
+ 
++#ifndef CONFIG_X86_BOOT_VIDEO_MODES
++/*
++ * Without the mode setting code (video-mode.c and the drivers) nothing
++ * changes the mode: the firmware's text mode on a VGA-class adapter.
++ */
++#define graphic_mode	0
++#define force_x		0
++#define force_y		0
++#define adapter		ADAPTER_VGA
++#endif
++
+ static u16 video_segment;
+ 
+ static void store_cursor_position(void)
+@@ -95,6 +106,7 @@ static void store_mode_params(void)
+ 	boot_params.screen_info.orig_video_lines = y;
+ }
+ 
++#ifdef CONFIG_X86_BOOT_VIDEO_MODES
+ static unsigned int get_entry(void)
+ {
+ 	char entry_buf[4];
+@@ -341,3 +353,11 @@ void set_video(void)
+ 	if (do_restore)
+ 		restore_screen();
+ }
++#else /* !CONFIG_X86_BOOT_VIDEO_MODES */
++void set_video(void)
++{
++	/* No mode setting: the firmware's mode stays; record it for the kernel */
++	RESET_HEAP();
++	store_mode_params();
++}
++#endif /* CONFIG_X86_BOOT_VIDEO_MODES */

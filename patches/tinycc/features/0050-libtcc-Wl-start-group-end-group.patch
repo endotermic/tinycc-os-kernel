@@ -1,0 +1,173 @@
+From fb3dfee8658ed51dd8bf8aa9893c81f5622b6e85 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] libtcc: -Wl,--start-group / --end-group
+
+The options become marker entries in the file list.  At --end-group
+the archives of the group (-l entries and plain files starting with
+the ar magic) are added again until a pass changes neither the number
+of symbols nor the number of undefined ones, like GNU ld's rescan.
+Needed for circular references between archives (busybox links 30
+per-directory lib.a files inside a group).  --end-group without
+--start-group is an error.
+---
+ libtcc.c | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tcc.c    | 13 +++++++++--
+ tcc.h    |  2 ++
+ 3 files changed, 83 insertions(+), 2 deletions(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index f6764b2..ad64e4a 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -1418,6 +1418,7 @@ succ:
+ }
+ 
+ static void args_parser_add_file(TCCState *s, const char* filename, int filetype);
++static void args_parser_add_group(TCCState *s, int which);
+ 
+ #define SET_OR_CLEAR(v,f) (v = r > 0 ? v | f : v & ~f)
+ #define SET_OR_CLEAR_2(v,f1,f2) (v = r > 0 ? v | f1 : v & ~f2)
+@@ -1486,6 +1487,10 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
+             tcc_set_str(&s->soname, o.arg);
+         } else if (!!(r = link_option(&o, "?whole-archive"))) {
+             SET_OR_CLEAR(s->filetype, AFF_WHOLE_ARCHIVE);
++        } else if (link_option(&o, "start-group")) {
++            args_parser_add_group(s, 1);
++        } else if (link_option(&o, "end-group")) {
++            args_parser_add_group(s, 2);
+         } else if (link_option(&o, "znodelete")) {
+             s->znodelete = 1;
+ #ifdef TCC_TARGET_PE
+@@ -1844,12 +1849,77 @@ static void args_parser_add_file(TCCState *s, const char* filename, int filetype
+ {
+     struct filespec *f = tcc_malloc(sizeof *f + strlen(filename));
+     f->type = filetype;
++    f->group = 0;
+     strcpy(f->name, filename);
+     dynarray_add(&s->files, &s->nb_files, f);
+     if (filetype & AFF_TYPE_LIB)
+         ++s->nb_libraries;
+ }
+ 
++/* GNU ld "--start-group" (1) / "--end-group" (2): a marker in the file
++   list, see tcc_add_group() */
++static void args_parser_add_group(TCCState *s, int which)
++{
++    struct filespec *f = tcc_malloc(sizeof *f);
++    f->type = 0;
++    f->group = which;
++    f->name[0] = 0;
++    dynarray_add(&s->files, &s->nb_files, f);
++}
++
++/* does the file start with the ar magic "!<arch>\n"? */
++static int is_archive(const char *filename)
++{
++    char buf[8];
++    int fd = open(filename, O_RDONLY | O_BINARY), n;
++    if (fd < 0)
++        return 0;
++    n = read(fd, buf, sizeof buf);
++    close(fd);
++    return n == 8 && 0 == memcmp(buf, "!<arch>\n", 8);
++}
++
++/* count the symbols of the output symbol table, and the undefined ones */
++static int count_syms(TCCState *s1, int *undef)
++{
++    ElfW(Sym) *sym = (ElfW(Sym) *)symtab_section->data;
++    int n = symtab_section->data_offset / sizeof *sym, i, u = 0;
++    for (i = 1; i < n; i++)
++        if (sym[i].st_shndx == SHN_UNDEF)
++            u++;
++    *undef = u;
++    return n;
++}
++
++/* "-Wl,--start-group a.a b.a -Wl,--end-group": like GNU ld, the archives of
++   files[start..end) are searched again as long as that resolves something
++   (circular references between archives, e.g. busybox's lib.a files).
++   Object and source files of the group are added once by the caller. */
++PUB_FUNC int tcc_add_group(TCCState *s1, int start, int end)
++{
++    int n, ret = 0, nsyms, undef, nsyms1, undef1;
++    nsyms = count_syms(s1, &undef);
++    for (;;) {
++        for (n = start; n < end && ret == 0; n++) {
++            struct filespec *f = s1->files[n];
++            if (f->group)
++                continue;
++            s1->filetype = f->type;
++            if (f->type & AFF_TYPE_LIB) {
++                ret = tcc_add_library(s1, f->name);
++            } else if (!(f->type & (AFF_TYPE_C | AFF_TYPE_ASM | AFF_TYPE_ASMPP))
++                       && is_archive(f->name)) {
++                ret = tcc_add_file(s1, f->name);
++            }
++        }
++        nsyms1 = count_syms(s1, &undef1);
++        if (ret || (nsyms1 == nsyms && undef1 == undef))
++            break;
++        nsyms = nsyms1, undef = undef1;
++    }
++    return ret;
++}
++
+ /* using * to argc/argv to let "tcc -ar" benefit from @listfile expansion */
+ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+ {
+diff --git a/tcc.c b/tcc.c
+index c2274fb..ffb04bf 100644
+--- a/tcc.c
++++ b/tcc.c
+@@ -289,7 +289,7 @@ static unsigned getclock_ms(void)
+ int main(int argc, char **argv)
+ {
+     TCCState *s, *s1;
+-    int ret, opt, n = 0, t = 0, done;
++    int ret, opt, n = 0, t = 0, done, group_start;
+     unsigned start_time = 0, end_time = 0;
+     const char *first_file;
+     int argc0 = argc;
+@@ -371,10 +371,19 @@ redo:
+ 
+     /* compile or add each files or library */
+     first_file = NULL;
++    group_start = -1;
+     while (0 == ret) {
+         struct filespec *f = s->files[n];
+         s->filetype = f->type;
+-        if (f->type & AFF_TYPE_LIB) {
++        if (f->group) {
++            /* -Wl,--start-group / --end-group: rescan the group's archives */
++            if (f->group == 1)
++                group_start = n + 1;
++            else if (group_start < 0)
++                ret = tcc_error_noabort("--end-group without --start-group");
++            else
++                ret = tcc_add_group(s, group_start, n), group_start = -1;
++        } else if (f->type & AFF_TYPE_LIB) {
+             ret = tcc_add_library(s, f->name);
+         } else {
+             if (1 == s->verbose)
+diff --git a/tcc.h b/tcc.h
+index cc31144..dcbe141 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1030,6 +1030,7 @@ struct TCCState {
+ 
+ struct filespec {
+     char type;
++    char group; /* 1: "--start-group" marker, 2: "--end-group" marker (no file) */
+     char name[1];
+ };
+ 
+@@ -1586,6 +1587,7 @@ ST_FUNC void *load_data(int fd, unsigned long file_offset, unsigned long size);
+ ST_FUNC int tcc_object_type(int fd, ElfW(Ehdr) *h);
+ ST_FUNC int tcc_load_object_file(TCCState *s1, int fd, unsigned long file_offset);
+ ST_FUNC int tcc_load_archive(TCCState *s1, int fd, int alacarte);
++PUB_FUNC int tcc_add_group(TCCState *s1, int start, int end);
+ ST_FUNC void add_array(TCCState *s1, const char *sec, int c);
+ 
+ ST_FUNC struct sym_attr *get_sym_attr(TCCState *s1, int index, int alloc);

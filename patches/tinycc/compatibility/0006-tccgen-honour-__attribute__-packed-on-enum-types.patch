@@ -1,0 +1,48 @@
+From c8257316b37d0284e7949929c7d144668bfcfd88 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccgen: honour __attribute__((packed)) on enum types
+
+"enum e { ... } __attribute__((packed));" was ignored and the enum
+stayed 4 bytes.  As GCC, give a packed enum the smallest integer type
+that holds all its values: unsigned char/short/int when there is no
+negative value, signed char/short/int otherwise; values beyond int
+still use long long.
+---
+ tccgen.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 1b63467..0a122b4 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -4572,6 +4572,7 @@ do_decl:
+                     break;
+             }
+             skip('}');
++            parse_attribute(&ad); /* e.g. __attribute__((packed)) */
+ 
+             if (bt) {
+                 t.t = bt;
+@@ -4579,14 +4580,20 @@ do_decl:
+                 goto enum_done;
+             }
+ 
+-            /* set integral type of the enum */
++            /* set integral type of the enum; a packed enum gets the
++               smallest integer type that holds all values (as GCC) */
+             t.t = VT_INT;
+             if (nl >= 0) {
+                 if (pl != (unsigned)pl)
+                     t.t = (LONG_SIZE==8 ? VT_LLONG|VT_LONG : VT_LLONG);
++                else if (ad.a.packed)
++                    t.t = pl <= 0xff ? VT_BYTE : pl <= 0xffff ? VT_SHORT : VT_INT;
+                 t.t |= VT_UNSIGNED;
+             } else if (pl != (int)pl || nl != (int)nl)
+                 t.t = (LONG_SIZE==8 ? VT_LLONG|VT_LONG : VT_LLONG);
++            else if (ad.a.packed)
++                t.t = (nl >= -0x80 && pl <= 0x7f) ? VT_BYTE
++                    : (nl >= -0x8000 && pl <= 0x7fff) ? VT_SHORT : VT_INT;
+ 
+             /* set type for enum members */
+             for (ss = s->next; ss; ss = ss->next) {

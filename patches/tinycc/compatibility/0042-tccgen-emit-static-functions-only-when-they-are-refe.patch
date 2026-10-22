@@ -1,0 +1,116 @@
+From 41bd8ac345b08b88e785fadded666820b347a513 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: emit static functions only when they are referenced
+
+Static non-inline functions are recorded like static inline ones and
+emitted at the end of the unit only if used, as gcc -O2 drops unused
+static functions (the kernel has static helpers only called from
+folded-away code).  Exceptions: __attribute__((used)), constructors,
+destructors and alias targets; the target of an alias gets its ELF
+symbol at the alias declaration so that it is emitted.  The section
+attribute is honoured for deferred functions (which also fixes
+"static inline __init" functions landing in .text).
+---
+ tcc.h    |  2 ++
+ tccgen.c | 33 ++++++++++++++++++++++++++++-----
+ 2 files changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 2875514..0852ce2 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -686,6 +686,8 @@ typedef struct AttributeDef {
+ typedef struct InlineFunc {
+     TokenString *func_str;
+     Sym *sym;
++    struct Section *sec; /* attribute((section)) of the definition */
++    char is_static; /* a static non-inline function, only emitted if used */
+     char filename[1];
+ } InlineFunc;
+ 
+diff --git a/tccgen.c b/tccgen.c
+index b18f2f4..9ed21bf 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -1247,6 +1247,8 @@ static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
+       fa->func_ctor = 1;
+     if (fa1->func_dtor)
+       fa->func_dtor = 1;
++    if (fa1->func_used)
++      fa->func_used = 1;
+ }
+ 
+ /* Merge attributes.  */
+@@ -4130,10 +4132,10 @@ redo:
+             break;
+         case TOK_USED1:
+         case TOK_USED2:
++            ad->f.func_used = 1; /* a static function is emitted even if unused */
++            break;
+         case TOK_UNUSED1:
+         case TOK_UNUSED2:
+-            /* currently, no need to handle it because tcc does not
+-               track used/unused objects */
+             break;
+         case TOK_CONST1:
+         case TOK_CONST2:
+@@ -9490,7 +9492,7 @@ static void gen_inline_functions(TCCState *s)
+         for (i = 0; i < s->nb_inline_fns; ++i) {
+             fn = s->inline_fns[i];
+             sym = fn->sym;
+-            if (sym && (sym->c || !(sym->type.t & VT_INLINE))) {
++            if (sym && (sym->c || (!fn->is_static && !(sym->type.t & VT_INLINE)))) {
+                 /* the function was used or forced (and then not internal):
+                    generate its code and convert it to a normal function */
+                 fn->sym = NULL;
+@@ -9498,6 +9500,10 @@ static void gen_inline_functions(TCCState *s)
+                 begin_macro(fn->func_str, 1);
+                 next();
+                 cur_text_section = text_section;
++                if (fn->sec) {
++                    cur_text_section = fn->sec;
++                    fn->sec->sh_flags |= text_section->sh_flags;
++                }
+                 gen_function(sym);
+                 end_macro();
+ 
+@@ -9696,12 +9702,22 @@ static int decl(int l)
+ 
+                 /* static inline functions are just recorded as a kind
+                    of macro. Their code will be emitted at the end of
+-                   the compilation unit only if they are used */
+-                if (sym->type.t & VT_INLINE) {
++                   the compilation unit only if they are used.  Other
++                   static functions are treated the same way (as an
++                   optimizing compiler drops unused ones), unless an
++                   attribute needs them emitted. */
++                if ((sym->type.t & VT_INLINE)
++                    || ((sym->type.t & VT_STATIC)
++                        && !sym->type.ref->f.func_used
++                        && !sym->type.ref->f.func_ctor
++                        && !sym->type.ref->f.func_dtor
++                        && !ad.alias_target)) {
+                     struct InlineFunc *fn;
+                     fn = tcc_malloc(sizeof *fn + strlen(file->filename));
+                     strcpy(fn->filename, file->filename);
+                     fn->sym = sym;
++                    fn->sec = ad.section;
++                    fn->is_static = !(sym->type.t & VT_INLINE);
+                     dynarray_add(&tcc_state->inline_fns,
+ 				 &tcc_state->nb_inline_fns, fn);
+                     skip_or_save_block(&fn->func_str);
+@@ -9826,6 +9842,13 @@ static int decl(int l)
+                            target is not defined yet, the alias is resolved
+                            at the end of the compilation unit (see
+                            resolve_pending_aliases()). */
++                        {
++                            /* the target of an alias is used (it may be
++                               a static function whose code is deferred) */
++                            Sym *ts = sym_find(ad.alias_target);
++                            if (ts && !ts->c && (ts->type.t & VT_BTYPE) == VT_FUNC)
++                                put_extern_sym2(ts, SHN_UNDEF, 0, 0, 1);
++                        }
+                         esym = elfsym(sym_find(ad.alias_target));
+                         if (!esym || esym->st_shndx == SHN_UNDEF) {
+                             PendingAlias *pa = tcc_malloc(sizeof *pa);

@@ -1,0 +1,5 @@
+The patches in this directory modify the Tiny C Compiler and are derivative
+works of it.  They are licensed under tinycc's license, LGPL-2.1-or-later (the
+text is in ../../LICENSES/LGPL-2.1-or-later.txt), not under the BSD-2-Clause
+license of the rest of tinycc-os-kernel.  The `series` file and the directory
+layout are BSD-2-Clause like the rest of the repository.

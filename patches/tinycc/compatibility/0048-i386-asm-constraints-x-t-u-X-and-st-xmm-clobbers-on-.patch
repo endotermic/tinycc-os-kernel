@@ -1,0 +1,255 @@
+From 6459d7c6366ce4d99f3eb1a5f1555a83cf881316 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] i386-asm: constraints "x", "t", "u", "X" and st/xmm clobbers
+ on x86_64
+
+The asm operand allocator tracks xmm0-7 and st(0)/st(1) (a pseudo
+register TREG_ST1) besides the 16 general registers (NB_ASM_REGS 26,
+NB_ASM_GREGS 16 for the "r" loops).  "x" takes a free xmm register for
+a float or double operand, "t"/"u" need a long double ("u" is input
+only), "X" behaves like "g"; operands print as %xmmN, %st and %st(1).
+Loads happen in three passes (general/xmm, st(1), st(0)) so that the
+x87 stack is in the order the asm expects; "=t"/"+t" outputs are
+stored and popped afterwards, and every x87 input not tied to an
+output is popped unless the asm clobbered "st"/"st(1)" (GCC's rule: a
+clobbered x87 input was popped by the asm itself).  st/xmm clobbers do
+not block allocation, since tcc keeps no values in those registers
+across an asm statement.  All of musl's src/math/x86_64/*.c compile and
+behave as with GCC.
+---
+ i386-asm.c   | 110 +++++++++++++++++++++++++++++++++++++++++++++++----
+ x86_64-gen.c |   3 +-
+ 2 files changed, 105 insertions(+), 8 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 2afe86a..b481058 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1217,6 +1217,18 @@ static inline int constraint_priority(const char *str)
+ 	case 'p':
+             pr = 3;
+             break;
++#ifdef TCC_TARGET_X86_64
++        case 't':
++        case 'u':
++            pr = 1;
++            break;
++        case 'x':
++            pr = 3;
++            break;
++        case 'X':
++            pr = 4;
++            break;
++#endif
+         case 'N':
+         case 'M':
+         case 'I':
+@@ -1269,6 +1281,19 @@ ST_FUNC int asm_parse_regvar (int t)
+ #define REG_OUT_MASK 0x01
+ #define REG_IN_MASK  0x02
+ 
++#ifdef TCC_TARGET_X86_64
++/* x86-64 only: "x" allocates xmm0-7, "t"/"u" are st(0)/st(1) of the x87
++   stack (long double operands).  TREG_ST1 is a pseudo register of the asm
++   allocator only; loads and stores go through TREG_ST0. */
++#define TREG_ST1 (TREG_ST0 + 1)
++#define is_x87_reg(r) ((r) == TREG_ST0 || (r) == TREG_ST1)
++#define asm_load_pass(r) ((r) == TREG_ST0 ? 2 : (r) == TREG_ST1 ? 1 : 0)
++#else
++#define NB_ASM_GREGS NB_ASM_REGS
++#define is_x87_reg(r) 0
++#define asm_load_pass(r) 0
++#endif
++
+ #define is_reg_allocated(reg) (regs_allocated[reg] & reg_mask)
+ 
+ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+@@ -1334,7 +1359,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+     }
+ 
+     for(i = 0;i < NB_ASM_REGS; i++) {
+-        if (clobber_regs[i])
++        if (clobber_regs[i] && !is_x87_reg(i))
+             regs_allocated[i] = REG_IN_MASK | REG_OUT_MASK;
+         else
+             regs_allocated[i] = 0;
+@@ -1417,6 +1442,30 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             goto alloc_reg;
+         case 'D':
+             reg = 7;
++            goto alloc_reg;
++#ifdef TCC_TARGET_X86_64
++        case 't':
++        case 'u':
++            /* st(0) / st(1): long double only, "u" only as input */
++            if ((op->vt->type.t & VT_BTYPE) != VT_LDOUBLE)
++                tcc_error("asm constraint '%c' needs a long double operand", c);
++            if (c == 'u' && j < nb_outputs)
++                tcc_error("asm constraint 'u' is only supported for inputs");
++            reg = c == 't' ? TREG_ST0 : TREG_ST1;
++            goto alloc_reg;
++        case 'x':
++            /* any xmm register tcc knows how to load: float or double */
++            if ((op->vt->type.t & VT_BTYPE) != VT_FLOAT
++                && (op->vt->type.t & VT_BTYPE) != VT_DOUBLE)
++                tcc_error("asm constraint 'x' needs a float or double operand");
++            if ((reg = op->reg) >= 0)
++                goto reg_found;
++            for(reg = TREG_XMM0; reg <= TREG_XMM7; reg++) {
++                if (!is_reg_allocated(reg))
++                    goto reg_found;
++            }
++            goto try_next;
++#endif
+         alloc_reg:
+             if (op->reg >= 0 && reg != op->reg)
+                 goto try_next;
+@@ -1439,7 +1488,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             /* any general register */
+             if ((reg = op->reg) >= 0)
+                 goto reg_found;
+-            else for(reg = 0; reg < NB_ASM_REGS; reg++) {
++            else for(reg = 0; reg < NB_ASM_GREGS; reg++) {
+                 if (!is_reg_allocated(reg))
+                     goto reg_found;
+             }
+@@ -1461,6 +1510,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             if (!((op->vt->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST))
+                 goto try_next;
+             break;
++        case 'X': /* any operand: like 'g' */
+         case 'm':
+         case 'g':
+             /* nothing special to do because the operand is already in
+@@ -1474,7 +1524,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             if (j < nb_outputs || c == 'm') {
+                 if ((op->vt->r & VT_VALMASK) == VT_LLOCAL) {
+                     /* any general register */
+-                    for(reg = 0; reg < NB_ASM_REGS; reg++) {
++                    for(reg = 0; reg < NB_ASM_GREGS; reg++) {
+                         if (!(regs_allocated[reg] & REG_IN_MASK))
+                             goto reg_found1;
+                     }
+@@ -1507,7 +1557,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         if (op->reg >= 0 &&
+             (op->vt->r & VT_VALMASK) == VT_LLOCAL  &&
+             !op->is_memory) {
+-            for(reg = 0; reg < NB_ASM_REGS; reg++) {
++            for(reg = 0; reg < NB_ASM_GREGS; reg++) {
+                 if (!(regs_allocated[reg] & REG_OUT_MASK))
+                     goto reg_found2;
+             }
+@@ -1587,6 +1637,18 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+         reg = r & VT_VALMASK;
+         if (reg >= VT_CONST)
+             tcc_internal_error("");
++#ifdef TCC_TARGET_X86_64
++        if (reg >= TREG_XMM0 && reg <= TREG_XMM7) {
++            cstr_printf(add_str, "%%xmm%d", reg - TREG_XMM0);
++            return;
++        } else if (reg == TREG_ST0) {
++            cstr_cat(add_str, "%st", -1);
++            return;
++        } else if (reg == TREG_ST1) {
++            cstr_cat(add_str, "%st(1)", -1);
++            return;
++        }
++#endif
+ 
+         /* choose register operand size */
+         if ((sv->type.t & VT_BTYPE) == VT_BYTE ||
+@@ -1657,7 +1719,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+ {
+     uint8_t regs_allocated[NB_ASM_REGS];
+     ASMOperand *op;
+-    int i, reg;
++    int i, k, reg, x87_pops = 0;
+ 
+     /* Strictly speaking %Xbp and %Xsp should be included in the
+        call-preserved registers, but currently it doesn't matter.  */
+@@ -1689,10 +1751,14 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+             }
+         }
+ 
+-        /* generate load code */
++        /* generate load code.  x87 operands are pushed last, st(1)
++           before st(0), so that they end up where the asm expects them */
++        for(k = 0; k < 3; k++)
+         for(i = 0; i < nb_operands; i++) {
+             op = &operands[i];
+             if (op->reg >= 0) {
++                if (k != asm_load_pass(op->reg))
++                    continue;
+                 if ((op->vt->r & VT_VALMASK) == VT_LLOCAL &&
+                     op->is_memory) {
+                     /* memory reference case (for both input and
+@@ -1704,7 +1770,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+                     load(op->reg, &sv);
+                 } else if (i >= nb_outputs || op->is_rw) {
+                     /* load value in register */
+-                    load(op->reg, op->vt);
++                    load(is_x87_reg(op->reg) ? TREG_ST0 : op->reg, op->vt);
+                     if (op->is_llong) {
+                         SValue sv;
+                         sv = *op->vt;
+@@ -1740,8 +1806,24 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+                         store(TREG_XDX, &sv);
+                     }
+                 }
++                if (is_x87_reg(op->reg))
++                    x87_pops++; /* store() keeps st(0): pop the result */
+             }
+         }
++        /* x87 inputs not tied to an output stay on the stack unless the
++           asm clobbers the register (then it popped them itself) */
++        for(i = nb_outputs; i < nb_operands; i++) {
++            op = &operands[i];
++            if (is_x87_reg(op->reg) && op->ref_index < 0)
++                x87_pops++;
++        }
++        if (x87_pops) {
++            for(i = 0; i < NB_ASM_REGS; i++)
++                if (is_x87_reg(i) && clobber_regs[i])
++                    x87_pops--;
++            while (x87_pops-- > 0)
++                o(0xd8dd); /* fstp %st(0) */
++        }
+         /* generate reg restore code */
+         for(i = sizeof(reg_saved)/sizeof(reg_saved[0]) - 1; i >= 0; i--) {
+             reg = reg_saved[i];
+@@ -1765,6 +1847,20 @@ ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str)
+         !strcmp(str, "cc") ||
+ 	!strcmp(str, "flags"))
+         return;
++#ifdef TCC_TARGET_X86_64
++    /* x87 and sse clobbers: tcc holds no values in them across the asm
++       (save_regs), so only st(0)/st(1) matter, for the pop accounting */
++    if (!strcmp(str, "st") || !strcmp(str, "st(0)")) {
++        clobber_regs[TREG_ST0] = 1;
++        return;
++    }
++    if (!strcmp(str, "st(1)")) {
++        clobber_regs[TREG_ST1] = 1;
++        return;
++    }
++    if (!strncmp(str, "st(", 3) || !strncmp(str, "xmm", 3))
++        return;
++#endif
+     reg = tok_alloc_const(str);
+     if (reg >= TOK_ASM_eax && reg <= TOK_ASM_edi) {
+         reg -= TOK_ASM_eax;
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index e744591..d49ea49 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -24,7 +24,8 @@
+ 
+ /* number of available registers */
+ #define NB_REGS         25
+-#define NB_ASM_REGS     16
++#define NB_ASM_REGS     26 /* general + xmm0-7 + st(0), st(1), see i386-asm.c */
++#define NB_ASM_GREGS    16 /* general registers usable by "r" constraints */
+ #define CONFIG_TCC_ASM
+ 
+ /* a register can belong to several classes. The classes must be

@@ -1,0 +1,43 @@
+From 712d0e7e514b39188b46286204125dd173a11808 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] i386-asm: print constant asm operands as 64-bit values
+
+A constant "i"/"n" operand was printed with "%d" of an int, truncating
+64-bit constants.  The Linux kernel's runtime_const_ptr() emits
+"mov %1,%0" with "i"(0x0123456789abcdefull) and later patches the 8
+immediate bytes; tcc produced a 7-byte "mov $-1985229329,%rax" and the
+patch clobbered the following instruction.
+---
+ i386-asm.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 76a2498..7d6d3b7 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1532,7 +1532,8 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+ ST_FUNC void subst_asm_operand(CString *add_str,
+                               SValue *sv, int modifier)
+ {
+-    int r, reg, size, val;
++    int r, reg, size;
++    long long val;
+ 
+     r = sv->r;
+     if ((r & VT_VALMASK) == VT_CONST) {
+@@ -1556,10 +1557,13 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+                 goto no_offset;
+ 	    cstr_ccat(add_str, '+');
+         }
++        /* a 64-bit constant must not be truncated: the kernel's
++           runtime_const_ptr() places `mov $0x0123456789abcdef, %reg`
++           and patches the 8 immediate bytes later */
+         val = sv->c.i;
+         if (modifier == 'n')
+             val = -val;
+-        cstr_printf(add_str, "%d", val);
++        cstr_printf(add_str, "%lld", val);
+     no_offset:;
+ #ifdef TCC_TARGET_X86_64
+         if (r & VT_LVAL)

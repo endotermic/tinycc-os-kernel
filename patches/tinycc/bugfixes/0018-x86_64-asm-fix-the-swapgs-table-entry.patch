@@ -1,0 +1,32 @@
+From 95912ab4022e7c43257b704fed8133145c12d0db Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] x86_64-asm: fix the swapgs table entry
+
+swapgs was defined as "0x0f01 /7 OPC_MODRM" and failed with "bad
+MODR/M opcode without operands".  It is 0F 01 F8: make it an OPC_0F01
+entry like the other instructions of that group.
+---
+ x86_64-asm.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index f260484..d671243 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -44,6 +44,7 @@
+     DEF_ASM_OP0L(vmlaunch, 0xc2, 0, OPC_0F01)
+     DEF_ASM_OP0L(vmresume, 0xc3, 0, OPC_0F01)
+     DEF_ASM_OP0L(vmxoff, 0xc4, 0, OPC_0F01)
++    DEF_ASM_OP0L(swapgs, 0xf8, 0, OPC_0F01)
+ 
+      /* strings */
+ ALT(DEF_ASM_OP0L(cmpsb, 0xa6, 0, OPC_BWLX))
+@@ -394,7 +395,6 @@ ALT(DEF_ASM_OP1(str, 0x660f00, 1, OPC_MODRM, OPT_REG16))
+ ALT(DEF_ASM_OP1(str, 0x0f00, 1, OPC_MODRM | OPC_48, OPT_REG64))
+     DEF_ASM_OP1(verr, 0x0f00, 4, OPC_MODRM, OPT_REG | OPT_EA)
+     DEF_ASM_OP1(verw, 0x0f00, 5, OPC_MODRM, OPT_REG | OPT_EA)
+-    DEF_ASM_OP0L(swapgs, 0x0f01, 7, OPC_MODRM)
+ 
+     /* 486 */
+     /* bswap can't be applied to 16bit regs */

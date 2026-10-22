@@ -1,0 +1,13 @@
+# patches/linux: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+workarounds/0001-x86-cmpxchg-build-the-128-bit-cmpxchg-helpers-only-w.patch
+workarounds/0002-mm-slab-define-freelist_full_t-without-__int128.patch
+workarounds/0003-x86-asm-provide-rip_rel_ptr-as-a-macro-for-tinycc.patch
+workarounds/0004-x86-cpufeature-use-the-dynamic-test-for-_static_cpu_.patch
+workarounds/0005-seqlock-select-the-stub-canaries-for-tinycc.patch
+upstreamable/0006-x86-fpu-spell-out-where-32-bit-signal-frames-are-pos.patch
+upstreamable/0007-dma-direct-check-CONFIG_ARCH_HAS_DMA_SET_UNCACHED-be.patch
+upstreamable/0008-dma-direct-return-early-when-CONFIG_DMA_COHERENT_POO.patch
+upstreamable/0009-kbuild-let-OBJTOOL-name-an-objtool-that-is-not-built.patch
+upstreamable/0010-crypto-x86-build-the-AVX2-and-AVX-512-SHA-256-and-BL.patch
+upstreamable/0011-x86-boot-make-the-video-mode-setting-code-optional.patch
+upstreamable/0012-mm-provide-a-vma_thp_gfp_mask-stub-without-THP.patch

@@ -1,0 +1,41 @@
+From 4dc96a3b1aa321bd3bf0286de3acd4f419f7c785 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:18 +0300
+Subject: [PATCH] x86/asm: provide rip_rel_ptr() as a macro for tinycc
+
+rip_rel_ptr() passes its argument as an "i" operand, which only works
+after the __always_inline function has been inlined into a caller with
+a constant.  tinycc does not inline, so under __TINYC__ make it a
+statement-expression macro: the operand is then the caller's constant.
+
+Assisted-by: LLM
+---
+ arch/x86/include/asm/asm.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/x86/include/asm/asm.h b/arch/x86/include/asm/asm.h
+index 0e8c611bc..63416ee17 100644
+--- a/arch/x86/include/asm/asm.h
++++ b/arch/x86/include/asm/asm.h
+@@ -116,6 +116,13 @@
+ #endif
+ 
+ #ifndef __ASSEMBLER__
++#ifdef __TINYC__
++/* tcc does not inline, so the "i" operand must be the caller's constant */
++#define rip_rel_ptr(p) ({							\
++	void *__rip_p;							\
++	asm("leaq %c1(%%rip), %0" : "=r"(__rip_p) : "i"(p));		\
++	__rip_p; })
++#else
+ static __always_inline __pure void *rip_rel_ptr(void *p)
+ {
+ 	asm("leaq %c1(%%rip), %0" : "=r"(p) : "i"(p));
+@@ -123,6 +130,7 @@ static __always_inline __pure void *rip_rel_ptr(void *p)
+ 	return p;
+ }
+ #endif
++#endif
+ 
+ #ifdef __KERNEL__
+ 

@@ -1,0 +1,61 @@
+From 8f6e9b10da34b9144f9ade09b8b1d8644805c418 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccdefs: __builtin_{add,sub,mul}_overflow
+
+Statement-expression macros: the exact result is computed as sign and
+magnitude in 64 bits and compared with the range of the result type;
+the operands are evaluated once.  Checked against GCC's builtins on
+1.3 million (type pair, value pair, result type) cases.  Operands wider
+than 64 bits are not supported (tcc has none).
+---
+ include/tccdefs.h | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index e17714d..10424c1 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -189,6 +189,42 @@
+     #define __builtin_trap() __asm__ __volatile__ ("ud2")
+ #endif
+ 
++    /* GCC's type-generic overflow builtins: the exact result is computed as
++       sign + magnitude in 64 bits and compared with the range of *r */
++    #define __tcc_ovf_neg(x) ((__typeof__(x))-1 < 0 && (x) < 0)
++    #define __tcc_ovf_mag(x) (__tcc_ovf_neg(x) ? 0ULL - (unsigned long long)(x) : (unsigned long long)(x))
++    #define __tcc_ovf_store(neg, mag, big, r) __extension__ ({ \
++        __typeof__(*(r)) __t = 0; int __ts = (__typeof__(*(r)))-1 < 0; \
++        unsigned long long __tmax = __ts ? (1ULL << (sizeof __t * 8 - 1)) - 1 \
++                                         : (unsigned long long)(__typeof__(*(r)))-1; \
++        *(r) = (__typeof__(*(r)))((neg) ? 0ULL - (mag) : (mag)); \
++        (big) || ((neg) ? !__ts || (mag) > __tmax + 1 : (mag) > __tmax); })
++    #define __builtin_add_overflow(a, b, r) __extension__ ({ \
++        __typeof__(a) __a = (a); __typeof__(b) __b = (b); \
++        int __na = __tcc_ovf_neg(__a), __nb = __tcc_ovf_neg(__b), __n, __big = 0; \
++        unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b), __m; \
++        if (__na == __nb) { __m = __ma + __mb; __big = __m < __ma; __n = __na; } \
++        else if (__ma >= __mb) { __m = __ma - __mb; __n = __na; } \
++        else { __m = __mb - __ma; __n = __nb; } \
++        if (__m == 0) __n = 0; \
++        __tcc_ovf_store(__n, __m, __big, r); })
++    #define __builtin_sub_overflow(a, b, r) __extension__ ({ \
++        __typeof__(a) __a = (a); __typeof__(b) __b = (b); \
++        int __na = __tcc_ovf_neg(__a), __nb = !__tcc_ovf_neg(__b), __n, __big = 0; \
++        unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b), __m; \
++        if (__mb == 0) __nb = __na; \
++        if (__na == __nb) { __m = __ma + __mb; __big = __m < __ma; __n = __na; } \
++        else if (__ma >= __mb) { __m = __ma - __mb; __n = __na; } \
++        else { __m = __mb - __ma; __n = __nb; } \
++        if (__m == 0) __n = 0; \
++        __tcc_ovf_store(__n, __m, __big, r); })
++    #define __builtin_mul_overflow(a, b, r) __extension__ ({ \
++        __typeof__(a) __a = (a); __typeof__(b) __b = (b); \
++        unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b); \
++        unsigned long long __m = __ma * __mb; \
++        int __big = __ma != 0 && __m / __ma != __mb; \
++        int __n = __m != 0 && (__tcc_ovf_neg(__a) != __tcc_ovf_neg(__b)); \
++        __tcc_ovf_store(__n, __m, __big, r); })
+ #if !defined __linux__ && !defined _WIN32
+     /* used by math.h */
+     #define __builtin_huge_val() 1e500

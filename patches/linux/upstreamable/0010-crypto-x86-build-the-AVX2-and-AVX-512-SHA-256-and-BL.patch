@@ -1,0 +1,140 @@
+From 6b3566338cf1488506ae162a482e590ac69decdf Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:20:59 +0300
+Subject: [PATCH] crypto: x86 - build the AVX2 and AVX-512 SHA-256 and BLAKE2s
+ code only if the assembler can
+
+lib/crypto/x86/sha256-avx-asm.S, sha256-avx2-asm.S and the AVX-512 half
+of blake2s-core.S need an assembler with VEX and EVEX encodings.  Every
+binutils the kernel supports has them, so the CONFIG_AS_AVX2 and
+CONFIG_AS_AVX512 probes were removed in v5.8; a smaller assembler (the
+tinycc one, which does the rest of the x86_64 kernel) does not have
+them and cannot build the files at all.
+
+Bring the two probes back in arch/x86/Kconfig.assembler and build the
+AVX2 SHA-256 files and the BLAKE2s AVX-512 function only when they
+pass; the glue code falls back to the SSSE3 and generic versions.  With
+a capable assembler nothing changes.
+
+Assisted-by: LLM
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ arch/x86/Kconfig.assembler    | 10 ++++++++++
+ lib/crypto/Makefile           |  6 ++++--
+ lib/crypto/x86/blake2s-core.S |  3 +++
+ lib/crypto/x86/blake2s.h      |  6 ++++--
+ lib/crypto/x86/sha256.h       |  4 ++++
+ 5 files changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/arch/x86/Kconfig.assembler b/arch/x86/Kconfig.assembler
+index b1c59fb0a..a545474bf 100644
+--- a/arch/x86/Kconfig.assembler
++++ b/arch/x86/Kconfig.assembler
+@@ -1,6 +1,16 @@
+ # SPDX-License-Identifier: GPL-2.0
+ # Copyright (C) 2020 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
+ 
++config AS_AVX2
++	def_bool $(as-instr,vpaddd %ymm0$(comma)%ymm1$(comma)%ymm2)
++	help
++	  Supported by binutils >= 2.22 and LLVM integrated assembler
++
++config AS_AVX512
++	def_bool $(as-instr,vpmovm2b %k1$(comma)%zmm5)
++	help
++	  Supported by binutils >= 2.25 and LLVM integrated assembler
++
+ config AS_WRUSS
+ 	def_bool $(as-instr64,wrussq %rax$(comma)(%rbx))
+ 	help
+diff --git a/lib/crypto/Makefile b/lib/crypto/Makefile
+index ca068df1f..195c4ea88 100644
+--- a/lib/crypto/Makefile
++++ b/lib/crypto/Makefile
+@@ -318,9 +318,11 @@ libsha256-$(CONFIG_PPC) += powerpc/sha256-spe-asm.o
+ libsha256-$(CONFIG_RISCV) += riscv/sha256-riscv64-zvknha_or_zvknhb-zvkb.o
+ libsha256-$(CONFIG_SPARC) += sparc/sha256_asm.o
+ libsha256-$(CONFIG_X86) += x86/sha256-ssse3-asm.o \
+-			   x86/sha256-avx-asm.o \
+-			   x86/sha256-avx2-asm.o \
+ 			   x86/sha256-ni-asm.o
++ifeq ($(CONFIG_AS_AVX2),y)
++libsha256-$(CONFIG_X86) += x86/sha256-avx-asm.o \
++			   x86/sha256-avx2-asm.o
++endif
+ endif # CONFIG_CRYPTO_LIB_SHA256_ARCH
+ 
+ ################################################################################
+diff --git a/lib/crypto/x86/blake2s-core.S b/lib/crypto/x86/blake2s-core.S
+index 7b1d98ca7..36315ba4a 100644
+--- a/lib/crypto/x86/blake2s-core.S
++++ b/lib/crypto/x86/blake2s-core.S
+@@ -197,6 +197,8 @@ SYM_FUNC_START(blake2s_compress_ssse3)
+ 	RET
+ SYM_FUNC_END(blake2s_compress_ssse3)
+ 
++#ifdef CONFIG_AS_AVX512
++
+ //
+ // void blake2s_compress_avx512(struct blake2s_ctx *ctx,
+ //				const u8 *data, size_t nblocks, u32 inc);
+@@ -289,3 +291,4 @@ SYM_FUNC_START(blake2s_compress_avx512)
+ 	vzeroupper
+ 	RET
+ SYM_FUNC_END(blake2s_compress_avx512)
++#endif /* CONFIG_AS_AVX512 */
+diff --git a/lib/crypto/x86/blake2s.h b/lib/crypto/x86/blake2s.h
+index f8eed6cb0..4d7d79ba8 100644
+--- a/lib/crypto/x86/blake2s.h
++++ b/lib/crypto/x86/blake2s.h
+@@ -35,7 +35,8 @@ static void blake2s_compress(struct blake2s_ctx *ctx,
+ 					    SZ_4K / BLAKE2S_BLOCK_SIZE);
+ 
+ 		kernel_fpu_begin();
+-		if (static_branch_likely(&blake2s_use_avx512))
++		if (IS_ENABLED(CONFIG_AS_AVX512) &&
++		    static_branch_likely(&blake2s_use_avx512))
+ 			blake2s_compress_avx512(ctx, data, blocks, inc);
+ 		else
+ 			blake2s_compress_ssse3(ctx, data, blocks, inc);
+@@ -52,7 +53,8 @@ static void blake2s_mod_init_arch(void)
+ 	if (boot_cpu_has(X86_FEATURE_SSSE3))
+ 		static_branch_enable(&blake2s_use_ssse3);
+ 
+-	if (boot_cpu_has(X86_FEATURE_AVX) &&
++	if (IS_ENABLED(CONFIG_AS_AVX512) &&
++	    boot_cpu_has(X86_FEATURE_AVX) &&
+ 	    boot_cpu_has(X86_FEATURE_AVX2) &&
+ 	    boot_cpu_has(X86_FEATURE_AVX512F) &&
+ 	    boot_cpu_has(X86_FEATURE_AVX512VL) &&
+diff --git a/lib/crypto/x86/sha256.h b/lib/crypto/x86/sha256.h
+index 0ee69d8e3..db208ee12 100644
+--- a/lib/crypto/x86/sha256.h
++++ b/lib/crypto/x86/sha256.h
+@@ -27,8 +27,10 @@ DEFINE_STATIC_CALL(sha256_blocks_x86, sha256_blocks_generic);
+ 	}
+ 
+ DEFINE_X86_SHA256_FN(sha256_blocks_ssse3, sha256_transform_ssse3);
++#ifdef CONFIG_AS_AVX2
+ DEFINE_X86_SHA256_FN(sha256_blocks_avx, sha256_transform_avx);
+ DEFINE_X86_SHA256_FN(sha256_blocks_avx2, sha256_transform_rorx);
++#endif
+ DEFINE_X86_SHA256_FN(sha256_blocks_ni, sha256_ni_transform);
+ 
+ #define PHE_ALIGNMENT 16
+@@ -104,6 +106,7 @@ static void sha256_mod_init_arch(void)
+ 		   boot_cpu_has(X86_FEATURE_PHE_EN) &&
+ 		   boot_cpu_data.x86 >= 0x07) {
+ 		static_call_update(sha256_blocks_x86, sha256_blocks_phe);
++#ifdef CONFIG_AS_AVX2
+ 	} else if (cpu_has_xfeatures(XFEATURE_MASK_SSE | XFEATURE_MASK_YMM,
+ 				     NULL) &&
+ 		   boot_cpu_has(X86_FEATURE_AVX)) {
+@@ -114,6 +117,7 @@ static void sha256_mod_init_arch(void)
+ 		else
+ 			static_call_update(sha256_blocks_x86,
+ 					   sha256_blocks_avx);
++#endif
+ 	} else if (boot_cpu_has(X86_FEATURE_SSSE3)) {
+ 		static_call_update(sha256_blocks_x86, sha256_blocks_ssse3);
+ 	}

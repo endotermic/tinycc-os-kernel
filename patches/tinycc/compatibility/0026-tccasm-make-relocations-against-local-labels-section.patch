@@ -1,0 +1,82 @@
+From 771515df5b26a25635463105f820294d3c234bc8 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: make relocations against local labels
+ section-relative
+
+After an inline asm statement, relocations against local labels
+("1:" = L..N, ".L*") are rewritten against the label's section symbol
+with the label value added to the addend (or in place for REL
+targets), which is how GNU as emits them.  objtool reads
+.discard.annotate_insn and .altinstructions entries that way ("bad
+.discard.annotate_insn entry: 0 of type 8" before).
+---
+ tccasm.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 41 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index f51627a..a9e0e66 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -23,6 +23,7 @@
+ #ifdef CONFIG_TCC_ASM
+ 
+ static Section *last_text_section; /* to handle .previous asm directive */
++static Sym* asm_section_sym(TCCState *s1, Section *sec);
+ 
+ /* ------------------------------------------------------------------ */
+ /* Two-pass assembly of an inline asm statement.
+@@ -176,6 +177,45 @@ static void asm_pass_rollback(TCCState *s1)
+     }
+ }
+ 
++/* Like GNU as, make the relocations against local labels ("1:", ".L..")
++   that the statement emitted relative to the label's section symbol;
++   tools such as objtool rely on that. */
++static void asm_fixup_local_label_relocs(TCCState *s1)
++{
++    int i;
++    for (i = 1; i < s1->nb_sections; i++) {
++        Section *sr = s1->sections[i];
++        unsigned long off;
++        if (sr->sh_type != SHT_RELX)
++            continue;
++        off = i < asm_pass.nb_sections ? asm_pass.offsets[2 * i] : 0;
++        for (; off < sr->data_offset; off += sizeof(ElfW_Rel)) {
++            ElfW_Rel *rel = (ElfW_Rel *)(sr->data + off);
++            int symi = ELFW(R_SYM)(rel->r_info);
++            ElfSym *esym = &((ElfSym *)symtab_section->data)[symi];
++            const char *name;
++            Sym *secsym;
++            if (esym->st_shndx == SHN_UNDEF || esym->st_shndx >= SHN_LORESERVE
++                || ELFW(ST_BIND)(esym->st_info) != STB_LOCAL)
++                continue;
++            name = (char *)symtab_section->link->data + esym->st_name;
++            if (!((name[0] == 'L' && name[1] == '.' && name[2] == '.')
++                  || (name[0] == '.' && name[1] == 'L')))
++                continue;
++            secsym = asm_section_sym(s1, s1->sections[esym->st_shndx]);
++            if (!secsym->c || secsym->c == symi)
++                continue;
++            rel->r_info = ELFW(R_INFO)(secsym->c, ELFW(R_TYPE)(rel->r_info));
++#if SHT_RELX == SHT_RELA
++            rel->r_addend += esym->st_value;
++#else
++            /* REL: the addend lives in the relocated data */
++            add32le(s1->sections[sr->sh_info]->data + rel->r_offset, esym->st_value);
++#endif
++        }
++    }
++}
++
+ /* after each pass: returns 1 if the statement must be assembled again */
+ static int asm_pass_next(TCCState *s1)
+ {
+@@ -202,6 +242,7 @@ static int asm_pass_next(TCCState *s1)
+     }
+     /* done: keep the output of the last pass */
+     dynarray_reset(&asm_pass.cur, &asm_pass.nb_cur);
++    asm_fixup_local_label_relocs(s1);
+     tcc_free(asm_pass.offsets), asm_pass.offsets = NULL;
+     asm_pass.pass = 0;
+     return 0;

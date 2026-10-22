@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Pinned upstream sources.  scripts/fetch.sh clones each one shallowly at exactly this
+# commit into src/<component>; scripts/patch.sh then applies patches/<component>/series.
+# Fields: component  commit  ref(tag or branch the commit came from)  url[,fallback-url...]
+# A release tarball instead of a git commit: "sha256:<digest>" in the commit field, the
+# version in the ref field and the tarball URLs; fetch.sh unpacks it into src/<component> and
+# commits it there as branch 'base', so that the component looks like the others.
+tinycc   e23dabed154a8495f3ac1ff3cc9d04fa1c207893  mob     https://repo.or.cz/tinycc.git,https://github.com/TinyCC/tinycc.git
+linux    f47d223627f80cb7a1eb14c585fe6cb35de5e984  master  https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git,https://github.com/torvalds/linux.git
+musl     9fa28ece75d8a2191de7c5bb53bed224c5947417  v1.2.6  https://git.musl-libc.org/git/musl
+busybox  fc71374dfccd46448c62947269a35f1420d7ee28  1_38_0  https://git.busybox.net/busybox
+make     sha256:dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3  4.4.1   https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz,https://ftpmirror.gnu.org/make/make-4.4.1.tar.gz

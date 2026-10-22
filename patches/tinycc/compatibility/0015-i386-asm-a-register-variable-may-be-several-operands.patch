@@ -1,0 +1,41 @@
+From f72fa290328d42557b549b3dab1a6554c66f3a98 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] i386-asm: a register variable may be several operands of one
+ asm
+
+"register void *tos asm("r11")" given both as "+r"(tos) and as
+[tos] "r"(tos) failed with "asm regvar requests register that's taken
+already".  Share the register when the operand that holds it is the
+same variable.
+---
+ i386-asm.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 5e7f2a2..bc45c25 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1344,8 +1344,20 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             reg_mask = REG_IN_MASK;
+         }
+ 	if (op->reg >= 0) {
+-	    if (is_reg_allocated(op->reg))
+-	        tcc_error("asm regvar requests register that's taken already");
++	    if (is_reg_allocated(op->reg)) {
++	        /* the same register variable may appear as several
++	           operands (e.g. as "+r" output and as input) */
++	        for (k = 0; k < i; k++) {
++	            ASMOperand *o = &operands[sorted_op[k]];
++	            if (o->reg == op->reg && o->vt->sym && o->vt->sym == op->vt->sym)
++	                break;
++	        }
++	        if (k == i)
++	            tcc_error("asm regvar requests register that's taken already");
++	        reg = op->reg;
++	        regs_allocated[reg] |= reg_mask;
++	        continue;
++	    }
+ 	    reg = op->reg;
+ 	}
+     try_next:

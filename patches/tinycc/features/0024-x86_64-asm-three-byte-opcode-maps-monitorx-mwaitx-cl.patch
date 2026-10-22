@@ -1,0 +1,64 @@
+From a90ba2692edaaa2a99d3e9b6013e35082790c785 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] x86_64-asm: three-byte opcode maps; monitorx, mwaitx,
+ clflushopt, clwb, invpcid
+
+The table's opcode field is 16 bits, so the 0F 38 / 0F 3A map byte
+cannot be part of the opcode: new instr_type flags OPC_0F38 and
+OPC_0F3A supply it.  The map byte is ORed in right after the OPC_0F
+expansion so that the special cases for imul, int3 and the arithmetic
+group never see the instruction's own (small) opcode byte.  Adds
+monitorx, mwaitx, clflushopt, clwb and invpcid (the first user of
+OPC_0F38); all byte-identical to GNU as.
+---
+ i386-asm.c   | 5 +++++
+ x86_64-asm.h | 5 +++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index e8ad984..76a2498 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -46,6 +46,8 @@
+ 
+ #define OPC_0F        0x100 /* Is secondary map (0x0f prefix) */
+ #define OPC_48        0x200 /* Always has REX prefix */
++#define OPC_0F38      0x400 /* three-byte opcode map 0F 38 xx */
++#define OPC_0F3A      0x800 /* three-byte opcode map 0F 3A xx */
+ #ifdef TCC_TARGET_X86_64
+ # define OPC_WLQ     0x1000  /* accepts w, l, q or no suffix */
+ # define OPC_BWLQ    (OPC_B | OPC_WLQ) /* accepts b, w, l, q or no suffix */
+@@ -973,6 +975,9 @@ again:
+     }
+     if (pa->instr_type & OPC_0F)
+         v = ((v & ~0xff) << 8) | 0x0f00 | (v & 0xff);
++    else if (pa->instr_type & (OPC_0F38 | OPC_0F3A))
++        /* here, so that the special cases below do not see e.g. pshufb's 0x00 */
++        v |= pa->instr_type & OPC_0F38 ? 0x0f3800 : 0x0f3a00;
+     if ((v == 0x69 || v == 0x6b) && nb_ops == 2) {
+         /* kludge for imul $im, %reg */
+         nb_ops = 3;
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 93b38c8..4f3d8ba 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -52,6 +52,8 @@
+     DEF_ASM_OP0L(xsetbv, 0xd1, 0, OPC_0F01)
+     DEF_ASM_OP0L(swapgs, 0xf8, 0, OPC_0F01)
+     DEF_ASM_OP0L(rdtscp, 0xf9, 0, OPC_0F01)
++    DEF_ASM_OP0L(monitorx, 0xfa, 0, OPC_0F01)
++    DEF_ASM_OP0L(mwaitx, 0xfb, 0, OPC_0F01)
+     DEF_ASM_OP1(rdrand, 0x0fc7, 6, OPC_MODRM, OPT_REG32)
+ ALT(DEF_ASM_OP1(rdrand, 0x660fc7, 6, OPC_MODRM, OPT_REG16))
+ ALT(DEF_ASM_OP1(rdrand, 0x0fc7, 6, OPC_MODRM | OPC_48, OPT_REG64))
+@@ -562,6 +564,9 @@ ALT(DEF_ASM_OP2(cvtsd2si, 0xf20f2d, 0, OPC_MODRM | OPC_48, OPT_EA | OPT_SSE, OPT
+     DEF_ASM_OP0L(mfence, 0x0fae, 6, OPC_MODRM)
+     DEF_ASM_OP0L(sfence, 0x0fae, 7, OPC_MODRM)
+     DEF_ASM_OP1(clflush, 0x0fae, 7, OPC_MODRM, OPT_EA)
++    DEF_ASM_OP1(clflushopt, 0x660fae, 7, OPC_MODRM, OPT_EA)
++    DEF_ASM_OP1(clwb, 0x660fae, 6, OPC_MODRM, OPT_EA)
++    DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG64)
+ 
+     /* Control-Flow Enforcement */
+     DEF_ASM_OP0L(endbr64, 0xf30f1e, 7, OPC_MODRM)

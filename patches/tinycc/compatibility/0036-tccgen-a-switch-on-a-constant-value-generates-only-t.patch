@@ -1,0 +1,183 @@
+From 93978615fdab4842a394d4eff12da4d672ce03ca Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: a switch on a constant value generates only the taken
+ case
+
+"switch (sizeof(x))" with a braced body is pre-scanned from the saved
+tokens for the case that is taken (case values via expr_const64;
+nested braced switches are skipped, their cases are their own); only
+that case label starts code, "default" only when no case matches,
+fall-through still works and the dispatch is one direct jump.  The
+other cases typically call undefined functions as link-time
+assertions (__bad_size_call_parameter, __xchg_wrong_size, ...).
+---
+ tccgen.c | 114 +++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 110 insertions(+), 4 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 8c54e58..bf17656 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -95,6 +95,8 @@ static struct switch_t {
+     } **p; int n; /* list of case ranges */
+     int def_sym; /* default symbol */
+     int nocode_wanted;
++    int fold; /* constant switch value: only the taken case gets code */
++    int ncase, match, match_ind; /* its ordinal and position */
+     int *bsym;
+     struct scope *scope;
+     struct switch_t *prev;
+@@ -160,6 +162,8 @@ static void free_inline_functions(TCCState *s);
+ static void skip_or_save_block(TokenString **str);
+ static void replay_end(TokenString *str);
+ static TokenString *dead_loop_tokens(int kind, int *dead);
++static TokenString *switch_fold_scan(struct switch_t *sw);
++static int case_cmp(uint64_t a, uint64_t b);
+ static void gv_dup(void);
+ static int get_temp_local_var(int size,int align,int *r2);
+ static void cast_error(CType *st, CType *dt);
+@@ -7313,6 +7317,81 @@ giveup:
+     return NULL;
+ }
+ 
++/* switch on a constant value (switch (sizeof (x)) in the kernel's percpu
++   and uaccess code): find the case that is taken so that only its code is
++   generated; the other cases typically call undefined functions as a
++   link-time assertion.  The body is saved and the caller parses it from
++   the returned tokens (replay_end() when done). */
++static TokenString *switch_fold_scan(struct switch_t *sw)
++{
++    TokenString *body;
++    int ncase = 0, match = 0, ok = 1;
++    uint64_t v = value64(sw->sv.c.i, sw->sv.type.t);
++
++    skip_or_save_block(&body);
++    unget_tok(0);
++    begin_macro(body, 0);
++    next();
++    while (tok != TOK_EOF) {
++        if (tok == TOK_SWITCH) {
++            /* skip a nested braced switch: its cases are its own */
++            int level;
++            next();
++            if (tok != '(') {
++                ok = 0;
++                break;
++            }
++            for (level = 0; ok; next()) {
++                if (tok == TOK_EOF)
++                    ok = 0;
++                else if (tok == '(')
++                    level++;
++                else if (tok == ')' && --level == 0) {
++                    next();
++                    break;
++                }
++            }
++            if (!ok || tok != '{') {
++                ok = 0;
++                break;
++            }
++            for (level = 0; ok; next()) {
++                if (tok == TOK_EOF)
++                    ok = 0;
++                else if (tok == '{')
++                    level++;
++                else if (tok == '}' && --level == 0) {
++                    next();
++                    break;
++                }
++            }
++            if (!ok)
++                break;
++            continue;
++        }
++        if (tok == TOK_CASE) {
++            uint64_t v1, v2;
++            next();
++            v1 = v2 = value64(expr_const64(), sw->sv.type.t);
++            if (tok == TOK_DOTS && gnu_ext) {
++                next();
++                v2 = value64(expr_const64(), sw->sv.type.t);
++            }
++            ncase++;
++            if (!match && case_cmp(v1, v) <= 0 && case_cmp(v, v2) <= 0)
++                match = ncase;
++            continue;
++        }
++        next();
++    }
++    end_macro();
++    if (ok)
++        sw->fold = 1, sw->match = match;
++    begin_macro(body, 0);
++    next();
++    return body;
++}
++
+ static int case_cmp(uint64_t a, uint64_t b)
+ {
+     if (cur_switch->sv.type.t & VT_UNSIGNED)
+@@ -7817,14 +7896,31 @@ again:
+             tcc_error("switch value not an integer");
+         skip(')');
+         sw->sv = *vtop--; /* save switch value */
++        if (tok == '{' && !nocode_wanted
++            && (sw->sv.r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
++            body = switch_fold_scan(sw);
+         a = 0;
+         b = gjmp(0); /* jump to first case */
+         lblock(&a, NULL);
+         a = gjmp(a); /* add implicit break */
++        if (body) {
++            replay_end(body);
++            tok_str_free(body);
++        }
+         /* case lookup */
+-        gsym(b);
++        if (sw->fold) {
++            /* constant value: straight to the taken case */
++            if (sw->match)
++                gsym_addr(b, sw->match_ind);
++            else if (sw->def_sym > 0)
++                gsym_addr(b, sw->def_sym);
++            else
++                gsym(b);
++        } else {
++            gsym(b);
++        }
+         prev_scope_s(&o);
+-        if (sw->nocode_wanted)
++        if (sw->nocode_wanted || sw->fold)
+             goto skip_switch;
+         case_sort(sw);
+         sw->bsym = NULL; /* marker for 32bit:gen_opl() */
+@@ -7856,7 +7952,14 @@ again:
+                 tcc_warning("empty case range");
+         }
+         /* case and default are unreachable from a switch under nocode_wanted */
+-        if (!cur_switch->nocode_wanted)
++        if (cur_switch->fold) {
++            /* only the taken case starts code; the others are not
++               reached and neither stop a fall-through into them */
++            if (++cur_switch->ncase == cur_switch->match)
++                cur_switch->match_ind = cr->ind = gind();
++            else
++                cr->ind = -1;
++        } else if (!cur_switch->nocode_wanted)
+             cr->ind = gind();
+         cr->line = file->line_num;
+         skip(':');
+@@ -7867,7 +7970,10 @@ again:
+             expect("switch");
+         if (cur_switch->def_sym)
+             tcc_error("too many 'default'");
+-        cur_switch->def_sym = cur_switch->nocode_wanted ? -1 : gind();
++        if (cur_switch->fold)
++            cur_switch->def_sym = cur_switch->match ? -1 : gind();
++        else
++            cur_switch->def_sym = cur_switch->nocode_wanted ? -1 : gind();
+         skip(':');
+         goto block_after_label;
+ 

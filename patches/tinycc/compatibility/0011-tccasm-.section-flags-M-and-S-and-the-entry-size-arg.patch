@@ -1,0 +1,59 @@
+From a4b16327730a9854f70ce6b00c00969cad999509 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: .section flags "M" and "S" and the entry size
+ argument
+
+".pushsection name,"aM",@progbits,14" (SHF_MERGE/SHF_STRINGS with an
+entry size, used for .altinstructions, __ex_table and .discard.*)
+failed with "end of line expected".  Accept the flags and store the
+entry size in sh_entsize.
+---
+ tccasm.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index 89e15bf..0b9066a 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1089,7 +1089,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+         {
+             char sname[256];
+ 	    int old_nb_section = s1->nb_sections;
+-            int flags = SHF_ALLOC;
++            int flags = SHF_ALLOC, entsize = 0;
+ 
+ 	    tok1 = tok;
+             /* XXX: support more options */
+@@ -1113,6 +1113,10 @@ static void asm_parse_directive(TCCState *s1, int global)
+                         flags |= SHF_WRITE;
+                     if (*p == 'x')
+                         flags |= SHF_EXECINSTR;
++                    if (*p == 'M')
++                        flags |= SHF_MERGE;
++                    if (*p == 'S')
++                        flags |= SHF_STRINGS;
+                 }
+                 next();
+                 if (tok == ',') {
+@@ -1120,6 +1124,12 @@ static void asm_parse_directive(TCCState *s1, int global)
+                     if (tok == '@' || tok == '%')
+                         next();
+                     next();
++                    /* entry size of a mergeable section:
++                       .section name,"aM",@progbits,<entsize> */
++                    if (tok == ',') {
++                        next();
++                        entsize = asm_int_expr(s1);
++                    }
+                 }
+             }
+             last_text_section = cur_text_section;
+@@ -1137,6 +1147,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+                 if (!strcmp(sname, ".init") || !strcmp(sname, ".fini"))
+                     flags |= SHF_EXECINSTR;
+ 	        cur_text_section->sh_flags = flags;
++                cur_text_section->sh_entsize = entsize;
+             }
+         }
+         break;

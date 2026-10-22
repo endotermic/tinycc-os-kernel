@@ -1,0 +1,40 @@
+From cd78cfffa671daa67b117de75c149416b67d8f68 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:18 +0300
+Subject: [PATCH] x86/cpufeature: use the dynamic test for _static_cpu_has()
+ under tinycc
+
+__static_cpu_has() is an asm goto whose "i" operands exist only after
+inlining.  tinycc does not inline, so under __TINYC__ let
+_static_cpu_has(bit) be boot_cpu_has(bit).
+
+Assisted-by: LLM
+---
+ arch/x86/include/asm/cpufeature.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/x86/include/asm/cpufeature.h b/arch/x86/include/asm/cpufeature.h
+index b4cc5fd1b..d2e688746 100644
+--- a/arch/x86/include/asm/cpufeature.h
++++ b/arch/x86/include/asm/cpufeature.h
+@@ -116,12 +116,20 @@ static __always_inline bool __static_cpu_has(u16 bit)
+ 	return false;
+ }
+ 
++#ifdef __TINYC__
++/*
++ * tcc does not inline __static_cpu_has(), so its "i" operands cannot be
++ * immediates; use the dynamic test instead.
++ */
++#define _static_cpu_has(bit)	boot_cpu_has(bit)
++#else
+ #define _static_cpu_has(bit)					\
+ (								\
+ 	__builtin_constant_p(boot_cpu_has(bit)) ?		\
+ 		boot_cpu_has(bit) :				\
+ 		__static_cpu_has(bit)				\
+ )
++#endif
+ 
+ #define cpu_has_bug(c, bit)		cpu_has(c, (bit))
+ #define set_cpu_bug(c, bit)		set_cpu_cap(c, (bit))

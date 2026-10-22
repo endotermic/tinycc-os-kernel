@@ -1,0 +1,110 @@
+From 1a0c234df4b489e1affbe8b13f5229689cd63e5f Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: __builtin_{clz,ctz,popcount,ffs}{,l,ll} as compiler
+ builtins
+
+They fold for constant arguments (the Linux kernel's ilog2() in array
+designators and _Static_assert needs that: "constant expression
+expected") and otherwise call the same-named libtcc1 function as
+before.  The declarations leave tccdefs.h; clrsb and parity stay
+there.
+---
+ include/tccdefs.h |  6 ++----
+ tccgen.c          | 40 ++++++++++++++++++++++++++++++++++++++++
+ tcctok.h          | 13 +++++++++++++
+ 3 files changed, 55 insertions(+), 4 deletions(-)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index cb751e3..293b9a4 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -389,11 +389,9 @@
+         int __builtin_##name(u int);		\
+         int __builtin_##name##l(u long);	\
+         int __builtin_##name##ll(u long long);
+-    __BUILTIN_EXTERN(ffs,)
+-    __BUILTIN_EXTERN(clz, unsigned)
+-    __BUILTIN_EXTERN(ctz, unsigned)
++    /* ffs, clz, ctz and popcount are handled by the compiler (constant
++       folding), falling back to these library functions otherwise */
+     __BUILTIN_EXTERN(clrsb,)
+-    __BUILTIN_EXTERN(popcount, unsigned)
+     __BUILTIN_EXTERN(parity, unsigned)
+     #undef __BUILTIN_EXTERN
+ 
+diff --git a/tccgen.c b/tccgen.c
+index 90d0748..c27c447 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -5959,6 +5959,46 @@ ST_FUNC void unary(void)
+ 	parse_builtin_params(0, "ee");
+ 	vpop();
+         break;
++    case TOK_builtin_clz: case TOK_builtin_clzl: case TOK_builtin_clzll:
++    case TOK_builtin_ctz: case TOK_builtin_ctzl: case TOK_builtin_ctzll:
++    case TOK_builtin_popcount: case TOK_builtin_popcountl: case TOK_builtin_popcountll:
++    case TOK_builtin_ffs: case TOK_builtin_ffsl: case TOK_builtin_ffsll:
++        /* folded for a constant argument (needed e.g. by the Linux kernel's
++           ilog2() in constant expressions), else a call to the library */
++        t = tok;
++        parse_builtin_params(0, "e");
++        if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
++            int kind = (t - TOK_builtin_clz) / 3;
++            int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
++            uint64_t v = vtop->c.i;
++            if (bits == 32)
++                v &= 0xffffffffu;
++            if (kind == 2) {            /* popcount */
++                for (n = 0; v; v >>= 1)
++                    n += v & 1;
++            } else if (!v) {
++                n = kind == 3 ? 0 : bits;  /* ffs(0) = 0; clz/ctz(0) undefined */
++            } else if (kind == 0) {     /* clz */
++                for (n = 0; !(v >> (bits - 1)); v <<= 1)
++                    n++;
++            } else {                    /* ctz, ffs */
++                for (n = 0; !(v & 1); v >>= 1)
++                    n++;
++                n += kind == 3;
++            }
++            vtop->c.i = n;
++            vtop->type.t = VT_INT;
++        } else {
++            int kind = (t - TOK_builtin_clz) / 3;
++            int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
++            (void)kind, (void)bits;
++            vpush_helper_func(t);
++            vswap();
++            gfunc_call(1);
++            vpushi(0);
++            vtop->r = REG_IRET;
++        }
++        break;
+     case TOK_builtin_strlen:
+         /* a string literal is folded (needed in constant expressions),
+            anything else is a call to strlen() */
+diff --git a/tcctok.h b/tcctok.h
+index 0835902..bf8b12a 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -180,6 +180,19 @@
+      DEF(TOK_builtin_expect, "__builtin_expect")
+      DEF(TOK_builtin_unreachable, "__builtin_unreachable")
+      DEF(TOK_builtin_strlen, "__builtin_strlen")
++     /* keep the order: kind = (tok - TOK_builtin_clz) / 3, width = % 3 */
++     DEF(TOK_builtin_clz, "__builtin_clz")
++     DEF(TOK_builtin_clzl, "__builtin_clzl")
++     DEF(TOK_builtin_clzll, "__builtin_clzll")
++     DEF(TOK_builtin_ctz, "__builtin_ctz")
++     DEF(TOK_builtin_ctzl, "__builtin_ctzl")
++     DEF(TOK_builtin_ctzll, "__builtin_ctzll")
++     DEF(TOK_builtin_popcount, "__builtin_popcount")
++     DEF(TOK_builtin_popcountl, "__builtin_popcountl")
++     DEF(TOK_builtin_popcountll, "__builtin_popcountll")
++     DEF(TOK_builtin_ffs, "__builtin_ffs")
++     DEF(TOK_builtin_ffsl, "__builtin_ffsl")
++     DEF(TOK_builtin_ffsll, "__builtin_ffsll")
+      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
+ #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
+      DEF(TOK_builtin_va_start, "__builtin_va_start")

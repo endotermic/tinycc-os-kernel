@@ -1,0 +1,38 @@
+From 2f286ed510351c7afde11ced3ab9c66e3fda574c Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccdefs: fetch integer-class va_arg arguments inline on
+ x86_64
+
+__builtin_va_arg of an integer-class argument of 1..8 bytes reads the
+register save area or the overflow area directly, as GCC does; only
+the other classes still call __va_arg(), which freestanding code (the
+Linux kernel's vsprintf) does not have.  Zero-sized structs keep the
+__va_arg path because they take no slot.
+---
+ include/tccdefs.h | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 293b9a4..10e5842 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -264,8 +264,17 @@
+     void *__va_arg(__builtin_va_list ap, int arg_type, int size, int align);
+     #define __builtin_va_start(ap, last) \
+        (*(ap) = *(__builtin_va_list)((char*)__builtin_frame_address(0) - 24))
++    /* integer class arguments of up to 8 bytes (the common case) are
++       fetched inline, as GCC does; no library call (e.g. in the Linux
++       kernel), the other classes still go through __va_arg() */
++    #define __tcc_va_arg_gp(ap) \
++       ((ap)->gp_offset < 48 \
++        ? ((ap)->gp_offset += 8, (ap)->reg_save_area + (ap)->gp_offset - 8) \
++        : ((ap)->overflow_arg_area += 8, (ap)->overflow_arg_area - 8))
+     #define __builtin_va_arg(ap, t)   \
+-       (*(t *)(__va_arg(ap, __builtin_va_arg_types(t), sizeof(t), __alignof__(t))))
++       (*(t *)(__builtin_va_arg_types(t) == 0 && sizeof(t) - 1 < 8 && __alignof__(t) <= 8 \
++        ? __tcc_va_arg_gp(ap) \
++        : __va_arg(ap, __builtin_va_arg_types(t), sizeof(t), __alignof__(t))))
+     #define __builtin_va_copy(dest, src) (*(dest) = *(src))
+ 
+ #else /* _WIN64 */

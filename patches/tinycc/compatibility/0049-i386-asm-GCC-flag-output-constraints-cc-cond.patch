@@ -1,0 +1,124 @@
+From 36bfc5f99cb0e4c3f083328a72d1d0c5f111c1da Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] i386-asm: GCC flag output constraints "=@cc<cond>"
+
+The condition is read with setcc into a general register after the
+asm statement, followed by movzbl ("al".."bl" only on i386); all
+condition code names and aliases are accepted.  Used by the Linux
+kernel's bit operations ("=@ccc", "=@ccz").
+---
+ i386-asm.c | 59 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tcc.h      |  1 +
+ 2 files changed, 60 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index b481058..6b03843 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1229,6 +1229,9 @@ static inline int constraint_priority(const char *str)
+             pr = 4;
+             break;
+ #endif
++        case '@':
++            /* "=@cc<cond>" flag output: needs a general register */
++            return 3;
+         case 'N':
+         case 'M':
+         case 'I':
+@@ -1248,6 +1251,40 @@ static inline int constraint_priority(const char *str)
+     return priority;
+ }
+ 
++/* x86 condition code of a GCC flag output constraint "=@cc<cond>" */
++static int asm_parse_cc(const char *s)
++{
++    static const char * const names[] = {
++        "o", "no", "b", "ae", "e", "ne", "be", "a",
++        "s", "ns", "p", "np", "l", "ge", "le", "g",
++        /* aliases */
++        "c", "nc", "z", "nz", "na", "nbe", "nae", "nb",
++        "nge", "nl", "ng", "nle", NULL };
++    static const unsigned char alias_cc[] = { 2, 3, 4, 5, 6, 7, 2, 3, 12, 13, 14, 15 };
++    int i;
++    for (i = 0; names[i]; i++)
++        if (!strcmp(s, names[i]))
++            return i < 16 ? i : alias_cc[i - 16];
++    tcc_error("unknown condition code '%s' in flag output constraint", s);
++    return -1;
++}
++
++/* materialize the flag output of an asm statement: setcc %reg8; movzbl %reg8,%reg32 */
++static void asm_gen_setcc(int reg, int cc)
++{
++    int r = reg & 7;
++    if (reg >= 8)
++        g(0x41);
++    else if (reg >= 4)
++        g(0x40); /* spl, bpl, sil, dil need a REX prefix (x86-64 only) */
++    g(0x0f), g(0x90 + cc), g(0xc0 + r);
++    if (reg >= 8)
++        g(0x45);
++    else if (reg >= 4)
++        g(0x40);
++    g(0x0f), g(0xb6), g(0xc0 + r * 8 + r);
++}
++
+ static const char *skip_constraint_modifiers(const char *p)
+ {
+     while (*p == '=' || *p == '&' || *p == '+' || *p == '%')
+@@ -1315,6 +1352,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         op->reg = -1;
+         op->is_memory = 0;
+         op->is_rw = 0;
++        op->flag_cc = -1;
+     }
+     /* compute constraint priority and evaluate references to output
+        constraints if input constraints */
+@@ -1493,6 +1531,25 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+                     goto reg_found;
+             }
+             goto try_next;
++        case '@':
++            /* "=@cc<cond>" (GCC flag output): the condition is read with
++               setcc into a general register after the asm statement, see
++               asm_gen_code(); on i386 only al..bl are byte addressable */
++            if (j >= nb_outputs || str[0] != 'c' || str[1] != 'c')
++                tcc_error("invalid flag output constraint '%s'", op->constraint);
++            op->flag_cc = asm_parse_cc(str + 2);
++#ifdef TCC_TARGET_X86_64
++            k = NB_ASM_GREGS;
++#else
++            k = 4;
++#endif
++            if ((reg = op->reg) >= 0 && reg < k)
++                goto reg_found;
++            for(reg = 0; reg < k; reg++) {
++                if (!is_reg_allocated(reg))
++                    goto reg_found;
++            }
++            tcc_error("no free register for flag output '%s'", op->constraint);
+         reg_found:
+             /* now we can reload in the register */
+             op->is_llong = 0;
+@@ -1785,6 +1842,8 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+         for(i = 0 ; i < nb_outputs; i++) {
+             op = &operands[i];
+             if (op->reg >= 0) {
++                if (op->flag_cc >= 0)
++                    asm_gen_setcc(op->reg, op->flag_cc);
+                 if ((op->vt->r & VT_VALMASK) == VT_LLOCAL) {
+                     if (!op->is_memory) {
+                         SValue sv;
+diff --git a/tcc.h b/tcc.h
+index 0052be8..cc31144 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -723,6 +723,7 @@ typedef struct ASMOperand {
+     int is_memory; /* true if memory operand */
+     int is_rw;     /* for '+' modifier */
+     int is_label;  /* for asm goto */
++    int flag_cc;   /* >= 0: "=@cc<cond>" flag output, x86 condition code */
+ } ASMOperand;
+ #endif
+ 

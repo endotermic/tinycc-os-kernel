@@ -1,0 +1,35 @@
+From ac515262fe4f319cc8630e45423bd4a5142dc815 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: do not call empty non-weak void functions
+
+A non-static void function whose body is "{ }" gets func_fold set (the
+body is peeked), so direct calls to it are dropped and their arguments
+are not referenced.  The Linux kernel's "void __init noinline
+apply_retpolines(s32 *start, s32 *end) { }" stubs are called with
+linker-script symbols that only exist when the mitigation is built.
+---
+ tccgen.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 7f407af..b18f2f4 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9716,6 +9716,16 @@ static int decl(int l)
+                            already created the section */
+                         ad.section->sh_flags |= text_section->sh_flags;
+                     }
++                    /* an empty void function is not called (as with
++                       inline_fold_check; kernel apply_retpolines() stubs) */
++                    if ((sym->type.ref->type.t & VT_BTYPE) == VT_VOID
++                        && !sym->a.weak) {
++                        next();
++                        if (tok == '}')
++                            sym->type.ref->f.func_fold = 1,
++                            sym->type.ref->c = sym->v;
++                        unget_tok('{');
++                    }
+                     gen_function(sym);
+                 }
+                 break;

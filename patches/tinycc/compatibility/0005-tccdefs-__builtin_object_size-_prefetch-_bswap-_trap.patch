@@ -1,0 +1,55 @@
+From 66905125584b7d5128802ac29bda04fd786ddcbf Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccdefs: __builtin_object_size, _prefetch, _bswap*, _trap and
+ friends
+
+Provide GCC builtins that tcc does not implement natively as macros
+with their documented fallback semantics: __builtin_object_size and
+__builtin_dynamic_object_size (0 / (size_t)-1), __builtin_prefetch
+(no-op), __builtin_expect_with_probability (__builtin_expect),
+__builtin_bswap16/32/64 (shift and mask; note that they evaluate the
+argument more than once) and __builtin_trap (ud2 on x86).  Without
+them the identifiers were implicit function declarations and failed
+at link time.
+---
+ include/tccdefs.h | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 2655c1d..e17714d 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -163,6 +163,32 @@
+ 
+     #define __builtin_offsetof(type, field) ((__SIZE_TYPE__)&((type*)0)->field)
+     #define __builtin_extract_return_addr(x) x
++
++    /* GCC builtins that tcc does not implement natively, as macros with
++       the documented fallback semantics (used by e.g. the Linux kernel).
++       Note: the bswap macros evaluate their argument more than once. */
++    #define __builtin_object_size(ptr, type) (((type) & 2) ? (__SIZE_TYPE__)0 : (__SIZE_TYPE__)-1)
++    #define __builtin_dynamic_object_size(ptr, type) __builtin_object_size(ptr, type)
++    #define __builtin_prefetch(addr, ...) ((void)(addr))
++    #define __builtin_expect_with_probability(expr, c, probability) __builtin_expect(expr, c)
++    #define __builtin_bswap16(x) ((unsigned short)((((unsigned short)(x) & 0x00ffU) << 8) \
++                                                 | (((unsigned short)(x) & 0xff00U) >> 8)))
++    #define __builtin_bswap32(x) ((((unsigned)(x) & 0x000000ffU) << 24) \
++                                | (((unsigned)(x) & 0x0000ff00U) <<  8) \
++                                | (((unsigned)(x) & 0x00ff0000U) >>  8) \
++                                | (((unsigned)(x) & 0xff000000U) >> 24))
++    #define __builtin_bswap64(x) ((((unsigned long long)(x) & 0x00000000000000ffULL) << 56) \
++                                | (((unsigned long long)(x) & 0x000000000000ff00ULL) << 40) \
++                                | (((unsigned long long)(x) & 0x0000000000ff0000ULL) << 24) \
++                                | (((unsigned long long)(x) & 0x00000000ff000000ULL) <<  8) \
++                                | (((unsigned long long)(x) & 0x000000ff00000000ULL) >>  8) \
++                                | (((unsigned long long)(x) & 0x0000ff0000000000ULL) >> 24) \
++                                | (((unsigned long long)(x) & 0x00ff000000000000ULL) >> 40) \
++                                | (((unsigned long long)(x) & 0xff00000000000000ULL) >> 56))
++#if defined __i386__ || defined __x86_64__
++    #define __builtin_trap() __asm__ __volatile__ ("ud2")
++#endif
++
+ #if !defined __linux__ && !defined _WIN32
+     /* used by math.h */
+     #define __builtin_huge_val() 1e500

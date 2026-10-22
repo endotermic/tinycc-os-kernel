@@ -1,0 +1,42 @@
+From f2d6601bfcea83cc93b4a72fd57b5231ebb8ae80 Mon Sep 17 00:00:00 2001
+From: tinycc-os-kernel <tinycc-os-kernel@localhost>
+Date: Thu, 22 Oct 2026 13:30:30 +0300
+Subject: [PATCH] mm: provide a vma_thp_gfp_mask() stub without THP
+
+vma_thp_gfp_mask() is defined in mm/huge_memory.c, which is built only
+with CONFIG_TRANSPARENT_HUGEPAGE, but declared unconditionally.
+shmem_get_folio_gfp() calls it under "if (orders > 0)", where orders
+comes from shmem_allowable_huge_orders(), a static inline that returns
+0 without THP, so the call is dead code that an optimizing compiler
+removes; a compiler that keeps it (tinycc, or gcc -O0) fails the link
+with an undefined reference to vma_thp_gfp_mask.
+
+Give the function an inline stub returning 0 for the !THP case, like
+the other THP helpers in huge_mm.h, so that the callers link regardless
+of how the dead branch is treated.
+
+Assisted-by: LLM
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ include/linux/gfp.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/include/linux/gfp.h b/include/linux/gfp.h
+index 872bc53f3..62cae2078 100644
+--- a/include/linux/gfp.h
++++ b/include/linux/gfp.h
+@@ -383,7 +383,14 @@ static inline bool gfp_compaction_allowed(gfp_t gfp_mask)
+ 	return IS_ENABLED(CONFIG_COMPACTION) && (gfp_mask & __GFP_IO);
+ }
+ 
++#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ extern gfp_t vma_thp_gfp_mask(struct vm_area_struct *vma);
++#else
++static inline gfp_t vma_thp_gfp_mask(struct vm_area_struct *vma)
++{
++	return 0;
++}
++#endif
+ 
+ #ifdef CONFIG_CONTIG_ALLOC
+ 

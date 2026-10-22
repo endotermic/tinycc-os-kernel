@@ -1,0 +1,223 @@
+From a4fd46b87da1c63ee672ac298a24e6e43ce7801c Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] x86_64-asm: SSSE3/SSE4.1/SHA-NI instructions, %xmm8-15 and
+ .octa
+
+xorps, movhlps, shufps, pshufb, palignr, pinsrd, pextrd, sha1rnds4,
+sha1nexte, sha1msg1/2, sha256rnds2 (also the explicit "%xmm0, src, dst"
+form) and sha256msg1/2, with the 0x66 prefix as the high opcode byte
+and the map from OPC_0F38/OPC_0F3A; %xmm8-%xmm15 as tokens outside the
+8-per-class register block (REX.R/REX.B from asm_rex()); ".octa" for
+128-bit constants (parsed into two 64-bit halves without __int128,
+since tcc self-hosts).  busybox's SHA1/SHA256 hwaccel assembly now
+assembles byte-identical to GNU as; the forms are appended to
+tests/asmtest.S.
+---
+ i386-asm.c      | 12 ++++++++++++
+ i386-tok.h      |  9 +++++++++
+ tccasm.c        | 45 +++++++++++++++++++++++++++++++++++++++++++++
+ tcctok.h        |  1 +
+ tests/asmtest.S | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ x86_64-asm.h    | 18 ++++++++++++++++++
+ 6 files changed, 129 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 6b03843..7440925 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -406,6 +406,9 @@ static void parse_operand(TCCState *s1, Operand *op)
+ 	} else if (tok >= TOK_ASM_spl && tok <= TOK_ASM_dil) {
+ 	    op->type = OP_REG8 | OP_REG8_LOW;
+ 	    op->reg = 4 + tok - TOK_ASM_spl;
++        } else if (tok >= TOK_ASM_xmm8 && tok <= TOK_ASM_xmm15) {
++            op->type = OP_SSE;
++            op->reg = 8 + tok - TOK_ASM_xmm8;
+         } else if ((op->reg = asm_parse_numeric_reg(tok, &op->type)) >= 0) {
+ 	    ;
+ #endif
+@@ -746,6 +749,15 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+ 
+     s = 0; /* avoid warning */
+ 
++#ifdef TCC_TARGET_X86_64
++    /* 'sha256rnds2 %xmm0, src, dst': the implicit xmm0 may be written */
++    if (opcode == TOK_ASM_sha256rnds2 && nb_ops == 3) {
++        if (!(ops[0].type & OP_SSE) || ops[0].reg != 0)
++            tcc_error("the first operand of sha256rnds2 must be %%xmm0");
++        ops[0] = ops[1], ops[1] = ops[2], nb_ops = 2;
++    }
++#endif
++
+ again:
+     /* optimize matching by using a lookup table (no hashing is needed
+        !) */
+diff --git a/i386-tok.h b/i386-tok.h
+index 2907105..3aa886b 100644
+--- a/i386-tok.h
++++ b/i386-tok.h
+@@ -176,6 +176,15 @@
+  DEF_ASM(bpl)
+  DEF_ASM(sil)
+  DEF_ASM(dil)
++ /* xmm8-15 (REX.R/REX.B), outside the 8-per-class block above */
++ DEF_ASM(xmm8)
++ DEF_ASM(xmm9)
++ DEF_ASM(xmm10)
++ DEF_ASM(xmm11)
++ DEF_ASM(xmm12)
++ DEF_ASM(xmm13)
++ DEF_ASM(xmm14)
++ DEF_ASM(xmm15)
+ #endif
+  /* generic two operands */
+  DEF_BWLX(mov)
+diff --git a/tccasm.c b/tccasm.c
+index ac586fa..2deb463 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1044,6 +1044,51 @@ static void asm_parse_directive(TCCState *s1, int global)
+         }
+         break;
+ #endif
++    case TOK_ASMDIR_octa:
++        /* 128-bit constants, hex or decimal literals (optionally negated),
++           little endian; e.g. the byte-shuffle masks of SHA code */
++        next();
++        for(;;) {
++            uint64_t lo = 0, hi = 0, l2, h2;
++            const char *p;
++            int neg = 0, base = 10, d;
++
++            if (tok == '-')
++                neg = 1, next();
++            if (tok != TOK_PPNUM)
++                tcc_error("128 bit constant expected");
++            p = tokc.str.data;
++            if (p[0] == '0' && (p[1] | 0x20) == 'x')
++                base = 16, p += 2;
++            for (; *p; p++) {
++                d = *p | 0x20;
++                d = d >= 'a' && d <= 'f' ? d - 'a' + 10 : *p - '0';
++                if ((unsigned)d >= (unsigned)base)
++                    tcc_error("invalid 128 bit constant");
++                if (base == 16) {
++                    hi = (hi << 4) | (lo >> 60), lo <<= 4;
++                } else { /* x*10 = x*8 + x*2 */
++                    h2 = (hi << 3) | (lo >> 61), l2 = lo << 3;
++                    hi = (hi << 1) | (lo >> 63), lo <<= 1;
++                    l2 += lo, h2 += hi + (l2 < lo);
++                    hi = h2, lo = l2;
++                }
++                lo += d, hi += lo < (uint64_t)d;
++            }
++            if (neg)
++                lo = ~lo + 1, hi = ~hi + (lo == 0);
++            next();
++            if (sec->sh_type != SHT_NOBITS) {
++                gen_le32(lo), gen_le32(lo >> 32);
++                gen_le32(hi), gen_le32(hi >> 32);
++            } else {
++                ind += 16;
++            }
++            if (tok != ',')
++                break;
++            next();
++        }
++        break;
+     case TOK_ASMDIR_byte:
+         size = 1;
+         goto asm_data;
+diff --git a/tcctok.h b/tcctok.h
+index 2b09264..7ba4f59 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -435,6 +435,7 @@
+  DEF_ASMDIR(endr)
+  DEF_ASMDIR(org)
+  DEF_ASMDIR(quad)
++ DEF_ASMDIR(octa)
+ #if PTR_SIZE == 4
+  DEF_ASMDIR(code16)
+  DEF_ASMDIR(code32)
+diff --git a/tests/asmtest.S b/tests/asmtest.S
+index ae4b157..10100bd 100644
+--- a/tests/asmtest.S
++++ b/tests/asmtest.S
+@@ -1025,3 +1025,47 @@ TEST_MMX_SSE_I8(psrlq)
+     TEST_MMX_SSE(pmaxub)
+     TEST_MMX_SSE(pminsw)
+     TEST_MMX_SSE(pminub)
++
++#ifdef __x86_64__
++/* SSE/SSSE3/SSE4.1/SHA-NI with xmm8-15 (busybox SHA hwaccel asm), .octa */
++    xorps %xmm1, %xmm0
++    xorps %xmm9, %xmm10
++    xorps 16(%rdi), %xmm3
++    movaps %xmm1, %xmm0
++    movaps %xmm1, %xmm8
++    movaps %xmm12, %xmm3
++    movaps 16(%rax), %xmm2
++    movaps %xmm2, 32(%rax)
++    movaps sym(%rip), %xmm7
++    movups 16(%rdi), %xmm1
++    movups %xmm1, 16(%rdi)
++    movups %xmm9, (%r8)
++    movhlps %xmm1, %xmm0
++    movhlps %xmm11, %xmm13
++    shufps $0x1b, %xmm1, %xmm0
++    shufps $0xe4, %xmm9, %xmm2
++    pshufb %xmm7, %xmm3
++    pshufb %xmm15, %xmm3
++    pshufb (%rax), %xmm3
++    palignr $4, %xmm3, %xmm7
++    palignr $8, %xmm10, %xmm1
++    pinsrd $3, 96(%rdi), %xmm1
++    pinsrd $1, %eax, %xmm1
++    pextrd $3, %xmm1, 96(%rdi)
++    pextrd $2, %xmm9, %ecx
++    sha1rnds4 $0, %xmm1, %xmm2
++    sha1rnds4 $3, %xmm10, %xmm2
++    sha1nexte %xmm3, %xmm1
++    sha1nexte 8(%rsi), %xmm1
++    sha1msg1 %xmm4, %xmm3
++    sha1msg2 %xmm6, %xmm3
++    sha256rnds2 %xmm0, %xmm1, %xmm2
++    sha256rnds2 %xmm1, %xmm2
++    sha256rnds2 %xmm0, %xmm9, %xmm12
++    sha256msg1 %xmm4, %xmm3
++    sha256msg2 %xmm6, %xmm3
++    paddd %xmm8, %xmm0
++    paddd 16(%rax), %xmm9
++    .octa 0x000102030405060708090a0b0c0d0e0f
++    .octa 1234567890123456789012345678901234567, -1
++#endif
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 64560be..aa2e995 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -590,6 +590,24 @@ ALT(DEF_ASM_OP2(cvtsd2si, 0xf20f2d, 0, OPC_MODRM | OPC_48, OPT_EA | OPT_SSE, OPT
+     DEF_ASM_OP1(clwb, 0x660fae, 6, OPC_MODRM, OPT_EA)
+     DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG64)
+ 
++    /* SSE/SSSE3/SSE4.1/SHA-NI (busybox's SHA1/SHA256 hwaccel asm); the 0x66
++       prefix is the high opcode byte, the map comes from OPC_0F38/OPC_0F3A */
++    DEF_ASM_OP2(xorps, 0x0f57, 0, OPC_MODRM, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(movhlps, 0x0f12, 0, OPC_MODRM, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(shufps, 0x0fc6, 0, OPC_MODRM, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(pshufb, 0x6600, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(palignr, 0x660f, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(pinsrd, 0x6622, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_REG32, OPT_SSE)
++    DEF_ASM_OP3(pextrd, 0x6616, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_SSE, OPT_EA | OPT_REG32)
++    DEF_ASM_OP3(sha1rnds4, 0xcc, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(sha1nexte, 0xc8, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(sha1msg1, 0xc9, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(sha1msg2, 0xca, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    /* 2-operand form; 'sha256rnds2 %xmm0, src, dst' is accepted too (asm_opcode) */
++    DEF_ASM_OP2(sha256rnds2, 0xcb, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(sha256msg1, 0xcc, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(sha256msg2, 0xcd, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++
+     /* Control-Flow Enforcement */
+     DEF_ASM_OP0L(endbr64, 0xf30f1e, 7, OPC_MODRM)
+ #undef ALT

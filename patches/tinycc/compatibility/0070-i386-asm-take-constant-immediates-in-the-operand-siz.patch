@@ -1,0 +1,203 @@
+From b196f445839c20ce47655630441402d848f4bf95 Mon Sep 17 00:00:00 2001
+From: tinycc-os-kernel <tinycc-os-kernel@localhost>
+Date: Thu, 22 Oct 2026 13:21:42 +0300
+Subject: [PATCH] i386-asm: take constant immediates in the operand size like
+ GNU as
+
+A constant wider than the operand size of a byte, word or long operation
+was classified as a 64-bit immediate and found no encoding: the kernel's
+head_64.S (CONFIG_SMP) has "andl $(~STARTUP_PARALLEL_MASK), %ecx" with
+STARTUP_PARALLEL_MASK = 0xFF000000, which GNU as assembles as
+andl $0x00ffffff.  Truncate the constant to the operand size given by
+the suffix, or by a register operand when there is no suffix, when the
+instruction table entry takes an immediate smaller than 64 bits, and
+treat it as signed in that size so that "andw $0xffff" takes the imm8
+form (66 83 e1 ff) as GNU as does.  A 64-bit operation sign-extends its
+imm32, so a constant outside that range ("andq $0xffffffff, %rax") is
+now rejected instead of being silently sign-extended; GNU as rejects it
+as well.  Only the arith and b/w/l/q instruction families are sized this
+way (ret $N, int $N, shift counts are not operand-sized).
+
+Verified by byte comparison with GNU as 2.47 on 70 immediate forms in
+64-bit mode and 14 in 32-bit mode (all equal, except the pre-existing
+"shll $1" long form and constructs GNU as rejects).
+---
+ i386-asm.c | 106 ++++++++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 88 insertions(+), 18 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 626edce..9c15ddc 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -359,6 +359,61 @@ static int asm_parse_reg(unsigned int *type)
+     return reg;
+ }
+ 
++/* the operand type of a constant immediate: which encodings it fits */
++static int imm_type(uint64_t v)
++{
++    int type = OP_IM32;
++    if (v == (uint8_t)v)
++        type |= OP_IM8;
++    if (v == (uint64_t)(int8_t)v)
++        type |= OP_IM8S;
++    if (v == (uint16_t)v)
++        type |= OP_IM16;
++    if (v != (uint64_t)(int32_t)v && v != (uint32_t)v)
++        type = OP_IM64;
++    else if (v != (uint64_t)(int32_t)v)
++        /* 2^31..2^32-1: an imm32 for 32-bit operations, but a
++           mov to a 64-bit register needs the imm64 form (the
++           imm32 one sign-extends), as GNU as does */
++        type |= OP_IM64;
++    return type;
++}
++
++/* A constant immediate of a byte, word or long operation is taken in the
++   operand size like GNU as does: a wider constant is truncated to that size
++   instead of being rejected ("andl $(~0xFF000000), %ecx" is andl $0x00ffffff,
++   the kernel's head_64.S has it) and the imm8 form applies when the constant
++   is a small negative number in that size ("andw $0xffff" is andw $-1).  The
++   size comes from the suffix (s, unless it is the automatic size) or else
++   from a register operand.  Returns the type of the constant in that size
++   (its value in *pv), or 0 when the operand is not a constant or the
++   operation is 64-bit. */
++static int imm_truncated(const Operand *ops, int nb_ops, int i, int s,
++                         int autosize, uint64_t *pv)
++{
++    uint64_t v = ops[i].e.v;
++    int j;
++
++    if (!(ops[i].type & (OP_IM32 | OP_IM64)) || ops[i].e.sym)
++        return 0;
++    if (s == autosize) {
++        s = -1;
++        for (j = nb_ops - 1; j >= 0 && s < 0; j--)
++            if (ops[j].type & OP_REG)
++                s = reg_to_size[ops[j].type & OP_REG];
++    }
++    if (s < 0 || s > 2)
++        return 0;
++    v &= s == 0 ? 0xff : s == 1 ? 0xffff : 0xffffffff;
++    *pv = v;
++    /* the constant is signed in the operand size: 0xffffffff is -1 for a
++       32-bit operation and takes the sign-extended imm8 form like GNU as */
++    j = imm_type(v);
++    if ((int8_t)v == (s == 0 ? (int8_t)v : s == 1 ? (int16_t)v : (int32_t)v))
++        j |= OP_IM8S;
++    return j;
++}
++
+ static void parse_operand(TCCState *s1, Operand *op)
+ {
+     ExprValue e;
+@@ -438,21 +493,8 @@ static void parse_operand(TCCState *s1, Operand *op)
+         /* 16- and 32-bit code computes in 32 bits ("andl $~X86_CR0_PG") */
+         if (!CODE64)
+             op->e.v = (int32_t)op->e.v;
+-        if (!op->e.sym) {
+-            if (op->e.v == (uint8_t)op->e.v)
+-                op->type |= OP_IM8;
+-            if (op->e.v == (int8_t)op->e.v)
+-                op->type |= OP_IM8S;
+-            if (op->e.v == (uint16_t)op->e.v)
+-                op->type |= OP_IM16;
+-            if (op->e.v != (int32_t)op->e.v && op->e.v != (uint32_t)op->e.v)
+-                op->type = OP_IM64;
+-            else if (op->e.v != (int32_t)op->e.v)
+-                /* 2^31..2^32-1: an imm32 for 32-bit operations, but a
+-                   mov to a 64-bit register needs the imm64 form (the
+-                   imm32 one sign-extends), as GNU as does */
+-                op->type |= OP_IM64;
+-        }
++        if (!op->e.sym)
++            op->type = imm_type(op->e.v);
+     } else {
+         /* address(reg,reg2,shift) with all variants */
+         op->type = OP_EA;
+@@ -879,6 +921,8 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+     int i, modrm_index, modreg_index, reg, v, op1, seg_prefix, pc, p;
+     int nb_ops, s;
+     Operand ops[MAX_OPERANDS], *pop;
++    int trunc_type[MAX_OPERANDS];   /* immediates truncated to the operand size */
++    uint64_t trunc_val[MAX_OPERANDS];
+     int op_type[3]; /* decoded op type */
+     int alltypes;   /* OR of all operand types */
+     int autosize;
+@@ -956,6 +1000,7 @@ again:
+        !) */
+     for(pa = asm_instrs; pa->sym != 0; pa++) {
+ 	int it = pa->instr_type & OPCT_MASK;
++        int sized = 0;  /* s is an operand size (from the suffix): arith, b/w/l/q families */
+         s = 0;
+         /* encodings that exist in some modes only */
+         if ((pa->instr_type & OPC_NO64) && CODE64)
+@@ -970,6 +1015,7 @@ again:
+             if (!(opcode >= pa->sym && opcode < pa->sym + 8*NBWLX))
+                 continue;
+             s = (opcode - pa->sym) % NBWLX;
++            sized = 1;
+ 	    if ((pa->instr_type & OPC_BWLX) == OPC_WLX)
+ 	      {
+ 		/* We need to reject the xxxb opcodes that we accepted above.
+@@ -1001,10 +1047,12 @@ again:
+             if (!(opcode >= pa->sym && opcode < pa->sym + NBWLX))
+                 continue;
+             s = opcode - pa->sym;
++            sized = 1;
+         } else if (pa->instr_type & OPC_WLX) {
+             if (!(opcode >= pa->sym && opcode < pa->sym + NBWLX-1))
+                 continue;
+             s = opcode - pa->sym + 1;
++            sized = 1;
+         } else {
+             if (pa->sym != opcode)
+                 continue;
+@@ -1022,9 +1070,10 @@ again:
+         /* now decode and check each operand */
+ 	alltypes = 0;
+         for(i = 0; i < nb_ops; i++) {
+-            int op1, op2;
++            int op1, op2, ty;
+             op1 = pa->op_type[i];
+             op2 = op1 & 0x1f;
++            trunc_type[i] = 0;
+             switch(op2) {
+             case OPT_IM:
+                 v = OP_IM8 | OP_IM16 | OP_IM32;
+@@ -1052,12 +1101,33 @@ again:
+             if (op1 & OPT_EA)
+                 v |= OP_EA;
+ 	    op_type[i] = v;
+-            if ((ops[i].type & v) == 0)
++            ty = ops[i].type;
++            /* a constant where the entry takes an immediate smaller than 64
++               bits: taken in the operand size like GNU as (imm_truncated) */
++            if (sized && (ty & (OP_IM32 | OP_IM64)) && !ops[i].e.sym
++                && (v & (OP_IM8 | OP_IM8S | OP_IM16 | OP_IM32)) && !(v & OP_IM64)) {
++                trunc_type[i] = imm_truncated(ops, nb_ops, i, s,
++                    (pa->instr_type & OPC_BWLQ) == OPC_B ? NBWLX-2 : NBWLX-1,
++                    &trunc_val[i]);
++                if (trunc_type[i])
++                    ty = trunc_type[i];
++                /* a 64-bit operation sign-extends its imm32: a constant
++                   outside that range has no encoding ("andq $0xffffffff"),
++                   GNU as rejects it too */
++                else if (s == 3 && (ty & OP_IM64))
++                    goto next;
++            }
++            if ((ty & v) == 0)
+                 goto next;
+-	    alltypes |= ops[i].type;
++	    alltypes |= ty;
+         }
+         (void)alltypes; /* maybe unused */
+         /* all is matching ! */
++        for(i = 0; i < nb_ops; i++)
++            if (trunc_type[i]) {
++                ops[i].type = trunc_type[i];
++                ops[i].e.v = trunc_val[i];
++            }
+         break;
+     next: ;
+     }

@@ -1,0 +1,31 @@
+From 352262cfe919140fdf2fa9258b3159cf6b1a8e40 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:18 +0300
+Subject: [PATCH] mm/slab: define freelist_full_t without __int128
+
+freelist_full_t is a u128, which only exists with __SIZEOF_INT128__.
+Without it use a 16-byte struct: when system_has_cmpxchg128 is not
+defined only the size of the type matters.
+
+Assisted-by: LLM
+---
+ mm/slab.h | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/mm/slab.h b/mm/slab.h
+index 8fd6835e4..75b692cc9 100644
+--- a/mm/slab.h
++++ b/mm/slab.h
+@@ -62,7 +62,12 @@ static __always_inline __alloc_size(1) void *_kmalloc_flags_noprof(size_t size,
+ # define system_has_freelist_aba()	system_has_cmpxchg128()
+ # define try_cmpxchg_freelist		try_cmpxchg128
+ # endif
++# ifdef __SIZEOF_INT128__
+ typedef u128 freelist_full_t;
++# else
++/* no 128-bit cmpxchg without __int128; only the size matters here */
++typedef struct { u64 lo, hi; } freelist_full_t;
++# endif
+ #else /* CONFIG_64BIT */
+ # ifdef system_has_cmpxchg64
+ # define system_has_freelist_aba()	system_has_cmpxchg64()

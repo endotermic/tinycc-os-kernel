@@ -1,0 +1,27 @@
+From bca007834e776ee3acb4da27303ca30b7e6d991c Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] lib/Makefile: compile bcheck_run.o from $< for out-of-tree
+ builds
+
+The rule for $(TOP)/bcheck_run.o named the source literally as
+"bcheck.c".  In a build directory separate from the source tree the file
+is only found through VPATH, so the recipe failed with
+"tcc: error: file 'bcheck.c' not found".  Use $< like the other rules.
+---
+ lib/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/lib/Makefile b/lib/Makefile
+index 3b166a8..e70803c 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -96,7 +96,7 @@ $(TOP)/%.o : %.c $(TCC)
+ 
+ $(TOP)/bcheck.o : XFLAGS += $(BFLAGS)
+ $(TOP)/bcheck_run.o : bcheck.c $(TCC)
+-	$S$(XCC) -c bcheck.c -o $@ $(XFLAGS)  $(BFLAGS) -DBCHECK_RUN
++	$S$(XCC) -c $< -o $@ $(XFLAGS)  $(BFLAGS) -DBCHECK_RUN
+ 
+ $(X)crt1w.o : crt1.c
+ $(X)wincrt1w.o : wincrt1.c

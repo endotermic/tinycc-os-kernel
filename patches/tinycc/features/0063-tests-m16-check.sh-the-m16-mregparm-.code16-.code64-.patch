@@ -1,0 +1,285 @@
+From c54b98596f3f6cfb60cbb38bbeaa9b9098f46847 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:49:50 +0300
+Subject: [PATCH] tests: m16-check.sh, the -m16/-mregparm/.code16-.code64
+ verification
+
+tests/m16-check.sh [codegen|asm|files|regparm|link|all] compares against
+GCC and GNU as on the Linux x86 boot code (needs the kernel build
+directory with the gcc-built objects, KBUILD/KSRC): the -m16 and -m32
+instruction streams of arch/x86/boot/*.c, the encodings of 170-odd
+snippets per mode, the kernel's mixed-mode .S files section by section,
+the regparm ABI at run time, and the setup.ld link with GNU ld.
+---
+ .gitignore                 |   1 +
+ tests/m16-asm-cmp.sh       |  19 ++++++
+ tests/m16-check.sh         | 117 +++++++++++++++++++++++++++++++++++++
+ tests/m16-file-cmp.sh      |  28 +++++++++
+ tests/m16/regparm_callee.c |  17 ++++++
+ tests/m16/regparm_main.c   |  39 +++++++++++++
+ 6 files changed, 221 insertions(+)
+ create mode 100755 tests/m16-asm-cmp.sh
+ create mode 100755 tests/m16-check.sh
+ create mode 100755 tests/m16-file-cmp.sh
+ create mode 100644 tests/m16/regparm_callee.c
+ create mode 100644 tests/m16/regparm_main.c
+
+diff --git a/.gitignore b/.gitignore
+index 6870b8d..bf73520 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -68,3 +68,4 @@ tests/vla_test
+ tests/hello
+ tests/tests2/fred.txt
+ libtcc.dylib
++/tests/m16-out/
+diff --git a/tests/m16-asm-cmp.sh b/tests/m16-asm-cmp.sh
+new file mode 100755
+index 0000000..5263d94
+--- /dev/null
++++ b/tests/m16-asm-cmp.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++# cmp.sh <as-flag:--32|--64> <tcc-binary> <mode-directive> instr...  : bytes and relocs of each
++# instruction assembled by GNU as and by tcc; prints only differences / errors
++asflag=$1; tcc=$2; mode=$3; shift 3
++if [ $# = 0 ]; then mapfile -t __l; set -- "${__l[@]}"; fi
++d=$(mktemp -d); ok=0; bad=0
++for ins in "$@"; do
++  printf '%s\n%s\n' "$mode" "$ins" > $d/t.s
++  cp $d/t.s $d/t.S
++  if ! as $asflag -o $d/g.o $d/t.s 2>$d/g.err; then printf '%-30s GAS-ERR %s\n' "$ins" "$(grep -o 'Error.*' $d/g.err | head -1)"; continue; fi
++  if ! $tcc -c -o $d/t.o $d/t.S 2>$d/t.err; then printf '%-30s TCC-ERR %s\n' "$ins" "$(head -1 $d/t.err)"; bad=$((bad+1)); continue; fi
++  gb=$(objcopy -O binary -j .text $d/g.o $d/g.bin && od -An -tx1 $d/g.bin | tr -d ' \n')
++  tb=$(objcopy -O binary -j .text $d/t.o $d/t.bin && od -An -tx1 $d/t.bin | tr -d ' \n')
++  gr=$(readelf -rW $d/g.o | awk '/R_/{print $3, $5}' | tr '\n' ';')
++  tr=$(readelf -rW $d/t.o | awk '/R_/{print $3, $5}' | tr '\n' ';')
++  if [ "$gb" = "$tb" ] && [ "$gr" = "$tr" ]; then ok=$((ok+1)); else bad=$((bad+1)); printf '%-30s gas: %s %s\n%-30s tcc: %s %s\n' "$ins" "$gb" "$gr" "" "$tb" "$tr"; fi
++done
++echo "== $mode: $ok identical, $bad different/errors"
++rm -rf $d
+diff --git a/tests/m16-check.sh b/tests/m16-check.sh
+new file mode 100755
+index 0000000..2a2b601
+--- /dev/null
++++ b/tests/m16-check.sh
+@@ -0,0 +1,117 @@
++#!/bin/bash
++# m16-check.sh - verification of tcc's -m16 / -mregparm / .code16-.code64 support
++# against GCC and GNU as, on the Linux x86 boot code.
++#
++#   tests/m16-check.sh [codegen|asm|files|regparm|link|all]
++#
++# Needs a kernel build directory with the gcc-built boot objects and their
++# .cmd files (KBUILD, default: the tinycc-os-kernel build), the kernel
++# sources (KSRC), binutils and gcc on the host.
++set -u
++cd "$(dirname "$0")/.." || exit 1
++TOP=$PWD
++KBUILD=${KBUILD:-$TOP/../../build/x86_64/linux}
++KSRC=${KSRC:-$TOP/../linux}
++export KBUILD KSRC   # m16-file-cmp.sh and m16-asm-cmp.sh use them too
++S=${S:-$TOP/tests/m16-out}; mkdir -p "$S"
++TCC32=$TOP/i386-tcc; TCC64=$TOP/tcc
++# macros the kernel headers need from the preprocessor (tcc does not
++# predefine them in .S mode yet: see tccpp)
++PREDEF32="-D__CHAR_BIT__=8 -D__SIZEOF_LONG__=4"
++PREDEF64="-D__CHAR_BIT__=8 -D__SIZEOF_LONG__=8"
++KCC="-D__GNUC__=15 -D__GNUC_MINOR__=3 -D__GNUC_PATCHLEVEL__=0 -U__OPTIMIZE__"
++fail=0
++note() { printf '%s\n' "$*"; }
++
++# the build's own command line of an object, with the compiler replaced
++kcmd() { # kcmd <obj> <compiler words>
++    local c; c=$(grep -m1 '^savedcmd_' "$KBUILD/$(dirname "$1")/.$(basename "$1").cmd" \
++        | sed 's/^savedcmd_[^=]*:= //; s#; .*##; s# -Wp,-MMD,[^ ]*##')
++    echo "$c" | sed "s#^[^ ]*tcc-kcc#$2#"
++}
++
++# 1. code generation: the -m16 object is the -m32 object plus prefixes
++check_codegen() {
++    local n=0 bad=0 o f
++    note "== codegen: boot/*.c with -m32 and -m16, instruction streams must match"
++    for o in $(cd "$KBUILD" && ls arch/x86/boot/*.o | grep -v 'bioscall\|copy\|header\|pmjump'); do
++        f=$S/$(basename $o .o)
++        cmd=$(kcmd $o "$TCC32 -B$TOP -I$TOP/include $KCC $PREDEF32")
++        (cd "$KBUILD" && eval "$(echo "$cmd" | sed "s# -o [^ ]*# -o $f.16.o#")") 2>$f.16.err || { note "   $o: -m16 compile failed: $(head -1 $f.16.err)"; bad=$((bad+1)); continue; }
++        (cd "$KBUILD" && eval "$(echo "$cmd" | sed "s# -o [^ ]*# -o $f.32.o#; s# -m16 # -m32 #")") 2>$f.32.err || { note "   $o: -m32 compile failed: $(head -1 $f.32.err)"; bad=$((bad+1)); continue; }
++        # mnemonic + operands, without addresses, raw bytes and jump targets
++        # (objdump's 16-bit disassembly names the 32-bit branches calll/jmpl/jel..
++        # and shows an explicit addr32 prefix on 32-bit absolute addresses)
++        norm() { objdump -d $1 "$2" | awk '/^[0-9a-f]+ </{sub(/^[0-9a-f]+ /,""); print; next} /^ *[0-9a-f]+:/{sub(/^ *[0-9a-f]+:\t/,""); sub(/^([0-9a-f][0-9a-f] )+ *\t?/,""); if ($0 == "") next; sub(/ +[0-9a-f]+ <.*>$/," T"); sub(/#.*$/,""); sub(/^addr32 /,""); if (match($0,/^(calll|jmpl|j[a-z]+l|leavel|retl|lretl|iretl|pushfl|popfl|enterl) /) || $0 ~ /^(leavel|retl|lretl|iretl|pushfl|popfl)$/) { sub(/l( |$)/," ") } gsub(/\(%si\)/,"(%esi)"); gsub(/\(%di\)/,"(%edi)"); gsub(/ +/," "); sub(/ $/,""); if ($0 ~ /%[cdefgs]s($|,)/) { gsub(/%eax/,"%ax"); gsub(/%ebx/,"%bx"); gsub(/%ecx/,"%cx"); gsub(/%edx/,"%dx"); sub(/^pushw /,"push "); sub(/^popw /,"pop "); sub(/^lcallw /,"lcall ") } sub(/^lcallw /,"lcall "); print}'; }
++        norm "-M i8086" $f.16.o > $f.16.txt; norm "-M i386" $f.32.o > $f.32.txt
++        if cmp -s $f.16.txt $f.32.txt; then n=$((n+1)); else bad=$((bad+1)); note "   $o: differs:"; diff $f.32.txt $f.16.txt | head -6; fi
++    done
++    note "   $n objects identical, $bad different"; [ $bad = 0 ] || fail=1
++}
++
++# 2. assembler: snippets byte-compared with GNU as in every mode
++check_asm() {
++    note "== assembler: encodings vs GNU as (.code16gcc, .code16, .code32 in i386-tcc; .code32, .code64 in tcc)"
++    local r
++    r=$(bash tests/m16-asm-cmp.sh --32 $TCC32 .code16gcc < tests/m16-asm-16.txt); echo "$r" | tail -1; echo "$r" | grep -q ' 0 different' || { echo "$r" | head -20; fail=1; }
++    r=$(bash tests/m16-asm-cmp.sh --32 $TCC32 .code16 < tests/m16-asm-16.txt); echo "$r" | tail -1; echo "$r" | grep -q ' 0 different' || { echo "$r" | head -20; fail=1; }
++    r=$(bash tests/m16-asm-cmp.sh --32 $TCC32 "" < tests/m16-asm-32.txt); echo "$r" | tail -1; echo "$r" | grep -q ' 0 different' || { echo "$r" | head -20; fail=1; }
++    r=$(bash tests/m16-asm-cmp.sh --64 $TCC64 .code32 < tests/m16-asm-32.txt); echo "$r" | tail -1; echo "$r" | grep -q ' 0 different' || { echo "$r" | head -20; fail=1; }
++    r=$(bash tests/m16-asm-cmp.sh --32 $TCC32 .code64 < tests/m16-asm-64.txt); echo "$r" | tail -1; echo "$r" | grep -q ' 0 different' || { echo "$r" | head -20; fail=1; }
++}
++
++# 3. the kernel's mixed-mode .S files against the gcc/GNU as objects
++check_files() {
++    note "== kernel .S files vs the GNU-built objects (sections and relocations)"
++    local o
++    for o in arch/x86/boot/pmjump.o arch/x86/boot/bioscall.o arch/x86/boot/copy.o arch/x86/boot/header.o \
++             arch/x86/realmode/rm/header.o arch/x86/realmode/rm/stack.o arch/x86/realmode/rm/reboot.o \
++             arch/x86/realmode/rm/trampoline_64.o; do
++        bash tests/m16-file-cmp.sh $TCC32 $o "$PREDEF32" || fail=1
++    done
++    for o in arch/x86/boot/compressed/head_64.o arch/x86/boot/startup/la57toggle.o; do
++        bash tests/m16-file-cmp.sh $TCC64 $o "$PREDEF64" || fail=1
++    done
++}
++
++# 4. -mregparm=3: GCC-compiled and tcc-compiled code call each other
++#    (32-bit static binaries without libc, run on the host)
++check_regparm() {
++    note "== -mregparm=3: gcc <-> tcc calls (tests/m16/regparm_*.c), exit 0 = all checks passed"
++    local d=tests/m16 G T c
++    G="gcc -m32 -mregparm=3 -O2 -ffreestanding -fno-pic -fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables -fno-builtin -c"
++    T="$TCC32 -B$TOP -I$TOP/include -mregparm=3 -c"
++    $G $d/regparm_callee.c -o $S/g_callee.o && $G $d/regparm_main.c -o $S/g_main.o \
++    && $T $d/regparm_callee.c -o $S/t_callee.o && $T $d/regparm_main.c -o $S/t_main.o || { fail=1; return; }
++    for c in "g_main t_callee" "t_main g_callee" "t_main t_callee"; do
++        set -- $c
++        if ld -m elf_i386 -static -nostdlib -e _start -o $S/rp_$1_$2 $S/$1.o $S/$2.o 2>/dev/null && $S/rp_$1_$2; then
++            note "   $1 + $2: ok"
++        else
++            note "   $1 + $2: check $? failed"; fail=1
++        fi
++    done
++}
++
++# 5. link: boot C objects compiled by tcc -m16 link with GNU ld against setup.ld; no libgcc needs
++check_link() {
++    note "== link check: tcc -m16 boot objects + GNU as .S objects with setup.ld"
++    local objs="" o f
++    for o in $(cd "$KBUILD" && ls arch/x86/boot/*.o); do
++        f=$S/$(basename $o .o).16.o
++        case $o in *bioscall*|*copy*|*header*|*pmjump*) f=$KBUILD/$o;; esac
++        [ -f "$f" ] || { cmd=$(kcmd $o "$TCC32 -B$TOP -I$TOP/include $KCC $PREDEF32"); (cd "$KBUILD" && eval "$(echo "$cmd" | sed "s# -o [^ ]*# -o $f#")") || { fail=1; return; }; }
++        objs="$objs $f"
++    done
++    nm -u $S/*.16.o | awk '{print $2}' | sort -u > $S/undef.txt
++    nm --defined-only $objs | awk '{print $3}' | sort -u > $S/def.txt
++    note "   undefined symbols not defined by any boot object: $(comm -23 $S/undef.txt $S/def.txt | tr '\n' ' ')"
++    if ld -m elf_i386 -z noexecstack -T $KSRC/arch/x86/boot/setup.ld -o $S/setup.elf $objs 2>$S/ld.err; then note "   GNU ld: setup.elf linked ($(stat -c%s $S/setup.elf) bytes)"; else note "   GNU ld failed:"; head -5 $S/ld.err; fail=1; fi
++}
++
++case ${1:-all} in
++    codegen) check_codegen;; asm) check_asm;; files) check_files;; regparm) check_regparm;; link) check_link;;
++    all) check_codegen; check_asm; check_files; check_regparm; check_link;;
++esac
++[ $fail = 0 ] && note "== m16-check: all checks passed" || note "== m16-check: FAILURES (see above)"
++exit $fail
+diff --git a/tests/m16-file-cmp.sh b/tests/m16-file-cmp.sh
+new file mode 100755
+index 0000000..7c8ef15
+--- /dev/null
++++ b/tests/m16-file-cmp.sh
+@@ -0,0 +1,28 @@
++#!/bin/bash
++# cmpfile.sh <tcc> <object path relative to the kernel build dir>: assemble the
++# kernel .S with tcc using the build's own command line and compare every
++# section's bytes and relocations with the gcc/GNU as object
++tcc=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); obj=$2; PREDEF=${3:-}
++# the kernel build directory (its .cmd files and GNU-built objects): $KBUILD as in
++# m16-check.sh, default the tinycc-os-kernel build next to this checkout
++B=${KBUILD:-$(cd "$(dirname "$0")/.." && pwd)/../../build/x86_64/linux}
++TD=$(cd "$(dirname "$tcc")" && pwd); SZL=4; case "$tcc" in *i386*) ;; *) SZL=8;; esac; DIS="-M i8086"; [ $SZL = 8 ] && DIS=""
++cd $B || exit 1
++cmd=$(grep -m1 '^savedcmd_' "$(dirname $obj)/.$(basename $obj).cmd" | sed 's/^savedcmd_[^=]*:= //; s#; .*##; s# -Wp,-MMD,[^ ]*##')
++out=/tmp/m16cmp-$(basename $obj)
++cmd=$(echo "$cmd" | sed "s#^[^ ]*tcc-kcc#$tcc -B$TD -I$TD/include -D__GNUC__=15 -D__GNUC_MINOR__=3 -D__GNUC_PATCHLEVEL__=0 $PREDEF#; s# -o [^ ]*# -o $out#")
++if ! eval "$cmd" 2>$out.err; then echo "## $obj: TCC ERROR"; head -5 $out.err; exit 1; fi
++rc=0
++for sec in $(readelf -SW $obj | awk '/PROGBITS|NOBITS/ && !/\.comment|\.note\.GNU-stack|\.debug/ {gsub(/\[ *[0-9]+\]/,""); print $1}' | sort -u); do
++  gs=$(readelf -SW $obj | awk -v s="$sec" '{gsub(/\[ *[0-9]+\]/,"")} $1==s {print $5}')
++  ts=$(readelf -SW $out | awk -v s="$sec" '{gsub(/\[ *[0-9]+\]/,"")} $1==s {print $5}')
++  if [ -z "$ts" ]; then [ "$gs" = "000000" ] && continue; echo "## $obj $sec: missing in tcc object (gcc size $gs)"; rc=1; continue; fi
++  if [ "$gs" != "$ts" ]; then echo "## $obj $sec: size gcc $gs tcc $ts"; rc=1; fi
++  objcopy -O binary -j $sec $obj $out.g.bin 2>/dev/null; objcopy -O binary -j $sec $out $out.t.bin 2>/dev/null
++  if ! cmp -s $out.g.bin $out.t.bin; then echo "## $obj $sec: bytes differ"; rc=1; diff <(objdump -d $DIS -j $sec $obj | tail -n +7 | sed "s/^ *[0-9a-f]*://") <(objdump -d $DIS -j $sec $out | tail -n +7 | sed "s/^ *[0-9a-f]*://") | grep "^[<>]" | head -${DIFFN:-6}; fi
++  gr=$(readelf -rW $obj | awk -v s=".rel$sec" -v s2=".rela$sec" 'index($0,"section "s" ")||index($0,"section "s2" "){f=1;next} /^Relocation section/{f=0} f&&/R_/{print $1,$3,$5,$6,$7}' | sort)
++  tr=$(readelf -rW $out | awk -v s=".rel$sec" -v s2=".rela$sec" 'index($0,"section "s" ")||index($0,"section "s2" "){f=1;next} /^Relocation section/{f=0} f&&/R_/{print $1,$3,$5,$6,$7}' | sort)
++  if [ "$gr" != "$tr" ]; then echo "## $obj $sec: relocations differ"; rc=1; diff <(echo "$gr") <(echo "$tr") | head -8; fi
++done
++[ $rc = 0 ] && echo "== $obj: identical sections and relocations"
++exit $rc
+diff --git a/tests/m16/regparm_callee.c b/tests/m16/regparm_callee.c
+new file mode 100644
+index 0000000..46515ee
+--- /dev/null
++++ b/tests/m16/regparm_callee.c
+@@ -0,0 +1,17 @@
++/* callees of the -mregparm=3 ABI test: each result encodes its arguments */
++struct S { int a, b, c; };
++struct B { int a, b, c, d; };
++struct R { int x, y; };
++int f3(int a, int b, int c, int d) { return a + 10 * b + 100 * c + 1000 * d; }
++int fll(long long x, int y) { return (int)(x & 0xffff) + (int)(x >> 32) * 3 + 100 * y; }
++int fs(struct S s, int y, int z) { return s.a + 10 * s.b + 100 * s.c + 1000 * y + 10000 * z; }
++int fsp(int a, struct S s, int y, int z) { return a + 10 * s.a + 100 * s.b + 1000 * s.c + 10000 * y + 100000 * z; }
++int fb(int a, struct B b, int y) { return a + 10 * b.a + 100 * b.b + 1000 * b.c + 10000 * b.d + 100000 * y; }
++int fv(int n, ...) { __builtin_va_list ap; int i, r = 0; __builtin_va_start(ap, n); for (i = 0; i < n; i++) r = r * 10 + __builtin_va_arg(ap, int); __builtin_va_end(ap); return r; }
++int fp(int (*p)(int, int), int a) { return p(a, 2 * a); }
++int f2(int a, int b) { return a * 100 + b; }
++int fll2(int a, long long b, int c) { return a + (int)b * 10 + (int)(b >> 32) * 100 + c * 1000; }
++int fll3(int a, int b, int c, long long d) { return a + 10 * b + 100 * c + 1000 * (int)d + 10000 * (int)(d >> 32); }
++struct R fr(int a, int b) { struct R r; r.x = a + b; r.y = a * b; return r; }
++unsigned char fc(unsigned char a, short b, int c) { return a + b + c; }
++int fpp(int (*p)(int, int, int, int)) { return p(1, 2, 3, 4); }
+diff --git a/tests/m16/regparm_main.c b/tests/m16/regparm_main.c
+new file mode 100644
+index 0000000..1958339
+--- /dev/null
++++ b/tests/m16/regparm_main.c
+@@ -0,0 +1,39 @@
++/* the caller side: checks every result; exit code = number of the first
++   failing check (0: all passed) */
++struct S { int a, b, c; };
++struct B { int a, b, c, d; };
++struct R { int x, y; };
++int f3(int a, int b, int c, int d);
++int fll(long long x, int y);
++int fs(struct S s, int y, int z);
++int fsp(int a, struct S s, int y, int z);
++int fb(int a, struct B b, int y);
++int fv(int n, ...);
++int fp(int (*p)(int, int), int a);
++int f2(int a, int b);
++int fll2(int a, long long b, int c);
++int fll3(int a, int b, int c, long long d);
++struct R fr(int a, int b);
++unsigned char fc(unsigned char a, short b, int c);
++int fpp(int (*p)(int, int, int, int));
++/* tcc zeroes the local structures with memset */
++void *memset(void *d, int c, unsigned n) { unsigned char *p = d; while (n--) *p++ = c; return d; }
++static void sys_exit(int code) { __asm__ volatile("int $0x80" : : "a"(1), "b"(code)); for (;;) ; }
++static int run(void)
++{
++    struct S s = {1, 2, 3}; struct B b = {4, 5, 6, 7}; struct R r;
++    if (f3(1, 2, 3, 4) != 4321) return 1;
++    if (fll(0x0000000300000005LL, 7) != 5 + 9 + 700) return 2;
++    if (fs(s, 7, 8) != 1 + 20 + 300 + 7000 + 80000) return 3;
++    if (fsp(9, s, 10, 11) != 9 + 10 + 200 + 3000 + 100000 + 1100000) return 4;
++    if (fb(12, b, 13) != 12 + 40 + 500 + 6000 + 70000 + 1300000) return 5;
++    if (fv(3, 1, 2, 3) != 123) return 6;
++    if (fp(f2, 5) != 510) return 7;
++    if (fll2(1, 0x0000000400000002LL, 3) != 1 + 20 + 400 + 3000) return 8;
++    if (fll3(1, 2, 3, 0x0000000500000004LL) != 1 + 20 + 300 + 4000 + 50000) return 9;
++    r = fr(3, 4); if (r.x != 7 || r.y != 12) return 10;
++    if (fc(250, -200, 60) != (unsigned char)(250 - 200 + 60)) return 11;
++    if (fpp(f3) != 4321) return 12;
++    return 0;
++}
++void _start(void) { sys_exit(run()); }

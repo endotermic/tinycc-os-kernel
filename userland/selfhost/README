@@ -1,0 +1,37 @@
+tinycc-os-kernel: the self-hosting image
+=========================================
+
+This system was compiled, assembled and linked by the Tiny C Compiler (tcc) and the
+project's own linker (tld): the kernel, busybox, musl, tcc itself.  This image also
+carries what is needed to do that again, in here, without gcc, binutils, flex or bison:
+
+  /usr/src/linux-*.tar.gz    the kernel source pruned to what this configuration builds
+                             (every file the host build read, all Makefiles and Kconfig
+                             files, Kbuild's scripts, the headers, arch/x86), with the
+                             project's kernel patches applied
+  /usr/src/tinycc.tar.gz     tcc with the project's patches
+  /usr/src/tld.tar.gz        the linker suite (ld, nm, objcopy, readelf, ar, strip)
+  /usr/src/make-*.tar.gz     GNU make
+  /usr/bin/tcc, i386-tcc     the compiler (static, musl) and the i386 cross compiler that
+                             tcc -m16 runs for the kernel's real-mode code
+  /usr/bin/tld (ld nm objcopy readelf ar strip), /usr/bin/make
+  /usr/bin/tcc-kcc, tcc-hostcc, objtool-stub    the Kbuild CC / HOSTCC / OBJTOOL wrappers
+  /usr/bin/flex, bison       copy the pre-generated Kconfig lexer and parser from
+                             /usr/share/tinycc-os-kernel/kconfig
+  /usr/share/tinycc-os-kernel/{minimal,tcc}.config    the Kconfig fragments
+  /usr/share/tinycc-os-kernel/patches                 the tcc and kernel patch series
+
+Commands:
+
+  build-kernel          unpack the kernel tree to /build (a tmpfs), configure it like the
+                        host did (tinyconfig + the fragments) and run the same make line;
+                        the result is /build/linux/arch/x86/boot/bzImage.  Its uname -v
+                        counts the generation: #1 was built on the host, #2 in here, ...
+  build-toolchain       rebuild tcc + i386-tcc and tld from the sources into /usr/local;
+                        build-kernel then uses them (--make also rebuilds GNU make)
+  send-file FILE...     copy files to the host over the second serial port (ttyS1); with
+                        ./run.sh --selfhost the host gets them in out/x86_64/selfhost/
+                        (scripts/recv-file.sh cuts them out of the capture)
+
+The host boots the result with KERNEL=out/x86_64/selfhost/bzImage ./run.sh and the banner
+shows generation #2.  Everything happens in RAM: ./run.sh --selfhost gives the machine 1 GB.

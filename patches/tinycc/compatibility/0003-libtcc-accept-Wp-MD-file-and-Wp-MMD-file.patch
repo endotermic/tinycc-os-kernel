@@ -1,0 +1,40 @@
+From c3edf5f58e181e33f9a7687eeb18d1a3127f335f Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] libtcc: accept -Wp,-MD,<file> and -Wp,-MMD,<file>
+
+GCC takes the dependency file name as part of the -MD/-MMD option when
+it comes through -Wp, and Kbuild passes exactly that form.  tcc split
+the -Wp argument on commas, which made <file> an input file ("cannot
+specify output file with -c many files").  Rewrite "-MD,<file>" to
+"-MD,-MF,<file>" before splitting; -MF is already understood.
+---
+ libtcc.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index 44ea25f..f6764b2 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -2082,8 +2082,20 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+                 return -1;
+             break;
+         case TCC_OPTION_Wp:
+-            if (argv[0]) /* not with tcc_set_options() */
++            if (argv[0]) { /* not with tcc_set_options() */
++                /* "-Wp,-MD,<file>" and "-Wp,-MMD,<file>" (as used by the Linux
++                   kernel): <file> is the argument of -MD/-MMD, pass it as -MF */
++                char *p = NULL;
++                if (0 == strncmp(optarg, "-MD,", 4) || 0 == strncmp(optarg, "-MMD,", 5)) {
++                    const char *f = strchr(optarg, ',');
++                    size_t n = strlen(optarg) + 5;
++                    p = tcc_malloc(n);
++                    snprintf(p, n, "%.*s,-MF%s", (int)(f - optarg), optarg, f);
++                    optarg = p;
++                }
+                 insert_args(s, &argv, &argc, --optind, optarg, ',');
++                tcc_free(p);
++            }
+             break;
+         case TCC_OPTION_E:
+             x = TCC_OUTPUT_PREPROCESS;

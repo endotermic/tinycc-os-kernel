@@ -1,0 +1,67 @@
+From b292840af6b751cd6b47052e102472d17132d1a9 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:25:19 +0300
+Subject: [PATCH] x86/fpu: spell out where 32-bit signal frames are possible
+
+copy_fpstate_to_sigframe() and __fpu_restore_sig() test ia32_fxstate,
+a local that is constant false on a 64-bit kernel without IA32
+emulation.  GCC propagates the constant through the variable and drops
+the 32-bit frame code paths, but a compiler without that optimization
+keeps them and then references convert_to_fxsr() and friends.
+
+Add ia32_fxstate_possible() (X86_32 || IA32_EMULATION) and test it
+where ia32_fxstate is tested.  No functional change.
+
+Assisted-by: LLM
+---
+ arch/x86/kernel/fpu/signal.c | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/arch/x86/kernel/fpu/signal.c b/arch/x86/kernel/fpu/signal.c
+index 33e1284bf..9fc890583 100644
+--- a/arch/x86/kernel/fpu/signal.c
++++ b/arch/x86/kernel/fpu/signal.c
+@@ -66,6 +66,14 @@ static inline bool check_xstate_in_sigframe(struct fxregs_state __user *fxbuf,
+ /*
+  * Signal frame handlers.
+  */
++/*
++ * 32-bit frames only exist on 32-bit kernels or with IA32 emulation. Spelled
++ * out where ia32_fxstate is tested, so that a compiler which does not
++ * propagate the constant through the variable still drops that code.
++ */
++#define ia32_fxstate_possible() \
++	(IS_ENABLED(CONFIG_X86_32) || IS_ENABLED(CONFIG_IA32_EMULATION))
++
+ static inline bool save_fsave_header(struct task_struct *tsk, void __user *buf)
+ {
+ 	if (use_fxsr()) {
+@@ -184,8 +192,7 @@ bool copy_fpstate_to_sigframe(void __user *buf, void __user *buf_fx, int size, u
+ 	bool ia32_fxstate = (buf != buf_fx);
+ 	int ret;
+ 
+-	ia32_fxstate &= (IS_ENABLED(CONFIG_X86_32) ||
+-			 IS_ENABLED(CONFIG_IA32_EMULATION));
++	ia32_fxstate &= ia32_fxstate_possible();
+ 
+ 	if (!cpu_feature_enabled(X86_FEATURE_FPU)) {
+ 		struct user_i387_ia32_struct fp;
+@@ -231,7 +238,8 @@ bool copy_fpstate_to_sigframe(void __user *buf, void __user *buf_fx, int size, u
+ 	}
+ 
+ 	/* Save the fsave header for the 32-bit frames. */
+-	if ((ia32_fxstate || !use_fxsr()) && !save_fsave_header(tsk, buf))
++	if (((ia32_fxstate_possible() && ia32_fxstate) || !use_fxsr()) &&
++	    !save_fsave_header(tsk, buf))
+ 		return false;
+ 
+ 	if (use_fxsr() && !save_xstate_epilog(buf_fx, ia32_fxstate, fpstate))
+@@ -346,7 +354,7 @@ static bool __fpu_restore_sig(void __user *buf, void __user *buf_fx,
+ 		user_xfeatures = XFEATURE_MASK_FPSSE;
+ 	}
+ 
+-	if (likely(!ia32_fxstate)) {
++	if (!ia32_fxstate_possible() || likely(!ia32_fxstate)) {
+ 		/* Restore the FPU registers directly from user memory. */
+ 		return restore_fpregs_from_user(buf_fx, user_xfeatures, fx_only);
+ 	}

@@ -1,0 +1,40 @@
+From b48409603b1b1b7e533a40c6fc46c40419ad08ed Mon Sep 17 00:00:00 2001
+From: tinycc-os-kernel <tinycc-os-kernel@localhost>
+Date: Thu, 22 Oct 2026 13:59:57 +0300
+Subject: [PATCH] tccasm: GNU as binary constants (0b1010) independent of the
+ libc
+
+The assembler left "0b..." numbers to strtoull(), which with glibc 2.38+
+accepts the C23 binary prefix (so "pshufd $0b11111010" in the kernel's
+sha256-ssse3-asm.S assembled by luck) and with musl does not: there the
+constant parsed as 0 followed by 'b', a backward reference to local
+label 0, and tcc built against musl (the self-hosting image's compiler)
+failed with "local label '0' not found backward".  Parse 0b/0B followed
+by a binary digit as a base-2 constant explicitly; "0b" alone remains
+the local label reference.  Byte-compared with GNU as on binary
+constants and local label references; the musl tcc now produces the
+same object as the glibc one for the SHA-256 file.
+---
+ tccasm.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index c371855..0b38ea4 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -400,7 +400,14 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+     switch(tok) {
+     case TOK_PPNUM:
+         p = tokc.str.data;
+-        n = strtoull(p, (char **)&p, 0);
++        /* GNU as binary constants ("pshufd $0b11111010" in the kernel's
++           SHA-256 code); not left to strtoull, which accepts them with
++           glibc 2.38+ (C23) and not with musl.  "0b" alone is the
++           backward reference to local label 0, handled below. */
++        if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B') && (p[2] == '0' || p[2] == '1'))
++            n = strtoull(p + 2, (char **)&p, 2);
++        else
++            n = strtoull(p, (char **)&p, 0);
+         /* C integer suffixes, as GNU as accepts them ("$0x0700a169U" in
+            the kernel's generated feature masks) */
+         while (*p == 'U' || *p == 'u' || *p == 'L' || *p == 'l')

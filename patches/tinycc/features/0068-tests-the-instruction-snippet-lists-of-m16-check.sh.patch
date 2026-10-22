@@ -1,0 +1,487 @@
+From 9c48d10974fd9f37e2dd18c249944072f06e5988 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:27:06 +0300
+Subject: [PATCH] tests: the instruction snippet lists of m16-check.sh
+
+The .code16gcc/.code16/.code32/.code64 encoding comparison with GNU as
+reads its instructions from these files; they were left out of the
+commit that added the script (tests/*.txt is ignored by default).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ tests/m16-asm-16.txt | 168 +++++++++++++++++++++++++++++++++++++++++
+ tests/m16-asm-32.txt | 174 +++++++++++++++++++++++++++++++++++++++++++
+ tests/m16-asm-64.txt | 108 +++++++++++++++++++++++++++
+ 3 files changed, 450 insertions(+)
+ create mode 100644 tests/m16-asm-16.txt
+ create mode 100644 tests/m16-asm-32.txt
+ create mode 100644 tests/m16-asm-64.txt
+
+diff --git a/tests/m16-asm-16.txt b/tests/m16-asm-16.txt
+new file mode 100644
+index 0000000..8edbcb4
+--- /dev/null
++++ b/tests/m16-asm-16.txt
+@@ -0,0 +1,168 @@
++movl foo, %eax
++movl 4(%esp), %eax
++movl %eax, (%ebx)
++movw foo, %ax
++movb foo, %al
++movl $5, foo
++call bar
++jmp bar
++ret
++retw
++retl
++ret $4
++push %eax
++push %ax
++pop %eax
++push $5
++push $300
++pushw $5
++pushl $5
++push %ds
++pushw %ds
++pop %ds
++push %fs
++pushf
++pushfl
++pushfw
++popf
++leave
++enter $4, $0
++lgdtl foo
++lgdt foo
++lgdtw foo
++lidtl foo
++int $0x10
++cwtl
++cltd
++cbtw
++cwtd
++movzbl %al, %eax
++movzwl %ax, %eax
++movsbl %al, %eax
++movsbw %al, %ax
++movzbw %al, %ax
++movl %cr0, %eax
++movl %eax, %cr0
++mov %cr0, %eax
++movw %ds, %ax
++movl %ds, %eax
++movw %ax, %ds
++movl %eax, %ds
++ljmpl $0x10, $foo
++ljmpw $0x10, $foo
++ljmp $0x10, $foo
++ljmpl *foo
++ljmpw *foo
++lret
++lretl
++lretw
++iret
++iretl
++iretw
++outb %al, %dx
++inl %dx, %eax
++inw %dx, %ax
++rep; movsl
++rep movsb
++rep stosl
++rep stosw
++xchgw %bx,%bx
++addr32 movl foo, %eax
++jnz bar
++calll bar
++callw bar
++bswap %eax
++lss foo, %esp
++cmpxchgl %eax, (%ebx)
++pushal
++popal
++pusha
++pushaw
++incl %eax
++incw %ax
++decl (%ebx)
++btl $3, %eax
++btsl %eax, foo
++lcallw *foo
++lcalll *foo
++lcall $0x10, $foo
++fninit
++divl %ecx
++pushfl; popl %eax
++testl %eax,%eax
++xorl %eax,%eax
++shrw $4, %ax
++andw $0xf, %ax
++movw $0x1234, %ax
++movl $0x12345678, %eax
++movl $foo, %eax
++movw $foo, %ax
++leal 4(%esp), %eax
++nop
++hlt
++cli
++sti
++cld
++std
++rdmsr
++wrmsr
++cpuid
++wbinvd
++pause
++lock; btsl %eax, (%ebx)
++lock btsl %eax, (%ebx)
++movl foo(,%eax,4), %edx
++movl (%eax,%ebx), %edx
++movw %ax, foo
++movb %al, foo
++cmpw $0xa33f, (%eax)
++cmpl $0, foo
++movw %fs:foo, %ax
++movl %fs:(%eax), %ebx
++gs repe cmpsb
++jmp *%eax
++call *%eax
++jmp *foo
++call *foo
++lldt %ax
++ltr %ax
++lmsw %ax
++movw %ax, %gs:(%ebx)
++int $3
++int3
++shll $4, %eax
++imull $10, %eax, %eax
++movzwl %ax, %edx
++seta %al
++cmovel %eax, %edx
++xaddl %eax, (%ebx)
++jecxz bar
++jcxz bar
++loop bar
++xorl %ebx, %ebx
++orb $1, foo
++andb $0xfe, foo
++testb $1, foo
++cmpb $0, foo
++movzbl foo, %eax
++movzwl foo, %eax
++shll $4, foo
++addl $4, %esp
++subl $4, %esp
++movl %esp, %ebp
++movl %ebp, %esp
++wrmsr
++rdtsc
++movl %eax, %cr3
++movl %cr4, %eax
++movl %eax, %cr4
++btsl $31, %eax
++lgdtl (%eax)
++lidtl (%eax)
++movw %ax, %fs
++movw %ax, %gs
++movw %fs, %ax
++.word foo
++.byte 5
++.long foo
++.word 0x1234
+diff --git a/tests/m16-asm-32.txt b/tests/m16-asm-32.txt
+new file mode 100644
+index 0000000..384699c
+--- /dev/null
++++ b/tests/m16-asm-32.txt
+@@ -0,0 +1,174 @@
++movl foo, %eax
++movl 4(%esp), %eax
++movl %eax, (%ebx)
++movw foo, %ax
++movb foo, %al
++movl $5, foo
++call bar
++jmp bar
++ret
++retw
++retl
++ret $4
++push %eax
++push %ax
++pop %eax
++push $5
++push $300
++pushw $5
++pushl $5
++push %ds
++pushw %ds
++pop %ds
++push %fs
++pushf
++pushfl
++pushfw
++popf
++leave
++enter $4, $0
++lgdtl foo
++lgdt foo
++lgdtw foo
++lidtl foo
++lidt foo
++int $0x10
++cwtl
++cltd
++cbtw
++cwtd
++movzbl %al, %eax
++movzwl %ax, %eax
++movsbl %al, %eax
++movsbw %al, %ax
++movl %cr0, %eax
++movl %eax, %cr0
++mov %cr0, %eax
++movl %eax, %cr3
++movl %cr4, %eax
++movw %ds, %ax
++movl %ds, %eax
++movw %ax, %ds
++movl %eax, %ds
++ljmpl $0x10, $foo
++ljmpw $0x10, $foo
++ljmp $0x10, $foo
++ljmpl *foo
++ljmpw *foo
++ljmp *foo
++lret
++lretl
++lretw
++iret
++iretl
++iretw
++outb %al, %dx
++inl %dx, %eax
++inw %dx, %ax
++rep; movsl
++rep movsb
++rep stosl
++rep stosw
++incl %eax
++incw %ax
++decl %eax
++decl (%ebx)
++incl (%ebx)
++btl $3, %eax
++btsl %eax, foo
++lcallw *foo
++lcalll *foo
++lcall $0x10, $foo
++divl %ecx
++pushfl; popl %eax
++xorl %eax,%eax
++shrw $4, %ax
++andw $0xf, %ax
++andl $0xf, %eax
++andl $0x100, %eax
++andb $1, %al
++movl $foo, %eax
++movw $foo, %ax
++leal 4(%esp), %eax
++rdmsr
++wrmsr
++cpuid
++lock; btsl %eax, (%ebx)
++movl foo(,%eax,4), %edx
++movw %fs:foo, %ax
++jmp *%eax
++call *%eax
++jmp *foo
++call *foo
++lldt %ax
++ltr %ax
++lmsw %ax
++shll $4, %eax
++imull $10, %eax, %eax
++cmovel %eax, %edx
++xaddl %eax, (%ebx)
++pushal
++popal
++pusha
++pushaw
++les foo, %eax
++lss foo, %esp
++bswap %eax
++jnz bar
++jecxz bar
++jcxz bar
++loop bar
++movl %eax, %ds
++calll bar
++callw bar
++rep stosl
++rep; stosl
++cld
++std
++hlt
++lretl
++pushl %es
++popl %es
++movl $0x12345678, %eax
++movl %esp, %eax
++addl $-8, %esp
++andl $-16, %esp
++xorl %ebx, %ebx
++movl (%eax,%ebx,4), %ecx
++movzbl (%eax), %edx
++movsbl (%eax), %edx
++cmpl $0x1, foo
++testl $0x100, %eax
++orl $0x80000000, %eax
++btrl $1, %eax
++btsl $31, %eax
++rorl $8, %eax
++shrdl $16, %eax, %edx
++notl %eax
++negl %eax
++idivl %ecx
++mull %ecx
++movl %eax, %cr0
++movl %ebx, %cr3
++wbinvd
++invlpg (%eax)
++movl %cr2, %eax
++movl %dr7, %eax
++movl %eax, %dr7
++str %ax
++sgdt foo
++sidt foo
++sgdtl foo
++lgdtl (%eax)
++lidtl (%eax)
++xchgl %eax, %ebx
++cmpxchgl %ecx, (%edx)
++lock cmpxchgl %ecx, (%edx)
++rep insl
++rep outsl
++rep movsl
++repe cmpsb
++repne scasb
++.word foo
++.byte foo
++.long foo
+diff --git a/tests/m16-asm-64.txt b/tests/m16-asm-64.txt
+new file mode 100644
+index 0000000..80dc48e
+--- /dev/null
++++ b/tests/m16-asm-64.txt
+@@ -0,0 +1,108 @@
++movq %rax, %cr3
++movq %cr4, %rax
++xorl tr_cr4(%rip), %eax
++testl $1, %eax
++jmpq *tr_start(%rip)
++lidt tr_idt(%rip)
++lgdt tr_gdt64(%rip)
++movw $0x18, %dx
++movl %edx, %ss
++addl $foo, %esp
++movl $foo, %eax
++pushq $0x10
++pushq tr_start(%rip)
++lretq
++ljmpl *tr_compat(%rip)
++movq %rax,%rbx
++mov $0x80000000, %rax
++movq $-1, %rax
++movl %eax, %eax
++leaq foo(%rip), %rax
++call bar
++jmp bar
++jnz bar
++ret
++pushq %rbp
++popq %rbp
++movq 8(%rsp), %rax
++wrmsr
++rdmsr
++swapgs
++syscall
++sysretq
++iretq
++cltq
++cqto
++movslq %eax, %rdx
++rep stosq
++rep movsb
++lock cmpxchgq %rcx, (%rdx)
++xchgq %rax, %rbx
++incq %rax
++decl %eax
++incl %eax
++movq $5, foo(%rip)
++movq foo(%rip), %rax
++btsq $63, %rax
++shlq $32, %rax
++movzbl %al, %eax
++movzwl %ax, %eax
++movsbq %al, %rax
++cmovneq %rax, %rbx
++.long foo
++.word foo
++.byte foo
++movq %cr0, %rax
++movq %rax, %cr0
++lidtq foo(%rip)
++rdfsbase %rax
++xsave64 (%rax)
++endbr64
++lfence
++mfence
++pause
++hlt
++cli
++sti
++cld
++movl %eax, %fs
++movl %fs, %eax
++movw %ax, %fs
++push %fs
++pop %fs
++push $5
++push $300
++enter $4,$0
++leave
++ret $4
++lret
++jecxz bar
++jrcxz bar
++loop bar
++int $3
++int $0x80
++ud2
++xorps %xmm0,%xmm0
++movd %eax, %xmm0
++movq %rax, %xmm0
++movq %xmm0, %rax
++pxor %xmm1, %xmm2
++pshufb %xmm1, %xmm2
++andl $0xf, %eax
++andq $0xf, %rax
++andb $1, %al
++andl $0x100, %eax
++movl %esp, %ebp
++movq %rsp, %rbp
++pushfq
++popfq
++pushf
++popf
++cmpl $0, foo(%rip)
++movq %rax, %dr7
++movl %eax, %ds
++movw %ds, %ax
++xorl %eax, %eax
++movl $0, %eax
++rdtsc
++cpuid

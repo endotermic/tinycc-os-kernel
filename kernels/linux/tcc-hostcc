@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# tcc-hostcc: tinycc as Kbuild's HOSTCC (fixdep, kconfig, modpost, sorttable, relocs,
+# vdso2c, mkpiggy, tools/build ...), against the host libc.  tools/include needs a
+# __GNUC__ (for __must_be_array and friends): claim a modest GCC 4.2 like the busybox
+# build does, so that glibc's headers do not take the paths of newer gcc extensions.
+# The -U of the __REDIRECT macros lets glibc define its own without "redefined" noise;
+# __NO_INLINE__ keeps glibc's gnu89 "extern inline" helpers (duplicate definitions) out.
+# Inside the guest (userland/selfhost/build-kernel) the libc is musl, where these are no-ops.
+# -B only for an in-tree tcc (src/tinycc/tcc: its include/ and libtcc1.a sit next to it); an
+# installed tcc (/usr/bin/tcc in the guest) knows its tccdir.
+# Env: TCC (tcc binary), KCC_LOG (append one line per invocation).
+TCC=${TCC:?tcc-hostcc: set TCC to the tinycc binary (scripts/build.sh does)}
+TCCDIR=$(dirname "$TCC")
+BFLAGS=
+[ ! -f "$TCCDIR/include/tccdefs.h" ] || BFLAGS="-B$TCCDIR -I$TCCDIR/include"
+[ -z "$KCC_LOG" ] || echo "host-tcc ? :: $*" >> "$KCC_LOG"
+exec "$TCC" $BFLAGS \
+    -D__GNUC__=4 -D__GNUC_MINOR__=2 -D__GNUC_PATCHLEVEL__=0 \
+    -U__REDIRECT -U__REDIRECT_NTH -U__REDIRECT_NTHNL -D__USER_LABEL_PREFIX__= -D__NO_INLINE__ "$@"

@@ -1,0 +1,53 @@
+From a212c7905483746f9099b5ce9a3b38b4309f69e5 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccpp: keep "$" a token of its own in #define bodies of .S
+ files
+
+A macro body in an asm file is tokenized with PARSE_FLAG_ASM_FILE
+cleared (so that "#" is not a comment there), and with
+dollars_in_identifiers "$" then starts an identifier: "#define IMM
+$0x50" + "mov IMM, %eax" silently assembled to "mov 0x0,%eax" with a
+relocation against a symbol named "$0x50".  Remove "$" from the
+identifier characters while parsing a #define in an asm file, like the
+existing "." handling for macro parameter lists.
+---
+ tccpp.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index 9e70075..0b88f75 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -1528,7 +1528,7 @@ ST_FUNC void pp_error(CString *cs)
+ ST_FUNC void parse_define(void)
+ {
+     Sym *s, *first, **ps;
+-    int v, t, varg, is_vaargs, t0;
++    int v, t, varg, is_vaargs, t0, dollarid;
+     int saved_parse_flags = parse_flags;
+     TokenString str;
+ 
+@@ -1540,7 +1540,12 @@ ST_FUNC void parse_define(void)
+     /* We have to parse the whole define as if not in asm mode, in particular
+        no line comment with '#' must be ignored.  Also for function
+        macros the argument list must be parsed without '.' being an ID
+-       character.  */
++       character.  In an asm file '$' must stay a token of its own as
++       when assembling ("#define IMM $0x50" is the immediate, not an
++       identifier "$0x50" that would become a symbol reference).  */
++    dollarid = -1;
++    if (parse_flags & PARSE_FLAG_ASM_FILE)
++        dollarid = set_idnum('$', 0);
+     parse_flags = ((parse_flags & ~PARSE_FLAG_ASM_FILE) | PARSE_FLAG_SPACES);
+     /* '(' must be just after macro definition for MACRO_FUNC */
+     next_nomacro();
+@@ -1603,6 +1608,8 @@ ST_FUNC void parse_define(void)
+         next_nomacro();
+     }
+     parse_flags = saved_parse_flags;
++    if (dollarid >= 0)
++        set_idnum('$', dollarid);
+     tok_str_add(&str, 0);
+     if (t0 == TOK_PPJOIN)
+ bad_twosharp:

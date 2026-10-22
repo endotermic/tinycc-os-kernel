@@ -1,0 +1,94 @@
+From 081b7612c7b8334783440aeef9910b7b69acd1f7 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccgen: __attribute__((transparent_union))
+
+An argument passed to a parameter of a transparent union type is
+converted to the union (gen_cast_to_union(), with arrays and functions
+decayed before the member match).  The attribute is accepted after the
+union body, after the declarator ("typedef union {..} name
+__attribute__((..));") and before the type.  SymAttr gains the
+"transparent" bit; the remaining spare bit is named "regvar" for the
+global register variable support that follows.
+---
+ tcc.h    |  3 ++-
+ tccgen.c | 17 +++++++++++++++++
+ tcctok.h |  2 ++
+ 3 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/tcc.h b/tcc.h
+index 6052478..fe93840 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -507,7 +507,8 @@ struct SymAttr {
+     dllimport   : 1,
+     addrtaken   : 1,
+     nodebug     : 1,
+-    xxxx        : 2; /* not used */
++    transparent : 1, /* __attribute__((transparent_union)) on a union type */
++    regvar      : 1; /* declared with the 'register' storage class */
+ };
+ 
+ /* function attributes or temporary attributes for parsing */
+diff --git a/tccgen.c b/tccgen.c
+index abf725f..a822e78 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -4099,6 +4099,10 @@ redo:
+         case TOK_PACKED2:
+             ad->a.packed = 1;
+             break;
++        case TOK_TRANSPARENT1:
++        case TOK_TRANSPARENT2:
++            ad->a.transparent = 1;
++            break;
+         case TOK_WEAK1:
+         case TOK_WEAK2:
+             ad->a.weak = 1;
+@@ -4783,6 +4787,8 @@ do_decl:
+             if (ad.cleanup_func) {
+                 tcc_warning("attribute '__cleanup__' ignored on type");
+             }
++            if (ad.a.transparent && u == VT_UNION)
++                s->a.transparent = 1;
+ 	    check_fields(type, 1);
+ 	    check_fields(type, 0);
+             struct_layout(type, &ad);
+@@ -5494,6 +5500,12 @@ static void gfunc_param_typed(Sym *func, Sym *arg)
+     } else {
+         type = arg->type;
+         type.t &= ~VT_CONSTANT; /* need to do that to avoid false warning */
++        if (IS_UNION(type.t) && type.ref->a.transparent
++            && (vtop->type.t & VT_BTYPE) != VT_STRUCT) {
++            /* GCC transparent_union: the argument is a member of the union */
++            gen_cast_to_union(&type);
++            return;
++        }
+         gen_assign_cast(&type);
+     }
+ }
+@@ -8977,6 +8989,11 @@ static int decl(int l)
+ 	    ad = adbase;
+             type_decl(&type, &ad, &v, l == VT_CMP ? TYPE_DIRECT | TYPE_PARAM : TYPE_DIRECT);
+             /*ptype("decl", &type, v);*/
++            /* GCC: __attribute__((transparent_union)) may follow the
++               declarator ("typedef union {..} name __attribute__((..));")
++               or precede the type; it belongs to the union type */
++            if (ad.a.transparent && IS_UNION(type.t))
++                type.ref->a.transparent = 1;
+             if ((type.t & VT_BTYPE) == VT_FUNC) {
+                 if ((type.t & VT_STATIC) && (l != VT_CONST))
+                     tcc_error("function without file scope cannot be static");
+diff --git a/tcctok.h b/tcctok.h
+index 00fab06..9444b80 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -116,6 +116,8 @@
+      DEF(TOK_ALIGNED2, "__aligned__")
+      DEF(TOK_PACKED1, "packed")
+      DEF(TOK_PACKED2, "__packed__")
++     DEF(TOK_TRANSPARENT1, "transparent_union")
++     DEF(TOK_TRANSPARENT2, "__transparent_union__")
+      DEF(TOK_WEAK1, "weak")
+      DEF(TOK_WEAK2, "__weak__")
+      DEF(TOK_ALIAS1, "alias")

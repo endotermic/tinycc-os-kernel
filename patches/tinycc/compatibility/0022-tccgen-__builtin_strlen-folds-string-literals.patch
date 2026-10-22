@@ -1,0 +1,87 @@
+From 887704b2c91332906f9869a2eba58138f644d307 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccgen: __builtin_strlen folds string literals
+
+__builtin_strlen("literal") is a constant expression in GCC (used in
+_Static_assert and initializers); other arguments call strlen() with a
+size_t result.  strlen leaves the __BOTH list of tccdefs.h (it keeps
+the bound-checking declaration).
+---
+ include/tccdefs.h |  2 +-
+ tccgen.c          | 20 ++++++++++++++++++++
+ tcctok.h          |  3 +++
+ 3 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 10424c1..cb751e3 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -342,7 +342,7 @@
+     __BOTH(void*, memmove, (void *, const void*, __SIZE_TYPE__))
+     __BOTH(void*, memset, (void *, int, __SIZE_TYPE__))
+     __BOTH(int, memcmp, (const void *, const void*, __SIZE_TYPE__))
+-    __BOTH(__SIZE_TYPE__, strlen, (const char *))
++    __BOUND(__SIZE_TYPE__, strlen, (const char *))
+     __BOTH(char*, strcpy, (char *, const char *))
+     __BOTH(char*, strncpy, (char *, const char*, __SIZE_TYPE__))
+     __BOTH(int, strcmp, (const char*, const char*))
+diff --git a/tccgen.c b/tccgen.c
+index 1220fe0..abf725f 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -5944,6 +5944,26 @@ ST_FUNC void unary(void)
+ 	parse_builtin_params(0, "ee");
+ 	vpop();
+         break;
++    case TOK_builtin_strlen:
++        /* a string literal is folded (needed in constant expressions),
++           anything else is a call to strlen() */
++        next();
++        skip('(');
++        if (tok == TOK_STR) {
++            CString *cs = parse_mult_str("string constant");
++            n = strlen(cs->data);
++            skip(')');
++            vpush64(VT_SIZE_T, n);
++        } else {
++            vpush_helper_func(TOK_strlen);
++            gexpr();
++            skip(')');
++            gfunc_call(1);
++            vpushi(0);
++            vtop->type.t = VT_SIZE_T;
++            vtop->r = REG_IRET;
++        }
++        break;
+     case TOK_builtin_types_compatible_p:
+ 	parse_builtin_params(0, "tt");
+ 	n = compare_types(&vtop[-1].type, &vtop[0].type, 1);
+diff --git a/tcctok.h b/tcctok.h
+index 0b0b04e..00fab06 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -177,6 +177,7 @@
+      DEF(TOK_builtin_return_address, "__builtin_return_address")
+      DEF(TOK_builtin_expect, "__builtin_expect")
+      DEF(TOK_builtin_unreachable, "__builtin_unreachable")
++     DEF(TOK_builtin_strlen, "__builtin_strlen")
+      /*DEF(TOK_builtin_va_list, "__builtin_va_list")*/
+ #if defined TCC_TARGET_PE && defined TCC_TARGET_X86_64
+      DEF(TOK_builtin_va_start, "__builtin_va_start")
+@@ -229,6 +230,7 @@
+      DEF(TOK_memcpy, "memcpy")
+      DEF(TOK_memmove, "memmove")
+      DEF(TOK_memset, "memset")
++     DEF(TOK_strlen, "strlen")
+      DEF(TOK___divdi3, "__divdi3")
+      DEF(TOK___moddi3, "__moddi3")
+      DEF(TOK___udivdi3, "__udivdi3")
+@@ -253,6 +255,7 @@
+      DEF(TOK_memmove4, "__aeabi_memmove4")
+      DEF(TOK_memmove8, "__aeabi_memmove8")
+      DEF(TOK_memset, "__aeabi_memset")
++     DEF(TOK_strlen, "strlen")
+      DEF(TOK___aeabi_ldivmod, "__aeabi_ldivmod")
+      DEF(TOK___aeabi_uldivmod, "__aeabi_uldivmod")
+      DEF(TOK___aeabi_idivmod, "__aeabi_idivmod")

@@ -1,0 +1,240 @@
+From b8baf881e2a299fecfc9b96d10703a257895d0b9 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:10:49 +0300
+Subject: [PATCH] tccasm, i386-asm: register aliases, "&&"/"||", SSE2 moves and
+ shuffles, -E -MD
+
+The kernel's lib/crypto/x86 SHA-256 and BLAKE2s assembly needed:
+
+* GNU as register aliases: "X0 = %xmm4", "CTX = %rdi", also chained
+  ("X_ = X0") and rotated inside macros; an alias is usable wherever a
+  register is, including as the base or index of a memory operand.
+* "&&" and "||" in expressions (".if \i >= 12 && \i < 60"), results
+  1/0 like GNU as.
+* A displacement expression that starts with a parenthesis,
+  "(\i + 12)*4(%rsi)", used to be taken for "(%reg)".
+* movdqu, movdqa, paddq, pshufd, pslldq, psrldq, punpcklqdq,
+  punpckhqdq.
+* -E with -MD/-MMD writes the dependency file (Kbuild preprocesses the
+  linker scripts that way).
+
+sha256-ssse3-asm.o, sha256-ni-asm.o and blake2s-core.o (its SSSE3 half)
+assemble to the same sizes as GNU as; the instruction streams differ
+only in jump encodings and alignment padding, and a snippet of every
+new instruction form matches GNU as byte for byte.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ i386-asm.c   | 29 ++++++++++++++++------------
+ tcc.c        |  5 ++++-
+ tcc.h        |  1 +
+ tccasm.c     | 53 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ x86_64-asm.h | 12 ++++++++++++
+ 5 files changed, 87 insertions(+), 13 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 6648da6..0d7931c 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -330,9 +330,13 @@ static int asm_parse_reg(unsigned int *type)
+ {
+     int reg = 0;
+     *type = 0;
+-    if (tok != '%')
+-        goto error_32;
+-    next();
++    if (tok >= TOK_IDENT && asm_reg_alias(tok)) {
++        tok = asm_reg_alias(tok); /* "CTX = %rdi" ... "(CTX)" */
++    } else {
++        if (tok != '%')
++            goto error_32;
++        next();
++    }
+     if (tok >= TOK_ASM_eax && tok <= TOK_ASM_edi) {
+         reg = tok - TOK_ASM_eax;
+ 	*type = OP_REG32;
+@@ -367,8 +371,11 @@ static void parse_operand(TCCState *s1, Operand *op)
+         indir = OP_INDIR;
+     }
+ 
+-    if (tok == '%') {
+-        next();
++    if (tok == '%' || (tok >= TOK_IDENT && asm_reg_alias(tok))) {
++        if (tok == '%')
++            next();
++        else
++            tok = asm_reg_alias(tok); /* "X0 = %xmm4": X0 stands for the register */
+         if (tok >= TOK_ASM_al && tok <= TOK_ASM_db7) {
+             reg = tok - TOK_ASM_al;
+             op->type = 1 << (reg >> 3); /* WARNING: do not change constant order */
+@@ -456,19 +463,17 @@ static void parse_operand(TCCState *s1, Operand *op)
+             asm_expr(s1, &e);
+             op->e = e;
+         } else {
++            /* "(%reg...)" or a displacement expression that starts with a
++               parenthesis: "(\i + 12)*4(%rsi)" in the kernel's SHA code */
+             next();
+-            if (tok == '%') {
++            if (tok == '%' || (tok >= TOK_IDENT && asm_reg_alias(tok))) {
+                 unget_tok('(');
+                 op->e.v = 0;
+                 op->e.sym = NULL;
+             } else {
+-                /* bracketed offset expression */
++                unget_tok('(');
+                 asm_expr(s1, &e);
+-                if (tok != ')')
+-                    expect(")");
+-                next();
+-                op->e.v = e.v;
+-                op->e.sym = e.sym;
++                op->e = e;
+             }
+ 	    op->e.pcrel = 0;
+         }
+diff --git a/tcc.c b/tcc.c
+index 11bf6be..64a6565 100644
+--- a/tcc.c
++++ b/tcc.c
+@@ -404,7 +404,10 @@ redo:
+     if (s->run_test) {
+         t = 0;
+     } else if (s->output_type == TCC_OUTPUT_PREPROCESS) {
+-        ;
++        /* -E -MD: the dependencies of the preprocessed file (Kbuild's
++           linker scripts are made that way) */
++        if (0 == ret && s->gen_deps && s->outfile && strcmp(s->outfile, "-"))
++            gen_makedeps(s, s->outfile, s->deps_outfile);
+     } else if (s->asm_text_only) {
+         if (0 == ret && s->gen_deps && s->outfile)
+             gen_makedeps(s, s->outfile, s->deps_outfile);
+diff --git a/tcc.h b/tcc.h
+index 8eb16ed..b67c94b 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1770,6 +1770,7 @@ ST_FUNC int tcc_load_coff(TCCState * s1, int fd);
+ ST_FUNC void asm_instr(void);
+ ST_FUNC void asm_global_instr(void);
+ ST_FUNC void asm_free_macros(void);
++ST_FUNC int asm_reg_alias(int name);
+ ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess);
+ #ifdef CONFIG_TCC_ASM
+ ST_FUNC int find_constraint(ASMOperand *operands, int nb_operands, const char *name, const char **pp);
+diff --git a/tccasm.c b/tccasm.c
+index d5167c6..784ea54 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -682,9 +682,24 @@ static inline void asm_expr_cmp(TCCState *s1, ExprValue *pe)
+     }
+ }
+ 
++/* "&&" and "||": the lowest precedence, results 1/0 like GNU as
++   (".if \i >= 12 && \i < 60" in the kernel's SHA-NI code) */
+ ST_FUNC void asm_expr(TCCState *s1, ExprValue *pe)
+ {
++    int op;
++    ExprValue e2;
++
+     asm_expr_cmp(s1, pe);
++    for(;;) {
++        op = tok;
++        if (op != TOK_LAND && op != TOK_LOR)
++            break;
++        next();
++        asm_expr_cmp(s1, &e2);
++        if (pe->sym || e2.sym)
++            tcc_error("invalid operation with label");
++        pe->v = op == TOK_LAND ? (pe->v != 0 && e2.v != 0) : (pe->v != 0 || e2.v != 0);
++    }
+ }
+ 
+ ST_FUNC int asm_int_expr(TCCState *s1)
+@@ -741,6 +756,31 @@ static Sym* asm_new_label(TCCState *s1, int label, int is_local)
+ 
+ /* Set the value of LABEL to that of some expression (possibly
+    involving other symbols).  LABEL can be overwritten later still.  */
++/* GNU as register aliases: "X0 = %xmm4" makes X0 usable as an operand */
++static int *asm_reg_aliases, nb_asm_reg_aliases;
++
++ST_FUNC int asm_reg_alias(int name)
++{
++    int i;
++    for (i = 0; i < nb_asm_reg_aliases; i += 2)
++        if (asm_reg_aliases[i] == name)
++            return asm_reg_aliases[i + 1];
++    return 0;
++}
++
++static void asm_reg_alias_define(int name, int reg)
++{
++    int i;
++    for (i = 0; i < nb_asm_reg_aliases; i += 2)
++        if (asm_reg_aliases[i] == name) {
++            asm_reg_aliases[i + 1] = reg;
++            return;
++        }
++    asm_reg_aliases = tcc_realloc(asm_reg_aliases, (nb_asm_reg_aliases + 2) * sizeof(int));
++    asm_reg_aliases[nb_asm_reg_aliases++] = name;
++    asm_reg_aliases[nb_asm_reg_aliases++] = reg;
++}
++
+ static Sym* set_symbol(TCCState *s1, int label)
+ {
+     long n;
+@@ -748,6 +788,18 @@ static Sym* set_symbol(TCCState *s1, int label)
+     Sym *sym;
+     ElfSym *esym;
+     next();
++    if (tok == '%' || (tok >= TOK_IDENT && asm_reg_alias(tok))) {
++        /* a register alias ("X0 = %xmm4", "X_ = X0"), not a symbol */
++        if (tok == '%') {
++            next();
++            if (tok < TOK_IDENT)
++                expect("register");
++            asm_reg_alias_define(label, tok);
++        } else
++            asm_reg_alias_define(label, asm_reg_alias(tok));
++        next();
++        return NULL;
++    }
+     asm_expr(s1, &e);
+     n = e.v;
+     esym = elfsym(e.sym);
+@@ -845,6 +897,7 @@ ST_FUNC void asm_free_macros(void)
+     while (nb_asm_macros)
+         asm_macro_delete(asm_macros[0]->name);
+     tcc_free(asm_macros), asm_macros = NULL;
++    tcc_free(asm_reg_aliases), asm_reg_aliases = NULL, nb_asm_reg_aliases = 0;
+ }
+ 
+ /* Text is reconstructed from the (preprocessed) token stream: a blank is
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 6cb9369..fe01071 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -507,6 +507,7 @@ ALT(DEF_ASM_OP1(str, 0x0f00, 1, OPC_MODRM | OPC_48, OPT_REG64))
+     /* 486 */
+     /* bswap can't be applied to 16bit regs */
+     DEF_ASM_OP1(bswap, 0x0fc8, 0, OPC_REG, OPT_REG32 )
++ALT(DEF_ASM_OP1(bswap, 0x0fc8, 0, OPC_REG | OPC_48, OPT_REG64 ))
+     DEF_ASM_OP1(bswapl, 0x0fc8, 0, OPC_REG, OPT_REG32 )
+     DEF_ASM_OP1(bswapq, 0x0fc8, 0, OPC_REG | OPC_48, OPT_REG64 )
+ 
+@@ -603,6 +604,17 @@ ALT(DEF_ASM_OP2(psrlq, 0x0f73, 2, OPC_MODRM, OPT_IM8, OPT_MMXSSE ))
+     DEF_ASM_OP2(punpcklbw, 0x0f60, 0, OPC_MODRM, OPT_EA | OPT_MMXSSE, OPT_MMXSSE )
+     DEF_ASM_OP2(punpcklwd, 0x0f61, 0, OPC_MODRM, OPT_EA | OPT_MMXSSE, OPT_MMXSSE )
+     DEF_ASM_OP2(punpckldq, 0x0f62, 0, OPC_MODRM, OPT_EA | OPT_MMXSSE, OPT_MMXSSE )
++    /* SSE2 integer forms the kernel's SHA-256/BLAKE2s code uses */
++    DEF_ASM_OP2(punpcklqdq, 0x660f6c, 0, OPC_MODRM, OPT_EA | OPT_SSE, OPT_SSE )
++    DEF_ASM_OP2(punpckhqdq, 0x660f6d, 0, OPC_MODRM, OPT_EA | OPT_SSE, OPT_SSE )
++    DEF_ASM_OP2(paddq, 0x0fd4, 0, OPC_MODRM, OPT_EA | OPT_MMXSSE, OPT_MMXSSE )
++    DEF_ASM_OP3(pshufd, 0x660f70, 0, OPC_MODRM, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE )
++    DEF_ASM_OP2(pslldq, 0x660f73, 7, OPC_MODRM, OPT_IM8, OPT_SSE )
++    DEF_ASM_OP2(psrldq, 0x660f73, 3, OPC_MODRM, OPT_IM8, OPT_SSE )
++    DEF_ASM_OP2(movdqu, 0xf30f6f, 0, OPC_MODRM, OPT_EA | OPT_SSE, OPT_SSE )
++ALT(DEF_ASM_OP2(movdqu, 0xf30f7f, 0, OPC_MODRM, OPT_SSE, OPT_EA | OPT_SSE ))
++    DEF_ASM_OP2(movdqa, 0x660f6f, 0, OPC_MODRM, OPT_EA | OPT_SSE, OPT_SSE )
++ALT(DEF_ASM_OP2(movdqa, 0x660f7f, 0, OPC_MODRM, OPT_SSE, OPT_EA | OPT_SSE ))
+     DEF_ASM_OP2(pxor, 0x0fef, 0, OPC_MODRM, OPT_EA | OPT_MMXSSE, OPT_MMXSSE )
+ 
+     /* sse */

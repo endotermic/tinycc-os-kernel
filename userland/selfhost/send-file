@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# send-file FILE... - copy files out of the virtual machine over the second serial port.
+# run.sh --selfhost connects ttyS1 to a file on the host (QEMU -serial file:...); every file
+# goes out as a header line ">>> send-file NAME SIZE MD5" followed by its bytes, and
+# scripts/recv-file.sh on the host cuts the files out of that capture and checks the sums.
+# Usage: send-file FILE...     Env: DEV (/dev/ttyS1)
+DEV=${DEV:-/dev/ttyS1}
+[ $# -gt 0 ] || { echo "usage: send-file FILE..." >&2; exit 2; }
+[ -c "$DEV" ] || { echo "send-file: no $DEV (CONFIG_SERIAL_8250_RUNTIME_UARTS >= 2, and QEMU -serial file:...)" >&2; exit 1; }
+# raw mode: no CR/LF translation, no echo, no flow control; the highest standard speed
+stty -F "$DEV" 115200 raw -echo -onlcr -ocrnl -opost -isig -icanon -iexten cs8 -parenb -cstopb -crtscts clocal 2>/dev/null \
+    || stty -F "$DEV" raw -echo 2>/dev/null || true
+for f; do
+    [ -f "$f" ] || { echo "send-file: $f: not a file" >&2; exit 1; }
+    size=$(wc -c < "$f"); sum=$(md5sum "$f" | cut -d' ' -f1)
+    printf '%s %s %s %s\n' '>>> send-file' "$(basename "$f")" "$size" "$sum" > "$DEV"
+    t0=$(date +%s)
+    cat "$f" > "$DEV"
+    t1=$(date +%s)
+    echo "send-file: $f: $size bytes sent in $((t1 - t0)) s (md5 $sum)"
+done

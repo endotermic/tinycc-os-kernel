@@ -1,0 +1,93 @@
+From 40d40792aaefcef1ea1c08a0e848077ad733af9b Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:26:11 +0300
+Subject: [PATCH] tccasm, i386-asm: forward labels in symbol differences are
+ constants first
+
+"leal rva(gdt)(%ebp), %eax" (rva(X) = X - startup_32) and ".quad gdt -
+gdt64" in the kernel's compressed head_64.S subtract labels of one
+section where the first one is defined later in the file.  Pass two
+knows both, but the PC-relative conversion ("sym - label of this
+section") was tried before the two-pass resolution and produced an
+absolute relocation (R_X86_64_32/64), which the -pie link of the
+decompressor refuses - and for .quad the wrong value.  The difference
+of two labels of one section is now resolved to a constant whenever
+pass two knows them, before the PC-relative forms; pass one defers.
+
+A parenthesized displacement expression keeps its pcrel flag (it was
+cleared with the "(%reg)" case), and ".quad sym - label" of symbols in
+different sections gets R_X86_64_PC64.
+
+The compressed head_64.o now has only PC32/PLT32 relocations like GNU
+as's object; the PC-relative data test file still links to GNU as's
+bytes; make test and the .code16/.code32/.code64 encoding checks pass.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ i386-asm.c |  4 +++-
+ tccasm.c   | 18 ++++++++++++++++--
+ 2 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 0ad86cc..626edce 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -470,12 +470,14 @@ static void parse_operand(TCCState *s1, Operand *op)
+                 unget_tok('(');
+                 op->e.v = 0;
+                 op->e.sym = NULL;
++                op->e.pcrel = 0;
+             } else {
++                /* a PC-relative value ("rva(gdt)(%ebp)" = (gdt - startup_32))
++                   keeps its pcrel flag, like an unparenthesized one */
+                 unget_tok('(');
+                 asm_expr(s1, &e);
+                 op->e = e;
+             }
+-	    op->e.pcrel = 0;
+         }
+         if (tok == '(') {
+ 	    unsigned int type = 0;
+diff --git a/tccasm.c b/tccasm.c
+index 784ea54..c371855 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -275,6 +275,16 @@ ST_FUNC void gen_addr64(int r, Sym *sym, int64_t c)
+ 
+ ST_FUNC void gen_expr64(ExprValue *pe)
+ {
++#ifdef TCC_TARGET_X86_64
++    if (pe->pcrel) {
++        /* ".quad sym - label": pe->v is -<label offset> (gen_expr32's
++           convention), the relocation is relative to this field */
++        greloca(cur_text_section, pe->sym, ind, R_X86_64_PC64, pe->v + ind);
++        gen_le32(0);
++        gen_le32(0);
++        return;
++    }
++#endif
+     gen_addr64(pe->sym ? VT_SYM : 0, pe->sym, pe->v);
+ }
+ #endif
+@@ -615,6 +625,12 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		    /* we also accept defined symbols in the same section */
+ 		    pe->v += (int)(esym1->st_value - esym2->st_value);
+ 		    pe->sym = NULL;
++		} else if (asm_pass_resolve(pe, &e2)) {
++		    /* labels defined later: the difference of two labels of
++		       one section is a constant also when one of them comes
++		       later (".quad gdt - gdt64", "leal rva(gdt)(%ebp)" in
++		       the kernel's compressed head), so this is tried before
++		       the PC-relative forms below; the first pass defers */
+ 		} else if (esym2 && esym2->st_shndx == cur_text_section->sh_num) {
+ 		    /* When subtracting a defined symbol in current section
+ 		       this actually makes the value PC-relative.  */
+@@ -629,8 +645,6 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		    pe->v += (int)(0 - v2);
+ 		    pe->pcrel = 1;
+ 		    e2.sym = NULL;
+-		} else if (asm_pass_resolve(pe, &e2)) {
+-		    /* labels defined later in an inline asm statement */
+ 		} else {
+ cannot_relocate:
+ 		    tcc_error("invalid operation with label");

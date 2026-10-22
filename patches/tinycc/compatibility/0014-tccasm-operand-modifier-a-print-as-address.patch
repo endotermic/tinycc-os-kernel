@@ -1,0 +1,41 @@
+From c1678826f2963420f12e5c74bbe00459387baefa Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: operand modifier %a (print as address)
+
+"%a[var]" with an "i" operand prints the constant or symbol without
+the "$", as GCC does ("movq %a[src],%[val]" becomes "mov var,%reg").
+---
+ i386-asm.c | 2 +-
+ tccasm.c   | 5 +++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 1887490..5e7f2a2 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1514,7 +1514,7 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+     r = sv->r;
+     if ((r & VT_VALMASK) == VT_CONST) {
+         if (!(r & VT_LVAL) && modifier != 'c' && modifier != 'n' &&
+-	    modifier != 'P')
++	    modifier != 'P' && modifier != 'a')
+             cstr_ccat(add_str, '$');
+         if (r & VT_SYM) {
+ 	    const char *name = get_tok_str(sv->sym->v, NULL);
+diff --git a/tccasm.c b/tccasm.c
+index 7c01e96..7f1984e 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1449,8 +1449,9 @@ static void subst_asm_operands(ASMOperand *operands, int nb_operands,
+ 		*str == 'z' ||
+ #endif
+ 		/* P in GCC would add "@PLT" to symbol refs in PIC mode,
+-		   and make literal operands not be decorated with '$'.  */
+-		*str == 'P')
++		   and make literal operands not be decorated with '$'.
++		   'a' prints the operand as an address (no '$' either). */
++		*str == 'P' || *str == 'a')
+                 modifier = *str++;
+             index = find_constraint(operands, nb_operands, str, &str);
+             if (index < 0)

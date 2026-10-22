@@ -1,0 +1,49 @@
+From cf673986c983ef07b6f9dce19365880a24acf953 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 11:16:15 +0300
+Subject: [PATCH] kbuild: let OBJTOOL= name an objtool that is not built from
+ tools/objtool
+
+objtool is built on the host during prepare and needs libelf, which a
+build host may not have (a self-hosting build with a small toolchain,
+for example).  All the other host tools get by with libc.
+
+Honour a make variable OBJTOOL: when it is set, Kbuild runs that program
+on the objects instead of $(objtree)/tools/objtool/objtool and does not
+build tools/objtool.  Without it nothing changes.
+
+Assisted-by: LLM
+---
+ Makefile             | 2 ++
+ scripts/Makefile.lib | 3 ++-
+ 2 files changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index c61ea07ee..0a9cf66be 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1563,8 +1563,10 @@ vdso_install:
+ # Tools
+ 
+ ifdef CONFIG_OBJTOOL
++ifndef OBJTOOL
+ prepare: tools/objtool
+ endif
++endif
+ 
+ ifdef CONFIG_BPF
+ ifdef CONFIG_DEBUG_INFO_BTF
+diff --git a/scripts/Makefile.lib b/scripts/Makefile.lib
+index 0a4fdd8bd..268f892d8 100644
+--- a/scripts/Makefile.lib
++++ b/scripts/Makefile.lib
+@@ -184,7 +184,8 @@ ld_flags       = $(KBUILD_LDFLAGS) $(ldflags-y) $(LDFLAGS_$(@F))
+ 
+ ifdef CONFIG_OBJTOOL
+ 
+-objtool := $(objtree)/tools/objtool/objtool
++# OBJTOOL=<path> uses that objtool instead of building tools/objtool
++objtool := $(or $(OBJTOOL),$(objtree)/tools/objtool/objtool)
+ 
+ objtool-args-$(CONFIG_HAVE_JUMP_LABEL_HACK)		+= --hacks=jump_label
+ objtool-args-$(CONFIG_HAVE_NOINSTR_HACK)		+= --hacks=noinstr

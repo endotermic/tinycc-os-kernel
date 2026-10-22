@@ -1,0 +1,73 @@
+From 9496d04114f50ff4b187024faa7887376205761d Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] x86_64-gen: emit R_X86_64_REX_GOTPCRELX for relaxable GOT
+ loads
+
+Every non-static global is accessed through the GOT with a plain
+R_X86_64_GOTPCREL relocation, which forces GNU ld to create a GOT
+entry.  GCC emits R_X86_64_REX_GOTPCRELX for "mov sym@GOTPCREL(%rip),
+%reg" with a REX prefix, which lets the linker relax the load to
+"lea sym(%rip),%reg" and drop the GOT entry.  Do the same: the kernel
+link asserts that the GOT is empty.  tcc's own linker already handles
+the X variants.
+---
+ x86_64-gen.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index c62c8a0..e3f0226 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -278,7 +278,12 @@ ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
+ }
+ 
+ /* output got address with relocation */
+-static void gen_gotpcrel(int r, Sym *sym, int c)
++/* emit the displacement of an indirect access "sym@GOTPCREL(%rip)".
++   'relax' is set when the instruction is a load "mov sym@GOTPCREL(%rip),%reg"
++   with a REX prefix: the relocation is then R_X86_64_REX_GOTPCRELX, which
++   allows GNU ld to turn the load into "lea sym(%rip),%reg" and to drop the
++   GOT entry (needed e.g. by the Linux kernel, whose link forbids a GOT) */
++static void gen_gotpcrel(int r, Sym *sym, int c, int relax)
+ {
+ #ifdef TCC_TARGET_PE
+     tcc_error("internal error: no GOT on PE: %s %x %x | %02x %02x %02x\n",
+@@ -288,7 +293,8 @@ static void gen_gotpcrel(int r, Sym *sym, int c)
+         cur_text_section->data[ind-1]
+         );
+ #endif
+-    greloca(cur_text_section, sym, ind, R_X86_64_GOTPCREL, -4);
++    greloca(cur_text_section, sym, ind,
++            relax ? R_X86_64_REX_GOTPCRELX : R_X86_64_GOTPCREL, -4);
+     gen_le32(0);
+     if (c) {
+         /* we use add c, %xxx for displacement */
+@@ -335,7 +341,8 @@ static void gen_modrm_impl(int opcode, int ll, int op_reg_0, int r, Sym *sym, in
+ 	} else {
+ 	    o(0x05 | op_reg); /* (%rip)+disp32 | destreg */
+ 	    if (op_reg_0 & TREG_MEM) {
+-		gen_gotpcrel(r, sym, c);
++		/* relaxable if "mov" and orex() did emit a REX prefix */
++		gen_gotpcrel(r, sym, c, opcode == 0x8b && (ll || REX_BASE(op_reg_0)));
+ 	    } else {
+ 		gen_addrpc32(r, sym, c);
+ 	    }
+@@ -493,7 +500,7 @@ void load(int r, SValue *sv)
+                 } else {
+                     orex(1,0,r,0x8b);
+                     o(0x05 + REG_VALUE(r) * 8); /* mov xx(%rip), r */
+-                    gen_gotpcrel(r, sv->sym, fc);
++                    gen_gotpcrel(r, sv->sym, fc, 1);
+                 }
+ #endif
+             } else if (is64_type(ft)) {
+@@ -592,7 +599,7 @@ void store(int r, SValue *v)
+         && !(v->sym->type.t & (VT_STATIC|VT_TLS))) {
+         /* mov xx(%rip), %r11 */
+         o(0x1d8b4c);
+-        gen_gotpcrel(TREG_R11, v->sym, v->c.i);
++        gen_gotpcrel(TREG_R11, v->sym, v->c.i, 1);
+         fr = TREG_R11 | VT_LVAL;
+     }
+ #endif

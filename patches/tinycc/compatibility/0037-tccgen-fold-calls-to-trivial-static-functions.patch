@@ -1,0 +1,307 @@
+From 592cd3ee81f878bfc9a7807a40f482dce74d4dce Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccgen: fold calls to trivial static functions
+
+A static (inline or not) function whose body is "{ }", "{ return
+<constant>; }" or, for a void function, "{ if (<constant 0>) <stmt> }"
+is folded at its direct call sites, as an optimizing compiler does
+after inlining: the arguments are still evaluated, then dropped, and
+the constant is pushed; the function is not referenced.  The Linux
+kernel relies on that for its IS_ENABLED()-style stubs, whose callers
+reference symbols of the disabled subsystem.
+
+The return expression is probed by parsing it for real with the
+parameters in scope and nocode_wanted set; side effects (stores,
+helper calls, volatile reads, calls that are not folded) are detected
+while parsing at the probe's own nesting level, so dead arms of ?:, &&
+and || and sizeof do not count.  This folds transitively ("return 0 ||
+f(x)" with f folded) and through ({ ... }) expressions.  Names
+starting with "__builtin_" are known; nothing is probed with -g.
+
+The fold is tied to the defining symbol (its token is kept in the
+function type's "c" field): other symbols sharing the type, such as a
+weak alias "extern __typeof(dummy) __stdio_exit __attribute__((weak,
+alias("dummy")))" which the link may resolve to a real function, keep
+their calls.  The result lives in FuncAttr (func_fold, func_fval; the
+func_used bit is reserved for the following patch).
+---
+ tcc.h    |   4 +-
+ tccgen.c | 189 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 189 insertions(+), 4 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 0937dfb..003a707 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -521,7 +521,9 @@ struct FuncAttr {
+     func_dtor   : 1, /* attribute((destructor)) */
+     func_args   : 8, /* PE __stdcall args */
+     func_alwinl : 1, /* always_inline */
+-    xxxx        : 15;
++    func_fold   : 2, /* trivial body: 1 empty (void), 2 'return <const>' */
++    func_fval   : 12, /* the constant + 2048 (see inline_fold_check) */
++    func_used   : 1; /* attribute((used)) */
+ };
+ 
+ /* symbol management */
+diff --git a/tccgen.c b/tccgen.c
+index bf17656..717d822 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -161,9 +161,11 @@ static void gen_inline_functions(TCCState *s);
+ static void free_inline_functions(TCCState *s);
+ static void skip_or_save_block(TokenString **str);
+ static void replay_end(TokenString *str);
++static void fold_side_effect(void);
+ static TokenString *dead_loop_tokens(int kind, int *dead);
+ static TokenString *switch_fold_scan(struct switch_t *sw);
+ static int case_cmp(uint64_t a, uint64_t b);
++static void inline_fold_check(Sym *sym, TokenString *str);
+ static void gv_dup(void);
+ static int get_temp_local_var(int size,int align,int *r2);
+ static void cast_error(CType *st, CType *dt);
+@@ -1205,6 +1207,7 @@ ST_FUNC Sym *external_helper_sym(int v)
+ /* push a reference to an helper function (such as memmove) */
+ ST_FUNC void vpush_helper_func(int v)
+ {
++    fold_side_effect();
+     vpushsym(&func_old_type, external_helper_sym(v));
+ }
+ 
+@@ -1884,6 +1887,8 @@ ST_FUNC int gv(int rc)
+     int r, r2, r_ok, r2_ok, rc2, bt;
+     int bit_pos, bit_size, size, align;
+ 
++    if ((vtop->r & VT_LVAL) && (vtop->type.t & VT_VOLATILE))
++        fold_side_effect();
+     /* NOTE: get_reg can modify vstack[] */
+     if (vtop->type.t & VT_BITFIELD) {
+         CType type;
+@@ -3786,6 +3791,8 @@ ST_FUNC void vstore(void)
+ {
+     int sbt, dbt, ft, r, size, align, bit_size, bit_pos, delayed_cast;
+ 
++    fold_side_effect();
++
+     ft = vtop[-1].type.t;
+     sbt = vtop->type.t & VT_BTYPE;
+     dbt = ft & VT_BTYPE;
+@@ -6432,7 +6439,7 @@ special_math_val:
+         } else if (tok == '(') {
+             SValue ret;
+             Sym *sa;
+-            int nb_args, ret_nregs, ret_align, regsize, variadic;
++            int nb_args, ret_nregs, ret_align, regsize, variadic, fold = 0;
+             TokenString *p, *p2;
+ 
+             /* function call  */
+@@ -6538,9 +6545,30 @@ special_math_val:
+ 
+             next();
+             vcheck_cmp(); /* the generators don't like VT_CMP on vtop */
+-            gfunc_call(nb_args);
++            if (s->f.func_fold && ret_nregs > 0
++                && (vtop[-nb_args].r & (VT_VALMASK | VT_LVAL | VT_SYM))
++                   == (VT_CONST | VT_SYM)
++                && vtop[-nb_args].sym->v == s->c) {
++                /* direct call of the trivial function itself (see
++                   inline_fold_check; not of a weak alias or another
++                   declaration sharing its type): the arguments were
++                   evaluated, there is no call */
++                fold = s->f.func_fold;
++                for (n = 0; n <= nb_args; n++)
++                    vpop();
++                vpushi(0);
++                vtop->type = s->type;
++                if (fold == 2)
++                    vtop->c.i = (int)s->f.func_fval - 2048;
++            }
++            if (fold) {
++            } else {
++                fold_side_effect();
++                gfunc_call(nb_args);
++            }
+ 
+-            if (ret_nregs < 0) {
++            if (fold) {
++            } else if (ret_nregs < 0) {
+                 vsetc(&ret.type, ret.r, &ret.c);
+ #ifdef TCC_TARGET_RISCV64
+                 arch_transfer_ret_regs(1);
+@@ -7132,6 +7160,16 @@ static void replay_end(TokenString *str)
+     next();
+ }
+ 
++/* inline_fold_check() parses a return expression without code at
++   nocode_wanted == fold_probe_level; anything with a side effect met at
++   exactly that level (not in a dead arm of ?:, &&, ||, nor in sizeof)
++   makes the function unfoldable */
++static int fold_probe_level = -1, fold_impure;
++static void fold_side_effect(void)
++{
++    if (nocode_wanted == fold_probe_level)
++        fold_impure = 1;
++}
+ 
+ /* Loops in unreachable code.  tcc resumes code generation at a loop head
+    (gind()) because a label in the body may be the target of a goto from
+@@ -7392,6 +7430,149 @@ static TokenString *switch_fold_scan(struct switch_t *sw)
+     return body;
+ }
+ 
++/* A 'static inline' function whose body is empty or 'return <constant>;'
++   is folded at its call sites, as an optimizing compiler does after
++   inlining.  The Linux kernel relies on that for its IS_ENABLED()-style
++   stubs ("static inline bool efi_enabled(int f) { return false; }"): the
++   callers they guard reference symbols of the disabled subsystem.  Only an
++   expression made of constants, enum values, types and operators without
++   side effects qualifies; the result is kept in the function type's
++   attributes (func_fold/func_fval) and used in unary(). */
++/* Probe of an expression of a function body for inline_fold_check():
++   from the current token up to 'term' (';' or ')' at nesting level 0).
++   A quick look rejects statements (except ({..}) ones), asm and unknown
++   names (parsing must not fail; the parameters of 'fs' are put in scope,
++   member names follow '.', '->' or ',', tags struct/union/enum, builtins
++   are known).  Then it is parsed without code or data; 1 is returned if
++   the value is a constant (cast to 'cast_to' if given) in *val and
++   nothing had a side effect; the terminator is the current token. */
++static int fold_probe_expr(Sym *fs, CType *cast_to, int term, int64_t *val)
++{
++    Sym *sa, *top;
++    int t, t0, prev = 0, level = 0, ok = 1, saved_nocode, saved_loc, r = 0;
++    const int *p;
++    CValue c0;
++    struct scope probe_scope, *saved_scope;
++
++    p = macro_ptr, t0 = tok, c0 = tokc;
++    for (;;) {
++        t = tok;
++        if (t == TOK_EOF || (t == '}' && level == 0) || (t == '{' && prev != '(')
++            || t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3 || t == TOK_GOTO) {
++            ok = 0;
++            break;
++        }
++        if (level == 0 && t == term)
++            break;
++        if (t == '(' || t == '{')
++            level++;
++        else if (t == ')' || t == '}')
++            level--;
++        if (t >= TOK_UIDENT && !sym_find(t)
++            && strncmp(get_tok_str(t, NULL), "__builtin_", 10)
++            && !(prev == '.' || prev == TOK_ARROW || prev == ','
++                 || prev == TOK_STRUCT || prev == TOK_UNION || prev == TOK_ENUM)) {
++            for (sa = fs->next; sa && (sa->v & ~SYM_FIELD) != t; sa = sa->next)
++                ;
++            if (!sa) {
++                ok = 0;
++                break;
++            }
++        }
++        prev = t;
++        next();
++    }
++    if (!ok)
++        return 0;
++    macro_ptr = p, tok = t0, tokc = c0;
++    top = global_stack;
++    local_scope++;
++    for (sa = fs->next; sa; sa = sa->next)
++        if (sa->v & ~SYM_FIELD)
++            sym_push(sa->v & ~SYM_FIELD, &sa->type, VT_LOCAL | VT_LVAL, 0);
++    saved_nocode = nocode_wanted, saved_loc = loc, saved_scope = cur_scope;
++    memset(&probe_scope, 0, sizeof probe_scope);
++    cur_scope = &probe_scope;
++    nocode_wanted = 1;
++    fold_probe_level = 1, fold_impure = 0;
++    gexpr();
++    if (!fold_impure && tok == term
++        && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
++        if (cast_to)
++            gen_cast(cast_to);
++        if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
++            *val = vtop->c.i, r = 1;
++    }
++    vpop();
++    fold_probe_level = -1;
++    nocode_wanted = saved_nocode, loc = saved_loc, cur_scope = saved_scope;
++    sym_pop(&global_stack, top, 0);
++    local_scope--;
++    return r;
++}
++
++/* A function whose body is trivial is folded at its call sites, as an
++   optimizing compiler does after inlining: '{ }', '{ return <constant>; }'
++   or, for a void function, '{ if (<constant 0>) <statement> }'.  The
++   Linux kernel relies on that for its IS_ENABLED()-style stubs ("static
++   inline bool efi_enabled(int f) { return false; }"): the callers they
++   guard reference symbols of the disabled subsystem.  The result is kept
++   in the function type's attributes (func_fold/func_fval) together with
++   the token of the defining symbol (fs->c, otherwise -1 for a function
++   type), see unary(): other symbols sharing the type must not be folded,
++   e.g. musl's "extern __typeof(dummy) __stdio_exit __attribute__((weak,
++   alias("dummy")))", which the link may resolve to a real function.
++   Called with the body saved in 'str' (static and inline functions). */
++static void inline_fold_check(Sym *sym, TokenString *str)
++{
++    Sym *fs = sym->type.ref;
++    CType *rt = &fs->type;
++    int bt = rt->t & VT_BTYPE;
++    int64_t v;
++
++    if (debug_modes || !(bt == VT_VOID || bt == VT_PTR || is_integer_btype(bt)))
++        return;
++    unget_tok(0);
++    begin_macro(str, 0);
++    next();                             /* '{' */
++    next();
++    if (tok == '}') {
++        if (bt == VT_VOID)
++            fs->f.func_fold = 1;
++    } else if (tok == TOK_RETURN && bt != VT_VOID) {
++        next();
++        if (fold_probe_expr(fs, rt, ';', &v) && v >= -2048 && v < 2048) {
++            next();
++            if (tok == '}') {
++                next();
++                if (tok == TOK_EOF) {
++                    fs->f.func_fold = 2;
++                    fs->f.func_fval = (int)v + 2048;
++                }
++            }
++        }
++    } else if (tok == TOK_IF && bt == VT_VOID) {
++        next();
++        if (tok == '(') {
++            next();
++            if (fold_probe_expr(fs, NULL, ')', &v) && v == 0) {
++                next();                 /* the statement, never executed */
++                skip_or_save_block(NULL);
++                if (tok == ';')
++                    next();
++                if (tok == '}') {
++                    next();
++                    if (tok == TOK_EOF)
++                        fs->f.func_fold = 1;
++                }
++            }
++        }
++    }
++    if (fs->f.func_fold)
++        fs->c = sym->v;
++    replay_end(str);
++}
++
+ static int case_cmp(uint64_t a, uint64_t b)
+ {
+     if (cur_switch->sv.type.t & VT_UNSIGNED)
+@@ -9462,6 +9643,8 @@ static int decl(int l)
+                     dynarray_add(&tcc_state->inline_fns,
+ 				 &tcc_state->nb_inline_fns, fn);
+                     skip_or_save_block(&fn->func_str);
++                    if (sym->type.t & VT_STATIC)
++                        inline_fold_check(sym, fn->func_str);
+                 } else {
+                     /* compute text section */
+                     cur_text_section = text_section;

@@ -1,0 +1,5 @@
+The patches in this directory modify the Linux kernel and are derivative works
+of it.  They are licensed under the kernel's license, GPL-2.0-only (the text is
+in ../../LICENSES/GPL-2.0-only.txt), not under the BSD-2-Clause license of the
+rest of tinycc-os-kernel.  The `series` file and the directory layout are
+BSD-2-Clause like the rest of the repository.

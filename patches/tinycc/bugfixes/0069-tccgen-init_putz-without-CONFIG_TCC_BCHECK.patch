@@ -1,0 +1,33 @@
+From 18d70797155fcfd7ffeed860828955108b4cb21d Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 22 Oct 2026 12:37:12 +0300
+Subject: [PATCH] tccgen: init_putz without CONFIG_TCC_BCHECK
+
+The inline zero-filling of local initializers tested do_bounds_check,
+a field that only exists with CONFIG_TCC_BCHECK; a tcc configured with
+--config-bcheck=no (the guest tcc of tinycc-os-kernel) did not build.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+---
+ tccgen.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index d243573..53553cb 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -8457,7 +8457,13 @@ static void init_putz(init_params *p, unsigned long c, int size)
+     if (p->sec) {
+         /* nothing to do because globals are already set to zero */
+ #ifdef TCC_TARGET_NATIVE_STRUCT_COPY
+-    } else if (!tcc_state->do_bounds_check) {
++    } else if (
++#ifdef CONFIG_TCC_BCHECK
++               !tcc_state->do_bounds_check
++#else
++               1
++#endif
++               ) {
+         /* inline, like GCC: no call into a libc the code may not have */
+         vseti(VT_LOCAL, c);
+         vpushi(0);

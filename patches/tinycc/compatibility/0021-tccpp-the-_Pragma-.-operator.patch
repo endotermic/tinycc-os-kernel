@@ -1,0 +1,75 @@
+From 50f0432abc8721ad5e8b8b84f570527009e13dbb Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccpp: the _Pragma("...") operator
+
+It was not implemented at all ("identifier expected").  next() now
+wraps the former next() (renamed next1()) and consumes _Pragma(...):
+GCC and clang pragmas are ignored silently like "#pragma GCC
+diagnostic", anything else gets an "ignored" warning.
+_Pragma("pack(...)") is not applied yet.
+---
+ tccpp.c  | 30 +++++++++++++++++++++++++++++-
+ tcctok.h |  1 +
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index 214e9cd..4fab38c 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3467,7 +3467,7 @@ static int macro_subst(
+ }
+ 
+ /* return next token with macro substitution */
+-ST_FUNC void next(void)
++static void next1(void)
+ {
+     int t;
+     while (macro_ptr) {
+@@ -3524,6 +3524,34 @@ convert:
+     }
+ }
+ 
++/* the _Pragma("...") operator: GCC/clang diagnostic pragmas are ignored
++   (as #pragma GCC diagnostic is), anything else is reported as ignored */
++static void pragma_operator(void)
++{
++    char buf[256];
++    next1();
++    if (tok != '(')
++        expect("'('");
++    next1();
++    if (tok != TOK_STR && tok != TOK_PPSTR)
++        expect("string constant");
++    pstrcpy(buf, sizeof buf, tokc.str.data);
++    next1();
++    if (tok != ')')
++        expect("')'");
++    if (strncmp(buf, "GCC ", 4) && strncmp(buf, "clang ", 6))
++        tcc_warning_c(warn_all)("_Pragma(\"%s\") ignored", buf);
++}
++
++ST_FUNC void next(void)
++{
++    next1();
++    while (tok == TOK___PRAGMA && !(parse_flags & PARSE_FLAG_ASM_FILE)) {
++        pragma_operator();
++        next1();
++    }
++}
++
+ /* push back current token and set current token to 'last_tok'. Only
+    identifier case handled for labels. */
+ ST_INLN void unget_tok(int last_tok)
+diff --git a/tcctok.h b/tcctok.h
+index a327bac..0b0b04e 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -43,6 +43,7 @@
+ 
+      DEF(TOK_GENERIC, "_Generic")
+      DEF(TOK_STATIC_ASSERT, "_Static_assert")
++     DEF(TOK___PRAGMA, "_Pragma")
+ 
+      DEF(TOK_VOID, "void")
+      DEF(TOK_CHAR, "char")

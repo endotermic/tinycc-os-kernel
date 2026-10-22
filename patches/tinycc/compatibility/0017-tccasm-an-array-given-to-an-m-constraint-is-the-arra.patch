@@ -1,0 +1,28 @@
+From a3ebbff383b1f13b40322e9ff96d1c6674ce236c Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:08 +0300
+Subject: [PATCH] tccasm: an array given to an "m" constraint is the array
+ object
+
+It was substituted as its address constant ("$arr"), which produced
+"bad operand with opcode 'btl'" for [var] "m"(array).  Substitute a
+memory reference ("arr(%rip)") instead.
+---
+ tccasm.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index 7f1984e..f51627a 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1468,6 +1468,10 @@ static void subst_asm_operands(ASMOperand *operands, int nb_operands,
+                     sv.r = op->reg;
+                     if (op->is_memory)
+                       sv.r |= VT_LVAL;
++                } else if ((sv.type.t & VT_ARRAY) && strchr(op->constraint, 'm')) {
++                    /* an array given to a memory constraint denotes the
++                       array object, not its address */
++                    sv.r |= VT_LVAL;
+                 }
+                 subst_asm_operand(out_str, &sv, modifier);
+             }

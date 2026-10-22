@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# gen_init_cpio manifest of the smoke-test image: only the libc-free init (userland/init.c),
+# which prints a banner with uname and reboots, so QEMU (-no-reboot) exits after ~2 s.
+# ${INIT} is expanded by gen_init_cpio from the environment (scripts/build.sh).
+# /dev/console must exist so the kernel can give PID 1 stdin/stdout/stderr.
+dir  /dev          0755 0 0
+nod  /dev/console  0600 0 0 c 5 1
+file /init         ${INIT} 0755 0 0

@@ -1,0 +1,86 @@
+From ea2be9149f5c22135d327ef0ed017b6f2b858227 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] x86_64-gen: inline bsr/bsf for __builtin_clz, ctz and ffs
+
+Non-constant __builtin_clz/ctz/ffs{,l,ll} are generated inline on
+x86_64 (bsr/bsf; "xor $bits-1" for clz; jnz / mov $-1 / add $1 for
+ffs(0) == 0) instead of calling the libtcc1 function, which does not
+exist in freestanding code such as the Linux kernel.  popcount still
+calls.  Verified against GCC for 32- and 64-bit values including
+ffs(0).
+---
+ tcc.h        |  1 +
+ tccgen.c     | 10 ++++++++++
+ x86_64-gen.c | 25 +++++++++++++++++++++++++
+ 3 files changed, 36 insertions(+)
+
+diff --git a/tcc.h b/tcc.h
+index 003a707..2875514 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1701,6 +1701,7 @@ ST_FUNC void gen_opl(int op);
+ ST_FUNC void gen_vla_result(int addr);
+ #endif
+ ST_FUNC void gen_cvt_sxtw(void);
++ST_FUNC void gen_bitscan(int kind, int bits, int r);
+ ST_FUNC void gen_cvt_csti(int t);
+ #endif
+ 
+diff --git a/tccgen.c b/tccgen.c
+index 9487eb0..7f407af 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6008,6 +6008,16 @@ ST_FUNC void unary(void)
+         } else {
+             int kind = (t - TOK_builtin_clz) / 3;
+             int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
++#ifdef TCC_TARGET_X86_64
++            if (kind != 2) {
++                /* bsr/bsf inline: no library function (e.g. in the kernel) */
++                gen_cast_s(bits == 64 ? VT_LLONG | VT_UNSIGNED : VT_INT | VT_UNSIGNED);
++                r = gv(RC_INT);
++                gen_bitscan(kind, bits, r);
++                vtop->type.t = VT_INT;
++                break;
++            }
++#endif
+             (void)kind, (void)bits;
+             vpush_helper_func(t);
+             vswap();
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index e3f0226..a9347f7 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -627,6 +627,31 @@ void store(int r, SValue *v)
+     gen_modrm_impl(opc, ll, r, fr, v->sym, fc);
+ }
+ 
++/* __builtin_clz (kind 0), ctz (1), ffs (3) of the 32/64-bit value in
++   register r; the int result is left in r.  bsr/bsf inline, so that no
++   library function is needed (e.g. in the Linux kernel). */
++ST_FUNC void gen_bitscan(int kind, int bits, int r)
++{
++    int ll = bits == 64;
++    orex(ll, r, r, 0x0f);
++    o(kind == 0 ? 0xbd : 0xbc);                 /* bsr / bsf r,r */
++    o(0xc0 | REG_VALUE(r) << 3 | REG_VALUE(r));
++    if (kind == 0) {
++        orex(0, r, 0, 0x83);                    /* xor $bits-1,r */
++        o(0xf0 | REG_VALUE(r));
++        g(bits - 1);
++    } else if (kind == 3) {
++        /* ffs(0) == 0: bsf left ZF set */
++        g(0x75);                                /* jnz over the mov */
++        g(REG_VALUE(r) != r ? 6 : 5);
++        orex(0, r, 0, 0xb8 + REG_VALUE(r));     /* mov $-1,r */
++        gen_le32(-1);
++        orex(0, r, 0, 0x83);                    /* add $1,r */
++        o(0xc0 | REG_VALUE(r));
++        g(1);
++    }
++}
++
+ /* 'is_jmp' is '1' if it is a jump */
+ static void gcall_or_jmp(int is_jmp)
+ {

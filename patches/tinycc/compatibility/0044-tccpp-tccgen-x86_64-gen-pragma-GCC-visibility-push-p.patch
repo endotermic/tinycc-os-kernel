@@ -1,0 +1,157 @@
+From c97c2db06a74026b85e037c172e22c5c1e6f8a5f Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 21 Oct 2026 16:20:09 +0300
+Subject: [PATCH] tccpp, tccgen, x86_64-gen: #pragma GCC visibility push/pop
+
+The pragma was silently ignored.  File-scope declarations without an
+explicit visibility attribute now get the pragma's visibility, and
+hidden or internal symbols are addressed like static ones on x86_64
+("lea sym(%rip)", direct RIP-relative loads and stores, R_X86_64_PC32)
+instead of through the GOT.
+
+The Linux kernel's position independent startup code force-includes a
+header with "#pragma GCC visibility push(hidden)"; with the GOTPCREL
+form the non-PIE vmlinux link relaxed the access to an absolute
+address and the kernel touched a virtual address before paging was
+set up (triple fault without console output).
+---
+ tcc.h        |  4 ++++
+ tccgen.c     |  3 +++
+ tccpp.c      | 39 +++++++++++++++++++++++++++++++++++++++
+ x86_64-gen.c | 16 +++++++++++++---
+ 4 files changed, 59 insertions(+), 3 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 0852ce2..0052be8 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -883,6 +883,10 @@ struct TCCState {
+     /* #pragma pack stack */
+     int pack_stack[PACK_STACK_SIZE];
+     int *pack_stack_ptr;
++    /* #pragma GCC visibility push(..)/pop: default ELF visibility of
++       the following file-scope declarations (0 = STV_DEFAULT) */
++    unsigned char vis_stack[PACK_STACK_SIZE];
++    int vis_stack_ptr;
+     char **pragma_libs;
+     int nb_pragma_libs;
+ 
+diff --git a/tccgen.c b/tccgen.c
+index 5d6bfa7..79192ab 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9637,6 +9637,9 @@ static int decl(int l)
+ 	    ad = adbase;
+             type_decl(&type, &ad, &v, l == VT_CMP ? TYPE_DIRECT | TYPE_PARAM : TYPE_DIRECT);
+             /*ptype("decl", &type, v);*/
++            /* #pragma GCC visibility push(..) */
++            if (l == VT_CONST && !ad.a.visibility && tcc_state->vis_stack_ptr)
++                ad.a.visibility = tcc_state->vis_stack[tcc_state->vis_stack_ptr];
+             /* GCC: __attribute__((transparent_union)) may follow the
+                declarator ("typedef union {..} name __attribute__((..));")
+                or precede the type; it belongs to the union type */
+diff --git a/tccpp.c b/tccpp.c
+index e2ee456..9e70075 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -1743,6 +1743,44 @@ static int pragma_parse(TCCState *s1)
+         if (tok != ')')
+             goto pragma_err;
+ 
++    } else if (!strcmp(get_tok_str(tok, NULL), "GCC")) {
++        /* #pragma GCC visibility push(hidden|default|internal|protected)
++           #pragma GCC visibility pop : the Linux kernel includes it for
++           its position independent code; hidden symbols are accessed
++           directly (RIP-relative on x86_64), not through the GOT */
++        next();
++        if (tok != TOK_VISIBILITY1)
++            goto pragma_ignored;
++        next();
++        if (tok == TOK_ASM_pop) {
++            if (s1->vis_stack_ptr <= 0)
++                tcc_error("unbalanced #pragma GCC visibility pop");
++            s1->vis_stack_ptr--;
++        } else if (tok == TOK_ASM_push) {
++            const char *p;
++            int vis;
++            next();
++            skip('(');
++            p = get_tok_str(tok, NULL);
++            if (!strcmp(p, "default"))
++                vis = STV_DEFAULT;
++            else if (!strcmp(p, "hidden"))
++                vis = STV_HIDDEN;
++            else if (!strcmp(p, "internal"))
++                vis = STV_INTERNAL;
++            else if (!strcmp(p, "protected"))
++                vis = STV_PROTECTED;
++            else
++                goto pragma_err;
++            next();
++            if (tok != ')')
++                goto pragma_err;
++            if (s1->vis_stack_ptr >= PACK_STACK_SIZE - 1)
++                tcc_error("out of visibility stack");
++            s1->vis_stack[++s1->vis_stack_ptr] = vis;
++        } else
++            goto pragma_err;
++
+     } else if (tok == TOK_comment) {
+         char *p; int t;
+         next();
+@@ -1765,6 +1803,7 @@ static int pragma_parse(TCCState *s1)
+         }
+ 
+     } else {
++    pragma_ignored:
+         tcc_warning_c(warn_all)("#pragma %s ignored", get_tok_str(tok, &tokc));
+         return 0;
+     }
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index a9347f7..e744591 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -283,6 +283,16 @@ ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
+    with a REX prefix: the relocation is then R_X86_64_REX_GOTPCRELX, which
+    allows GNU ld to turn the load into "lea sym(%rip),%reg" and to drop the
+    GOT entry (needed e.g. by the Linux kernel, whose link forbids a GOT) */
++/* a symbol that cannot be preempted: static, or hidden/internal
++   visibility (#pragma GCC visibility push(hidden) in the Linux kernel's
++   position independent code); accessed directly, not through the GOT,
++   which the linker may turn into an absolute address */
++static int sym_is_local(Sym *s)
++{
++    return (s->type.t & VT_STATIC)
++        || s->a.visibility == STV_HIDDEN || s->a.visibility == STV_INTERNAL;
++}
++
+ static void gen_gotpcrel(int r, Sym *sym, int c, int relax)
+ {
+ #ifdef TCC_TARGET_PE
+@@ -393,7 +403,7 @@ void load(int r, SValue *sv)
+ #ifndef TCC_TARGET_PE
+     /* we use indirect access via got */
+     if ((fr & (VT_VALMASK|VT_SYM|VT_LVAL)) == (VT_CONST|VT_SYM|VT_LVAL)
+-        && !(sv->sym->type.t & (VT_STATIC|VT_TLS))) {
++        && !sym_is_local(sv->sym) && !(sv->sym->type.t & VT_TLS)) {
+         /* use the result register as a temporal register */
+         int tr = r | TREG_MEM;
+         if (is_float(ft)) {
+@@ -493,7 +503,7 @@ void load(int r, SValue *sv)
+                     /* add $tpoff,r */
+                     orex(1,0,r,0x81), oad(0xC0 | REG_VALUE(r), 0);
+                     greloca(cur_text_section, sv->sym, ind - 4, R_X86_64_TPOFF32, fc);
+-                } else if (sv->sym->type.t & VT_STATIC) {
++                } else if (sym_is_local(sv->sym)) {
+                     orex(1,0,r,0x8d);
+                     o(0x05 + REG_VALUE(r) * 8); /* lea xx(%rip), r */
+                     gen_addrpc32(fr, sv->sym, fc);
+@@ -596,7 +606,7 @@ void store(int r, SValue *v)
+ #ifndef TCC_TARGET_PE
+     /* we need to access the variable via got */
+     if ((fr & (VT_VALMASK|VT_SYM)) == (VT_CONST|VT_SYM)
+-        && !(v->sym->type.t & (VT_STATIC|VT_TLS))) {
++        && !sym_is_local(v->sym) && !(v->sym->type.t & VT_TLS)) {
+         /* mov xx(%rip), %r11 */
+         o(0x1d8b4c);
+         gen_gotpcrel(TREG_R11, v->sym, v->c.i, 1);
