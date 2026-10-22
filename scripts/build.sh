@@ -55,6 +55,18 @@ need_src() {
     done
 }
 fail() { tail -n 25 "$1" >&2; die "$2 (log: $1)"; }
+# configured FILE STRING...: FILE (a configure output) exists and records every STRING.  The
+# configure scripts write absolute paths (CC, srcdir, prefix) into config.mak / config.status;
+# when the repository or its build tree has moved, those files exist but point to nowhere, so
+# the steps re-run configure instead of trusting that the file is there.
+configured() {
+    f=$1; shift
+    [ -f "$f" ] || return 1
+    for sv; do grep -qF -- "$sv" "$f" && continue
+        echo "   $f was configured for another path: re-running configure"
+        rm -f "$f"; return 1
+    done
+}
 # "<upstream commit>+<n> patches", e.g. "e23dabe+53p": tcc's version suffix (see step_host_tcc)
 tcc_tag() { echo "$(git -C "$TCCSRC" rev-parse --short base)+$(git -C "$TCCSRC" rev-list --count base..HEAD)p"; }
 
@@ -179,7 +191,8 @@ step_musl() {
     mkdir -p "$MUSLB"
     if [ ! -f "$MUSLP/lib/libc.a" ]; then
         cd "$MUSLB"
-        [ -f config.mak ] || "$MUSLSRC/configure" CC="$TCC" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
+        configured config.mak "CC = $TCC" "srcdir = $MUSLSRC" "prefix = $MUSLP" \
+            || "$MUSLSRC/configure" CC="$TCC" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
             || fail "$LOGS/musl-configure.log" "musl configure failed"
         srcdir=$(sed -n 's/^srcdir = //p' config.mak)
         malloc=$(sed -n 's/^MALLOC_DIR = //p' config.mak)
@@ -269,7 +282,7 @@ step_guest_tcc() {
         echo "$(tcc_tag)" > "$G/tcc-tag"
     fi
     cd "$G/src"
-    if [ ! -f config.mak ]; then
+    if ! configured config.mak "CC=$MUSL_TCC"; then
         ./configure --cc="$MUSL_TCC" --ar=ar --prefix=/usr --tccdir=/usr/lib/tcc --config-musl \
             --sysincludepaths='{B}/include:/usr/include' --libpaths='{B}:/usr/lib' \
             --crtprefix=/usr/lib --tcc-switches=-static --extra-cflags=-O2 \
@@ -306,7 +319,8 @@ step_guest_make() {
     msg "guest make: GNU make $(lock_ref make), static, musl, compiled by the host tcc -> $M/make"
     cd "$M"
     # no NLS, no guile, no dynamic loading of extensions: a static musl binary
-    [ -f config.status ] || "$SRC/make/configure" CC="$MUSL_TCC" --disable-nls --without-guile \
+    configured config.status "CC=$MUSL_TCC" "srcdir='$SRC/make'" \
+        || "$SRC/make/configure" CC="$MUSL_TCC" --disable-nls --without-guile \
         --disable-dependency-tracking --disable-load >"$LOGS/make-configure.log" 2>&1 \
         || fail "$LOGS/make-configure.log" "GNU make configure failed"
     : >"$LOGS/make.log"

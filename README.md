@@ -48,6 +48,9 @@ step per compiled file for the builds). The totals for the kernel and busybox ba
 estimates on the first run and are corrected from the real count afterwards (`make -n`
 cannot tell for those two). Without a terminal, milestone lines are printed instead;
 `PROGRESS=0` turns the bars off. Full build output is in `build/<arch>/logs/`.
+A build tree survives moving or renaming the repository: the steps re-run `configure` for
+musl, the guest tcc and GNU make when their `config.mak`/`config.status` record another path,
+and Kbuild recompiles what its dependency files point at.
 
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
