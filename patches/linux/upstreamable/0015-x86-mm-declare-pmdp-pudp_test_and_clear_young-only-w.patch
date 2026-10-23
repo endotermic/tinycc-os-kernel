@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:01:36 +0300
+Subject: [PATCH] x86/mm: declare pmdp/pudp_test_and_clear_young() only where
+ they are defined
+
+arch/x86/mm/pgtable.c defines pmdp_test_and_clear_young() under
+CONFIG_TRANSPARENT_HUGEPAGE || CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG and
+pudp_test_and_clear_young() under CONFIG_TRANSPARENT_HUGEPAGE, but
+asm/pgtable.h declares both unconditionally and sets
+__HAVE_ARCH_PMDP_TEST_AND_CLEAR_YOUNG, which hides the generic stub.  On
+32-bit x86 (two-level page tables select neither option) the arch thus
+declares a function it never defines; clear_refs_pte_range()'s THP branch
+references it, dead code that an optimizing compiler removes and a compiler
+that keeps it (tinycc, or gcc -O0) turns into an undefined reference.
+
+Put the declarations under the conditions of their definitions so that the
+generic stub applies otherwise.  No change for configurations that define
+them.
+
+Assisted-by: LLM
+---
+ arch/x86/include/asm/pgtable.h | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/arch/x86/include/asm/pgtable.h b/arch/x86/include/asm/pgtable.h
+index d551120a7..91e73f1bc 100644
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1302,11 +1302,19 @@ extern int pudp_set_access_flags(struct vm_area_struct *vma,
+ 				 unsigned long address, pud_t *pudp,
+ 				 pud_t entry, int dirty);
+ 
++/*
++ * Defined in pgtable.c under the same conditions; otherwise the generic
++ * pmdp_test_and_clear_young() stub applies (the callers are dead code then).
++ */
++#if defined(CONFIG_TRANSPARENT_HUGEPAGE) || defined(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG)
+ #define __HAVE_ARCH_PMDP_TEST_AND_CLEAR_YOUNG
+ bool pmdp_test_and_clear_young(struct vm_area_struct *vma,
+ 		unsigned long addr, pmd_t *pmdp);
++#endif
++#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+ bool pudp_test_and_clear_young(struct vm_area_struct *vma,
+ 		unsigned long addr, pud_t *pudp);
++#endif
+ 
+ #define __HAVE_ARCH_PMDP_CLEAR_YOUNG_FLUSH
+ bool pmdp_clear_flush_young(struct vm_area_struct *vma,

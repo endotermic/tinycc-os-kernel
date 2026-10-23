@@ -1,0 +1,428 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:02:26 +0300
+Subject: [PATCH] i386-asm: assembler forms of the 32-bit kernel, musl and
+ busybox
+
+Found by building the 32-bit kernel, musl and busybox for i386:
+
+- clobbers: "rax", "rcx", "rdx" are the 32-bit registers in 32-bit code
+  (the kernel's shared x86 headers), a leading '%' is skipped ("%eax",
+  busybox);
+- mov between a segment register and memory infers a 16-bit move
+  ("mov PT_FS(%esp), %fs"), and the store form never gets the 0x66
+  prefix, like GNU as;
+- a segment register name as a statement is its prefix byte
+  ("ds;ds;ds;int $0x80" in the vDSO's ALTERNATIVE), alone or before an
+  instruction;
+- ".previous" after a ".text" with no ".section" yet returns to .text;
+- ud2a, sysenter, sysexit; rdpid and invpcid with a 32-bit register;
+- "call *%gs:16" (musl's system call): the '*' survives the re-parse of
+  the operand after the segment prefix (it became a direct call);
+- the x87 constraints "t"/"u" on i386 (musl's math: "fabs" : "+t"(x)),
+  as asm registers 8 and 9 mapped to TREG_ST0, for any floating type;
+- an "m" input operand with no register left for its address is copied
+  to a stack temporary (busybox's comba multiply: three register outputs,
+  two clobbers, two pointer-based memory inputs);
+- tcc's own linker applies R_386_8/PC8 and R_386_16/PC16 for any output
+  format ("jecxz 1f" in musl's sigsetjmp.s).
+
+Fixes 76, 77, 79, 80, 81, 90, 91, 92 and 93 of the tinycc-os-kernel
+project (docs/FIX-LOG.md).
+---
+ i386-asm.c   | 132 +++++++++++++++++++++++++++++++++++++++++----------
+ i386-gen.c   |   2 +-
+ i386-link.c  |  35 ++++++++++----
+ tccasm.c     |   5 +-
+ x86_64-asm.h |   6 +++
+ 5 files changed, 145 insertions(+), 35 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 051e676..4f1e235 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -962,6 +962,19 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+ #ifndef TCC_TARGET_X86_64
+     asm_insn_start = ind;
+ #endif
++    /* a segment register name as an instruction is its override prefix
++       byte, alone ("ds;ds;ds;int $0x80" pads the 32-bit vDSO's system
++       call to the length of "call __kernel_vsyscall") or before the
++       instruction it applies to, like GNU as */
++    if (opcode >= TOK_ASM_es && opcode <= TOK_ASM_gs) {
++        g(segment_prefixes[opcode - TOK_ASM_es]);
++        if (tok == ';' || tok == TOK_LINEFEED)
++            return;
++        opcode = tok;
++        next();
++        asm_opcode(s1, opcode);
++        return;
++    }
+     /* a prefix followed by its instruction on the same line ("rep stosb",
+        "lock cmpxchg", "addr32 call") is assembled with that instruction,
+        where GNU as places it after the size prefixes (or lets it change a
+@@ -1002,6 +1015,11 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+         }
+         parse_operand(s1, pop);
+         if (tok == ':') {
++           /* "%seg:mem": the '*' of an indirect call/jmp came before the
++              segment register ("call *%gs:16", musl's i386 system call
++              through the vDSO pointer) and must survive the re-parse of
++              the memory operand, else it is a direct call to that address */
++           int indir = pop->type & OP_INDIR;
+            if (!(pop->type & OP_SEG) || seg_prefix)
+                tcc_error("incorrect prefix");
+            seg_prefix = segment_prefixes[pop->reg];
+@@ -1010,6 +1028,7 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+            if (!(pop->type & OP_EA)) {
+                tcc_error("segment prefix must be followed by memory reference");
+            }
++           pop->type |= indir;
+         }
+         pop++;
+         nb_ops++;
+@@ -1207,6 +1226,11 @@ again:
+             if ((ops[i].type & OP_REG) && !(op_type[i] & (OP_CL | OP_DX)))
+                 s = reg_to_size[ops[i].type & OP_REG];
+         }
++        /* "mov PT_FS(%esp), %fs" (the kernel's entry_32.S): a move between
++           a segment register and memory is a 16-bit one, like GNU as
++           (push/pop of a segment register keep their own rule below) */
++        if (s == autosize && opcode == TOK_ASM_mov && (alltypes & OP_SEG) && (alltypes & OP_EA))
++            s = 1;
+         if (s == autosize) {
+             /* push/pop of an immediate, segment register or memory operand:
+                the mode's word (.code16gcc: 32 bits) */
+@@ -1233,8 +1257,9 @@ again:
+         opsize = reg_to_size[ops[0].type & OP_REG]; /* jmp/call *%reg */
+     else
+         opsize = sizeless_opsize(opcode, pa->opcode);
+-    if ((alltypes & (OP_CR | OP_DB | OP_TR)) || (pa->opcode == 0x8e && !(pa->instr_type & OPC_0F)))
+-        opsize = -1;
++    if ((alltypes & (OP_CR | OP_DB | OP_TR)) || (pa->opcode == 0x8e && !(pa->instr_type & OPC_0F))
++        || (pa->opcode == 0x8c && !(pa->instr_type & OPC_0F) && (alltypes & OP_EA)))
++        opsize = -1;    /* mov %sreg, mem: a 16-bit store, no prefix (GNU as) */
+ 
+     rex64 = 0;
+     if (!CODE64)
+@@ -1575,11 +1600,11 @@ static inline int constraint_priority(const char *str)
+ 	case 'p':
+             pr = 3;
+             break;
+-#ifdef TCC_TARGET_X86_64
+         case 't':
+         case 'u':
+             pr = 1;
+             break;
++#ifdef TCC_TARGET_X86_64
+         case 'x':
+             pr = 3;
+             break;
+@@ -1678,18 +1703,22 @@ ST_FUNC int asm_parse_regvar (int t)
+ #define REG_OUT_MASK 0x01
+ #define REG_IN_MASK  0x02
+ 
++/* "t"/"u" are st(0)/st(1) of the x87 stack (long double operands; musl's
++   i386 math: "fabs" : "+t"(x)); x86-64 only: "x" allocates xmm0-7.  ASM_ST0
++   and ASM_ST1 are register numbers of the asm allocator; loads and stores go
++   through the code generator's TREG_ST0 (x87_real()).  On x86-64 TREG_ST0
++   is above the general and xmm registers; on i386 TREG_ST0 is 4, the asm
++   number of %esp, so the x87 pair gets the numbers after %edi. */
+ #ifdef TCC_TARGET_X86_64
+-/* x86-64 only: "x" allocates xmm0-7, "t"/"u" are st(0)/st(1) of the x87
+-   stack (long double operands).  TREG_ST1 is a pseudo register of the asm
+-   allocator only; loads and stores go through TREG_ST0. */
+-#define TREG_ST1 (TREG_ST0 + 1)
+-#define is_x87_reg(r) ((r) == TREG_ST0 || (r) == TREG_ST1)
+-#define asm_load_pass(r) ((r) == TREG_ST0 ? 2 : (r) == TREG_ST1 ? 1 : 0)
++#define ASM_ST0 TREG_ST0
+ #else
+-#define NB_ASM_GREGS NB_ASM_REGS
+-#define is_x87_reg(r) 0
+-#define asm_load_pass(r) 0
++#define NB_ASM_GREGS 8
++#define ASM_ST0 8
+ #endif
++#define ASM_ST1 (ASM_ST0 + 1)
++#define is_x87_reg(r) ((r) == ASM_ST0 || (r) == ASM_ST1)
++#define x87_real(r) (is_x87_reg(r) ? TREG_ST0 : (r))
++#define asm_load_pass(r) ((r) == ASM_ST0 ? 2 : (r) == ASM_ST1 ? 1 : 0)
+ 
+ #define is_reg_allocated(reg) (regs_allocated[reg] & reg_mask)
+ 
+@@ -1841,16 +1870,24 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         case 'D':
+             reg = 7;
+             goto alloc_reg;
+-#ifdef TCC_TARGET_X86_64
+         case 't':
+         case 'u':
+-            /* st(0) / st(1): long double only, "u" only as input */
++            /* st(0) / st(1): on x86-64 long double only (float and double
++               live in xmm registers), on i386 any floating type (the x87
++               is the float unit: musl's "fabs" : "+t"(x) on a double);
++               "u" only as input */
++#ifdef TCC_TARGET_X86_64
+             if ((op->vt->type.t & VT_BTYPE) != VT_LDOUBLE)
+                 tcc_error("asm constraint '%c' needs a long double operand", c);
++#else
++            if (!is_float(op->vt->type.t))
++                tcc_error("asm constraint '%c' needs a floating point operand", c);
++#endif
+             if (c == 'u' && j < nb_outputs)
+                 tcc_error("asm constraint 'u' is only supported for inputs");
+-            reg = c == 't' ? TREG_ST0 : TREG_ST1;
++            reg = c == 't' ? ASM_ST0 : ASM_ST1;
+             goto alloc_reg;
++#ifdef TCC_TARGET_X86_64
+         case 'x':
+             /* any xmm register tcc knows how to load: float or double */
+             if ((op->vt->type.t & VT_BTYPE) != VT_FLOAT
+@@ -1945,6 +1982,19 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+                         if (!(regs_allocated[reg] & REG_IN_MASK))
+                             goto reg_found1;
+                     }
++                    /* no register left for the address: an input of a
++                       scalar type is copied to a stack temporary before
++                       the asm and the temporary is the operand (invisible
++                       for an input; busybox's i386 comba multiply has
++                       three register outputs, two clobbers and two "m"
++                       inputs reached through pointers: eight registers
++                       would be needed).  asm_gen_code() does the copy. */
++                    if (j >= nb_outputs && !op->is_rw
++                        && (op->vt->type.t & VT_BTYPE) != VT_STRUCT
++                        && !is_float(op->vt->type.t)) {
++                        op->is_memory = 2;
++                        break;
++                    }
+                     goto try_next;
+                 reg_found1:
+                     /* now we can reload in the register */
+@@ -1966,6 +2016,34 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         }
+     }
+ 
++    /* "m" inputs that got no register for their address (above): copy the
++       value to a stack temporary, which becomes the operand, before the
++       operand text is substituted.  Every register is free here (the
++       asm statement starts with save_regs(0)); %eax is the scratch. */
++    for(i = nb_outputs; i < nb_operands; i++) {
++        op = &operands[i];
++        if (op->is_memory == 2) {
++            SValue sv, dst;
++            int size, align, w;
++            size = type_size(&op->vt->type, &align);
++            loc = (loc - size) & -4;
++            for (w = 0; w < size; w += 4) {
++                sv = *op->vt;
++                sv.c.i += w;
++                if (size > 4)
++                    sv.type.t = VT_INT;
++                load(TREG_XAX, &sv);
++                dst = sv;
++                dst.r = VT_LOCAL | VT_LVAL;
++                dst.c.i = loc + w;
++                store(TREG_XAX, &dst);
++            }
++            op->vt->r = VT_LOCAL | VT_LVAL;
++            op->vt->c.i = loc;
++            op->is_memory = 0;
++        }
++    }
++
+     /* compute out_reg. It is used to store outputs registers to memory
+        locations references by pointers (VT_LLOCAL case) */
+     *pout_reg = -1;
+@@ -2058,14 +2136,15 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+         if (reg >= TREG_XMM0 && reg <= TREG_XMM7) {
+             cstr_printf(add_str, "%%xmm%d", reg - TREG_XMM0);
+             return;
+-        } else if (reg == TREG_ST0) {
++        }
++#endif
++        if (reg == ASM_ST0) {
+             cstr_cat(add_str, "%st", -1);
+             return;
+-        } else if (reg == TREG_ST1) {
++        } else if (reg == ASM_ST1) {
+             cstr_cat(add_str, "%st(1)", -1);
+             return;
+         }
+-#endif
+ 
+         /* choose register operand size */
+         if ((sv->type.t & VT_BTYPE) == VT_BYTE ||
+@@ -2216,10 +2295,10 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+ 
+ 			sv = *op->vt;
+                         sv.r = (sv.r & ~VT_VALMASK) | out_reg;
+-                        store(op->reg, &sv);
++                        store(x87_real(op->reg), &sv);
+                     }
+                 } else {
+-                    store(op->reg, op->vt);
++                    store(x87_real(op->reg), op->vt);
+                     if (op->is_llong) {
+                         SValue sv;
+                         sv = *op->vt;
+@@ -2270,28 +2349,31 @@ ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str)
+         !strcmp(str, "cc") ||
+ 	!strcmp(str, "flags"))
+         return;
+-#ifdef TCC_TARGET_X86_64
++    if (str[0] == '%')    /* gcc accepts "%eax" too (busybox's tls_pstm_mul_comba.c) */
++        str++;
+     /* x87 and sse clobbers: tcc holds no values in them across the asm
+        (save_regs), so only st(0)/st(1) matter, for the pop accounting */
+     if (!strcmp(str, "st") || !strcmp(str, "st(0)")) {
+-        clobber_regs[TREG_ST0] = 1;
++        clobber_regs[ASM_ST0] = 1;
+         return;
+     }
+     if (!strcmp(str, "st(1)")) {
+-        clobber_regs[TREG_ST1] = 1;
++        clobber_regs[ASM_ST1] = 1;
+         return;
+     }
+     if (!strncmp(str, "st(", 3) || !strncmp(str, "xmm", 3))
+         return;
+-#endif
+     reg = tok_alloc_const(str);
+     if (reg >= TOK_ASM_eax && reg <= TOK_ASM_edi) {
+         reg -= TOK_ASM_eax;
+     } else if (reg >= TOK_ASM_ax && reg <= TOK_ASM_di) {
+         reg -= TOK_ASM_ax;
+-#ifdef TCC_TARGET_X86_64
+     } else if (reg >= TOK_ASM_rax && reg <= TOK_ASM_rdi) {
++        /* also in 32-bit code: gcc takes the 64-bit name of a register
++           as that register (the kernel's shared x86 headers clobber
++           "rax", "rcx", "rdx") */
+         reg -= TOK_ASM_rax;
++#ifdef TCC_TARGET_X86_64
+     } else if ((reg = asm_parse_numeric_reg(reg, &type)) >= 0) {
+ 	;
+ #endif
+diff --git a/i386-gen.c b/i386-gen.c
+index 3effd2c..5fb0915 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -22,7 +22,7 @@
+ 
+ /* number of available registers */
+ #define NB_REGS         5
+-#define NB_ASM_REGS     8
++#define NB_ASM_REGS     10 /* eax..edi + the asm's st(0), st(1), see i386-asm.c */
+ #define CONFIG_TCC_ASM
+ 
+ /* a register can belong to several classes. The classes must be
+diff --git a/i386-link.c b/i386-link.c
+index 822821d..b76b14d 100644
+--- a/i386-link.c
++++ b/i386-link.c
+@@ -66,6 +66,7 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+     switch (reloc_type) {
+ 	case R_386_RELATIVE:
+ 	case R_386_16:
++	case R_386_8:
+ 	case R_386_GLOB_DAT:
+ 	case R_386_JMP_SLOT:
+ 	case R_386_COPY:
+@@ -78,6 +79,7 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+             return AUTO_GOTPLT_ENTRY;
+ 
+ 	case R_386_PC16:
++	case R_386_PC8:
+ 	case R_386_PC32:
+             return AUTO_GOTPLT_ENTRY;
+ 
+@@ -230,17 +232,34 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+             /* we load the got offset */
+             add32le(ptr, get_sym_attr(s1, sym_index, 0)->got_offset);
+             return;
++        /* the 8- and 16-bit relocations of the assembler (".word sym",
++           "jecxz 1f" and the other rel8-only jumps, 16-bit code): applied
++           whatever the output format, with GNU ld's overflow check */
+         case R_386_16:
+-            if (s1->output_format != TCC_OUTPUT_FORMAT_BINARY) {
+-            output_file:
+-                tcc_error_noabort("can only produce 16-bit binary files");
+-            }
+-            write16le(ptr, read16le(ptr) + val);
++            val += read16le(ptr);
++            if (val + 0x8000 > 0x17fff)
++                goto overflow;
++            write16le(ptr, val);
+             return;
+         case R_386_PC16:
+-            if (s1->output_format != TCC_OUTPUT_FORMAT_BINARY)
+-                goto output_file;
+-            write16le(ptr, read16le(ptr) + val - addr);
++            val += (int16_t)read16le(ptr) - addr;
++            if ((int32_t)val != (int16_t)val)
++                goto overflow;
++            write16le(ptr, val);
++            return;
++        case R_386_8:
++            val += *ptr;
++            if (val + 0x80 > 0x17f)
++                goto overflow;
++            *ptr = val;
++            return;
++        case R_386_PC8:
++            val += (int8_t)*ptr - addr;
++            if ((int32_t)val != (int8_t)val) {
++            overflow:
++                tcc_error_noabort("relocation %d at %x truncated to fit (value %x)", type, (unsigned)addr, (unsigned)val);
++            }
++            *ptr = val;
+             return;
+         case R_386_RELATIVE:
+ #ifdef TCC_TARGET_PE
+diff --git a/tccasm.c b/tccasm.c
+index c17107c..e450876 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -2196,8 +2196,11 @@ static void asm_parse_directive(TCCState *s1, int global)
+         { 
+             Section *sec;
+             next();
++            /* like GNU as, the section in force at the start (.text) is
++               the previous one of a file that has not changed sections
++               yet (".text ... .previous" in the kernel's vDSO) */
+             if (!last_text_section)
+-                tcc_error("no previous section referenced");
++                last_text_section = text_section;
+             sec = cur_text_section;
+             use_section1(s1, last_text_section);
+             last_text_section = sec;
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index fe01071..c623220 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -73,6 +73,8 @@ ALT(DEF_ASM_OP1(rdrand, 0x0fc7, 6, OPC_MODRM | OPC_48, OPT_REG64))
+     DEF_ASM_OP1(rdseed, 0x0fc7, 7, OPC_MODRM, OPT_REG32)
+ ALT(DEF_ASM_OP1(rdseed, 0x660fc7, 7, OPC_MODRM, OPT_REG16))
+ ALT(DEF_ASM_OP1(rdseed, 0x0fc7, 7, OPC_MODRM | OPC_48, OPT_REG64))
++    /* rdpid/invpcid: the 32-bit register form of 32-bit code */
++ALT(DEF_ASM_OP1(rdpid, 0xf30fc7, 7, OPC_MODRM, OPT_REG32))
+     DEF_ASM_OP1(rdpid, 0xf30fc7, 7, OPC_MODRM, OPT_REG64)
+ 
+      /* strings */
+@@ -142,6 +144,9 @@ ALT(DEF_ASM_OP2(lzcntw, 0xf30fbd, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT
+      DEF_ASM_OP0(sysretl, 0x0f07)
+      DEF_ASM_OP0L(sysretq, 0x480f07, 0, 0)
+      DEF_ASM_OP0(ud2, 0x0f0b)
++     DEF_ASM_OP0(ud2a, 0x0f0b)
++     DEF_ASM_OP0(sysenter, 0x0f34)
++     DEF_ASM_OP0(sysexit, 0x0f35)
+ 
+      /* NOTE: we took the same order as gas opcode definition order */
+ /* the moffs forms: GNU as uses them for an absolute address in 16- and
+@@ -672,6 +677,7 @@ ALT(DEF_ASM_OP2(cvtsd2si, 0xf20f2d, 0, OPC_MODRM | OPC_48, OPT_EA | OPT_SSE, OPT
+     DEF_ASM_OP1(clflush, 0x0fae, 7, OPC_MODRM, OPT_EA)
+     DEF_ASM_OP1(clflushopt, 0x660fae, 7, OPC_MODRM, OPT_EA)
+     DEF_ASM_OP1(clwb, 0x660fae, 6, OPC_MODRM, OPT_EA)
++ALT(DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG32))
+     DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG64)
+ 
+     /* SSE/SSSE3/SSE4.1/SHA-NI (busybox's SHA1/SHA256 hwaccel asm); the 0x66

@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:02:26 +0300
+Subject: [PATCH] i386-gen: inline 64-bit shifts by a variable count and the
+ bit-scan builtins
+
+A long long shifted by a variable count called __ashldi3/__lshrdi3/
+__ashrdi3, and __builtin_clz/ctz/ffs were library calls on i386 (they
+were inlined for x86_64 only).  Freestanding code such as the kernel's
+vDSO has no such helpers.  Both are inline now: gcc's shld/shrd sequence
+with the test of bit 5 of the count, and bsr/bsf (the 64-bit forms on
+i386 scan the two halves); with -m16 the operand-size prefixes.
+
+Fixes 83 and 87 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-gen.c | 88 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tcc.h      |  3 ++
+ tccgen.c   | 13 +++++++-
+ 3 files changed, 103 insertions(+), 1 deletion(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index 5fb0915..ffe46a9 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -583,6 +583,94 @@ static void gcall_or_jmp(int is_jmp)
+ 
+ static const uint8_t fastcall_regs[3] = { TREG_EAX, TREG_EDX, TREG_ECX };
+ 
++/* __builtin_clz/ctz/ffs inline (bsr/bsf), like the x86_64 backend: no
++   library call in freestanding code.  32-bit value in register r; with
++   -m16 every 32-bit instruction carries the operand size prefix, which the
++   short jump displacements account for (p). */
++ST_FUNC void gen_bitscan(int kind, int bits, int r)
++{
++    int p = !!M16;
++    (void)bits;
++    o66(); o(kind == 0 ? 0xbd0f : 0xbc0f);     /* bsr / bsf r,r */
++    o(0xc0 | r << 3 | r);
++    if (kind == 0) {
++        o66(); o(0xf083 | r << 8); g(31);      /* xor $31,r */
++    } else if (kind == 3) {
++        o(0x75); g(5 + p);                     /* ffs(0) = 0: jnz over the mov */
++        o66(); o(0xb8 + r); gen_le32(-1);      /* mov $-1,r */
++        o66(); o(0xc083 | r << 8); g(1);       /* add $1,r */
++    }
++}
++
++/* the same for a long long value (vtop): %edx:%eax, result in %eax */
++ST_FUNC void gen_bitscan64(int kind)
++{
++    int p = !!M16;
++    gv(RC_IRET);
++    save_reg(TREG_ECX);
++    if (kind == 0) {                           /* clz */
++        o66(); o(0xcabd0f);                    /* bsr %edx,%ecx */
++        o(0x74); g(5 + p);                     /* jz 1f */
++        o66(); o(0xf183); g(31);               /* xor $31,%ecx */
++        o(0xeb); g(9 + 3 * p);                 /* jmp 2f */
++        o66(); o(0xc8bd0f);                    /* 1: bsr %eax,%ecx */
++        o66(); o(0xf183); g(31);               /* xor $31,%ecx */
++        o66(); o(0xc183); g(32);               /* add $32,%ecx */
++    } else if (kind == 1) {                    /* ctz */
++        o66(); o(0xc8bc0f);                    /* bsf %eax,%ecx */
++        o(0x75); g(6 + 2 * p);                 /* jnz 2f */
++        o66(); o(0xcabc0f);                    /* bsf %edx,%ecx */
++        o66(); o(0xc183); g(32);               /* add $32,%ecx */
++    } else {                                   /* ffs */
++        o66(); o(0xc8bc0f);                    /* bsf %eax,%ecx */
++        o(0x75); g(8 + 2 * p);                 /* jnz 2f */
++        o66(); o(0xcabc0f);                    /* bsf %edx,%ecx */
++        o(0x74); g(8 + 3 * p);                 /* jz 3f */
++        o66(); o(0xc183); g(32);               /* add $32,%ecx */
++        o66(); o(0x41);                        /* 2: inc %ecx */
++        o66(); o(0xc889);                      /* mov %ecx,%eax */
++        o(0xeb); g(2 + p);                     /* jmp 4f */
++        o66(); o(0xc031);                      /* 3: xor %eax,%eax */
++        vtop->r = TREG_EAX;                    /* 4: */
++        vtop->r2 = VT_CONST;
++        return;
++    }
++    o66(); o(0xc889);                          /* 2: mov %ecx,%eax */
++    vtop->r = TREG_EAX;
++    vtop->r2 = VT_CONST;
++}
++
++/* long long shift by a variable count, inline like gcc instead of the
++   libtcc1 helpers __ashldi3/__lshrdi3/__ashrdi3 (freestanding code such as
++   the kernel's 32-bit vDSO has no helpers): vtop[-1] is the value, vtop the
++   count; the value goes to %edx:%eax, the count to %cl */
++ST_FUNC void gen_shift64(int op)
++{
++    gv2(RC_IRET, RC_ECX);
++    if (op == TOK_SHL) {
++        o66(); o(0xc2a50f);     /* shld %cl,%eax,%edx */
++        o66(); o(0xe0d3);       /* shl %cl,%eax */
++        o(0x20c1f6);            /* test $32,%cl */
++        o(0x74); g(M16 ? 6 : 4);/* je 1f */
++        o66(); o(0xc289);       /* mov %eax,%edx */
++        o66(); o(0xc031);       /* xor %eax,%eax */
++    } else {
++        o66(); o(0xd0ad0f);     /* shrd %cl,%edx,%eax */
++        o66(); o(op == TOK_SHR ? 0xead3 : 0xfad3); /* shr/sar %cl,%edx */
++        o(0x20c1f6);            /* test $32,%cl */
++        if (op == TOK_SHR) {
++            o(0x74); g(M16 ? 6 : 4);
++            o66(); o(0xd089);   /* mov %edx,%eax */
++            o66(); o(0xd231);   /* xor %edx,%edx */
++        } else {
++            o(0x74); g(M16 ? 7 : 5);
++            o66(); o(0xd089);   /* mov %edx,%eax */
++            o66(); o(0x1ffac1); /* sar $31,%edx */
++        }
++    }
++    vtop--;                     /* 1: the result is in %edx:%eax */
++}
++
+ /* GCC's regparm(N) register assignment (also the default under
+    -mregparm=N): the arguments are taken in order; an integer, pointer or
+    structure argument of w dwords goes into the next w registers while
+diff --git a/tcc.h b/tcc.h
+index edc52d5..8ccb818 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1713,6 +1713,9 @@ ST_FUNC void gen_le32(int c);
+ #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
+ ST_FUNC void gen_addr32(int r, Sym *sym, int c);
+ ST_FUNC void gen_addrpc32(int r, Sym *sym, int c);
++ST_FUNC void gen_shift64(int op);
++ST_FUNC void gen_bitscan(int kind, int bits, int r);
++ST_FUNC void gen_bitscan64(int kind);
+ ST_FUNC void gen_cvt_csti(int t);
+ ST_FUNC void gen_increment_tcov (SValue *sv);
+ #endif
+diff --git a/tccgen.c b/tccgen.c
+index 45b0606..d2e2376 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -2317,6 +2317,10 @@ static void gen_opl(int op)
+                 vswap();
+             lbuild(t);
+         } else {
++#ifdef TCC_TARGET_I386
++            gen_shift64(op);
++            break;
++#endif
+             /* XXX: should provide a faster fallback on x86 ? */
+             switch(op) {
+             case TOK_SAR:
+@@ -6055,10 +6059,17 @@ ST_FUNC void unary(void)
+         } else {
+             int kind = (t - TOK_builtin_clz) / 3;
+             int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
+-#ifdef TCC_TARGET_X86_64
++#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
+             if (kind != 2) {
+                 /* bsr/bsf inline: no library function (e.g. in the kernel) */
+                 gen_cast_s(bits == 64 ? VT_LLONG | VT_UNSIGNED : VT_INT | VT_UNSIGNED);
++#ifdef TCC_TARGET_I386
++                if (bits == 64) {
++                    gen_bitscan64(kind);
++                    vtop->type.t = VT_INT;
++                    break;
++                }
++#endif
+                 r = gv(RC_INT);
+                 gen_bitscan(kind, bits, r);
+                 vtop->type.t = VT_INT;

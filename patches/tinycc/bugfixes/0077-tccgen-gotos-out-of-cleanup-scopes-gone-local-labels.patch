@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:02:26 +0300
+Subject: [PATCH] tccgen: gotos out of cleanup scopes: gone local labels,
+ cleanups registered after the initializer
+
+block_cleanup() tested a pending goto's label with "r & LABEL_FORWARD";
+LABEL_GONE (3, a __label__ of a statement expression that has ended) has
+that bit, so the cleanup code at the scope end followed the label's
+pending nodes that were freed when the label was defined and patched a
+stale jump index: a crash (SIGSEGV in gsym_addr) on the kernel's
+futex_get_value_locked(): guard(pagefault)() plus get_user_inline(),
+which gotoes to a local label from nested cleanup scopes.  "== LABEL_FORWARD".
+
+A cleanup variable was registered before its initializer was parsed, so a
+goto out of the initializer ran the cleanup of an object whose lifetime
+had not begun (gcc does not); it is registered after the initializer.
+
+Fixes 85 and 86 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ tccgen.c | 27 ++++++++++++++++++---------
+ 1 file changed, 18 insertions(+), 9 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index d2e2376..d214864 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -7862,7 +7862,10 @@ static void block_cleanup(struct scope *o)
+     int jmp = 0;
+     Sym *g, **pg;
+     for (pg = &pending_gotos; (g = *pg) && g->c > o->cl.n;) {
+-        if (g->cleanup_label->r & LABEL_FORWARD) {
++        /* (== and not &: LABEL_GONE, a local label whose statement
++           expression has ended, has the LABEL_FORWARD bit; its pending
++           nodes were freed when it was defined) */
++        if (g->cleanup_label->r == LABEL_FORWARD) {
+             Sym *pcl = g->next;
+             if (!jmp)
+                 jmp = gjmp(0);
+@@ -9141,6 +9144,7 @@ static void decl_initializer(init_params *p, CType *type, unsigned long c, int f
+ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r, 
+                                    int has_init, int v, int scope)
+ {
++    Sym *cleanup_var = NULL; /* __attribute__((cleanup)) variable to register */
+     int size, align, addr;
+     TokenString *init_str = NULL;
+ 
+@@ -9300,14 +9304,11 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
+ 	    }
+ #endif
+             sym = sym_push(v, type, r, addr);
+-	    if (ad->cleanup_func) {
+-		Sym *cls = sym_push2(&all_cleanups,
+-                    SYM_FIELD | ++cur_scope->cl.n, 0, 0);
+-		cls->cleanup_sym = sym;
+-		cls->cleanup_func = ad->cleanup_func;
+-		cls->next = cur_scope->cl.s;
+-		cur_scope->cl.s = cls;
+-	    }
++            /* __attribute__((cleanup)): registered after the initializer
++               below, so that a goto out of the initializer does not run the
++               cleanup of a variable whose lifetime has not begun (gcc) */
++            if (ad->cleanup_func)
++                cleanup_var = sym;
+ 
+             sym->a = ad->a;
+         } else {
+@@ -9443,6 +9444,14 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
+         if (flexible_array)
+             flexible_array->type.ref->c = -1;
+     }
++    if (cleanup_var) {
++        Sym *cls = sym_push2(&all_cleanups,
++            SYM_FIELD | ++cur_scope->cl.n, 0, 0);
++        cls->cleanup_sym = cleanup_var;
++        cls->cleanup_func = ad->cleanup_func;
++        cls->next = cur_scope->cl.s;
++        cur_scope->cl.s = cls;
++    }
+ 
+  no_alloc:
+     /* restore parse state if needed */

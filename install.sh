@@ -8,7 +8,7 @@
 #   --build   tcc: only the patched Tiny C Compiler, installed into a staging tree and packed
 #                  as out/<arch>/tcc-<version>-<arch>-linux.tar.gz (extract with tar xzf ... -C /)
 #             distro: the kernel and the userland built with that compiler (default)
-#   --arch    x86_64 (default; the only working target, see the table below), i386, arm64
+#   --arch    x86_64 (default), i386 (the 32-bit x86 kernel), arm64 (not available, see the table below)
 #   --output  initrd: kernel + initramfs images (default); iso: also the bootable ISO; all
 #   --selfhost  also the self-hosting image (initramfs-selfhost.cpio, and its ISO menu entries):
 #             the sources and the toolchain to rebuild the kernel and tcc inside the guest
@@ -19,8 +19,8 @@
 #
 # Target status:
 #   x86_64  works: the tcc-built kernel boots the tcc-built busybox and tcc in QEMU
-#   i386    not implemented: needs the i386-tcc cross compiler, a 32-bit kernel fragment and
-#           32-bit versions of the instruction-table and inline-asm fixes (all x86_64 so far)
+#   i386    works: the 32-bit kernel (ARCH=i386, kernels/linux/i386.config) compiled by the
+#           i386-tcc cross compiler, musl/busybox/tcc for i386, boots in qemu-system-i386
 #   arm64   not available: tcc's arm64 backend has no inline assembler good enough for the
 #           kernel; nothing has been attempted (also needs aarch64 binutils and qemu-system-aarch64)
 set -e
@@ -51,7 +51,7 @@ if [ -t 0 ] && [ -t 1 ]; then
     [ -n "$build" ] || ask build "What to build:" distro "tcc: only the patched Tiny C Compiler, as a tar.gz archive" "distro: the kernel and userland built with it"
     build=${build%%:*}
     if [ "$build" = distro ]; then
-        [ -n "$arch" ] || ask arch "Target architecture:" x86_64 "x86_64 (works)" "i386 (not implemented)" "arm64 (not available)"
+        [ -n "$arch" ] || ask arch "Target architecture:" x86_64 "x86_64 (works)" "i386 (works: the 32-bit kernel)" "arm64 (not available)"
         arch=${arch%% *}
         [ -n "$output" ] || ask output "Output:" initrd "initrd: kernel + initramfs images (boot with ./run.sh)" "iso: the same plus a bootable BIOS/UEFI ISO"
         output=${output%%:*}
@@ -60,8 +60,8 @@ fi
 build=${build:-distro}; arch=${arch:-x86_64}; output=${output:-initrd}
 case $build in tcc|distro) ;; *) die "unknown build '$build' (tcc, distro)";; esac
 case $arch in
-    x86_64) ;;
-    i386|arm64) sed -n "/^#   $arch /,/^#   [a-z]\|^set -e/p" "$0" | sed '$d' | cut -c3- >&2; die "arch $arch is not supported yet";;
+    x86_64|i386) ;;
+    arm64) sed -n "/^#   $arch /,/^#   [a-z]\|^set -e/p" "$0" | sed '$d' | cut -c3- >&2; die "arch $arch is not supported yet";;
     *) die "unknown arch '$arch' (x86_64, i386, arm64)";;
 esac
 case $output in initrd|iso|all) ;; *) die "unknown output '$output' (initrd, iso, all)";; esac

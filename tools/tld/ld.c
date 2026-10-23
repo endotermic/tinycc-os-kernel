@@ -1256,6 +1256,20 @@ static int resolve_reloc_symbol(InSec *s, GRel *r, uint64_t *S, Symbol **symp, I
     }
 }
 
+/* _GLOBAL_OFFSET_TABLE_: GNU ld defines it at the GOT when something refers to it; tld
+   builds no GOT, so it is an absolute 0 unless the script defines it.  GOTPC/GOTOFF
+   relocations only use it as a common base (see apply_relocs). */
+static Symbol *got_symbol;
+static uint64_t got_address(void) { return got_symbol ? symbol_address(got_symbol, NULL) : 0; }
+static void define_got_symbol(void)
+{
+    Symbol *g = sym_lookup("_GLOBAL_OFFSET_TABLE_", 0);
+    if (!g) return;
+    got_symbol = g;
+    if (g->defined) return;
+    g->defined = 1; g->script = 0; g->sec = NULL; g->value = 0; g->bind = STB_LOCAL; g->type = STT_OBJECT; g->linker_local = 1;
+}
+
 static int fits_signed(int64_t v, int bits) { int64_t lim = (int64_t)1 << (bits - 1); return v >= -lim && v < lim; }
 static int fits_unsigned_or_signed(int64_t v, int bits) { return fits_signed(v, bits) || (v >= 0 && (uint64_t)v < ((uint64_t)1 << bits)); }
 
@@ -1338,8 +1352,15 @@ static void apply_relocs(InSec *s, uint8_t *out)
         } else {
             switch (r->type) {
             case R_386_NONE: continue;
-            case R_386_32: V = S + A; break;
+            case R_386_32: V = S + A; if (L.pie && ds) { reloc_error(s, r->offset, "%s against `%s' cannot be used when making a PIE object", reloc_name(r->type), sym ? sym->name : ds->g->name); continue; } break;
             case R_386_PC32: case R_386_PLT32: V = S + A - P; break;
+            /* the GOT-relative pair of position-independent i386 code without a GOT (gcc
+               -fPIE with hidden symbols, tcc -fPIC): the linker-defined _GLOBAL_OFFSET_TABLE_
+               (got_address(): absolute 0 unless a script places it) cancels out between
+               "add $_GLOBAL_OFFSET_TABLE_, %ebx" (GOTPC = GOT + A - P) and "sym@GOTOFF(%ebx)"
+               (GOTOFF = S + A - GOT) */
+            case R_386_GOTOFF: V = S + A - got_address(); break;
+            case R_386_GOTPC: V = got_address() + A - P; break;
             case R_386_16: V = S + A; if (!fits_unsigned_or_signed((int64_t)(int32_t)V, 16)) { reloc_error(s, r->offset, "relocation truncated to fit: %s against `%s'", reloc_name(r->type), sym ? sym->name : "?"); continue; } break;
             case R_386_8: V = S + A; if (!fits_unsigned_or_signed((int64_t)(int32_t)V, 8)) { reloc_error(s, r->offset, "relocation truncated to fit: %s", reloc_name(r->type)); continue; } break;
             case R_386_PC16: V = S + A - P; if (!fits_signed((int64_t)(int32_t)V, 16)) { reloc_error(s, r->offset, "relocation truncated to fit: %s", reloc_name(r->type)); continue; } break;
@@ -2382,6 +2403,8 @@ int ld_main(int argc, char **argv)
     L.entry_sym = L.entry_opt ? L.entry_opt : L.sc->entry ? L.sc->entry : (L.relocatable || L.shared) ? NULL : "_start";
     mark_script_references(L.sc->stmts);
     if (L.entry_sym) { Symbol *es = sym_lookup(L.entry_sym, 0); if (es) es->referenced = 1; }
+
+    if (!L.relocatable) define_got_symbol();
 
     /* linker-created input sections */
     if (L.build_id && !L.relocatable) {

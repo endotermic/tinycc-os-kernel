@@ -210,6 +210,27 @@ static void copy_elf(GElf *e, const char *out)
         w.phdrs[i].vaddr = e->phdrs[i].vaddr; w.phdrs[i].paddr = e->phdrs[i].paddr; w.phdrs[i].filesz = e->phdrs[i].filesz;
         w.phdrs[i].memsz = e->phdrs[i].memsz; w.phdrs[i].align = e->phdrs[i].align;
     }
+    /* like GNU objcopy, a PT_LOAD's sizes follow the sections it still holds: p_filesz ends
+       at the last kept section with contents, p_memsz at the last kept section.  The kernel
+       strips .modinfo, an alloc section the linker script places after .bss/.brk, out of
+       vmlinux; while it is there the data segment's file size spans the NOBITS sections, and
+       the 32-bit decompressor would copy that "file" over itself (parse_elf copies p_filesz) */
+    for (i = 0; i < e->nphdrs; i++) {
+        uint64_t lo = e->phdrs[i].vaddr, hi = lo + e->phdrs[i].memsz, fend = 0, mend = 0;
+        int j, any = 0;
+        if (w.phdrs[i].type != PT_LOAD || hi == lo) continue;
+        for (j = 1; j < n; j++) {
+            WSec *s = &ws[j];
+            if (!(s->flags & SHF_ALLOC) || s->addr < lo || s->addr >= hi) continue;
+            any = 1;
+            if (s->addr + s->size > mend) mend = s->addr + s->size;
+            if (s->type != SHT_NOBITS && s->addr + s->size > fend) fend = s->addr + s->size;
+        }
+        if (!any) continue;
+        w.phdrs[i].filesz = fend > lo ? fend - lo : 0;
+        w.phdrs[i].memsz = mend > lo ? mend - lo : 0;
+        if (w.phdrs[i].memsz < w.phdrs[i].filesz) w.phdrs[i].memsz = w.phdrs[i].filesz;
+    }
     welf_write(&w, out);
     if (e->e_type != ET_REL) chmod(out, 0755);
 }

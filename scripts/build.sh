@@ -21,15 +21,21 @@
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
 #   all         host-tcc tld kernel musl busybox guest-tcc initramfs
-# Env: ARCH (x86_64; i386 and arm64 are not implemented, see install.sh), JOBS, SRC/BUILD/OUT.
+# Env: ARCH (x86_64, i386; arm64 is not implemented, see install.sh), JOBS, SRC/BUILD/OUT.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
 ARCH=${ARCH:-x86_64}
 JOBS=${JOBS:-$(nproc)}
+# KARCH: the kernel's ARCH= (i386 selects the 32-bit kernel); TCC_TARGET: the compiler of the
+# target code (the i386 cross compiler built next to the host tcc for i386: "tcc -m32" would
+# exec it anyway); LIBTCC1: its runtime archive, for the musl-tcc wrapper; TCC_CPU: tcc's
+# configure --cpu for the guest compiler; the self-hosting image of the i386 guest needs no
+# i386 cross compiler (tcc there is the i386 compiler, -m16 is native)
 case $ARCH in
-    x86_64) KARCH=x86; KIMG=arch/x86/boot/bzImage;;
-    *) die "ARCH=$ARCH is not implemented (only x86_64 for now; see ./install.sh --help)";;
+    x86_64) KARCH=x86;   KIMG=arch/x86/boot/bzImage; TCC_TARGET=tcc;      LIBTCC1=libtcc1.a;      TCC_CPU=x86_64; CROSS_I386=1;;
+    i386)   KARCH=i386;  KIMG=arch/x86/boot/bzImage; TCC_TARGET=i386-tcc; LIBTCC1=i386-libtcc1.a; TCC_CPU=i386;   CROSS_I386=;;
+    *) die "ARCH=$ARCH is not implemented (x86_64, i386; see ./install.sh --help)";;
 esac
 B=$BUILD/$ARCH; LOGS=$B/logs; O=$OUT/$ARCH
 # the source copies under build/ must not see this repository's own .git (tcc's and
@@ -41,7 +47,7 @@ mkdir -p "$B" "$LOGS" "$O"
 KERNEL_STEPS_DEFAULT=1190
 BUSYBOX_STEPS_DEFAULT=660
 STEPS=$B/steps; mkdir -p "$STEPS"
-TCCSRC=$SRC/tinycc; TCC=$TCCSRC/tcc
+TCCSRC=$SRC/tinycc; TCC=$TCCSRC/tcc; TCC_TARGET=$TCCSRC/$TCC_TARGET; LIBTCC1=$TCCSRC/$LIBTCC1
 LINUX=$SRC/linux; MUSLSRC=$SRC/musl; BBSRC=$SRC/busybox
 MUSLB=$B/musl; MUSLP=$MUSLB/install; KHDR=$B/kernel-headers; MUSL_TCC=$B/musl-tcc
 
@@ -137,9 +143,10 @@ step_kernel() {
     need_src linux
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
     [ -x "$TCCSRC/i386-tcc" ] || die "no $TCCSRC/i386-tcc (the host-tcc step builds it): the real-mode code needs tcc -m16"
+    KFRAGS="minimal.config $ARCH.config tcc.config"
     TLD=$B/tld; [ -x "$TLD/ld" ] || die "no $TLD/ld: run the tld step first"
     KB=$B/linux; mkdir -p "$KB"
-    msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,tcc}.config, CC=tcc-kcc -> $KB"
+    msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
     KCC_LOG=$LOGS/kcc.log
     : >"$KCC_LOG"
     # TCC and KCC_LOG are given to this make only (not exported: GNU make re-exports a
@@ -150,18 +157,20 @@ step_kernel() {
     # the binutils are tld's: LD/NM/OBJCOPY/READELF/AR/STRIP (no objdump is needed)
     # KBUILD_BUILD_VERSION=1: the build number counts the generations (uname -v "#1"); a kernel
     # built inside the guest by userland/selfhost/build-kernel is #2, and so on
-    MK="env TCC=$TCC KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$ROOT/kernels/linux/tcc-kcc HOSTCC=$ROOT/kernels/linux/tcc-hostcc OBJTOOL=$ROOT/kernels/linux/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1"
+    # KCC_TCC: the compiler tcc-kcc runs for the target code (TCC stays the host compiler for
+    # tcc-hostcc); for i386 the cross compiler next to it
+    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$ROOT/kernels/linux/tcc-kcc HOSTCC=$ROOT/kernels/linux/tcc-hostcc OBJTOOL=$ROOT/kernels/linux/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1"
     if [ ! -f "$KB/.config" ]; then
         $MK -s tinyconfig >"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "tinyconfig failed"
     fi
     # the fragments are merged on every run, so that a line added to them reaches an existing
     # build tree too (olddefconfig then resolves the dependencies; Kbuild rebuilds what changed)
-    for f in minimal.config tcc.config; do
+    for f in $KFRAGS; do
         "$LINUX/scripts/kconfig/merge_config.sh" -m -O "$KB" "$KB/.config" "$ROOT/kernels/linux/$f" >>"$LOGS/kernel-config.log" 2>&1
     done
     $MK -s olddefconfig >>"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "olddefconfig failed"
     # every fragment line must survive olddefconfig
-    for f in minimal.config tcc.config; do
+    for f in $KFRAGS; do
         grep -E '^(CONFIG_|# CONFIG_.* is not set)' "$ROOT/kernels/linux/$f" | while IFS= read -r line; do
             grep -qxF -- "$line" "$KB/.config" && continue
             case $line in
@@ -187,12 +196,12 @@ step_kernel() {
 step_musl() {
     need_src musl linux
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
-    msg "musl: CC=tcc, static, without src/complex -> $MUSLP"
+    msg "musl: CC=$(basename "$TCC_TARGET"), static, without src/complex -> $MUSLP"
     mkdir -p "$MUSLB"
     if [ ! -f "$MUSLP/lib/libc.a" ]; then
         cd "$MUSLB"
-        configured config.mak "CC = $TCC" "srcdir = $MUSLSRC" "prefix = $MUSLP" \
-            || "$MUSLSRC/configure" CC="$TCC" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
+        configured config.mak "CC = $TCC_TARGET" "srcdir = $MUSLSRC" "prefix = $MUSLP" \
+            || "$MUSLSRC/configure" CC="$TCC_TARGET" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
             || fail "$LOGS/musl-configure.log" "musl configure failed"
         srcdir=$(sed -n 's/^srcdir = //p' config.mak)
         malloc=$(sed -n 's/^MALLOC_DIR = //p' config.mak)
@@ -218,8 +227,8 @@ step_musl() {
 # -c/-E/-S/-M*, -r and -nostdlib invocations are passed through without crt files or libs.
 MUSL=$MUSLP
 KHDR=$KHDR
-TCC=\${MUSL_TCC_BIN:-$TCC}
-LIBTCC1=\${MUSL_TCC_LIBTCC1:-$TCCSRC/libtcc1.a}
+TCC=\${MUSL_TCC_BIN:-$TCC_TARGET}
+LIBTCC1=\${MUSL_TCC_LIBTCC1:-$LIBTCC1}
 link=1
 for a; do
     case \$a in -c|-E|-S|-M|-MM|-r|-nostdlib|--version|-v|-dumpversion|-print-*) link=0;; esac
@@ -283,7 +292,7 @@ step_guest_tcc() {
     fi
     cd "$G/src"
     if ! configured config.mak "CC=$MUSL_TCC"; then
-        ./configure --cc="$MUSL_TCC" --ar=ar --prefix=/usr --tccdir=/usr/lib/tcc --config-musl \
+        ./configure --cc="$MUSL_TCC" --cpu="$TCC_CPU" --ar=ar --prefix=/usr --tccdir=/usr/lib/tcc --config-musl \
             --sysincludepaths='{B}/include:/usr/include' --libpaths='{B}:/usr/lib' \
             --crtprefix=/usr/lib --tcc-switches=-static --extra-cflags=-O2 \
             --config-backtrace=no --config-bcheck=no >"$LOGS/tcc-guest-configure.log" 2>&1 \
@@ -292,12 +301,13 @@ step_guest_tcc() {
     # libtcc1's objects are normally compiled by the just-built tcc, whose include path is the
     # guest's /usr/include (glibc on the host); the usegcc switch uses $(CC) = musl-tcc instead
     : >"$LOGS/tcc-guest.log"
-    run_progress "guest tcc" "$(make_total x86_64-libtcc1-usegcc=yes GITHASH="$(tcc_tag)" GITMODF=)" "$LOGS/tcc-guest.log" \
-        make -j"$JOBS" x86_64-libtcc1-usegcc=yes GITHASH="$(tcc_tag)" GITMODF= || fail "$LOGS/tcc-guest.log" "guest tcc build failed"
+    run_progress "guest tcc" "$(make_total $TCC_CPU-libtcc1-usegcc=yes GITHASH="$(tcc_tag)" GITMODF=)" "$LOGS/tcc-guest.log" \
+        make -j"$JOBS" $TCC_CPU-libtcc1-usegcc=yes GITHASH="$(tcc_tag)" GITMODF= || fail "$LOGS/tcc-guest.log" "guest tcc build failed"
     # the i386 cross compiler next to it (tcc -m16 execs it): the self-hosting image compiles
     # the kernel's real-mode code with it.  Its libtcc1.a is not needed by the kernel; build it
-    # when it compiles against the host's headers, else only the compiler
-    make -j"$JOBS" cross-i386 GITHASH="$(tcc_tag)" GITMODF= >>"$LOGS/tcc-guest.log" 2>&1 \
+    # when it compiles against the host's headers, else only the compiler.  (The i386 guest's
+    # tcc is the i386 compiler itself: nothing to add.)
+    [ -z "$CROSS_I386" ] || make -j"$JOBS" cross-i386 GITHASH="$(tcc_tag)" GITMODF= >>"$LOGS/tcc-guest.log" 2>&1 \
         || make -j"$JOBS" i386-tcc GITHASH="$(tcc_tag)" GITMODF= >>"$LOGS/tcc-guest.log" 2>&1 \
         || fail "$LOGS/tcc-guest.log" "guest i386-tcc build failed"
     rm -rf "$STAGE"
@@ -309,7 +319,7 @@ step_guest_tcc() {
     # objects into the guest's libc.a so that the archive is self-contained
     tmp=$(mktemp -d); (cd "$tmp" && ar x "$STAGE/usr/lib/tcc/libtcc1.a") && ar rs "$STAGE/usr/lib/libc.a" "$tmp"/*.o 2>/dev/null; rm -rf "$tmp"
     mkdir -p "$STAGE/root" && cp "$ROOT/userland/hello.c" "$STAGE/root/hello.c"
-    echo "   $(./tcc -v), $(./i386-tcc -v), $(file -b tcc | cut -d, -f1-2), staging tree $(du -sh "$STAGE" | cut -f1)"
+    echo "   $(./tcc -v)${CROSS_I386:+, $(./i386-tcc -v)}, $(file -b tcc | cut -d, -f1-2), staging tree $(du -sh "$STAGE" | cut -f1)"
 }
 
 step_guest_make() {
@@ -366,7 +376,7 @@ step_selfhost() {
     KB=$B/linux
     [ -f "$KB/vmlinux" ] && [ -f "$KB/$KIMG" ] || die "no complete kernel build in $KB: run the kernel step first (its dependency lists define the pruned source tree)"
     STAGE_TCC=$B/tcc-guest/stage
-    [ -x "$STAGE_TCC/usr/bin/tcc" ] && [ -x "$STAGE_TCC/usr/bin/i386-tcc" ] || die "no guest tcc + i386-tcc in $STAGE_TCC: run the guest-tcc step first"
+    [ -x "$STAGE_TCC/usr/bin/tcc" ] && { [ -z "$CROSS_I386" ] || [ -x "$STAGE_TCC/usr/bin/i386-tcc" ]; } || die "no guest tcc${CROSS_I386:+ + i386-tcc} in $STAGE_TCC: run the guest-tcc step first"
     [ -x "$B/busybox/busybox" ] || die "no busybox: run the busybox step first"
     [ -x "$B/make/make" ] || step_guest_make
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -399,7 +409,7 @@ step_selfhost() {
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
     #    not in the guest), the kernel and tcc patches and the notes
-    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/tcc.config" "$STAGE/usr/share/tinycc-os-kernel/"
+    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/$ARCH.config" "$ROOT/kernels/linux/tcc.config" "$STAGE/usr/share/tinycc-os-kernel/"
     cp "$KB/scripts/kconfig/lexer.lex.c" "$KB/scripts/kconfig/parser.tab.c" "$KB/scripts/kconfig/parser.tab.h" \
         "$STAGE/usr/share/tinycc-os-kernel/kconfig/" || die "no pre-generated Kconfig lexer/parser in $KB/scripts/kconfig"
     cp -r "$ROOT/patches" "$STAGE/usr/share/tinycc-os-kernel/patches"
@@ -428,7 +438,7 @@ step_initramfs() {
     msg "initramfs images -> $O"
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    "$TCC" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
+    "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
     export INIT=$B/init INIT_SH=$ROOT/userland/init.sh BUSYBOX=$B/busybox/busybox
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
     if [ -x "$BUSYBOX" ]; then

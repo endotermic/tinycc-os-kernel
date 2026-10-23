@@ -71,3 +71,9 @@ bugfixes/0069-tccgen-init_putz-without-CONFIG_TCC_BCHECK.patch
 compatibility/0070-i386-asm-take-constant-immediates-in-the-operand-siz.patch
 compatibility/0071-tccgen-a-named-section-is-aligned-like-its-contents-.patch
 compatibility/0072-tccasm-GNU-as-binary-constants-0b1010-independent-of.patch
+features/0073-i386-fPIC-fPIE-code-generation-and-the-GOT-relative-.patch
+compatibility/0074-i386-asm-assembler-forms-of-the-32-bit-kernel-musl-a.patch
+features/0075-tccgen-32-bit-addends-wrap-unsigned-64-bit-division-.patch
+features/0076-i386-gen-inline-64-bit-shifts-by-a-variable-count-an.patch
+bugfixes/0077-tccgen-gotos-out-of-cleanup-scopes-gone-local-labels.patch
+bugfixes/0078-i386-gen-regparm-indirect-calls-spilled-the-wrong-va.patch

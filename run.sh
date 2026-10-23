@@ -20,7 +20,7 @@
 #   --auto    with --selfhost: the guest runs build-kernel and send-file by itself and shuts
 #             down (kernel command line tcc.selfhost=auto; --auto=all also rebuilds the
 #             toolchain first and uses it); scripts/selfhost-test.sh drives this
-# Env: ARCH (x86_64), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
+# Env: ARCH (x86_64, i386), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM when
 # /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -z "$auto" ] || [ -n "$selfhost" ] || die "--auto needs --selfhost"
-case $ARCH in x86_64) QEMU=qemu-system-x86_64;; *) die "ARCH=$ARCH: no QEMU setup";; esac
+case $ARCH in x86_64) QEMU=qemu-system-x86_64;; i386) QEMU=qemu-system-i386;; *) die "ARCH=$ARCH: no QEMU setup";; esac
 have $QEMU || die "$QEMU not found"
 if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 [ "$TIMEOUT" = 0 ] && TIMEOUT= || TIMEOUT="timeout $TIMEOUT"

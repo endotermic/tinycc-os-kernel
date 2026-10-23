@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:01:36 +0300
+Subject: [PATCH] swiotlb: make the wrappers' calls dead code without
+ CONFIG_SWIOTLB
+
+swiotlb_tbl_unmap_single(), swiotlb_sync_single_for_device() and
+swiotlb_sync_single_for_cpu() call their __swiotlb_*() counterparts under
+"if (unlikely(pool))", where pool comes from swiotlb_find_pool(), a stub
+returning NULL without CONFIG_SWIOTLB, in which case the __swiotlb_*()
+functions are not built either.  An optimizing compiler propagates the
+NULL and drops the calls; a compiler that keeps them (tinycc, or gcc -O0)
+fails the link of kernel/dma/mapping.o with undefined references on a
+configuration without SWIOTLB (32-bit x86).
+
+Test the option directly: IS_ENABLED(CONFIG_SWIOTLB) && unlikely(pool).
+No change for configurations with SWIOTLB.
+
+Assisted-by: LLM
+---
+ include/linux/swiotlb.h | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/include/linux/swiotlb.h b/include/linux/swiotlb.h
+index 2a421241b..1ad894323 100644
+--- a/include/linux/swiotlb.h
++++ b/include/linux/swiotlb.h
+@@ -258,7 +258,12 @@ static inline void swiotlb_tbl_unmap_single(struct device *dev,
+ {
+ 	struct io_tlb_pool *pool = swiotlb_find_pool(dev, addr);
+ 
+-	if (unlikely(pool))
++	/*
++	 * Without CONFIG_SWIOTLB swiotlb_find_pool() is a stub returning
++	 * NULL and __swiotlb_*() are not built: test the option directly so
++	 * that the calls are dead code for every compiler.
++	 */
++	if (IS_ENABLED(CONFIG_SWIOTLB) && unlikely(pool))
+ 		__swiotlb_tbl_unmap_single(dev, addr, size, dir, attrs, pool);
+ }
+ 
+@@ -270,7 +275,7 @@ static inline void swiotlb_sync_single_for_device(struct device *dev,
+ {
+ 	struct io_tlb_pool *pool = swiotlb_find_pool(dev, addr);
+ 
+-	if (unlikely(pool))
++	if (IS_ENABLED(CONFIG_SWIOTLB) && unlikely(pool))
+ 		__swiotlb_sync_single_for_device(dev, addr, size, dir, pool);
+ }
+ 
+@@ -282,7 +287,7 @@ static inline void swiotlb_sync_single_for_cpu(struct device *dev,
+ {
+ 	struct io_tlb_pool *pool = swiotlb_find_pool(dev, addr);
+ 
+-	if (unlikely(pool))
++	if (IS_ENABLED(CONFIG_SWIOTLB) && unlikely(pool))
+ 		__swiotlb_sync_single_for_cpu(dev, addr, size, dir, pool);
+ }
+ 

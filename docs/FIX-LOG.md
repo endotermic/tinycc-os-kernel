@@ -35,9 +35,18 @@ that work, so one patch may hold several entries and one entry may span two patc
 | 61 | tinycc 0058 | 66 | tinycc 0063, 0068 | 71 | tinycc 0070 |
 | 62 | tinycc 0059 | 67 | tinycc 0064 | 72 | tinycc 0071 |
 | | | | | 73 | tinycc 0072 |
+| 74 | tinycc 0073 | 80 | tinycc 0074 | 86 | tinycc 0077 |
+| 75 | tinycc 0073 | 81 | tinycc 0074 | 87 | tinycc 0076 |
+| 76 | tinycc 0074 | 82 | tinycc 0075 | 88 | tinycc 0078 |
+| 77 | tinycc 0074 | 83 | tinycc 0076 | 89 | tinycc 0078 |
+| 78 | tinycc 0075 | 84 | tinycc 0075 | 90 | tinycc 0074 |
+| 79 | tinycc 0074 | 85 | tinycc 0077 | 91 | tinycc 0074 |
+| | | | | 92 | tinycc 0074 |
+| | | | | 93 | tinycc 0074 |
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
-K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012.
+K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
+K15 = 0014, K16 = 0015.
 
 Fixes 57-70 and K10-K12 (2026-10-22) made the kernel build independent of gcc and
 binutils: tcc assembles every `.S` file, compiles the real-mode code with `-m16`, produces
@@ -45,7 +54,12 @@ the asm-offsets text with `-S`, and the project's own `tools/tld` links (see
 `../tools/tld/README.md`); they are committed in `src/tinycc` / `src/linux` and exported,
 so their status is COMMITTED. Fixes 71-73 and K13 (the same evening) came with the SMP
 kernel and the self-hosting image (the kernel rebuilt inside the guest by the guest's own
-musl-built tcc, tld and GNU make; see `PORT-NOTES.md`, "Self-hosting").
+musl-built tcc, tld and GNU make; see `PORT-NOTES.md`, "Self-hosting"). Fixes 74-93,
+K14-K16 and the tld changes of 2026-10-23 are the i386 target (`ARCH=i386`, the 32-bit
+kernel; see `PORT-NOTES.md`, "The i386 target"): position-independent code for the
+decompressor and the vDSO, the 32-bit kernel's assembler forms and its freestanding
+arithmetic, four code generator bugs found by booting it (85, 88, 89, 91), and what musl
+and busybox asked of the inline assembler and tcc's own linker (90, 92, 93).
 
 ## Log
 
@@ -866,7 +880,249 @@ Wrapper (not tcc): until fix 60 `tcc-kcc` routed the arch/x86/entry/vdso/ C file
     by tcc against musl, so libc-dependent parsing differs; `scripts/selfhost-test.sh host` does
     not catch that class (it uses the host tcc), only the guest run does.
 
+74. 2026-10-23, COMMITTED, `i386-gen.c` (PIC, gen_gotoff32, got_sym, the prologue written by
+    gfunc_epilog), `libtcc.c` (-f options), `tccpp.c` (predefines), `tcc.h` (TCCState.pic).
+    Problem: the 32-bit kernel's decompressor is compiled with -fPIE (it runs where the
+    bootloader loaded it and copies itself to the end of its buffer) and the 32-bit vDSO with
+    -fpic (a shared object mapped into every process); the decompressor's linker script
+    refuses any run-time relocation and vdso2c fails on them. tcc's i386 code generator only
+    produced absolute addresses (R_386_32) and ignored the options; x86_64 needed nothing
+    here (RIP-relative addressing).
+    Fix: -fPIC/-fpic/-fPIE/-fpie set `s->pic` (-fno-pic/-fno-PIE clear it). With it the i386
+    code generator addresses every symbol `sym@GOTOFF(%ebx)` (R_386_GOTOFF): gen_modrm for
+    memory references, load() for addresses (`lea sym@GOTOFF(%ebx)` instead of `mov $sym`);
+    the prologue saves %ebx and loads the GOT address into it (`call 1f; 1: pop %ebx; add
+    $_GLOBAL_OFFSET_TABLE_+3, %ebx`, R_386_GOTPC), the epilogue restores it; calls stay
+    R_386_PC32. That is gcc's -fPIE model with hidden symbols (no GOT, no PLT), which is what
+    both kernel users compile with (hidden.h, -Bsymbolic); -fPIC gets the same code.
+    `__PIC__`/`__pic__` (2) and `__PIE__`/`__pie__` are defined like gcc. Not with -m16 (the
+    real-mode code is never position-independent). Inline asm using %ebx is unaffected: tcc
+    saves and restores it around the asm (asm_gen_code).
+    Verification: a libc-free test program (globals, statics, strings, function pointers,
+    long long, double, struct copies, 64-bit shifts, bit scans) linked with `tld -pie` runs
+    correctly as a PIE and gives the same output as the absolute build and as gcc; the
+    decompressor and the vDSO link under tld's PIE check (no R_386_32 against a defined
+    symbol); the kernel boots.
+
+75. 2026-10-23, COMMITTED, `tccasm.c` (asm_expr_unary: `@GOTOFF`), `i386-asm.c` (gen_expr32:
+    R_386_GOTOFF, `_GLOBAL_OFFSET_TABLE_` as R_386_GOTPC, asm_insn_start), `tcc.h`
+    (ExprValue.gotoff).
+    Problem: compressed/head_32.S computes the GOT address with `call 1f; 1: popl %edx; addl
+    $_GLOBAL_OFFSET_TABLE_+(.-1b), %edx` and addresses everything `sym@GOTOFF(%edx)`; the
+    assembler rejected `@GOTOFF` and took `_GLOBAL_OFFSET_TABLE_` for an ordinary symbol.
+    Fix: `sym@GOTOFF` marks the expression (ExprValue.gotoff) and gen_expr32 emits
+    R_386_GOTOFF; the symbol `_GLOBAL_OFFSET_TABLE_` emits R_386_GOTPC, and like GNU as the
+    addend grows by the offset of the field within the instruction (GNU as takes the symbol's
+    value relative to the instruction start: the kernel's `addl $_GLOBAL_OFFSET_TABLE_+(.-1b)`
+    gets the addend 3, not 1), for which asm_opcode records where the instruction began.
+    Verification: head_32.S's forms byte-compared with GNU as (identical apart from the known
+    symbol-vs-section spelling of local relocations); tld links the decompressor; the kernel
+    boots.
+
+76. 2026-10-23, COMMITTED, `i386-asm.c` (asm_clobber).
+    Problem: the kernel's shared x86 headers clobber "rax", "rcx", "rdx" (nospec-branch.h) in
+    32-bit code too, and busybox's tls_pstm_mul_comba.c spells clobbers "%eax"; gcc accepts
+    both, tcc said "invalid clobber register".
+    Fix: the 64-bit register names mean the 32-bit registers in 32-bit code, and a leading
+    '%' is skipped.
+    Verification: both files compile; the registers are saved around the asm as before.
+
+77. 2026-10-23, COMMITTED, `i386-asm.c` (asm_opcode: size inference, operand size prefix).
+    Problem: entry_32.S's `mov PT_FS(%esp), %fs` has no suffix and no sized register:
+    "cannot infer opcode suffix".
+    Fix: a mov between a segment register and memory is a 16-bit one (GNU as), and, also
+    like GNU as, the store form (`mov %fs, mem`, opcode 0x8c) never takes the 0x66 prefix
+    (the load form 0x8e already did not); push/pop of a segment register keep their rule.
+    Verification: the eight mov forms with segment registers byte-identical to GNU as;
+    `tests/m16-check.sh asm` (push/pop %seg in every mode) passes.
+
+78. 2026-10-23, COMMITTED, `tccgen.c` (gen_opic, the symbol + constant case).
+    Problem: arch/x86/kernel/doublefault_32.c initializes `.__cr3 = __pa_nodebug(
+    swapper_pg_dir)` = `(unsigned long)swapper_pg_dir - 0xC0000000`: "initializer element is
+    not constant". The folder refuses symbol addends that do not fit 32 bits signed, and
+    -0xC0000000 does not.
+    Fix: on a 32-bit target the addend wraps like the address arithmetic does (`l2 =
+    (int)l2`): sym - 0xC0000000 is sym + 0x40000000 in 32 bits.
+    Verification: the file compiles with the relocation addend 0x40000000, as with gcc; the
+    kernel boots (the double fault TSS's CR3 is that value).
+
+79. 2026-10-23, COMMITTED, `x86_64-asm.h`.
+    Problem: mnemonics of the 32-bit kernel missing from the table: `sysenter`
+    (vdso32/system_call.S), `ud2a` (vdso32/sigreturn.S), and `rdpid %eax` (segment.h's
+    vdso_read_cpunode) and `invpcid mem, %eax` (invpcid.h) with a 32-bit register, which the
+    table only had with a 64-bit one.
+    Fix: ud2a (= ud2), sysenter (0f 34), sysexit (0f 35), and the 32-bit register
+    alternatives of rdpid and invpcid.
+    Verification: byte-compared with GNU as in 32-bit mode; the 64-bit forms unchanged.
+
+80. 2026-10-23, COMMITTED, `i386-asm.c` (asm_opcode).
+    Problem: the 32-bit vDSO's system call is `ALTERNATIVE("ds;ds;ds;int $0x80", "call
+    __kernel_vsyscall", ...)` (asm/vdso/sys_call.h): a segment register name as a statement
+    is its prefix byte; tcc took `ds` for an opcode with a bad operand.
+    Fix: `es`..`gs` alone on a statement emit the override prefix; followed by an instruction
+    on the same line they prefix it (GNU as behaviour).
+    Verification: `ds`, `ds;ds;int $0x80`, `ds int $0x80` byte-identical to GNU as; the vDSO
+    links.
+
+81. 2026-10-23, COMMITTED, `tccasm.c` (.previous).
+    Problem: vdso32/sigreturn.S ends with `.previous` after a `.text` directive, having never
+    used `.section`: "no previous section referenced".
+    Fix: like GNU as, the section in force at the start (.text) is the previous one of a file
+    that has not switched sections yet.
+    Verification: the file assembles; `make test`.
+
+82. 2026-10-23, COMMITTED, `include/tccdefs.h` (`__builtin_mul_overflow`).
+    Problem: every 32-bit kernel object referenced `__udivdi3`: the macro checks the overflow
+    of the 64-bit product with a division (`__m / __ma != __mb`), a libtcc1 call on a 32-bit
+    target, and the kernel's size_mul()/check_mul_overflow() (overflow.h) are everywhere.
+    Fix: the division is compiled only when the operands' sizes add up to more than 8 bytes
+    (two 32-bit magnitudes cannot overflow a 64-bit product); the condition is a constant, so
+    tcc does not generate the dead arm.
+    Verification: `__builtin_mul_overflow` on 32- and 64-bit operands gives gcc's results
+    (value and overflow flag); size_mul() no longer references `__udivdi3`.
+
+83. 2026-10-23, COMMITTED, `i386-gen.c` (gen_shift64), `tccgen.c` (gen_opl), `tcc.h`.
+    Problem: a long long shifted by a variable count called `__ashldi3`/`__lshrdi3`/
+    `__ashrdi3` on i386; the vDSO (vclock_gettime.c) and the kernel have no such helpers,
+    gcc inlines them.
+    Fix: gcc's sequence inline: the value in %edx:%eax, the count in %cl, `shld`+`shl` (or
+    `shrd`+`shr`, `shrd`+`sar`), `test $32, %cl` and the fix-up of the halves; with -m16 the
+    operand-size prefixes.
+    Verification: the three shifts of nine 64-bit values by 0..63 give gcc's results
+    (absolute and PIE builds; the -m16 encoding inspected); `make test`.
+
+84. 2026-10-23, COMMITTED, `tccgen.c` (gen_opl).
+    Problem: an unsigned 64-bit division or modulo by a constant power of two called
+    `__udivdi3`/`__umoddi3` (page sizes and alignments in the kernel).
+    Fix: a shift or a mask, as gcc does at every optimization level (signed division keeps
+    the call: it needs the rounding fix-up).
+    Verification: x / 4096, x % 4096, x / 1, x % 1, x / 2^63 on nine values against gcc.
+
+85. 2026-10-23, COMMITTED, `tccgen.c` (block_cleanup). A pre-existing upstream bug; it
+    crashed the x86_64 compiler on the same code too.
+    Problem: kernel/futex/pi.c crashed tcc (SIGSEGV in gsym_addr) in
+    futex_get_value_locked(): `guard(pagefault)()` (a cleanup variable) plus
+    get_user_inline(), whose expansion `goto`es to a `__label__` local label of a statement
+    expression from nested cleanup scopes. When that label's statement expression ended,
+    label_pop marked it LABEL_GONE (3); block_cleanup tested `r & LABEL_FORWARD` (1), took the
+    gone label for a pending forward one and followed the pending nodes freed when the label
+    was defined, patching a stale jump index.
+    Fix: `== LABEL_FORWARD`.
+    Verification: the reduced test case and the kernel file compile on i386 and x86_64; a
+    destructor-order test (gotos out of nested cleanup scopes, local labels, statement
+    expressions) gives gcc's output; `make test`.
+
+86. 2026-10-23, COMMITTED, `tccgen.c` (decl_initializer_alloc).
+    Problem: found with the test of fix 85: a `goto` out of the initializer of a cleanup
+    variable ran that variable's cleanup (it was registered before the initializer was
+    parsed); gcc does not, the variable's lifetime has not begun.
+    Fix: the cleanup is registered after the initializer.
+    Verification: the destructor-order test matches gcc on every path.
+
+87. 2026-10-23, COMMITTED, `i386-gen.c` (gen_bitscan, gen_bitscan64), `tccgen.c`, `tcc.h`.
+    Problem: `__builtin_clzll` (seq_file.c, lib/math/div64.c, bitfield.h) and the other
+    bit-scan builtins were library calls on i386 (fix 47 inlined them for x86_64 only).
+    Fix: `bsr`/`bsf` inline for 32-bit values (the x86_64 sequence) and, for 64-bit values on
+    i386, the halves in %edx:%eax with a scan of the second half when the first is zero
+    (ffs: 0 for 0); with -m16 the prefixes.
+    Verification: clz/ctz/ffs of 7 32-bit and 10 64-bit values (and ffs(0)) against gcc,
+    absolute and PIE; `make test`.
+
+88. 2026-10-23, COMMITTED, `i386-gen.c` (gfunc_call). A bug in the regparm code of fix 62/65.
+    Problem: `entry->read(entry, &out)` under -mregparm=3 (cpuid_parser.c, the first use of
+    cpuid in the 32-bit kernel) called address 0: the function pointer's address stayed in
+    %eax while the arguments were popped into %eax/%edx, and was dereferenced afterwards.
+    gfunc_call's stack-slot path for such calls rotated the wrong way (vrott brings the first
+    argument to the top, not the function) and spilled the argument instead.
+    Fix: vrotb/vrott swapped: the function value is loaded and spilled to a stack slot before
+    the arguments, and the call goes through `call *disp(%ebp)`.
+    Verification: indirect regparm calls through struct fields, array elements, globals and
+    locals give the right results; the kernel boots.
+
+89. 2026-10-23, COMMITTED, `i386-gen.c` (gen_struct_fill). A bug in fix 67's i386 fill.
+    Problem: __init_waitqueue_head() wrote the spinlock through a NULL pointer: `*lock =
+    __SPIN_LOCK_UNLOCKED(lock)` zero-fills a compound literal with `rep stosb` and copies it;
+    the fill moved the value into %eax behind the register allocator's back and clobbered
+    the destination pointer of the copy that the allocator held in %eax.
+    Fix: the value is allocated to %eax by gv2(RC_INT, RC_EAX), like the x86_64 version's
+    RC_RAX, which spills whatever else lives there.
+    Verification: struct assignments from zero-initialized compound literals (4 and 41 bytes,
+    with regparm and PIE) give the expected memory contents; the kernel boots.
+
+90. 2026-10-23, COMMITTED, `i386-asm.c` (constraints 't'/'u', ASM_ST0/ASM_ST1), `i386-gen.c`
+    (NB_ASM_REGS 10).
+    Problem: musl's i386 math (`fabs`: `"+t"(x)`, `fmod`: `"+t"(x) : "u"(y)`) uses the x87
+    constraints, which fix 52 implemented for x86_64 only, and for long double only.
+    Fix: on i386 st(0)/st(1) are asm register numbers 8 and 9 (TREG_ST0 is 4, the asm number
+    of %esp), mapped to TREG_ST0 for the loads and stores, and any floating type is accepted
+    (the x87 is the float unit there); the "st"/"st(0)"/"st(1)" clobbers too.
+    Verification: fabs/fabsl/fmod/fmodl/fsqrt through these constraints give the right
+    results; musl's math builds.
+
+91. 2026-10-23, COMMITTED, `i386-asm.c` (asm_opcode, segment prefix).
+    Problem: musl's i386 system call is `call *%gs:16` (the vDSO pointer in the TLS). The `*`
+    was parsed with the segment register and lost when the memory operand was re-parsed
+    after the `:`, so tcc assembled a direct `gs call 16` (a PC32 relocation against the
+    absolute symbol, which tcc's own linker then rejected as an invalid relocation entry in
+    libc.a).
+    Fix: the indirection flag survives the re-parse.
+    Verification: `call *%gs:16`, `call *%gs:(%eax)`, `jmp *%gs:0x10`, `call *16`, `call *foo`
+    byte-identical to GNU as; musl's hello program links and runs.
+
+92. 2026-10-23, COMMITTED, `i386-asm.c` (asm_compute_constraints: the 'm' case and the copy).
+    Problem: busybox's i386 comba multiply (tls_pstm_mul_comba.c, MULADD) has three "=r"
+    outputs, "%eax"/"%edx" clobbers and two "m" inputs reached through pointers
+    (`*tmpx++`, `*tmpy--`): tcc needs a register for the address of such an operand, and
+    with eight general registers none was left ("asm constraint 7 ('m') could not be
+    satisfied"); gcc addresses the operands with whatever it has.
+    Fix: an "m" input of scalar integer or pointer type that gets no register is copied to a
+    stack temporary before the asm, and the temporary is the operand (`disp(%ebp)`): for an
+    input that is invisible. The copy is emitted at the end of asm_compute_constraints, before
+    the operand text is substituted; every register is free there (save_regs(0) opens the asm
+    statement), %eax is the scratch register; long long values are copied in two halves.
+    Verification: the MULADD loop over three 0xffffffff digits gives the 96-bit result of a
+    64-bit reference computation (3 fffffffa 2); busybox builds; `make test`.
+
+93. 2026-10-23, COMMITTED, `i386-link.c` (gotplt_entry_type, relocate).
+    Problem: tcc's own linker (the musl-tcc wrapper links busybox with `i386-tcc`) stopped at
+    musl's sigsetjmp.o: "Unknown relocation type for got: 23". R_386_PC8 comes from `jecxz
+    1f` (a rel8-only jump) and the other 8-/16-bit relocations from the assembler work of fix
+    63; the link tables only knew R_386_16/PC16, and applied those only to 16-bit binary
+    output.
+    Fix: R_386_8/PC8 classified like 16/PC16, and all four applied for any output format,
+    with GNU ld's overflow check.
+    Verification: a program with a forward `jecxz` in inline asm linked and run by tcc
+    itself; busybox links; `make test`.
+
+tld (tools/tld, 2026-10-23, for the i386 target): `ld` applies R_386_GOTOFF and R_386_GOTPC
+against a linker-defined `_GLOBAL_OFFSET_TABLE_` (absolute 0 unless the script defines it;
+no GOT is built) and refuses R_386_32 against a defined symbol in a PIE like the x86_64
+check. `objcopy` recomputes a PT_LOAD's p_filesz/p_memsz from the sections it still holds
+(GNU objcopy behaviour): the kernel strips `.modinfo` out of vmlinux.unstripped, an alloc
+section the linker script places after .bss/.brk, and while it is there the data segment's
+file size spans the NOBITS sections (GNU ld lays it out the same way); with the headers
+copied unchanged the 32-bit decompressor's parse_elf() copied 2.8 MB of "file" over its own
+relocated code and stack. Both builds had filesz == memsz; the x86_64 decompressor sits
+higher in memory and survived.
+
 Kernel-side changes (separate from tcc, kept to a minimum; repo /home/nika/Documents/linux):
+K14. 2026-10-23, COMMITTED (upstreamable), `init/Kconfig` (CC_IS_TCC), `lib/Kconfig`,
+    `lib/math/Makefile`, `lib/math/divdi3.c`, `arch/x86/Kconfig`: GENERIC_LIB_DIVDI3 provides
+    `__divdi3`, `__moddi3`, `__udivdi3` and `__umoddi3` on top of lib/math/div64.c, selected
+    for X86_32 when the compiler is tcc (CC_IS_TCC: `$(CC) -v` says "tcc version"). gcc
+    strength-reduces every 64-bit division by a constant on 32-bit x86, so no gcc build links
+    them; tcc emits the calls (`/ 8`, `/ 100`, ... in a dozen objects of mm, fs and sched).
+K15. 2026-10-23, COMMITTED (upstreamable, semantics-preserving), `include/linux/swiotlb.h`: the
+    three swiotlb_*() wrappers test `IS_ENABLED(CONFIG_SWIOTLB) && unlikely(pool)`: without
+    SWIOTLB (32-bit x86 does not select it) swiotlb_find_pool() is a stub returning NULL and
+    the __swiotlb_*() functions are not built; a compiler that does not propagate the NULL
+    through the local keeps the calls (undefined references from kernel/dma/mapping.o).
+K16. 2026-10-23, COMMITTED (upstreamable), `arch/x86/include/asm/pgtable.h`:
+    __HAVE_ARCH_PMDP_TEST_AND_CLEAR_YOUNG and the declaration of pmdp_test_and_clear_young()
+    only under the conditions pgtable.c defines it (THP or ARCH_HAS_NONLEAF_PMD_YOUNG),
+    pudp_test_and_clear_young() only with THP; otherwise the generic stub applies. On 32-bit
+    x86 (two-level page tables, no THP) the arch declared a function it never defined, and
+    clear_refs_pte_range()'s dead THP branch referenced it.
 K2. 2026-10-20, APPLIED (uncommitted), `mm/slab.h`: `typedef u128 freelist_full_t;` now under
     `#ifdef __SIZEOF_INT128__`, else a 16-byte `struct { u64 lo, hi; }` (only its size is used
     when system_has_cmpxchg128 is undefined).

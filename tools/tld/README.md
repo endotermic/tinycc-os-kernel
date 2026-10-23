@@ -57,7 +57,8 @@ All 28 checks pass against the reference tree of 2026-10-22.
    unless they assign to `.` or contain KEEP'd/linker-created input; symbols assigned
    relative to a removed section are moved to a neighbouring section like bfd's fix_syms.
 6. Relocations: R_X86_64_{64,32,32S,PC32,PLT32,PC64,16,PC16,8,PC8} and R_386_{32,PC32,
-   PLT32,16,PC16,8,PC8}.  GOTPCREL/GOTPCRELX/REX_GOTPCRELX are relaxed exactly like GNU ld
+   PLT32,16,PC16,8,PC8,GOTOFF,GOTPC} (the GOT-relative pair of the 32-bit decompressor and
+   vDSO, computed against a linker-defined `_GLOBAL_OFFSET_TABLE_`; no GOT is built).  GOTPCREL/GOTPCRELX/REX_GOTPCRELX are relaxed exactly like GNU ld
    (no GOT is ever created): `mov sym@GOTPCREL(%rip),%reg` becomes `mov $sym,%reg` in a
    non-PIC link and `lea sym(%rip),%reg` in `-pie`/`-shared`; `call/jmp *sym@GOTPCREL(%rip)`
    become direct branches.  In `-pie` an absolute relocation against a defined symbol is

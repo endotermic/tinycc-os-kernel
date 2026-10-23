@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:02:26 +0300
+Subject: [PATCH] i386-gen: regparm indirect calls spilled the wrong value, the
+ struct fill clobbered %eax
+
+Two bugs of this project's earlier i386 work, found by booting the 32-bit
+kernel:
+
+- gfunc_call's stack slot for the address of a regparm indirect call
+  rotated the wrong way (vrott brings the first argument to the top, not
+  the function) and spilled the argument, leaving the function pointer's
+  address in %eax, which the argument pops then overwrote:
+  entry->read(entry, &out) called address 0 (cpuid_parser.c).
+- gen_struct_fill moved the fill value to %eax behind the register
+  allocator's back and clobbered the destination pointer of the struct
+  copy that follows a zero-filled compound literal
+  (*lock = __SPIN_LOCK_UNLOCKED(lock) wrote to NULL).  The value is
+  allocated to %eax with gv2(RC_INT, RC_EAX), like the x86_64 version.
+
+Fixes 88 and 89 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-gen.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index ffe46a9..ffd50c3 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -763,10 +763,12 @@ ST_FUNC void gfunc_call(int nb_args)
+         if ((fn->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_CONST | VT_SYM)
+             && !((fn->r & VT_LVAL)
+                  && ((fn->r & VT_VALMASK) == VT_LOCAL || (fn->r & VT_VALMASK) == VT_CONST))) {
+-            vrott(nb_args + 1);
++            /* (vrotb brings the deepest of the n entries, the function, to
++               the top; vrott would bring the first argument) */
++            vrotb(nb_args + 1);
+             r = gv(RC_INT);
+             save_reg(r);
+-            vrotb(nb_args + 1);
++            vrott(nb_args + 1);
+         }
+     }
+ 
+@@ -1678,7 +1680,12 @@ ST_FUNC void gen_struct_copy(int size)
+ ST_FUNC void gen_struct_fill(int size)
+ {
+     int rd, rv;
+-    gv2(RC_INT, RC_INT);
++    /* the value goes to %eax through the register allocator (like the
++       x86_64 backend's RC_RAX), which spills whatever else lives there: a
++       "mov rv, %eax" behind the allocator's back clobbered the destination
++       pointer of the struct copy that follows a zero-filled compound
++       literal ("*lock = __SPIN_LOCK_UNLOCKED(lock)" in the kernel) */
++    gv2(RC_INT, RC_EAX);
+     rd = vtop[-1].r & VT_VALMASK;
+     rv = vtop[0].r & VT_VALMASK;
+     o66(), g(0x57); /* push %edi */

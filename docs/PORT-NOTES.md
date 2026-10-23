@@ -161,7 +161,84 @@ directly, which is also better code for gcc.
    it in /usr/local and `build-kernel` prefers it, but the automatic run `--auto=all` is the
    only path exercising it), a generation-3 run from inside generation 2, and `make test` of
    tcc in the guest (needs the test suite's expectations of a glibc host reviewed).
-8. Targets: i386 and arm64 (see README), other kernels.
+8. Targets: arm64 (see README), other kernels; on i386 the self-hosting image is untested
+   and the setup code's early serial output doubles every character (see "The i386 target").
+
+## The i386 target
+
+`ARCH=i386` (2026-10-23; `install.sh --arch i386`, `ARCH=i386 ./run.sh`) builds the 32-bit
+kernel from the same sources, patches and fragments: `scripts/build.sh` gives the kernel
+`ARCH=i386` (which forces `CONFIG_64BIT=n`; `kernels/linux/i386.config` only switches highmem
+off), runs the `i386-tcc` cross compiler as the target compiler through `tcc-kcc` (`KCC_TCC`;
+`TCC` stays the host compiler of `tcc-hostcc`; `-dumpmachine` answers i686-linux-gnu), links
+with the same tld (`-m elf_i386`), and builds musl, busybox and the guest tcc (configured
+`--cpu=i386`, no cross compiler needed in the guest: `tcc -m16` is native) with `i386-tcc`
+and `i386-libtcc1.a`. The libc-free init has an `int $0x80` syscall path. Numbers of the
+first boot: 1900 tcc and 0 gcc invocations, a 1.8 MB bzImage, the kernel reports
+`Linux 7.3.0+ i686`.
+
+What the 32-bit kernel needed from the toolchain (fixes 74-93, K14-K16, docs/FIX-LOG.md):
+
+* Position-independent code. The decompressor is compiled `-fPIE` (it relocates itself to
+  the end of its buffer) and the vDSO `-fpic`; neither may contain run-time relocations.
+  On x86_64 tcc's RIP-relative addressing made that free; i386 has no PC-relative data
+  addressing, so tcc got a real PIC mode (fix 74): every symbol is addressed
+  `sym@GOTOFF(%ebx)` with `%ebx` loaded once per function from `_GLOBAL_OFFSET_TABLE_`
+  (R_386_GOTPC), calls stay PC-relative. That is gcc's `-fPIE` + hidden-symbols model
+  (`include/linux/hidden.h`, `-Bsymbolic`): no GOT, no PLT. The assembler takes `sym@GOTOFF`
+  and `_GLOBAL_OFFSET_TABLE_` as GNU as does (fix 75), and tld applies R_386_GOTOFF and
+  R_386_GOTPC against a linker-defined `_GLOBAL_OFFSET_TABLE_` (absolute 0; the two
+  relocations only need a common base) and refuses absolute relocations in a PIE.
+* Freestanding 64-bit arithmetic. The kernel has no libgcc: tcc now inlines 64-bit shifts by
+  a variable count (83) and the bit-scan builtins (87) on i386, folds unsigned 64-bit
+  division by a power of two (84) and no longer divides in `__builtin_mul_overflow` for
+  32-bit operands (82, every object had `__udivdi3` from `size_mul()`). The dozen real
+  64-bit divisions by other constants (`/ 8`, `/ 100`, ... which gcc strength-reduces) come
+  from kernel patch K14: `GENERIC_LIB_DIVDI3` (`lib/math/divdi3.c` on top of `div64.c`),
+  selected for `X86_32 && CC_IS_TCC`; `CC_IS_TCC` is new too (`$(CC) -v`).
+* The 32-bit kernel's assembler forms: `mov PT_FS(%esp), %fs` (77), `"rax"` clobbers in
+  shared headers (76), `ds;ds;ds;int $0x80` and `.previous` in the vDSO (80, 81),
+  `sysenter`/`ud2a`/`rdpid %eax`/`invpcid` (79), and `(unsigned long)&sym - 0xC0000000` in
+  a static initializer (78: the addend wraps in 32 bits).
+* Four code generator bugs found by booting: a pre-existing upstream crash on `goto` out of
+  cleanup scopes to a local label (85, `kernel/futex/pi.c`; it also crashes the x86_64 tcc on
+  the reduced case), and in this project's own earlier work the regparm indirect call that
+  dereferenced its function pointer after the argument registers were loaded (88,
+  `entry->read(entry, &out)` in cpuid_parser.c called address 0), the struct zero-fill that
+  clobbered `%eax` (89, `__init_waitqueue_head` wrote its spinlock to NULL) and musl's
+  `call *%gs:16` assembled as a direct call (91). 86 (a goto out of a cleanup variable's
+  initializer ran the cleanup) came out of the test written for 85.
+* tld's objcopy recomputes PT_LOAD sizes from the sections it keeps. The kernel strips
+  `.modinfo` out of `vmlinux.unstripped`; the linker script places it after `.bss`/`.brk`,
+  so while it is there the data segment's file size spans the NOBITS sections (GNU ld lays it
+  out the same way) and only objcopy brings it back. With the headers copied unchanged the
+  32-bit decompressor's `parse_elf()` copied 2.8 MB of "file" over its own relocated code and
+  stack: the first boot died with zeros where `zlib_adler32` had been. (The x86_64 vmlinux
+  had the same `p_filesz == p_memsz`; its decompressor sits above the data segment's end.)
+* Kernel patches K15 (swiotlb wrappers under `IS_ENABLED(CONFIG_SWIOTLB)`) and K16 (x86's
+  `pmdp_test_and_clear_young()` declared only where it is defined) remove undefined
+  references from dead branches that gcc's constant propagation eliminates; both are
+  semantics-preserving and upstreamable.
+* musl and busybox on i386: the x87 `"t"`/`"u"` constraints of musl's math (90, any floating
+  type on i386), `"%eax"` clobbers (76), an `"m"` input operand when every register is taken
+  (busybox's comba multiply: three register outputs, two clobbers, two pointer-based memory
+  inputs; the value is copied to a stack temporary, 92), and tcc's own linker learning the
+  8- and 16-bit relocations (93: `jecxz 1f` in musl's sigsetjmp).
+
+Debugging a 32-bit boot that prints nothing: `ARCH=i386 ./run.sh --nolibc -S -gdb tcp::1234`
+and gdb with `add-symbol-file build/i386/linux/arch/x86/boot/compressed/vmlinux -o <base>`
+for the decompressor (base = `0x1000000 + init_size - ZO__end`, from `arch/x86/boot/zoffset.h`
+and the bzImage header; software breakpoints set before its self-copy are overwritten by
+it, use `hbreak` for the first one) or `add-symbol-file build/i386/linux/vmlinux 0` for the
+kernel; tcc's frames always have `%ebp`, so the saved frame pointers give a call chain even
+without unwind info (`exc_page_fault`'s `pt_regs` is in `%eax` under `-mregparm=3`). Under
+TCG (`KVM=0`) `-d int` logs every exception with its address.
+
+Open on i386: the self-hosting image (`ARCH=i386 scripts/build.sh selfhost` and the guest's
+`build-kernel`, which now picks `ARCH=i386` from `uname -m`, are wired but have not been
+run); the real-mode setup's early serial console (`earlyprintk=serial`) prints every
+character twice ("eeaarrllyy ccoonnssoollee iinn sseettuupp ccooddee"), a -m16 code generation
+problem that the x86_64 boot (same setup code) does not show, not yet investigated.
 
 ## Self-hosting
 
@@ -180,7 +257,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 12 kernel patches are
+  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 15 kernel patches are
   applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same

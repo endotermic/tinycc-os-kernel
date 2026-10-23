@@ -64,15 +64,16 @@ export TCC KCC_LOG KCONFIG_PREGEN=$SHARE/kconfig
 # the same toolchain variables as scripts/build.sh step_kernel; LEX/YACC are the copies of the
 # pre-generated files; the version string names the generation and the builder
 set -- "$@"
-MK="$MAKE ARCH=x86 CC=$BIN/tcc-kcc HOSTCC=$BIN/tcc-hostcc OBJTOOL=$BIN/objtool-stub \
+case $(uname -m) in i?86) KARCH=i386; AFRAG=i386.config;; *) KARCH=x86; AFRAG=x86_64.config;; esac
+MK="$MAKE ARCH=$KARCH CC=$BIN/tcc-kcc HOSTCC=$BIN/tcc-hostcc OBJTOOL=$BIN/objtool-stub \
 LD=$BIN/ld NM=$BIN/nm OBJCOPY=$BIN/objcopy READELF=$BIN/readelf AR=$BIN/ar STRIP=$BIN/strip \
 LEX=$BIN/flex YACC=$BIN/bison \
 KBUILD_BUILD_VERSION=$GEN KBUILD_BUILD_USER=${KBUILD_BUILD_USER:-tcc} KBUILD_BUILD_HOST=${KBUILD_BUILD_HOST:-tinycc-os-guest}"
 if [ ! -f .config ]; then
-    echo "== configuring: tinyconfig + minimal.config + tcc.config, olddefconfig"
+    echo "== configuring: tinyconfig + minimal.config + $AFRAG + tcc.config, olddefconfig"
     $MK -s tinyconfig >>"$log" 2>&1 || { tail -20 "$log"; die "tinyconfig failed (log: $log)"; }
 fi
-for f in minimal.config tcc.config; do
+for f in minimal.config $AFRAG tcc.config; do
     KCONFIG_CONFIG=.config sh scripts/kconfig/merge_config.sh -m .config "$SHARE/$f" >>"$log" 2>&1
 done
 $MK -s olddefconfig >>"$log" 2>&1 || { tail -20 "$log"; die "olddefconfig failed (log: $log)"; }

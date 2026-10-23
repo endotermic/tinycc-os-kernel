@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:02:26 +0300
+Subject: [PATCH] tccgen: 32-bit addends wrap, unsigned 64-bit division by a
+ power of two, mul_overflow without a division
+
+- The constant folder refused symbol addends outside 32 bits signed; on
+  a 32-bit target they wrap like the address arithmetic does
+  ("(unsigned long)&swapper_pg_dir - 0xC0000000" in a static initializer
+  of the 32-bit kernel).
+- An unsigned 64-bit division or modulo by a constant power of two is a
+  shift or a mask instead of a call to __udivdi3/__umoddi3, as gcc does
+  at every optimization level.
+- __builtin_mul_overflow divided the product by an operand to detect
+  the overflow, a libtcc1 call on 32-bit targets; two magnitudes of at
+  most 32 bits cannot overflow a 64-bit product, so the division is only
+  compiled for wider operands (the kernel's size_mul() is everywhere and
+  it has no libgcc).
+
+Fixes 78, 82 and 84 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ include/tccdefs.h |  5 ++++-
+ tccgen.c          | 26 +++++++++++++++++++++++++-
+ 2 files changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 10e5842..22af378 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -218,11 +218,14 @@
+         else { __m = __mb - __ma; __n = __nb; } \
+         if (__m == 0) __n = 0; \
+         __tcc_ovf_store(__n, __m, __big, r); })
++    /* mul: the 64-bit product of two magnitudes of at most 32 bits cannot
++       overflow, so the division that detects the overflow (a libtcc1 call
++       on 32-bit targets) is only compiled for wider operands */
+     #define __builtin_mul_overflow(a, b, r) __extension__ ({ \
+         __typeof__(a) __a = (a); __typeof__(b) __b = (b); \
+         unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b); \
+         unsigned long long __m = __ma * __mb; \
+-        int __big = __ma != 0 && __m / __ma != __mb; \
++        int __big = sizeof(__a) + sizeof(__b) > 8 && __ma != 0 && __m / __ma != __mb; \
+         int __n = __m != 0 && (__tcc_ovf_neg(__a) != __tcc_ovf_neg(__b)); \
+         __tcc_ovf_store(__n, __m, __big, r); })
+ #if !defined __linux__ && !defined _WIN32
+diff --git a/tccgen.c b/tccgen.c
+index 5ab6133..45b0606 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -2150,6 +2150,25 @@ static void gen_opl(int op)
+     unsigned short reg_lret = REG_IRE2;
+     SValue tmp;
+ 
++    /* unsigned division or modulo by a constant power of two: a shift or
++       a mask, like gcc, instead of the libtcc1 helper (freestanding code
++       such as the kernel has none) */
++    if ((op == TOK_UDIV || op == TOK_UMOD)
++        && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++        && vtop->c.i && !(vtop->c.i & (vtop->c.i - 1))) {
++        uint64_t m = vtop->c.i;
++        if (op == TOK_UDIV) {
++            for (c = 0; m > 1; m >>= 1)
++                c++;
++            vtop->c.i = c;
++            gen_opl(TOK_SHR);
++        } else {
++            vtop->c.i = m - 1;
++            gen_opl('&');
++        }
++        return;
++    }
++
+     switch(op) {
+     case '/':
+     case TOK_PDIV:
+@@ -2536,7 +2555,12 @@ static void gen_opic(int op)
+                 l2 = -l2;
+ 	    l2 += vtop[-1].c.i;
+ 	    /* The backends can't always deal with addends to symbols
+-	       larger than +-1<<31.  Don't construct such.  */
++	       larger than +-1<<31.  Don't construct such.  On a 32-bit
++	       target the addend wraps like the address arithmetic does
++	       (the kernel's "(unsigned long)&swapper_pg_dir - 0xC0000000"
++	       in a static initializer on i386). */
++	    if (PTR_SIZE == 4)
++	        l2 = (int)l2;
+ 	    if ((int)l2 != l2)
+ 	        goto general_case;
+             vtop--;

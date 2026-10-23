@@ -11,3 +11,6 @@ upstreamable/0009-kbuild-let-OBJTOOL-name-an-objtool-that-is-not-built.patch
 upstreamable/0010-crypto-x86-build-the-AVX2-and-AVX-512-SHA-256-and-BL.patch
 upstreamable/0011-x86-boot-make-the-video-mode-setting-code-optional.patch
 upstreamable/0012-mm-provide-a-vma_thp_gfp_mask-stub-without-THP.patch
+upstreamable/0013-lib-provide-the-64-bit-division-helpers-when-the-com.patch
+upstreamable/0014-swiotlb-make-the-wrappers-calls-dead-code-without-CO.patch
+upstreamable/0015-x86-mm-declare-pmdp-pudp_test_and_clear_young-only-w.patch

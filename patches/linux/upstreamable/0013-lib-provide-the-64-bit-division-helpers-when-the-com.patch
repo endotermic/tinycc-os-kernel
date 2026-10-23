@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:01:36 +0300
+Subject: [PATCH] lib: provide the 64-bit division helpers when the compiler
+ calls them
+
+gcc strength-reduces every 64-bit division by a constant on 32-bit x86 to
+multiplications and shifts, so a 32-bit kernel built with it never links
+__divdi3, __moddi3, __udivdi3 or __umoddi3; a compiler that emits the calls
+(tinycc) fails the link in a dozen objects of mm, fs and sched ("/ 8",
+"/ 100", ...), while the remaining 64-bit divisions go through do_div() and
+the div64 helpers as they should.
+
+Add GENERIC_LIB_DIVDI3 with lib/math/divdi3.c, the four routines on top of
+div64_u64()/div64_s64() and their _rem variants, and CC_IS_TCC ("$(CC) -v"
+says "tcc version"; tinycc identifies itself as GCC to the headers, so
+CC_IS_GCC stays set).  x86 selects the helpers for X86_32 && CC_IS_TCC.
+
+Assisted-by: LLM
+---
+ arch/x86/Kconfig  |  1 +
+ init/Kconfig      |  8 ++++++++
+ lib/Kconfig       |  8 ++++++++
+ lib/math/Makefile |  2 ++
+ lib/math/divdi3.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 59 insertions(+)
+ create mode 100644 lib/math/divdi3.c
+
+diff --git a/arch/x86/Kconfig b/arch/x86/Kconfig
+index be0c03eed..f2131eda4 100644
+--- a/arch/x86/Kconfig
++++ b/arch/x86/Kconfig
+@@ -180,6 +180,7 @@ config X86
+ 	select GENERIC_IRQ_PROBE
+ 	select GENERIC_IRQ_RESERVATION_MODE
+ 	select GENERIC_IRQ_SHOW
++	select GENERIC_LIB_DIVDI3		if X86_32 && CC_IS_TCC
+ 	select GENERIC_PENDING_IRQ		if SMP
+ 	select GENERIC_SMP_IDLE_THREAD
+ 	select GENERIC_GETTIMEOFDAY
+diff --git a/init/Kconfig b/init/Kconfig
+index da0826044..03dc1671f 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -27,6 +27,14 @@ config GCC_VERSION
+ config CC_IS_CLANG
+ 	def_bool $(success,test "$(cc-name)" = Clang)
+ 
++config CC_IS_TCC
++	def_bool $(success,$(CC) -v 2>&1 | grep -q '^tcc version')
++	help
++	  The Tiny C Compiler.  It identifies itself as GCC to the headers
++	  (CC_IS_GCC stays set); this symbol selects the code that depends on
++	  what tinycc's code generator does not do, such as strength-reducing
++	  64-bit divisions by constants on 32-bit targets.
++
+ config CLANG_VERSION
+ 	int
+ 	default $(cc-version) if CC_IS_CLANG
+diff --git a/lib/Kconfig b/lib/Kconfig
+index 4e6b34c33..20671b641 100644
+--- a/lib/Kconfig
++++ b/lib/Kconfig
+@@ -596,6 +596,14 @@ config GENERIC_IOREMAP
+ config GENERIC_LIB_ASHLDI3
+ 	bool
+ 
++config GENERIC_LIB_DIVDI3
++	bool
++	help
++	  Provide the libgcc 64-bit division routines __divdi3, __moddi3,
++	  __udivdi3 and __umoddi3 on top of the kernel's div64 helpers, for
++	  32-bit targets whose compiler emits calls to them where gcc would
++	  strength-reduce the division (constant divisors).
++
+ config GENERIC_LIB_ASHRDI3
+ 	bool
+ 
+diff --git a/lib/math/Makefile b/lib/math/Makefile
+index 9a3850d55..e1c2724cd 100644
+--- a/lib/math/Makefile
++++ b/lib/math/Makefile
+@@ -1,6 +1,8 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-y += div64.o gcd.o lcm.o int_log.o int_pow.o int_sqrt.o reciprocal_div.o
+ 
++obj-$(CONFIG_GENERIC_LIB_DIVDI3) += divdi3.o
++
+ obj-$(CONFIG_CORDIC)		+= cordic.o
+ obj-$(CONFIG_POLYNOMIAL)	+= polynomial.o
+ obj-$(CONFIG_PRIME_NUMBERS)	+= prime_numbers.o
+diff --git a/lib/math/divdi3.c b/lib/math/divdi3.c
+new file mode 100644
+index 000000000..4d024f740
+--- /dev/null
++++ b/lib/math/divdi3.c
+@@ -0,0 +1,40 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * The libgcc 64-bit division routines for 32-bit targets whose compiler calls
++ * them: gcc strength-reduces a 64-bit division by a constant to multiplications
++ * and shifts, so a 32-bit kernel built with gcc never links them and the
++ * remaining uses go through do_div() and the div64 helpers; a compiler that
++ * emits the calls (tinycc) gets them from here, on top of lib/math/div64.c.
++ */
++#include <linux/export.h>
++#include <linux/math64.h>
++
++long long __divdi3(long long a, long long b)
++{
++	return div64_s64(a, b);
++}
++EXPORT_SYMBOL(__divdi3);
++
++long long __moddi3(long long a, long long b)
++{
++	s64 rem;
++
++	div64_s64_rem(a, b, &rem);
++	return rem;
++}
++EXPORT_SYMBOL(__moddi3);
++
++unsigned long long __udivdi3(unsigned long long a, unsigned long long b)
++{
++	return div64_u64(a, b);
++}
++EXPORT_SYMBOL(__udivdi3);
++
++unsigned long long __umoddi3(unsigned long long a, unsigned long long b)
++{
++	u64 rem;
++
++	div64_u64_rem(a, b, &rem);
++	return rem;
++}
++EXPORT_SYMBOL(__umoddi3);

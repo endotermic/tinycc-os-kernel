@@ -1,0 +1,295 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:01:35 +0300
+Subject: [PATCH] i386: -fPIC/-fPIE code generation and the GOT-relative
+ assembler forms
+
+The 32-bit Linux kernel compiles its decompressor with -fPIE and its vDSO
+with -fpic and refuses run-time relocations in both.  The i386 code
+generator only produced absolute addresses.
+
+With -fPIC/-fpic/-fPIE/-fpie every symbol is now addressed
+sym@GOTOFF(%ebx) (R_386_GOTOFF); the prologue saves %ebx and loads the
+GOT address into it (call 1f; 1: pop %ebx; add $_GLOBAL_OFFSET_TABLE_+3,
+%ebx, R_386_GOTPC), the epilogue restores it, calls stay R_386_PC32.
+That is gcc's -fPIE model with hidden symbols: no GOT, no PLT; -fPIC gets
+the same code.  __PIC__/__pic__ and __PIE__/__pie__ are defined like gcc.
+Not with -m16.  x86_64 code is RIP-relative anyway and only gets the
+macros.
+
+The assembler accepts sym@GOTOFF (R_386_GOTOFF) and emits R_386_GOTPC for
+_GLOBAL_OFFSET_TABLE_ in an expression, with GNU as's addend convention
+(the symbol's value relative to the instruction start, so the field's
+offset within the instruction is added; asm_opcode records the start).
+
+Fixes 74 and 75 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-asm.c | 32 ++++++++++++++++++++++++++++++
+ i386-gen.c | 58 ++++++++++++++++++++++++++++++++++++++++++++++--------
+ libtcc.c   | 19 ++++++++++++++++++
+ tcc.h      |  4 ++++
+ tccasm.c   |  9 +++++++--
+ tccpp.c    |  6 ++++++
+ 6 files changed, 118 insertions(+), 10 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 9c15ddc..051e676 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -547,6 +547,26 @@ static void parse_operand(TCCState *s1, Operand *op)
+     op->type |= indir;
+ }
+ 
++#ifndef TCC_TARGET_X86_64
++/* '_GLOBAL_OFFSET_TABLE_' in an expression: GNU as emits R_386_GOTPC for it
++   ("addl $_GLOBAL_OFFSET_TABLE_+(.-1b), %ebx" after "1: popl %ebx") and
++   takes the symbol's value relative to the start of the instruction, so the
++   addend grows by the offset of the field within the instruction (2 for
++   the immediate of "addl $imm32, %ebx"); asm_insn_start is set by
++   asm_opcode() */
++static int asm_insn_start = -1;
++static int is_got_sym(Sym *sym)
++{
++    return sym && !strcmp(get_tok_str(sym->v & ~SYM_FIELD, NULL), "_GLOBAL_OFFSET_TABLE_");
++}
++static int gotpc_field_offset(void)
++{
++    if (asm_insn_start >= 0 && ind >= asm_insn_start && ind - asm_insn_start < 16)
++        return ind - asm_insn_start;
++    return 0;
++}
++#endif
++
+ /* XXX: unify with C code output ? */
+ ST_FUNC void gen_expr32(ExprValue *pe)
+ {
+@@ -554,6 +574,15 @@ ST_FUNC void gen_expr32(ExprValue *pe)
+         /* If PC-relative, always set VT_SYM, even without symbol,
+ 	   so as to force a relocation to be emitted.  */
+ 	gen_addrpc32(VT_SYM, pe->sym, pe->v + (ind + 4));
++#ifndef TCC_TARGET_X86_64
++    else if (pe->sym && pe->gotoff) {
++        greloc(cur_text_section, pe->sym, ind, R_386_GOTOFF);
++        gen_le32(pe->v);
++    } else if (is_got_sym(pe->sym)) {
++        greloc(cur_text_section, pe->sym, ind, R_386_GOTPC);
++        gen_le32(pe->v + gotpc_field_offset());
++    }
++#endif
+ #ifdef TCC_TARGET_X86_64
+     else if (pe->sym && !CODE64) {
+         /* 32-bit code in a 64-bit object: a zero-extended address, as
+@@ -930,6 +959,9 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+     int rex64;
+ 
+     maybe_print_stats();
++#ifndef TCC_TARGET_X86_64
++    asm_insn_start = ind;
++#endif
+     /* a prefix followed by its instruction on the same line ("rep stosb",
+        "lock cmpxchg", "addr32 call") is assembled with that instruction,
+        where GNU as places it after the size prefixes (or lets it change a
+diff --git a/i386-gen.c b/i386-gen.c
+index e9702a8..3effd2c 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -119,6 +119,22 @@ static int func_ret_sub;
+    32-bit code.  o66()/o67() emit the prefixes; byte and x87 operations
+    have no operand size. */
+ #define M16 (tcc_state->m16)
++/* -fPIC/-fPIE (not with -m16, whose code is never position-independent):
++   %ebx holds the address of _GLOBAL_OFFSET_TABLE_ for the whole function
++   (loaded by the prologue, see gfunc_epilog) and every symbol is addressed
++   sym@GOTOFF(%ebx), R_386_GOTOFF: the model of gcc -fPIE with hidden
++   symbols (the kernel's 32-bit decompressor and vDSO), without a GOT. */
++#define PIC (tcc_state->pic && !M16)
++static Sym *got_sym(void)
++{
++    return external_global_sym(tok_alloc_const("_GLOBAL_OFFSET_TABLE_"), &int_type);
++}
++/* the GOT-relative displacement of 'sym + c' */
++static void gen_gotoff32(Sym *sym, int c)
++{
++    greloc(cur_text_section, sym, ind, R_386_GOTOFF);
++    gen_le32(c);
++}
+ static void o66(void) { if (M16) g(0x66); }
+ static void o67(void) { if (M16) g(0x67); }
+ /* the operand size prefix of an opcode given to gen_modrm()/store():
+@@ -313,8 +329,13 @@ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+     } else if ((r & VT_VALMASK) == VT_CONST) {
+         /* constant memory reference */
+         o(opc);
+-        o(0x05 | op_reg);
+-        gen_addr32(r, sym, c);
++        if (PIC && (r & VT_SYM)) {
++            o(0x83 | op_reg); /* sym@GOTOFF(%ebx) */
++            gen_gotoff32(sym, c);
++        } else {
++            o(0x05 | op_reg);
++            gen_addr32(r, sym, c);
++        }
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+ 	o(opc);
+         /* currently, we use only ebp as base */
+@@ -414,9 +435,15 @@ ST_FUNC void load(int r, SValue *sv)
+             }
+ #endif
+         } else if (v == VT_CONST) {
+-            o66();
+-            o(0xb8 + r); /* mov $xx, r */
+-            gen_addr32(fr, sv->sym, fc);
++            if (PIC && (fr & VT_SYM)) {
++                o(0x8d); /* lea sym@GOTOFF(%ebx), r */
++                o(0x83 | (r << 3));
++                gen_gotoff32(sv->sym, fc);
++            } else {
++                o66();
++                o(0xb8 + r); /* mov $xx, r */
++                gen_addr32(fr, sv->sym, fc);
++            }
+         } else if (v == VT_LOCAL) {
+             if (fc) {
+                 /* lea xxx(%ebp), r */
+@@ -764,11 +791,13 @@ ST_FUNC void gfunc_call(int nb_args)
+     vtop--;
+ }
+ 
+-/* push %ebp; mov %esp,%ebp; sub $n,%esp: 3 prefixes more with -m16 */
++/* push %ebp; mov %esp,%ebp; sub $n,%esp: 3 prefixes more with -m16; with
++   -fPIC: push %ebx; call 1f; 1: pop %ebx; add $_GLOBAL_OFFSET_TABLE_+3,%ebx */
++#define PIC_PROLOG_SIZE (PIC ? 1 + 5 + 1 + 6 : 0)
+ #ifdef TCC_TARGET_PE
+-#define FUNC_PROLOG_SIZE (10 + !!USE_EBX + 3 * !!M16)
++#define FUNC_PROLOG_SIZE (10 + !!USE_EBX + 3 * !!M16 + PIC_PROLOG_SIZE)
+ #else
+-#define FUNC_PROLOG_SIZE (9 + !!USE_EBX + 3 * !!M16)
++#define FUNC_PROLOG_SIZE (9 + !!USE_EBX + 3 * !!M16 + PIC_PROLOG_SIZE)
+ #endif
+ 
+ /* generate function prolog of type 't' */
+@@ -902,6 +931,8 @@ ST_FUNC void gfunc_epilog(void)
+ #if USE_EBX
+     gen_modrm(0x8b, TREG_EBX, VT_LOCAL, NULL, -(v+4));
+ #endif
++    if (PIC) /* the PIC register is callee-saved: restore it */
++        gen_modrm(0x8b, TREG_EBX, VT_LOCAL, NULL, -(v+4));
+ 
+     o66();
+     o(0xc9); /* leave */
+@@ -936,6 +967,17 @@ ST_FUNC void gfunc_epilog(void)
+ #if USE_EBX
+     o(0x53); /* push ebx */
+ #endif
++    if (PIC) {
++        /* the PIC register: push %ebx; call 1f; 1: pop %ebx;
++           add $_GLOBAL_OFFSET_TABLE_+3, %ebx (R_386_GOTPC = GOT + A - P
++           with P the immediate, 3 bytes after the popped address) */
++        o(0x53);
++        oad(0xe8, 0);
++        o(0x5b);
++        o(0xc381);
++        greloc(cur_text_section, got_sym(), ind, R_386_GOTPC);
++        gen_le32(3);
++    }
+     ind = saved_ind;
+ }
+ 
+diff --git a/libtcc.c b/libtcc.c
+index c185651..a1d4698 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -2118,6 +2118,25 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+             do ++s->verbose; while (*optarg++ == 'v');
+             continue;
+         case TCC_OPTION_f:
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++            /* position-independent code: the i386 code generator then addresses
++               every symbol GOT-relative through %ebx (i386-gen.c; both forms
++               are PIE-like: no GOT, no PLT, as for hidden symbols); x86_64
++               code is RIP-relative anyway, only __PIC__ is defined there */
++            if (!strcmp(optarg, "PIC") || !strcmp(optarg, "pic")) {
++                s->pic = 2;
++                break;
++            }
++            if (!strcmp(optarg, "PIE") || !strcmp(optarg, "pie")) {
++                s->pic = 1;
++                break;
++            }
++            if (!strcmp(optarg, "no-PIC") || !strcmp(optarg, "no-pic")
++                || !strcmp(optarg, "no-PIE") || !strcmp(optarg, "no-pie")) {
++                s->pic = 0;
++                break;
++            }
++#endif
+             if (set_flag(s, options_f, optarg) < 0)
+                 goto unsupported_option;
+             break;
+diff --git a/tcc.h b/tcc.h
+index b67c94b..edc52d5 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -707,6 +707,7 @@ typedef struct ExprValue {
+     uint64_t v;
+     Sym *sym;
+     int pcrel;
++    int gotoff; /* 'sym@GOTOFF': GOT-relative (R_386_GOTOFF) */
+ } ExprValue;
+ 
+ #define MAX_ASM_OPERANDS 30
+@@ -823,6 +824,9 @@ struct TCCState {
+     unsigned char m16;      /* -m16: generate 16-bit (.code16gcc) code */
+     unsigned char regparm;  /* -mregparm=N: default calling convention */
+ #endif
++    unsigned char pic;      /* -fPIC/-fpic (2), -fPIE/-fpie (1): i386 position-independent
++                               code, every symbol addressed sym@GOTOFF(%ebx) (no GOT);
++                               elsewhere only __PIC__ is defined */
+ 
+     char *tcc_lib_path; /* CONFIG_TCCDIR or -B option */
+     char *soname; /* as specified on the command line (-soname) */
+diff --git a/tccasm.c b/tccasm.c
+index 0b38ea4..c17107c 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -392,6 +392,7 @@ static Sym* asm_section_sym(TCCState *s1, Section *sec)
+ 
+ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+ {
++    pe->gotoff = 0;
+     Sym *sym;
+     int op, label;
+     uint64_t n;
+@@ -510,10 +511,14 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+             next();
+             /* 'sym@PLT' (musl's hand-written asm, gcc -fPIC output):
+                call/jmp already get a PLT-capable relocation, so the
+-               suffix only has to be accepted. */
++               suffix only has to be accepted.  'sym@GOTOFF' (the kernel's
++               32-bit decompressor, gcc -fPIE code): GOT-relative value,
++               R_386_GOTOFF, see gen_expr32(). */
+             if (tok == '@') {
+                 next();
+-                if (tok < TOK_IDENT || strcmp(get_tok_str(tok, NULL), "PLT"))
++                if (tok >= TOK_IDENT && !strcmp(get_tok_str(tok, NULL), "GOTOFF"))
++                    pe->gotoff = 1;
++                else if (tok < TOK_IDENT || strcmp(get_tok_str(tok, NULL), "PLT"))
+                     tcc_error("unsupported symbol suffix '@%s'",
+                               get_tok_str(tok, &tokc));
+                 next();
+diff --git a/tccpp.c b/tccpp.c
+index 7978494..6502937 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3672,6 +3672,12 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
+     cstr_printf(cs, "#define __TINYC__ 9%.2s\n", &TCC_VERSION[4]);
+     putdefs(cs, target_machine_defs);
+     putdefs(cs, target_os_defs);
++    if (s1->pic) {
++        /* like gcc: -fPIC/-fPIE define __PIC__ 2, -fPIE also __PIE__ 2 */
++        cstr_printf(cs, "#define __PIC__ 2\n#define __pic__ 2\n");
++        if (s1->pic == 1)
++            cstr_printf(cs, "#define __PIE__ 2\n#define __pie__ 2\n");
++    }
+ 
+ #ifdef TCC_TARGET_ARM
+     if (s1->float_abi == ARM_HARD_FLOAT)

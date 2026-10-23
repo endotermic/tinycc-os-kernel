@@ -20,21 +20,32 @@
 #    tccdir is /usr/lib/tcc) is used as it is.  Both also serve the self-hosting
 #    build inside the guest (userland/selfhost/build-kernel).
 #
-# Env: TCC (tcc binary), KCC_GCC (fallback compiler, default gcc),
+#  * KCC_TCC names the compiler of the target code when it is not TCC itself:
+#    the i386 kernel (ARCH=i386) is compiled by the i386-tcc cross compiler
+#    (scripts/build.sh), while TCC stays the host compiler of tcc-hostcc.
+#    -dumpmachine answers for that target (i686 when the compiler is the i386
+#    one or -m32 is given).
+#
+# Env: TCC (tcc binary), KCC_TCC (the target compiler, default TCC),
+#      KCC_GCC (fallback compiler, default gcc),
 #      KCC_LOG (append one line per invocation: tool and output file).
 TCC=${TCC:?tcc-kcc: set TCC to the tinycc binary (scripts/build.sh does)}
+TCC=${KCC_TCC:-$TCC}
 GCC=${KCC_GCC:-gcc}
 TCCDIR=$(dirname "$TCC")
 BFLAGS=
 [ ! -f "$TCCDIR/include/tccdefs.h" ] || BFLAGS="-B$TCCDIR -I$TCCDIR/include"
 
 tool=tcc werror= out= prev=
+case "$TCC" in *i386*) machine=i686-linux-gnu;; *) machine=x86_64-linux-gnu;; esac
 for a in "$@"; do
     case "$prev" in -o) out=$a;; esac
     case "$a" in
+        -m32) machine=i686-linux-gnu;;
+        -m64) machine=x86_64-linux-gnu;;
         -Werror) werror=1;;
         -Wa,--version) echo "GNU assembler (tcc-kcc) 2.47"; exit 0;;
-        -dumpmachine) echo x86_64-linux-gnu; exit 0;;
+        -dumpmachine) echo "$machine"; exit 0;;
         -print-file-name=*) echo "${a#-print-file-name=}"; exit 0;;
         -print-libgcc-file-name) echo libgcc.a; exit 0;;
     esac

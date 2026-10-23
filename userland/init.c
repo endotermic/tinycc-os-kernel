@@ -5,13 +5,14 @@
  * It prints a banner and the running kernel's uname, then asks the kernel
  * to reboot so that QEMU (started with -no-reboot) exits cleanly.
  *
- * Build (no libc, static, x86_64):
+ * Build (no libc, static, x86_64 or i386):
  *   tcc -nostdlib -static -o init init.c
  *   gcc -nostdlib -static -o init init.c
  */
 
 typedef unsigned long ul;
 
+#ifdef __x86_64__
 static long sys4(long n, long a, long b, long c, long d)
 {
     long r;
@@ -26,6 +27,23 @@ static long sys4(long n, long a, long b, long c, long d)
 #define SYS_uname   63
 #define SYS_reboot  169
 #define SYS_exit    60
+#else
+/* i386: int $0x80, arguments in ebx, ecx, edx, esi */
+static long sys4(long n, long a, long b, long c, long d)
+{
+    long r;
+    __asm__ volatile ("int $0x80"
+                      : "=a"(r)
+                      : "a"(n), "b"(a), "c"(b), "d"(c), "S"(d)
+                      : "memory");
+    return r;
+}
+
+#define SYS_write   4
+#define SYS_uname   122
+#define SYS_reboot  88
+#define SYS_exit    1
+#endif
 
 static void print(const char *s)
 {
