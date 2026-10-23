@@ -2,7 +2,16 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # run.sh - boot out/<arch> in QEMU on the serial console.  Extra arguments go to QEMU.
 # QEMU exits when the guest reboots (-no-reboot): 'exit' in the shell, or Ctrl-A X.
-# Usage: ./run.sh [--iso] [--efi] [--vga|--no-vga] [--nolibc] [--selfhost [--auto]] [qemu args...]
+# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--nolibc] [--selfhost [--auto]] [qemu args...]
+#        ./run.sh --list
+#   --arch    x86_64 or i386 (also ARCH in the environment).  Without it, run.sh looks at what
+#             is in place in out/<arch>/ (the ISO, or the kernel and the initramfs image a
+#             form needs): on a terminal it offers a numbered menu of every bootable form of
+#             every architecture (of the given form only, with --nolibc/--selfhost/--iso),
+#             otherwise it takes the one architecture that has the form (x86_64 when both do).
+#             Whatever is chosen, a missing file is named, with the command that builds it,
+#             before QEMU starts.
+#   --list    print that table (ok / missing files) and exit
 #   --iso     boot the ISO from boot/mkiso.sh instead of -kernel/-initrd; implies --vga when a
 #             display is available ($DISPLAY or $WAYLAND_DISPLAY), since the ISO's default menu
 #             entry puts the console on the screen
@@ -22,7 +31,7 @@
 #             toolchain first and uses it; --auto=test rebuilds the toolchain and runs tcc's
 #             test suite on it, no kernel: the logs come back); scripts/selfhost-test.sh
 #             drives the first two
-# Env: ARCH (x86_64, i386), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM when
 # /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
@@ -34,18 +43,86 @@
 # is not a tty; 0 = none)
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-ARCH=${ARCH:-x86_64}; O=$OUT/$ARCH
-iso= efi= vga= selfhost= auto= initrd=$O/initramfs.cpio
+iso= efi= vga= selfhost= auto= form=shell list=
 while [ $# -gt 0 ]; do
     case $1 in
-        --iso) iso=1; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
-        --nolibc) initrd=$O/initramfs-nolibc.cpio; shift;;
-        --selfhost) selfhost=1; initrd=$O/initramfs-selfhost.cpio; shift;;
+        --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;;
+        --list) list=1; shift;;
+        --iso) iso=1; form=iso; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
+        --nolibc) form=nolibc; shift;;
+        --selfhost) selfhost=1; form=selfhost; shift;;
         --auto) auto=auto; shift;; --auto=*) auto=${1#--auto=}; shift;;
         --) shift; break;; *) break;;
     esac
 done
 [ -z "$auto" ] || [ -n "$selfhost" ] || die "--auto needs --selfhost"
+# What a boot needs from out/<arch>/: the ISO, or the kernel (KERNEL overrides) and the
+# initramfs image of the form.  The table of what is in place drives --list, the menu and
+# the final check, so a missing file is named before QEMU starts.
+ARCHES="x86_64 i386"; FORMS="shell nolibc selfhost iso"
+needs() { # needs ARCH FORM: the files, one per line
+    case $2 in
+        iso) echo "$OUT/$1/tcc-linux-$1.iso";;
+        *) echo "${KERNEL:-$OUT/$1/bzImage}"
+           case $2 in nolibc) echo "$OUT/$1/initramfs-nolibc.cpio";; selfhost) echo "$OUT/$1/initramfs-selfhost.cpio";; *) echo "$OUT/$1/initramfs.cpio";; esac;;
+    esac
+}
+missing() { for f in $(needs "$1" "$2"); do [ -f "$f" ] || echo "$f"; done; }
+describe() { # describe ARCH FORM
+    case $2 in
+        shell) echo "$1: busybox shell with tcc";; nolibc) echo "$1: libc-free smoke test (--nolibc)";;
+        selfhost) echo "$1: the self-hosting image, 1 GB (--selfhost)";; iso) echo "$1: the ISO, GRUB menu (--iso)";;
+    esac
+}
+howto() { # howto ARCH FORM: what builds the missing files
+    ao=; [ "$1" = x86_64 ] || ao=" --arch $1"
+    case $2 in
+        iso) echo "./install.sh$ao --output iso  (or ARCH=$1 scripts/build.sh iso)";;
+        selfhost) echo "./install.sh$ao --selfhost  (or ARCH=$1 scripts/build.sh selfhost)";;
+        *) echo "./install.sh$ao  (or ARCH=$1 scripts/build.sh all)";;
+    esac
+}
+if [ -n "$list" ]; then
+    echo "boot targets in $OUT (./run.sh --arch ARCH [--nolibc|--selfhost|--iso]):"
+    for a in $ARCHES; do for f in $FORMS; do
+        m=$(missing $a $f)
+        if [ -z "$m" ]; then printf '  %-50s ok
+' "$(describe $a $f)"
+        else printf '  %-50s missing: %s
+' "$(describe $a $f)" "$(echo "$m" | sed "s|^$OUT/||" | tr '\n' ' ')"; fi
+    done; done
+    exit 0
+fi
+# The architecture: --arch or ARCH; else, on a terminal, a menu of every form that is in place
+# (of the chosen form when --nolibc/--selfhost/--iso was given); else the one architecture
+# that has the form, x86_64 when both do.
+if [ -z "$ARCH" ]; then
+    case $form in shell) forms=$FORMS;; *) forms=$form;; esac
+    n=0; targets=        # "arch:form" entries; "$@" stays what goes to QEMU
+    for a in $ARCHES; do for f in $forms; do [ -n "$(missing $a $f)" ] || { n=$((n + 1)); targets="$targets $a:$f"; }; done; done
+    [ $n -gt 0 ] || die "nothing of that kind is built in $OUT: $(howto x86_64 $form); ./run.sh --list shows what is there"
+    if [ -t 0 ] && [ -t 1 ] && [ $n -gt 1 ]; then
+        while :; do
+            echo "What to boot (in place in $OUT):"; i=0
+            for t in $targets; do i=$((i + 1)); echo "  $i) $(describe "${t%%:*}" "${t#*:}")"; done
+            printf '  1-%s [1]: ' $n; read -r r; [ -n "$r" ] || r=1
+            case $r in *[!0-9]*|'') ;; *) [ "$r" -lt 1 ] || [ "$r" -gt $n ] || break;; esac
+            echo "  '$r' is not one of the choices" >&2
+        done
+        i=0; for t in $targets; do i=$((i + 1)); [ "$i" != "$r" ] || break; done
+        ARCH=${t%%:*}; form=${t#*:}
+        case $form in iso) iso=1;; selfhost) selfhost=1;; esac
+    else
+        t=${targets# }; t=${t%% *}; ARCH=${t%%:*}
+        case " $targets " in *" x86_64:"*) ARCH=x86_64;; esac
+        [ "$ARCH" = x86_64 ] || echo "   the $ARCH system (the only one built; --arch chooses, --list lists)" >&2
+    fi
+fi
+case $ARCH in x86_64|i386) ;; *) die "--arch $ARCH: x86_64 or i386";; esac
+m=$(missing "$ARCH" "$form")
+[ -z "$m" ] || die "not in place for '$(describe "$ARCH" "$form")': $(echo "$m" | tr '\n' ' ')-- build it with $(howto "$ARCH" "$form"); ./run.sh --list shows what is there"
+O=$OUT/$ARCH
+case $form in nolibc) initrd=$O/initramfs-nolibc.cpio;; selfhost) initrd=$O/initramfs-selfhost.cpio;; *) initrd=$O/initramfs.cpio;; esac
 case $ARCH in x86_64) QEMU=qemu-system-x86_64;; i386) QEMU=qemu-system-i386;; *) die "ARCH=$ARCH: no QEMU setup";; esac
 have $QEMU || die "$QEMU not found"
 if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
@@ -86,7 +163,6 @@ if [ -n "$selfhost" ]; then
 fi
 KERNEL=${KERNEL:-$O/bzImage}
 if [ -n "$iso" ]; then
-    [ -f "$O/tcc-linux-$ARCH.iso" ] || die "no $O/tcc-linux-$ARCH.iso: scripts/build.sh iso"
     set -- -cdrom "$O/tcc-linux-$ARCH.iso" -boot d "$@"
     # one OEM string, space-separated words that grub.cfg parses: the gfxpayload, and with
     # --selfhost the menu entry to boot plus the extra kernel parameters (",," is a literal
@@ -95,7 +171,6 @@ if [ -n "$iso" ]; then
     oem="${RES:+gfxpayload=${RES}x32,,${RES},,auto}${selfhost:+${RES:+ }menu=selfhost${auto:+ tcc.selfhost=$auto}}"
     [ -z "$oem" ] || set -- -smbios "type=11,value=$oem" "$@"
 else
-    [ -f "$KERNEL" ] && [ -f "$initrd" ] || die "no kernel ($KERNEL) or initramfs ($initrd): run ./install.sh or scripts/build.sh${selfhost:+ selfhost}"
     set -- -kernel "$KERNEL" -initrd "$initrd" -append "$cmdline" "$@"
 fi
 # CPUs and hardware virtualization: the SMP kernel uses every virtual CPU (the self-hosting

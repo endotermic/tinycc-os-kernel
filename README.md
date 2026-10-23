@@ -36,10 +36,12 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./install.sh --build distro --arch x86_64 --output iso --test   # unattended, with tcc's test suite
 ./install.sh --build distro --output iso --selfhost             # + the self-hosting image and its ISO entries
 ./install.sh --arch i386                                        # the 32-bit kernel and userland (out/i386)
-ARCH=i386 ./run.sh                                              # boots it in qemu-system-i386
+./run.sh --arch i386                                            # boots it in qemu-system-i386 (chosen by itself when only i386 is built)
 ./install.sh --clean --arch i386                                # removes build/i386 and out/i386 (src/ stays)
 ./install.sh --clean-all --dry-run                              # lists what a clean of every architecture would free
 ./run.sh                          # boots out/x86_64 in QEMU to a busybox shell; 'exit' ends QEMU
+./run.sh --arch i386              # the 32-bit system; without --arch, a menu of what is built (on a terminal)
+./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
 ./run.sh --iso                    # the ISO (GRUB menu) with QEMU's display window; --efi: on OVMF
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)

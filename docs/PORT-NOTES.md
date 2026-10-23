@@ -165,7 +165,7 @@ directly, which is also better code for gcc.
 
 ## The i386 target
 
-`ARCH=i386` (2026-10-23; `install.sh --arch i386`, `ARCH=i386 ./run.sh`) builds the 32-bit
+`ARCH=i386` (2026-10-23; `install.sh --arch i386`, `./run.sh --arch i386`) builds the 32-bit
 kernel from the same sources, patches and fragments: `scripts/build.sh` gives the kernel
 `ARCH=i386` (which forces `CONFIG_64BIT=n`; `kernels/linux/i386.config` only switches highmem
 off), runs the `i386-tcc` cross compiler as the target compiler through `tcc-kcc` (`KCC_TCC`;
@@ -224,7 +224,7 @@ What the 32-bit kernel needed from the toolchain (fixes 74-93, K14-K16, docs/FIX
   inputs; the value is copied to a stack temporary, 92), and tcc's own linker learning the
   8- and 16-bit relocations (93: `jecxz 1f` in musl's sigsetjmp).
 
-Debugging a 32-bit boot that prints nothing: `ARCH=i386 ./run.sh --nolibc -S -gdb tcp::1234`
+Debugging a 32-bit boot that prints nothing: `./run.sh --arch i386 --nolibc -S -gdb tcp::1234`
 and gdb with `add-symbol-file build/i386/linux/arch/x86/boot/compressed/vmlinux -o <base>`
 for the decompressor (base = `0x1000000 + init_size - ZO__end`, from `arch/x86/boot/zoffset.h`
 and the bzImage header; software breakpoints set before its self-copy are overwritten by

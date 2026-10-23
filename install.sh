@@ -46,23 +46,30 @@ while [ $# -gt 0 ]; do
         *) echo "unknown option: $1" >&2; usage 2;;
     esac
 done
-ask() { # ask VAR "prompt" default choices...
+# ask VAR "prompt" default choices...: a numbered menu; each choice is "key: description" or
+# "key (note)", the key is what VAR gets.  The answer is a number (Enter = the default's), or a
+# key; anything else is asked again.
+key() { k=${1%%:*}; echo "${k%% *}"; }
+ask() {
     v=$1; p=$2; d=$3; shift 3
-    echo "$p"; i=0; for c; do i=$((i + 1)); echo "  $i) $c"; done
-    printf 'choice [%s]: ' "$d"; read -r a </dev/tty
-    [ -n "$a" ] || a=$d
-    case $a in [1-9]) eval "set -- \$@"; eval "a=\${$a}";; esac
-    eval "$v=\$a"
+    while :; do
+        echo "$p"; i=0; dn=
+        for c; do i=$((i + 1)); [ "$(key "$c")" != "$d" ] || { dn=$i; c="$c  (default)"; }; echo "  $i) $c"; done
+        printf '  1-%s [%s]: ' "$i" "$dn"; read -r a </dev/tty
+        [ -n "$a" ] || a=$dn
+        case $a in
+            *[!0-9]*|'') for c; do [ "$(key "$c")" != "$a" ] || { eval "$v=\$a"; return 0; }; done;;
+            *) if [ "$a" -ge 1 ] && [ "$a" -le $# ]; then eval "a=\${$a}"; eval "$v=\$(key \"\$a\")"; return 0; fi;;
+        esac
+        echo "  '$a' is not one of the choices" >&2
+    done
 }
 [ -z "$dry" ] || [ -n "$clean" ] || die "--dry-run goes with --clean or --clean-all"
 if [ -t 0 ] && [ -t 1 ] && [ -z "$clean" ]; then
     [ -n "$build" ] || ask build "What to build:" distro "tcc: only the patched Tiny C Compiler, as a tar.gz archive" "distro: the kernel and userland built with it"
-    build=${build%%:*}
     if [ "$build" = distro ]; then
         [ -n "$arch" ] || ask arch "Target architecture:" x86_64 "x86_64 (works)" "i386 (works: the 32-bit kernel)" "arm64 (not available)"
-        arch=${arch%% *}
-        [ -n "$output" ] || ask output "Output:" initrd "initrd: kernel + initramfs images (boot with ./run.sh)" "iso: the same plus a bootable BIOS/UEFI ISO"
-        output=${output%%:*}
+        [ -n "$output" ] || ask output "Output:" initrd "initrd: kernel + initramfs images (boot with ./run.sh)" "iso: the same plus a bootable BIOS/UEFI ISO" "all: both"
     fi
 fi
 build=${build:-distro}; arch=${arch:-x86_64}; output=${output:-initrd}
@@ -103,8 +110,12 @@ case $output in iso|all) "$ROOT/scripts/build.sh" iso;; esac
 echo
 msg "done: $OUT/$arch"
 ls -l "$OUT/$arch" | awk 'NR > 1 {print "   " $5 "\t" $9}'
-echo "   boot:  ./run.sh            (busybox shell with tcc; 'exit' ends QEMU)"
-echo "          ./run.sh --nolibc   (libc-free init: banner, reboot)"
-case $output in iso|all) echo "          ./run.sh --iso      (the ISO on SeaBIOS; --efi for OVMF)";; esac
-[ -z "$selfhost" ] || echo "          ./run.sh --selfhost (1 GB; inside: build-kernel, send-file; or scripts/selfhost-test.sh)"
-[ -z "$run" ] || exec "$ROOT/run.sh"
+# how to boot it: run.sh alone offers a menu of everything built; the direct lines name the
+# architecture, so that they can be pasted as they are whatever else is built
+hint() { printf '   %-6s %-34s %s\n' "$1" "$2" "$3"; }
+hint "boot:" "./run.sh" "a menu of everything built (--list prints it), or directly:"
+hint "" "./run.sh --arch $arch" "the busybox shell with tcc ('exit' ends QEMU)"
+hint "" "./run.sh --arch $arch --nolibc" "the libc-free init: banner, reboot"
+case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF)";; esac
+[ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file)"
+[ -z "$run" ] || exec "$ROOT/run.sh" --arch "$arch"
