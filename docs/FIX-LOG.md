@@ -46,6 +46,9 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 94 | tinycc 0079 |
 | | | | | 95 | tinycc 0080 |
 | | | | | 96 | tinycc 0081 |
+| | | | | 97 | tinycc 0082 |
+
+Tests: tinycc 0083-0091 (see "Tests" below).
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -64,7 +67,106 @@ decompressor and the vDSO, the 32-bit kernel's assembler forms and its freestand
 arithmetic, four code generator bugs found by booting it (85, 88, 89, 91), and what musl
 and busybox asked of the inline assembler and tcc's own linker (90, 92, 93). Fixes 95 and 96
 (2026-10-23) came from running tcc's own test suite inside the self-hosting guest: `-run` in a
-statically linked musl tcc, and musl's `<limits.h>` against fix 58's file.
+statically linked musl tcc, and musl's `<limits.h>` against fix 58's file. Fix 97 and the
+nine test patches (2026-10-23) put regression tests for the fixes into tcc's own suite; the
+tests found fix 97 and the open items listed under "Tests".
+
+## Tests
+
+Until 2026-10-23 only 5 of the tcc patches came with tests (`tests/m16-check.sh` and its
+snippet lists, two additions to `tests/asmtest.S`); everything else was verified by the
+kernel build and boot, by `make test` as a regression check and by `tools/tld/test.sh`.
+Patches 0083-0091 add the fixes to tcc's own suite, so that `make test` guards them: for
+each fix whose entry names a construct, the smallest program that fails on the upstream base
+e23dabe and passes with the fix, in the suite's own forms (`tests/tests2/NNN_name.c` +
+`.expect`, run with `tcc -run` and diffed; `tests/pp/` for the preprocessor;
+`tests/asmtest.S`, compared with GNU as). The expected outputs are gcc 15.3's (`-O2`;
+`-fno-pie` for the inline-asm case), the hashes of the arithmetic test included.
+`scripts/build.sh host-tcc tcc-test` (glibc host) and `./run.sh --selfhost --auto=test` in
+both musl guests print ALL TESTS PASSED with them (2026-10-23).
+
+| Test | Runs on | Fixes |
+|------|---------|-------|
+| `tests/tests2/152_gnu_extensions.c` | all | 5, 6, 7, 8, 9, 14, 17, 21, 22, 25, 29, 32, 39, 64, 82, 97 |
+| `tests/tests2/153_dead_code.c` | all | 36, 37, 38, 42, 43, 44, 45, 46, 47, 54 |
+| `tests/tests2/154_cleanup_goto.c` | all | 20, 85, 86 |
+| `tests/tests2/155_x86_inline_asm.c` | i386, x86_64 | 10, 11, 12, 13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 68, 76, 80, 90, 92 |
+| `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
+| `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89 |
+| `tests/tests2/158_link_group.c` | all | 53 |
+| `tests/tests2/159_depfile.c` | all | 3, 68 |
+| `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
+| `tests/pp/24.S` | all | 59 |
+| `tests/asmtest.S` (`make -C tests asmtest`: needs gcc and objdump, not part of `make test`) | x86_64 host (the `__i386__` part checked with `as --32`) | 19, 23, 24, 28, 31, 50, 51, 55, 56, 57, 59, 63, 67, 68, 70, 71, 73, 75, 77, 79, 80, 81, 91 |
+| `tests/m16-check.sh` (needs gcc, binutils, the kernel build directory) | x86_64 host | 62, 63, 65 |
+| the existing suite inside the musl guests | guests | 95, 96 |
+
+Each test file fails on the upstream base (a static assertion, unresolved references, a
+compiler crash, an unknown constraint, an unknown option, `#error`), checked with a build of
+e23dabe. Per fix, each of the 81 fix commits was reverted alone on top of the tip and the new
+tests were run (x86_64 host, and i386 natively through `build/i386/musl-tcc`): the revert of
+fix 3 fails 159; 6, 8, 21, 39, 64 fail 152; 13, 15, 16, 18, 33, 35, 70 fail 155 (13 and 70 the
+asmtest block too); 20 and 85/86 fail 154; 45, 46 fail 153; 49 fails 155 and 160; 53 fails 158;
+31, 56, 69 (its `.eh_frame` part), 71 fail the asmtest block; patch 0074 (76, 77, 79, 80, 81,
+90-93) fails 155 and the asmtest block; patch 0075 (78, 82, 84) fails 157; patch 0078 (88, 89)
+fails 157, 156 and 152 on i386. Reverts whose code was rewritten by later commits conflict and
+could not be checked that way (4, 5, 7, 9, 10, 11, 12, 14, 17, 19, 22, 24-29, 32, 34, 36-38,
+40, 42-44, 50-52, 54, 55, 57-63, 65, 67, 68, 74, 75, 83, 87); their constructs are among those
+that fail on the base. Reverting 23 (subsumed by 80), 41, 47, 73 (glibc's strtoull accepts
+`0b` constants, only the musl guest shows fix 73), 82 and 84 (the same values from the
+library calls) changes no result: those tests are guards against regressions only, as are
+the arithmetic hashes of 156 for 83 and 87 (the inline sequences) and the regparm values of
+157 for 65.
+
+Not covered, and why: 1, 2 (out-of-tree builds: the build system, not the compiler; the
+guest builds in-tree), 4 (R_X86_64_REX_GOTPCRELX: a relocation type, checked by the kernel
+link and `tools/tld/test.sh`), 30 and the section flags of 46 (whether a section is
+executable: `tcc -run` maps every section executable), 34 (local labels in the symbol
+table: needs readelf), 48 (`#pragma GCC visibility`: within one unit the code behaves the
+same), 61 (limits.h when claiming GCC: only the kernel's host tools do), 69 (64-bit addends
+and the `.eh_frame` CIE: relocations and sections, not output), 72 (section alignment), 93
+(R_386_PC8 in tcc's linker: the test exposed a second bug, below), 94 (a use-after-realloc
+that only musl's allocator catches: the i386 guest build is its test). `tests/asmtest.S`
+as a whole: the patched tcc rejects `ljmpw *(%esi)` (line 349; the 16-bit far jump entry
+carries `OPC_NO64` since fix 63, the upstream tcc accepted the form in 64-bit mode) and
+encodes `lar %ax,%rdx` with REX.W where GNU as drops it; apart from those two lines the
+whole file disassembles identically to GNU as 2.47's (two `lar` forms with mixed operand
+sizes that binutils 2.47 rejects were removed from the file, so its gas reference builds
+again).
+
+Found by the tests and left open (2026-10-23), each with a reproducer in the notes of the
+session that wrote the tests:
+
+* regparm with a floating-point argument on i386 (fixes 62/65, attribute and `-mregparm`):
+  `f(int a, double d, int b)` -- the caller treats the first N *arguments* as the register
+  ones (pushes `b`, the double, then pops `a` and half of the double into `%eax`/`%edx`),
+  the callee takes `a` in `%eax`, `b` in `%edx` and the double from the stack, as gcc does
+  (floats skip). Variadic functions with the attribute are also wrong (upstream behaviour:
+  gcc passes everything on the stack there). Not reachable from the kernel (no FP). The
+  float cases are left out of 157 until this is fixed.
+* a forward `jecxz 1f` in inline asm on i386 fails to link once the statement sits more
+  than 128 bytes into `.text`: "relocation 23 at ... truncated to fit". The R_386_PC8
+  relocation against the local label is rewritten section-relative (fix 26/34) with the
+  label offset as an in-place addend, which does not fit the 8-bit field (fix 93 was
+  verified on a small program). The same for `.byte`/`.word` references to local labels
+  with 8/16-bit relocations. Right fix: resolve same-section local labels at the end of
+  the statement or file like GNU as, or keep the label symbol when the field is narrow.
+* `jrcxz 1f`/`loop 1f` in inline asm on x86_64: "Unknown relocation type for got: 15"
+  from tcc's own linker (R_X86_64_PC8; fix 93 added the 8/16-bit types for i386 only).
+  Upstream failed earlier ("invalid displacement").
+* `ud1 (%edx), %rdi` and `ud1 %eax, %ebx` get a 0x66 prefix (the operand size of the
+  fix-57 table entry); the kernel's `ud1` annotation still traps, GNU as emits no prefix.
+* `mov %gs, %rax` / `mov %rax, %gs` get REX.W, GNU as drops it (like `lar %ax,%rdx`).
+* `ljmpw *(%esi)` rejected in 64-bit mode (above).
+* `movabs $-1, %rcx` (a small immediate with the movabs mnemonic): "bad operand".
+* `__auto_type c = ci;` with a `const int ci` keeps the qualifier (gcc drops it: assigning
+  `c` warns "assignment of read-only location").
+* a constant `"i"` operand of a 32-bit unsigned type with the top bit set
+  (`"i"(0x80000000u)`) prints as 2147483648; gcc prints the sign-extended -2147483648, so
+  `movq %1, %0` gives 0x80000000 with tcc and 0xffffffff80000000 with gcc.
+* the `"X"` constraint is accepted on x86_64 only (fix 52); gcc takes it everywhere.
+* an alias to a `static` function defined later in the unit without a forward declaration
+  ("alias target is not defined"; the kernel's SYSCALL_DEFINEx declares the target first).
 
 ## Log
 
@@ -1168,6 +1270,16 @@ Wrapper (not tcc): until fix 60 `tcc-kcc` routed the arch/x86/entry/vdso/ C file
     Verification: CHAR_MIN, INT_MAX, LONG_MAX, PATH_MAX, MB_LEN_MAX printed by the musl tcc
     (-128 2147483647 9223372036854775807 4096 4), by the glibc tcc and by gcc (... 4096 16)
     agree per library, no warnings with -Wall; make test on both.
+
+97. 2026-10-23, COMMITTED, `tccgen.c` (the bit-scan builtins of fix 29/40/87).
+    Problem: `__builtin_clzl`, `ctzl`, `ffsl` and `popcountl` were folded and generated as
+    64-bit operations on every target (`bits = index % 3 ? 64 : 32`), so on i386
+    `__builtin_clzl(1)` was 63 instead of 31, as a constant and at run time. Found by the
+    new tests2/152_gnu_extensions (`_Static_assert(__builtin_clzl(1) == 8 * sizeof(long)
+    - 1)`) on the i386 guest compiler; not hit by the kernel (x86's `fls`/`__fls` are asm).
+    Fix: the width of the `l` variants is `LONG_SIZE`.
+    Verification: 152 and 156 on the i386 tcc (native, through the musl wrapper) and in
+    the i386 guest; `make test` on the host.
 
 tld (tools/tld, 2026-10-23, for the i386 target): `ld` applies R_386_GOTOFF and R_386_GOTPC
 against a linker-defined `_GLOBAL_OFFSET_TABLE_` (absolute 0 unless the script defines it;

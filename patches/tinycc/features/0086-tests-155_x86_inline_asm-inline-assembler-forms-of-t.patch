@@ -1,0 +1,297 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: 155_x86_inline_asm: inline assembler forms of the
+ kernel, musl and busybox
+
+Flag output constraints, the kernel's ALTERNATIVE() pattern (.pushsection
+with "aM" and an entry size, .4byte, differences of labels defined later
+in the statement, .skip of such a difference), the %a operand modifier, a
+register variable as several operands, an array given to "m", segment
+register prefixes, .macro/.irp/.if with && and ||, asm in unreachable
+code, a global register variable, 64-bit immediates and movabs, the x87
+and SSE constraints with a balanced x87 stack, the clobber spellings and,
+on i386, an "m" input that gets no register (fixes 10-13, 15, 16, 18, 23,
+26, 27, 33, 35, 49, 50, 52, 57, 76, 80, 90 and 92 of the tinycc-os-kernel
+project).  Skipped on the other architectures like 127_asm_goto.
+---
+ tests/tests2/155_x86_inline_asm.c      | 237 +++++++++++++++++++++++++
+ tests/tests2/155_x86_inline_asm.expect |  12 ++
+ tests/tests2/Makefile                  |   1 +
+ 3 files changed, 250 insertions(+)
+ create mode 100644 tests/tests2/155_x86_inline_asm.c
+ create mode 100644 tests/tests2/155_x86_inline_asm.expect
+
+diff --git a/tests/tests2/155_x86_inline_asm.c b/tests/tests2/155_x86_inline_asm.c
+new file mode 100644
+index 0000000..200c9d2
+--- /dev/null
++++ b/tests/tests2/155_x86_inline_asm.c
+@@ -0,0 +1,237 @@
++/* GCC inline assembler forms of the Linux kernel, musl and busybox on x86
++   (fixes 10-13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 76, 80, 90
++   and 92 of the tinycc-os-kernel project). */
++#include <stdio.h>
++
++/* fix 10: flag output constraints */
++static int test_bit(unsigned long nr, const unsigned long *addr)
++{
++    int oldbit;
++    asm volatile("bt %2, %1" : "=@ccc"(oldbit) : "m"(*addr), "Ir"(nr));
++    return oldbit;
++}
++
++static void compare(int a, int b, int *eq)
++{
++    int lt, gt, b_set;
++    asm("cmp %[b], %[a]" : "=@ccl"(lt), "=@ccg"(gt), "=@cce"(*eq) : [a] "r"(a), [b] "r"(b));
++    asm("test %1, %1" : "=@ccz"(b_set) : "r"(b));
++    printf(" %d%d%d%d", lt, gt, *eq, b_set);
++}
++
++static void test_flags(void)
++{
++    unsigned long bits[2] = { 0x11, 0x2 };
++    int eq, sum = 0x7fffffff, ovf, sign;
++    printf("flags: %d%d%d%d", test_bit(0, bits), test_bit(1, bits), test_bit(4, bits),
++           test_bit(8 * sizeof(long) + 1, bits));
++    compare(1, 2, &eq); compare(2, 2, &eq); compare(3, 0, &eq);
++    asm("add %2, %0" : "+r"(sum), "=@cco"(ovf) : "r"(1));
++    asm("sub %2, %0" : "+r"(sum), "=@ccs"(sign) : "r"(1));
++    printf(" %d %d %d\n", ovf, sign, sum == 0x7fffffff);
++}
++
++/* fix 11, 12, 13, 26: the kernel's ALTERNATIVE(): .pushsection with "aM" and
++   an entry size, differences of labels defined later in the statement, .4byte,
++   relocations against local labels */
++static int alternative(void)
++{
++    int v = 1, w = 0, x = 0;
++    asm volatile(
++        "661:\n\tmovl $2, %0\n662:\n"
++        ".pushsection .altinstructions,\"aM\",@progbits,14\n"
++        ".long 661b - .\n"
++        ".long 663f - .\n"
++        ".4byte 0x1234\n"
++        ".byte 662b-661b\n"
++        ".byte 664f-663f\n"
++        ".popsection\n"
++        ".pushsection .altinstr_replacement, \"ax\"\n"
++        "663:\n\tmovl $3, %0\n664:\n"
++        ".popsection"
++        : "=r"(v));
++    asm volatile("movl $2f-1f, %0\n1:\n\tnop; nop; nop\n2:" : "=r"(w));
++    asm volatile("movl $4f-3f, %0\n3:\n\t.skip 2f-1f, 0x90\n4:\n\tnop\n1:\n\tnop; nop\n2:" : "=r"(x));
++    return v * 100 + w * 10 + x;
++}
++
++/* fix 15: operand modifier %a (print as an address) */
++static int the_var = 77;
++static void test_modifier_a(void)
++{
++    char buf[200];
++    char *q;
++    int *ip;
++    asm("lea %a[off](%[base]), %[d]" : [d] "=r"(q) : [base] "r"(buf), [off] "i"(100));
++#ifdef __x86_64__
++    ip = &the_var;      /* gcc prints a RIP-relative form here, tcc the kernel's absolute one */
++#else
++    asm("lea %a[sym], %[d]" : [d] "=r"(ip) : [sym] "i"(&the_var));
++#endif
++    printf("%%a: %d %d\n", (int)(q - buf), *ip);
++}
++
++/* fix 16: a register variable as several operands of one statement */
++static void *call_on_stack(void *tos)
++{
++#ifdef __x86_64__
++    register void *reg asm("r11") = tos;
++#else
++    register void *reg asm("edi") = tos;
++#endif
++    asm("mov %[tos], %0" : "+r"(reg) : [tos] "r"(reg));
++    return reg;
++}
++
++/* fix 18: an array given to an "m" constraint is the array object */
++static unsigned long caps[4] = { 0x8, 0, 0x40, 0 };
++static int cap_bit(unsigned long nr)
++{
++    int r;
++    asm volatile("bt %[bit], %[arr]\n\tsbb %0, %0" : "=r"(r) : [arr] "m"(caps), [bit] "r"(nr));
++    return r & 1;
++}
++
++/* fix 23, 80: segment register names as prefixes */
++static void test_prefix(void)
++{
++    asm volatile("ds nop\n\tcs nop\n\tds; nop\n\tds\n\tnop");
++}
++
++/* fix 27: .macro, .irp, .if in inline assembly; fix 68: && and || */
++static void test_macros(void)
++{
++    int a = 0, b = 0;
++    asm(".macro set_val reg, val=7\n"
++        "\tmovl $\\val, \\reg\n"
++        ".endm\n"
++        "\tset_val %0, 5\n"
++        "\tset_val %1\n"
++        ".purgem set_val"
++        : "=r"(a), "=r"(b));
++    asm(".irp n,1,2,3\n\taddl $\\n, %0\n.endr" : "+r"(a));
++    asm(".if 1 && 2\n\taddl $10, %0\n.else\n\taddl $20, %0\n.endif\n"
++        ".if 0 || 0\n\taddl $30, %0\n.endif\n"
++        ".ifc a,a\n\taddl $100, %0\n.endif\n"
++        ".ifnc a,b\n\taddl $1000, %0\n.endif"
++        : "+r"(a));
++    printf("macros: %d %d\n", a, b);
++}
++
++/* fix 33: asm statements in unreachable code are not assembled */
++static int dead_asm(int x)
++{
++    if (0)
++        asm volatile(".error \"dead asm assembled\"" : : "r"(x));
++    (void)sizeof(({ asm(".error \"dead asm assembled\""); 1; }));
++    if (x)
++        return x;
++    else
++        return 0;
++    asm volatile(".error \"dead asm assembled\"");
++}
++
++/* fix 35: a global register variable (the kernel's current_stack_pointer) */
++#ifdef __x86_64__
++register unsigned long current_sp asm("rsp");
++#else
++register unsigned long current_sp asm("esp");
++#endif
++static void test_regvar(void)
++{
++    int local;
++    unsigned long sp = current_sp, here = (unsigned long)&local;
++    asm("" : "+r"(current_sp));
++    printf("regvar: %d %d\n", sp <= here && here - sp < 4096, current_sp == sp);
++}
++
++/* fix 49, 50, 57: 64-bit immediates */
++static void test_imm64(void)
++{
++#ifdef __x86_64__
++    unsigned long a, b, c;
++    asm("movq %1, %0" : "=r"(a) : "i"(0x0123456789abcdefull));
++    asm("movq %1, %0" : "=r"(b) : "i"(0x80000000ul));
++    asm("movabsq $0x1122334455667788, %0" : "=r"(c));
++    printf("imm64: %lx %lx %lx\n", a, b, c);
++#else
++    printf("imm64: 123456789abcdef 80000000 1122334455667788\n");
++#endif
++}
++
++/* fix 52 (x86_64), 90 (i386): x87 and SSE constraints */
++static void test_fp(void)
++{
++    long double x = 7, y = 3, r;
++    long long i;
++    int k;
++    double d = 2.25, sq;
++    for (k = 0; k < 1000; k++) {       /* the x87 stack must stay balanced */
++        x = -7;
++        asm("fabs" : "+t"(x));
++        asm("fprem" : "+t"(x) : "u"(y));
++    }
++    asm("fsqrt" : "=t"(r) : "0"(x + 8));
++    asm("fistpll %0" : "=m"(i) : "t"(r * 10) : "st");
++    printf("x87: %.1Lf %.1Lf %lld", x, r, i);
++#ifdef __x86_64__
++    asm("" : : "X"(d), "X"(k));
++    asm("sqrtsd %1, %0" : "=x"(sq) : "x"(d));
++    asm("cvtsd2si %1, %0" : "=r"(k) : "x"(sq * 100) : "xmm0", "xmm7");
++    printf(" sse: %.2f %d", sq, k);
++#else
++    {
++        float f = -2.5;
++        double e = 16;
++        asm("fabs" : "+t"(f));
++        asm("fsqrt" : "+t"(e));
++        printf(" sse: %.2f %d", (double)f * 0.6, (int)(e * 37.5));
++    }
++#endif
++    printf("\n");
++}
++
++/* fix 76: clobber spellings */
++static int test_clobbers(int v)
++{
++    asm volatile("movl %0, %%eax\n\taddl %%eax, %0" : "+r"(v) : : "rax", "%edx", "cc");
++    return v;
++}
++
++#ifdef __i386__
++/* fix 92: an "m" input that gets no register (busybox's MULADD) */
++#define MULADD(i, j) \
++    asm("movl %6, %%eax\n\tmull %7\n\taddl %%eax, %0\n\tadcl %%edx, %1\n\tadcl $0, %2" \
++        : "=r"(c0), "=r"(c1), "=r"(c2) : "0"(c0), "1"(c1), "2"(c2), "m"(i), "m"(j) \
++        : "%eax", "%edx", "cc")
++static void test_comba(void)
++{
++    unsigned x[3] = { 0xffffffff, 0xffffffff, 0xffffffff }, y[3] = { 0xffffffff, 0xffffffff, 0xffffffff };
++    unsigned *tmpx = x, *tmpy = y + 2, c0 = 0, c1 = 0, c2 = 0;
++    int k;
++    for (k = 0; k < 3; k++)
++        MULADD(*tmpx++, *tmpy--);
++    printf("comba: %x %x %x\n", c2, c1, c0);
++}
++#else
++static void test_comba(void) { printf("comba: 2 fffffffa 3\n"); }
++#endif
++
++int main(void)
++{
++    char stack_var;
++    test_flags();
++    printf("alternative: %d\n", alternative());
++    test_modifier_a();
++    printf("regvar operands: %d\n", call_on_stack(&stack_var) == &stack_var);
++    printf("array m: %d%d%d%d\n", cap_bit(3), cap_bit(4), cap_bit(2 * 8 * sizeof(long) + 6), cap_bit(2 * 8 * sizeof(long) + 7));
++    test_prefix();
++    test_macros();
++    printf("dead asm: %d %d\n", dead_asm(0), dead_asm(4));
++    test_regvar();
++    test_imm64();
++    test_fp();
++    printf("clobbers: %d\n", test_clobbers(21));
++    test_comba();
++    return 0;
++}
+diff --git a/tests/tests2/155_x86_inline_asm.expect b/tests/tests2/155_x86_inline_asm.expect
+new file mode 100644
+index 0000000..9428139
+--- /dev/null
++++ b/tests/tests2/155_x86_inline_asm.expect
+@@ -0,0 +1,12 @@
++flags: 1011 1000 0010 0101 1 0 1
++alternative: 232
++%a: 100 77
++regvar operands: 1
++array m: 1010
++macros: 1121 7
++dead asm: 0 4
++regvar: 1 1
++imm64: 123456789abcdef 80000000 1122334455667788
++x87: 1.0 3.0 30 sse: 1.50 150
++clobbers: 42
++comba: 2 fffffffa 3
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 83933e6..8757a3a 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -18,6 +18,7 @@ endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+  SKIP += 127_asm_goto.test    # hardcodes x86 asm
++ SKIP += 155_x86_inline_asm.test # x86 inline asm
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test

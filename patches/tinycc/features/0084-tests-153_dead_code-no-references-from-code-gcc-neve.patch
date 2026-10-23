@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: 153_dead_code: no references from code gcc never emits
+
+Undefined symbols that only dead code refers to, as the Linux kernel's
+link-time assertions and the stubs of disabled subsystems are: a switch
+on a constant (nested, with fall-through), loops in unreachable code,
+trivial static inline stubs (transitively, with the arguments still
+evaluated), empty non-weak void functions, unreferenced static functions,
+x & 0; and the cases that must keep their call, a __typeof declaration
+and a weak alias of a folded function.  tcc -run fails on any remaining
+reference (fixes 36-47 and 54 of the tinycc-os-kernel project).
+---
+ tests/tests2/153_dead_code.c      | 139 ++++++++++++++++++++++++++++++
+ tests/tests2/153_dead_code.expect |   4 +
+ 2 files changed, 143 insertions(+)
+ create mode 100644 tests/tests2/153_dead_code.c
+ create mode 100644 tests/tests2/153_dead_code.expect
+
+diff --git a/tests/tests2/153_dead_code.c b/tests/tests2/153_dead_code.c
+new file mode 100644
+index 0000000..32ff899
+--- /dev/null
++++ b/tests/tests2/153_dead_code.c
+@@ -0,0 +1,139 @@
++/* Code that gcc never emits must not be referenced by tcc either: the Linux
++   kernel's link-time assertions and the stubs of disabled subsystems are
++   undefined symbols that only dead code refers to; tcc -run fails on any
++   reference (fixes 36-47 and 54 of the tinycc-os-kernel project). */
++#include <stdio.h>
++
++extern int __bad_size_call(void);               /* fix 37: switch on a constant */
++extern int __bad_nested(void);                  /* fix 43: nested constant switch */
++extern int loop_cond(void), loop_body(void);    /* fix 36, 44: loops in dead code */
++extern void disabled_init(void);                /* fix 38, 42: trivial static inline stubs */
++extern int disabled_param(int);
++extern int retpoline_sites[];                   /* fix 45: empty non-weak void functions */
++extern int unused_helper(void);                 /* fix 46: unreferenced static functions */
++extern void dax_op(void);                       /* fix 47: x & 0, x * 0 */
++
++static int effects;
++static int effect(void) { return ++effects; }
++
++/* stubs of disabled subsystems: folded at the call */
++static inline int subsystem_enabled(void) { return 0; }
++static inline int feature_enabled(int f) { return 0 || subsystem_enabled(); }
++static inline int pure_stub(int *p) { return 0; }
++static inline long big_stub(void) { return 1; }
++static inline void empty_inline(void) { }
++static inline const char *name_stub(void) { return "x"; }   /* fix 42: a literal in the body */
++static inline int dead_arm(int x) { return sizeof(x) == 4 ? 0 : disabled_param(x); }
++void apply_retpolines(int *start, int *end) { }
++static int unused_static(void) { return unused_helper(); }
++static int __attribute__((used)) used_static(void) { return 3; }
++
++/* fix 54: only the defining symbol is folded, not a declaration sharing its type */
++static int zero(void) { return 0; }
++extern __typeof(zero) one;
++int one(void) { return 1; }
++static void dummy(void) { }
++extern __typeof(dummy) weak_dummy __attribute__((weak, alias("dummy")));
++
++static int switch_sizeof(long v)
++{
++    switch (sizeof v) {
++    case 1: return 1;
++    case 2: return 2;
++    case 4: return 4;
++    case 8: return 8;
++    default: return __bad_size_call();
++    }
++}
++
++static int switch_nested(int sz)
++{
++    int r = 0;
++    switch (sz) {
++    case 4:
++        switch (sizeof(int)) {
++        case 4:
++            switch (sizeof(short)) {
++            case 2: r = 42; break;
++            default: r = __bad_nested();
++            }
++            break;
++        default: r = __bad_nested();
++        }
++        break;
++    default: r = 1;
++    }
++    return r;
++}
++
++static int switch_fallthrough(void)
++{
++    int r = 0;
++    switch (sizeof(char)) {
++    case 1: r++;
++    case 2: r++; break;
++    case 3: r = __bad_size_call();
++    }
++    switch (sizeof(long long)) {
++    case 1: __bad_size_call();
++    case 2: __bad_size_call();
++    default: r += 10;
++    }
++    switch (sizeof(int)) {
++    case 4: r += 100;
++    case 8: r += 1000;
++    }
++    return r;
++}
++
++static int dead_loops(int x)
++{
++    if (0) { while (loop_cond()) loop_body(); }
++    if (0) for (; loop_cond();) loop_body();
++    if (0) do loop_body(); while (loop_cond());
++    if (0) while (loop_cond()) if (loop_cond()) loop_body(); else loop_body();
++    if (sizeof(x) != sizeof(int)) {
++        for (;;) { if (loop_cond()) break; loop_body(); }
++    }
++    return x;
++    while (loop_cond())
++        loop_body();
++}
++
++static int stubs(int x)
++{
++    int r = x;
++    if (subsystem_enabled()) disabled_init();
++    if (feature_enabled(3)) disabled_init();
++    if (pure_stub(&r)) disabled_init();
++    if (big_stub() == 0) disabled_init();
++    if (dead_arm(x)) disabled_init();
++    if (pure_stub((effect(), &r))) disabled_init();   /* arguments are still evaluated */
++    empty_inline();
++    apply_retpolines(retpoline_sites, retpoline_sites + 4);
++    apply_retpolines((effect(), (int *)0), 0);
++    return r + name_stub()[0];
++}
++
++static void and_zero(int argc, volatile int *flags)
++{
++    struct host { int flags; } h = { 3 }, *p = argc > 5 ? 0 : &h;
++    if (p && (p->flags & 0)) dax_op();
++    if (argc > 5 && (*flags * 0)) dax_op();
++    if ((*flags & 0) && argc) dax_op();
++}
++
++int main(int argc, char **argv)
++{
++    volatile int flags = 7;
++    int r;
++    printf("switch: %d %d %d\n", switch_sizeof(0) == (int)sizeof(long), switch_nested(4), switch_fallthrough());
++    printf("loops: %d\n", dead_loops(5));
++    r = stubs(5);
++    printf("stubs: %d %d\n", r, effects);
++    and_zero(argc, &flags);
++    dummy();
++    weak_dummy();
++    printf("fold: %d %d %d\n", zero(), one(), used_static());
++    return 0;
++}
+diff --git a/tests/tests2/153_dead_code.expect b/tests/tests2/153_dead_code.expect
+new file mode 100644
+index 0000000..057a384
+--- /dev/null
++++ b/tests/tests2/153_dead_code.expect
+@@ -0,0 +1,4 @@
++switch: 1 42 1112
++loops: 5
++stubs: 125 2
++fold: 0 1 3

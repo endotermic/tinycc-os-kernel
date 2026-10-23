@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: pp/24.S: predefined macros and glued pastes in
+ assembler files
+
+An assembler file sees __CHAR_BIT__ and the __SIZEOF_*__ macros, and a
+## paste that does not form one token glues the pieces as GNU cpp does
+for assembler files (fix 59 of the tinycc-os-kernel project).
+---
+ tests/pp/24.S      | 14 ++++++++++++++
+ tests/pp/24.expect |  5 +++++
+ 2 files changed, 19 insertions(+)
+ create mode 100644 tests/pp/24.S
+ create mode 100644 tests/pp/24.expect
+
+diff --git a/tests/pp/24.S b/tests/pp/24.S
+new file mode 100644
+index 0000000..0b84eff
+--- /dev/null
++++ b/tests/pp/24.S
+@@ -0,0 +1,14 @@
++/* an assembler file sees the compiler's predefined macros (fix 59 of the
++   tinycc-os-kernel project: asm-generic/bitsperlong.h uses __CHAR_BIT__),
++   and a ## paste that does not form one token glues the pieces as GNU cpp
++   does for assembler files (.L__sym_size_##\name in the kernel macros) */
++#define SYM_SIZE(name) .L__sym_size_##name
++#define PASTE(a, b) a##b
++#if __CHAR_BIT__ != 8 || !defined __ASSEMBLER__
++#error wrong
++#endif
++	.long __CHAR_BIT__, __SIZEOF_INT__, __SIZEOF_SHORT__, __SIZEOF_LONG_LONG__
++	.set SYM_SIZE(\name), 8
++	movl PASTE(%e, ax), PASTE(%e, bx)
++	.quad SYM_SIZE(\x)
++	PASTE(.L, 1):
+diff --git a/tests/pp/24.expect b/tests/pp/24.expect
+new file mode 100644
+index 0000000..a98b399
+--- /dev/null
++++ b/tests/pp/24.expect
+@@ -0,0 +1,5 @@
++ .long 8, 4, 2, 8
++ .set .L__sym_size_\name, 8
++ movl %eax, %ebx
++ .quad .L__sym_size_\x
++ .L1:

@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: 154_cleanup_goto: cleanups on every exit path
+
+The cleanup order with continue, break, return and backward gotos; a
+label reached both by plain gotos and by gotos out of a cleanup scope
+(fix 20 of the tinycc-os-kernel project: the plain jumps were left
+unpatched); gotos from nested cleanup scopes to a local label of a
+statement expression, followed by new symbols (fix 85: the compiler
+followed the freed nodes of the gone label and crashed); a goto out of
+the initializer of a cleanup variable (fix 86: its cleanup ran).  The
+expected output is gcc's.
+---
+ tests/tests2/154_cleanup_goto.c      | 120 +++++++++++++++++++++++++++
+ tests/tests2/154_cleanup_goto.expect |   4 +
+ 2 files changed, 124 insertions(+)
+ create mode 100644 tests/tests2/154_cleanup_goto.c
+ create mode 100644 tests/tests2/154_cleanup_goto.expect
+
+diff --git a/tests/tests2/154_cleanup_goto.c b/tests/tests2/154_cleanup_goto.c
+new file mode 100644
+index 0000000..38a4239
+--- /dev/null
++++ b/tests/tests2/154_cleanup_goto.c
+@@ -0,0 +1,120 @@
++/* __attribute__((cleanup)) and gotos: the cleanup order on every exit path,
++   a label reached both by plain gotos and by gotos out of cleanup scopes (fix
++   20), gotos out of nested cleanup scopes to a local label of a statement
++   expression (fix 85 crashed the compiler), a goto out of the initializer of
++   a cleanup variable (fix 86); tinycc-os-kernel project. */
++#include <stdio.h>
++
++static char trace[128];
++static int n;
++static void rel(int *p) { trace[n++] = '0' + *p; }
++static void mark(char c) { trace[n++] = c; }
++#define GUARD(id) int g##id __attribute__((cleanup(rel))) = id
++
++/* fix 20 */
++static void label_two_ways(int path)
++{
++    if (path == 0)
++        goto out;                   /* plain forward goto */
++    {
++        GUARD(1);
++        if (path == 1)
++            goto out;               /* leaves the cleanup scope */
++        mark('a');
++    }
++    mark('b');
++out:
++    mark('o');
++}
++
++/* fix 85: the kernel's guard(pagefault)() + get_user_inline() */
++static int local_label(int v)
++{
++    GUARD(2);
++    int r = ({
++        __label__ fail;
++        int ret = -1;
++        {
++            GUARD(3);
++            {
++                GUARD(4);
++                if (v < 0)
++                    goto fail;
++            }
++            if (v == 0)
++                goto fail;
++            ret = v * 2;
++        }
++    fail:
++        ret;
++    });
++    /* new symbols reuse the freed nodes of the gone label */
++    enum { H1 = 0x40000000, H2 = 0x40000000, H3 = 0x40000000, H4 = 0x40000000 };
++    mark('r');
++    return r + H1 - H2;
++}
++
++/* fix 86 */
++static void goto_out_of_initializer(int v)
++{
++    {
++        int g5 __attribute__((cleanup(rel))) = ({ if (v) goto skip; 5; });
++        mark('i');
++    }
++skip:
++    mark('s');
++}
++
++static void loops(void)
++{
++    int i;
++    for (i = 0; i < 3; i++) {
++        GUARD(6);
++        if (i == 0)
++            continue;
++        if (i == 2)
++            break;
++        GUARD(7);
++        mark('m');
++    }
++    mark('.');
++}
++
++static int early_return(int v)
++{
++    GUARD(8);
++    {
++        GUARD(9);
++        if (v)
++            return 1;
++    }
++    return 0;
++}
++
++static void backward(void)
++{
++    int k = 0;
++again:
++    {
++        GUARD(1);
++        if (k++ < 2)
++            goto again;
++    }
++    mark('k');
++}
++
++int main(void)
++{
++    int a, b, c;
++    label_two_ways(0); label_two_ways(1); label_two_ways(2);
++    printf("fix 20: %s\n", trace); n = 0;
++    a = local_label(5); b = local_label(-1); c = local_label(0);
++    printf("fix 85: %d %d %d %s\n", a, b, c, trace); n = 0;
++    goto_out_of_initializer(0); goto_out_of_initializer(1);
++    printf("fix 86: %s\n", trace); n = 0;
++    loops();
++    a = early_return(0); b = early_return(1);
++    backward();
++    printf("order: %d %d %s\n", a, b, trace);
++    return 0;
++}
+diff --git a/tests/tests2/154_cleanup_goto.expect b/tests/tests2/154_cleanup_goto.expect
+new file mode 100644
+index 0000000..33c0a42
+--- /dev/null
++++ b/tests/tests2/154_cleanup_goto.expect
+@@ -0,0 +1,4 @@
++fix 20: o1oa1bo
++fix 85: 10 -1 -1 43r243r243r2
++fix 86: i5ss43r243r2
++order: 0 1 6m766.9898111k

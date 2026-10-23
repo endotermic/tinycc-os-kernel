@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: the driver options of the kernel and busybox builds
+
+158_link_group: archives with circular references inside
+-Wl,--start-group/--end-group are rescanned (fix 53 of the
+tinycc-os-kernel project); 159_depfile: -Wp,-MMD,<file> and -E -MMD write
+the dependency file (fixes 3, 68); 160_asm_offsets: -S writes the asm
+statements as text, from which Kbuild generates asm-offsets.h (fix 58).
+---
+ tests/tests2/158_link_group.c       | 24 ++++++++++++++++++++++++
+ tests/tests2/158_link_group.expect  |  1 +
+ tests/tests2/159_depfile.c          |  7 +++++++
+ tests/tests2/159_depfile.expect     |  4 ++++
+ tests/tests2/160_asm_offsets.c      | 22 ++++++++++++++++++++++
+ tests/tests2/160_asm_offsets.expect | 14 ++++++++++++++
+ tests/tests2/Makefile               | 21 +++++++++++++++++++++
+ 7 files changed, 93 insertions(+)
+ create mode 100644 tests/tests2/158_link_group.c
+ create mode 100644 tests/tests2/158_link_group.expect
+ create mode 100644 tests/tests2/159_depfile.c
+ create mode 100644 tests/tests2/159_depfile.expect
+ create mode 100644 tests/tests2/160_asm_offsets.c
+ create mode 100644 tests/tests2/160_asm_offsets.expect
+
+diff --git a/tests/tests2/158_link_group.c b/tests/tests2/158_link_group.c
+new file mode 100644
+index 0000000..a5f3d9b
+--- /dev/null
++++ b/tests/tests2/158_link_group.c
+@@ -0,0 +1,24 @@
++/* -Wl,--start-group ... -Wl,--end-group: archives with circular references
++   are rescanned (fix 53 of the tinycc-os-kernel project; busybox links its
++   per-directory lib.a archives this way).  The Makefile compiles this file
++   as four objects, puts a and a_helper into one archive (as two members) and
++   b into another, and links main with the group. */
++#include <stdio.h>
++
++int a(int);
++int b(int);
++int a_helper(int);
++
++#if PART == 1
++int main(void)
++{
++    printf("group: %d\n", a(1));
++    return 0;
++}
++#elif PART == 2
++int a(int x) { return b(x + 1) * 10; }
++#elif PART == 3
++int b(int x) { return a_helper(x + 1) + 100; }
++#elif PART == 4
++int a_helper(int x) { return x * 1000; }
++#endif
+diff --git a/tests/tests2/158_link_group.expect b/tests/tests2/158_link_group.expect
+new file mode 100644
+index 0000000..c41b12d
+--- /dev/null
++++ b/tests/tests2/158_link_group.expect
+@@ -0,0 +1 @@
++group: 31000
+diff --git a/tests/tests2/159_depfile.c b/tests/tests2/159_depfile.c
+new file mode 100644
+index 0000000..424a12b
+--- /dev/null
++++ b/tests/tests2/159_depfile.c
+@@ -0,0 +1,7 @@
++/* -Wp,-MMD,<file> (Kbuild's spelling, fix 3) and -MD with -E (fix 68) write
++   the dependency file; tinycc-os-kernel project.  The Makefile prints the
++   files. */
++int main(void)
++{
++    return 0;
++}
+diff --git a/tests/tests2/159_depfile.expect b/tests/tests2/159_depfile.expect
+new file mode 100644
+index 0000000..06e65c2
+--- /dev/null
++++ b/tests/tests2/159_depfile.expect
+@@ -0,0 +1,4 @@
++159_depfile.o: \
++  159_depfile.c
++159_depfile.i: \
++  159_depfile.c
+diff --git a/tests/tests2/160_asm_offsets.c b/tests/tests2/160_asm_offsets.c
+new file mode 100644
+index 0000000..4905500
+--- /dev/null
++++ b/tests/tests2/160_asm_offsets.c
+@@ -0,0 +1,22 @@
++/* -S writes the asm statements as text: Kbuild generates asm-offsets.h from
++   the .ascii lines of "cc -S" (fix 58 of the tinycc-os-kernel project).  The
++   Makefile runs tcc -S on this file and prints the output. */
++#define DEFINE(sym, val) \
++    asm volatile("\n.ascii \"->" #sym " %0 " #val "\"" : : "i" (val))
++#define BLANK() asm volatile("\n.ascii \"->\"" : : )
++#define COMMENT(x) asm volatile("\n.ascii \"->#" x "\"")
++#define OFFSET(sym, str, mem) DEFINE(sym, __builtin_offsetof(struct str, mem))
++
++struct pt_regs { int ax, bx; char flags, pad[7]; int ip; };
++
++int main(void)
++{
++    COMMENT("register offsets");
++    OFFSET(PT_BX, pt_regs, bx);
++    OFFSET(PT_IP, pt_regs, ip);
++    BLANK();
++    DEFINE(PT_SIZE, sizeof(struct pt_regs));
++    DEFINE(PT_FLAGS_NEG, -(int)sizeof(((struct pt_regs *)0)->flags));
++    DEFINE(BIG, 0x100000000ll);
++    return 0;
++}
+diff --git a/tests/tests2/160_asm_offsets.expect b/tests/tests2/160_asm_offsets.expect
+new file mode 100644
+index 0000000..cce135e
+--- /dev/null
++++ b/tests/tests2/160_asm_offsets.expect
+@@ -0,0 +1,14 @@
++
++.ascii "->#register offsets"
++
++.ascii "->PT_BX $4 __builtin_offsetof(struct pt_regs, bx)"
++
++.ascii "->PT_IP $16 __builtin_offsetof(struct pt_regs, ip)"
++
++.ascii "->"
++
++.ascii "->PT_SIZE $20 sizeof(struct pt_regs)"
++
++.ascii "->PT_FLAGS_NEG $-1 -(int)sizeof(((struct pt_regs *)0)->flags)"
++
++.ascii "->BIG $4294967296 0x100000000ll"
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 1da0b55..dc1a184 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -20,6 +20,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+  SKIP += 127_asm_goto.test    # hardcodes x86 asm
+  SKIP += 155_x86_inline_asm.test # x86 inline asm
++ SKIP += 160_asm_offsets.test # x86 asm text
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test
+@@ -184,6 +185,26 @@ endif
+ 157_i386_regparm_pic.test: T1 = ( $(TCC) -run $1 && $(TCC) -fPIC -run $1 )
+ 157_i386_regparm_pic.test: GEN = $(GEN-TCC)
+ 
++# archives with circular references inside -Wl,--start-group/--end-group:
++# a and a_helper in one archive (two members), b in another
++158_link_group.test: T1 = ( \
++	$(TCC) -c $1 -DPART=1 -o $*-main.o && $(TCC) -c $1 -DPART=2 -o $*-a.o && \
++	$(TCC) -c $1 -DPART=3 -o $*-b.o && $(TCC) -c $1 -DPART=4 -o $*-a2.o && \
++	rm -f $*-a.a $*-b.a && \
++	$(TCC_LOCAL) -ar rcs $*-a.a $*-a.o $*-a2.o && $(TCC_LOCAL) -ar rcs $*-b.a $*-b.o && \
++	$(TCC) $*-main.o -Wl,--start-group $*-a.a $*-b.a -Wl,--end-group -o $*.exe && ./$*.exe )
++158_link_group.test: GEN = $(T1)
++
++# dependency files from -Wp,-MMD,<file> and from -E -MMD
++159_depfile.test: T1 = ( \
++	$(TCC) -c $1 -o $*.o -Wp,-MMD,$*.d && cat $*.d && \
++	$(TCC) -E $1 -MMD -o $*.i && cat $*.d && rm -f $*.d $*.i )
++159_depfile.test: GEN = $(T1)
++
++# -S writes the asm statements as text
++160_asm_offsets.test: T1 = ( $(TCC) -S $1 -o $*.s && cat $*.s && rm -f $*.s )
++160_asm_offsets.test: GEN = $(T1)
++
+ # Filter source directory in warnings/errors (out-of-tree builds)
+ FILTER = 2>&1 | sed -e 's,$(SRC)/,,g'
+ 

@@ -1,0 +1,249 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: 152_gnu_extensions: GNU C extensions and GCC builtins
+ of the kernel
+
+Packed enums, __auto_type, typeof_unqual, __builtin_{add,sub,mul}_overflow,
+the tccdefs.h builtins (bswap, object_size, prefetch,
+expect_with_probability, trap), cast to union, transparent_union in its
+three spellings, an alias to a target defined later, _Pragma, the constant
+folding of __builtin_strlen, __builtin_strcmp and the bit-scan builtins,
+and a tentative definition followed by the initialized one in a named
+section (fixes 5-9, 14, 17, 21, 22, 25, 29, 32, 39 and 64 of the
+tinycc-os-kernel project).  The expected output is gcc's.
+---
+ tests/tests2/152_gnu_extensions.c      | 205 +++++++++++++++++++++++++
+ tests/tests2/152_gnu_extensions.expect |  11 ++
+ 2 files changed, 216 insertions(+)
+ create mode 100644 tests/tests2/152_gnu_extensions.c
+ create mode 100644 tests/tests2/152_gnu_extensions.expect
+
+diff --git a/tests/tests2/152_gnu_extensions.c b/tests/tests2/152_gnu_extensions.c
+new file mode 100644
+index 0000000..3e2578f
+--- /dev/null
++++ b/tests/tests2/152_gnu_extensions.c
+@@ -0,0 +1,205 @@
++/* GNU C extensions and GCC builtins used by the Linux kernel
++   (fixes 5-9, 14, 17, 21, 22, 25, 29, 32, 39, 64 of the tinycc-os-kernel
++   project; the numbers refer to its docs/FIX-LOG.md). */
++#include <stdio.h>
++
++/* fix 6: __attribute__((packed)) on an enum picks the smallest integer type */
++enum e_uchar { EC_A = 1, EC_B = 200 } __attribute__((packed));
++enum e_ushort { ES_A = 1, ES_B = 300 } __attribute__((packed));
++enum e_schar { EN_A = -1, EN_B = 100 } __attribute__((packed));
++enum e_uint { EI_A = 0x10000 } __attribute__((packed));
++enum e_plain { EP_A = 1 };
++struct s_packed_enum { enum e_uchar e; char c; };
++_Static_assert(sizeof(enum e_uchar) == 1, "packed enum: unsigned char");
++_Static_assert(sizeof(enum e_ushort) == 2, "packed enum: unsigned short");
++_Static_assert(sizeof(enum e_schar) == 1, "packed enum: signed char");
++_Static_assert(sizeof(enum e_uint) == 4, "packed enum: int");
++_Static_assert(sizeof(enum e_plain) == 4, "plain enum");
++_Static_assert(sizeof(struct s_packed_enum) == 2, "struct of a packed enum");
++
++static void test_packed_enum(void)
++{
++    struct s_packed_enum s = { EC_B, 'c' };
++    enum e_schar n = EN_A;
++    enum e_ushort u = ES_B;
++    printf("packed enum: %d %c %d %d\n", s.e, s.c, n, u);
++}
++
++/* fix 7: __auto_type */
++static int auto_type_calls;
++static int next_value(void) { return ++auto_type_calls; }
++static int add_one(int x) { return x + 1; }
++
++static void test_auto_type(void)
++{
++    const int ci = 7;
++    static int arr[3] = { 4, 5, 6 };
++    __auto_type i = 5;
++    __auto_type d = 2.5;
++    __auto_type c = ci;
++    __auto_type p = &ci;
++    __auto_type a = arr;            /* decays to int * */
++    __auto_type s = "str";
++    __auto_type f = add_one;        /* function designator -> pointer */
++    __auto_type v = next_value();   /* evaluated once */
++    __auto_type se = ({ int t = 3; t * 2; });
++    printf("auto_type: %d %d %d %d %d %d %c %d %d %d %d\n",
++           (int)sizeof i, (int)sizeof d, c, *p,
++           sizeof a == sizeof(int *), a[1], s[1], f(9),
++           v, auto_type_calls, se);
++}
++
++/* fix 8: C23 typeof_unqual */
++#if !defined __TINYC__ && (!defined __STDC_VERSION__ || __STDC_VERSION__ < 202311L)
++#define typeof_unqual __typeof_unqual__
++#endif
++static void test_typeof_unqual(void)
++{
++    const volatile int cv = 3;
++    typeof_unqual(cv) u = cv;       /* plain int */
++    __typeof_unqual(cv) u2 = 4;
++    __typeof_unqual__(cv) u3 = 5;
++    typeof(cv) k = 6;
++    _Static_assert(_Generic(&u, int *: 1, default: 0), "typeof_unqual drops the qualifiers");
++    _Static_assert(_Generic(&k, const volatile int *: 1, default: 0), "typeof keeps them");
++    u = 10; u2++; u3 += 2;
++    printf("typeof_unqual: %d %d %d %d\n", u, u2, u3, k);
++}
++
++/* fix 9, 82: __builtin_{add,sub,mul}_overflow */
++static void test_overflow(void)
++{
++    int i; unsigned u; long long ll; unsigned long long ull; short s; unsigned char uc;
++    int calls = 0;
++    printf("overflow:");
++    printf(" %d", __builtin_add_overflow(2147483647, 1, &i)); printf("/%d", i);
++    printf(" %d", __builtin_add_overflow(2147483647, 1, &ll)); printf("/%lld", ll);
++    printf(" %d", __builtin_sub_overflow(0u, 1u, &u)); printf("/%u", u);
++    printf(" %d", __builtin_sub_overflow(0u, 1u, &ll)); printf("/%lld", ll);
++    printf(" %d", __builtin_mul_overflow(65536, 65536, &i)); printf("/%d", i);
++    printf(" %d", __builtin_mul_overflow(65536u, 65536u, &ull)); printf("/%llu", ull);
++    /* two 32-bit magnitudes: the product fits 64 bits (fix 82: no division) */
++    printf(" %d", __builtin_mul_overflow(0xffffffffu, 0xffffffffu, &ull)); printf("/%llu", ull);
++    printf(" %d", __builtin_mul_overflow(0x100000000ull, 0x100000000ull, &ull)); printf("/%llu", ull);
++    printf(" %d", __builtin_mul_overflow(0x100000000ull, 0x80000000ull, &ll)); printf("/%lld", ll);
++    printf(" %d", __builtin_mul_overflow(-1, 1ull, &ll)); printf("/%lld", ll);
++    printf(" %d", __builtin_mul_overflow(-1, 1ull, &ull)); printf("/%llu", ull);
++    printf(" %d", __builtin_add_overflow(200, 100, &uc)); printf("/%u", uc);
++    printf(" %d", __builtin_add_overflow(-1, 0, &uc)); printf("/%u", uc);
++    printf(" %d", __builtin_sub_overflow(-32768, 1, &s)); printf("/%d", s);
++    printf(" %d", __builtin_sub_overflow(5ull, 7ull, &i)); printf("/%d", i);
++    /* the operands are evaluated once */
++    printf(" %d", __builtin_add_overflow((calls++, 1), (calls++, 2), &i)); printf("/%d/%d", i, calls);
++    printf("\n");
++}
++
++/* fix 5: builtins from tccdefs.h */
++static void test_misc_builtins(char *p)
++{
++    int x = 3;
++    __builtin_prefetch(p);
++    __builtin_prefetch(p, 1, 3);
++    if (x == 0)
++        __builtin_trap();
++    printf("builtins: %#x %#x %#llx %d %d %d %d %d\n",
++           __builtin_bswap16(0x1234), __builtin_bswap32(0x12345678u),
++           __builtin_bswap64(0x0102030405060708ull),
++           __builtin_object_size(p, 0) >= 5,
++           __builtin_object_size(p, 2) <= 16,
++           __builtin_dynamic_object_size(p, 0) >= 5,
++           __builtin_expect_with_probability(x == 3, 1, 0.9),
++           __builtin_expect(x, 3));
++}
++
++/* fix 14: cast to union; fix 25, 32: transparent_union */
++union ibs { unsigned long long val; struct { unsigned lo, hi; } s; double d; };
++static unsigned long long union_val(union ibs u) { return u.val; }
++
++typedef union { int *ip; unsigned *up; } __attribute__((transparent_union)) tu_body;
++typedef union { int *ip; unsigned *up; } tu_after __attribute__((__transparent_union__));
++typedef union __attribute__((transparent_union)) { int *ip; unsigned *up; } tu_before;
++static long tu_body_val(tu_body a) { return *a.ip; }
++static long tu_after_val(tu_after a) { return *a.ip; }
++static long tu_before_val(tu_before a) { return *a.up; }
++
++static void test_unions(void)
++{
++    union ibs u = (union ibs)0x0102030405060708ull;
++    union ibs v = (union ibs)1.5;
++    int i = 11; unsigned w = 22;
++    int ia[2] = { 33, 44 };
++    printf("cast to union: %x %x %f %llu\n", u.s.lo, u.s.hi, v.d, union_val((union ibs)42ull));
++    printf("transparent_union: %ld %ld %ld %ld %ld %ld\n",
++           tu_body_val(&i), tu_body_val(&w), tu_after_val(&w), tu_after_val(ia),
++           tu_before_val(&i), tu_before_val((int[]){ 55 }));
++}
++
++/* fix 17: alias to a target defined later in the unit */
++static int alias_fn_target(int);
++int alias_fn(int) __attribute__((alias("alias_fn_target")));
++extern int alias_var __attribute__((alias("alias_var_target")));
++static int alias_fn_target(int x) { return x + 1; }
++static int alias_var_target = 9;
++
++/* fix 21: _Pragma */
++_Pragma("GCC diagnostic push")
++_Pragma("GCC diagnostic ignored \"-Wunused-variable\"")
++static int pragma_fn(void)
++{
++    _Pragma("GCC diagnostic push")
++    int unused;
++    _Pragma("GCC diagnostic pop")
++    return 1;
++}
++_Pragma("GCC diagnostic pop")
++
++/* fix 22, 39: __builtin_strlen/__builtin_strcmp of string literals are constants */
++_Static_assert(__builtin_strlen("hello") == 5, "strlen fold");
++_Static_assert(__builtin_strlen("") == 0, "strlen fold");
++static char strlen_arr[__builtin_strlen("abc") + 1];
++_Static_assert(__builtin_strcmp("a", "b") < 0 && __builtin_strcmp("b", "a") > 0
++               && __builtin_strcmp("ab", "ab") == 0 && __builtin_strcmp("ab", "abc") < 0, "strcmp fold");
++static int strcmp_sel = __builtin_strcmp("x", "x") == 0 ? 1 : 2;
++
++/* fix 29: bit-scan builtins in constant expressions (the kernel's ilog2()) */
++_Static_assert(__builtin_clz(1) == 31 && __builtin_ctz(8) == 3 && __builtin_popcount(0xff) == 8
++               && __builtin_ffs(0) == 0 && __builtin_ffs(16) == 5, "32-bit folds");
++_Static_assert(__builtin_clzl(1) == 8 * sizeof(long) - 1 && __builtin_clzll(1) == 63
++               && __builtin_ctzll(1ull << 40) == 40 && __builtin_popcountll(-1ull) == 64
++               && __builtin_ffsll(1ll << 63) == 64 && __builtin_ctzl(1024) == 10, "64-bit folds");
++static int ilog2_tab[] = { [31 - __builtin_clz(4096)] = 1 };
++_Static_assert(sizeof ilog2_tab == 13 * sizeof(int), "designator");
++
++static int sign(int x) { return (x > 0) - (x < 0); }
++static void test_strfolds(const char *s)
++{
++    printf("str: %d %d %d %d %d %d %d\n", (int)sizeof strlen_arr, strcmp_sel,
++           (int)__builtin_strlen(s), (int)__builtin_strlen(s + 5),
++           sign(__builtin_strcmp(s, "hello")), sign(__builtin_strcmp(s, "hellp")),
++           sign(__builtin_strcmp("abc", s)));
++}
++
++/* fix 64: a tentative definition followed by the initialized definition in a
++   named section (crashed the compiler) */
++struct card { const char *name; int id; };
++#define __videocard struct card __attribute__((used, section(".videocards")))
++static __videocard video_vga;
++static __videocard video_vga = { "vga", 3 };
++static int __attribute__((section(".my.data"))) counted;
++static int __attribute__((section(".my.data"))) counted = 42;
++
++int main(void)
++{
++    char buf[16] = "hello";
++    test_packed_enum();
++    test_auto_type();
++    test_typeof_unqual();
++    test_overflow();
++    test_misc_builtins(buf);
++    test_unions();
++    printf("alias: %d %d\n", alias_fn(1), alias_var);
++    printf("pragma: %d\n", pragma_fn());
++    test_strfolds(buf);
++    printf("sections: %s %d %d\n", video_vga.name, video_vga.id, counted);
++    return 0;
++}
+diff --git a/tests/tests2/152_gnu_extensions.expect b/tests/tests2/152_gnu_extensions.expect
+new file mode 100644
+index 0000000..a8f8156
+--- /dev/null
++++ b/tests/tests2/152_gnu_extensions.expect
+@@ -0,0 +1,11 @@
++packed enum: 200 c -1 300
++auto_type: 4 8 7 7 1 5 t 10 1 1 6
++typeof_unqual: 10 5 7 6
++overflow: 1/-2147483648 0/2147483648 1/4294967295 0/-1 1/0 0/4294967296 0/18446744065119617025 1/0 1/-9223372036854775808 0/-1 1/18446744073709551615 1/44 1/255 1/32767 0/-2 0/3/2
++builtins: 0x3412 0x78563412 0x807060504030201 1 1 1 1 3
++cast to union: 5060708 1020304 1.500000 42
++transparent_union: 11 22 22 33 11 55
++alias: 2 9
++pragma: 1
++str: 4 1 5 0 0 -1 -1
++sections: vga 3 42

@@ -1,0 +1,278 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: asmtest.S: the assembler forms of the kernel, musl and
+ busybox
+
+$ in #define bodies, binary constants, differences of labels defined later
+and .skip of them, the GNU as macro and conditional directives,
+.set/.equ/.zero/.uleb128/.2byte/.4byte/.8byte/.comm/.local, constants
+taken in the operand size, mov between a segment register and memory,
+segment prefixes, sysenter/sysexit/ud2a, indirect calls through a
+segment-prefixed address, register aliases and parenthesized
+displacements, the SSE2 integer forms, bswap of a 64-bit register,
+lretq/movabs/sysretl, 64-bit immediates, the 0F 01 group,
+rdrand/rdseed/rdpid, the three-byte opcode maps, the xsave family,
+fsgsbase, .code16/.code32/.code64 inside one object and .previous (fixes
+19, 23, 24, 28, 31, 50, 56, 57, 59, 63, 67, 68, 70, 71, 73, 75, 77, 79, 80, 81
+and 91 of the tinycc-os-kernel project), all byte-identical to GNU as
+2.47 in 64- and 32-bit mode.  The two lar forms with mixed operand sizes
+that binutils 2.47 rejects are gone, so the gas reference builds again.
+---
+ tests/asmtest.S | 234 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 232 insertions(+), 2 deletions(-)
+
+diff --git a/tests/asmtest.S b/tests/asmtest.S
+index 10100bd..f4f9f4a 100644
+--- a/tests/asmtest.S
++++ b/tests/asmtest.S
+@@ -711,13 +711,12 @@ int $0x10
+ #endif
+ 
+     lar %ax,%dx
+-    lar %eax,%dx
+     lar %ax,%edx
+     lar %eax,%edx
+ #ifdef __x86_64__
+     lar %ax,%rdx
+-    lar %eax,%rdx
+ #endif
++    /* (lar %eax,%dx and lar %eax,%rdx: binutils 2.47 rejects the mixed sizes) */
+     emms
+     movd %edx, %mm3
+     movd 0x1000, %mm2
+@@ -1069,3 +1068,234 @@ TEST_MMX_SSE_I8(psrlq)
+     .octa 0x000102030405060708090a0b0c0d0e0f
+     .octa 1234567890123456789012345678901234567, -1
+ #endif
++
++/* tinycc-os-kernel: forms the kernel, musl and busybox assembly needed */
++/* fix 56: $ in the body of a #define of an assembler file */
++#define IMM $0x50
++#define SHUF(a,b,c,d) $((a)+((b)<<2)+((c)<<4)+((d)<<6))
++    mov IMM, %eax
++    shufps SHUF(1,2,3,0), %xmm1, %xmm2
++/* fix 73: binary constants */
++    movl $0b1010, %eax
++    pshufd $0b11111010, %xmm1, %xmm2
++    .byte 0b1, 0B101
++/* fix 59, 67, 70: differences of labels defined later, .skip padding */
++    .long 2f - 1f
++1:  nop; nop; nop
++2:
++    .skip 2f - 1f, 0x90
++1:  .byte 1, 2
++2:
++    .byte 3f - 2b
++3:
++/* fix 59: GNU as macro facilities */
++    .macro set_val reg, val=7
++    movl $\val, \reg
++    .endm
++    set_val %ecx, 5
++    set_val %edx
++    .purgem set_val
++    .irp n,1,2,3
++    addl $\n, %eax
++    .endr
++    .irpc c,abc
++    .ascii "\c"
++    .endr
++    .rept 2
++    nop
++    .endr
++    .if 1 && 2
++    addl $10, %eax
++    .else
++    addl $20, %eax
++    .endif
++    .if 0 || 0
++    addl $30, %eax
++    .elseif 1
++    addl $40, %eax
++    .endif
++    .ifc a,a
++    addl $100, %eax
++    .endif
++    .ifnc a,b
++    addl $1000, %eax
++    .endif
++    .ifdef UNDEFINED_SYM
++    .error "defined"
++    .endif
++    .ifb
++    nop
++    .endif
++    .set val1, 4
++    .equ val2, val1 * 2
++    movl $val1 + val2, %eax
++    .zero 3
++    .uleb128 130
++    .byte 0x1
++    .word 0x1234
++    .2byte 5, 6
++    .4byte 7
++    .8byte 8
++    .comm bss_var, 4
++    .local local_var
++    .comm local_var, 8, 4
++/* fix 71: constants in the operand size */
++    andl $~0xFF000000, %ecx
++    andw $0xffff, %ax
++    andb $0xff, %al
++    movl $0xffffffff, %eax
++    cmpl $0x80000000, %ecx
++    orw $0x8000, %dx
++/* fix 77: mov between a segment register and memory */
++    mov 8(%esp), %fs
++    mov %fs, 8(%esp)
++    movw 8(%esp), %fs
++    movw %fs, 8(%esp)
++    mov %ax, %fs
++    mov %fs, %ax
++    mov %fs, %eax
++    mov %eax, %fs
++/* fix 23, 80: segment prefixes */
++    ds nop
++    cs nop
++    ds
++    nop
++    ds; ds; int $0x80
++    ds int $0x80
++    fs movl (%ebx), %eax
++    gs movl 16, %eax
++/* fix 79: mnemonics of the 32-bit kernel */
++    sysenter
++    sysexit
++    ud2a
++    ud2
++/* fix 91: an indirect call through a segment-prefixed address */
++    call *%gs:16
++    call *%gs:(%eax)
++    jmp *%gs:0x10
++    call *16
++/* fix 68: register aliases, expression displacements, SSE2 integer forms */
++    X0 = %xmm4
++    CTX = %edi
++    movdqu (CTX), X0
++    movdqa X0, %xmm1
++    paddq %xmm1, X0
++    pshufd $0x1b, X0, %xmm2
++    pslldq $4, %xmm2
++    psrldq $8, %xmm2
++    punpcklqdq %xmm1, %xmm2
++    punpckhqdq %xmm1, %xmm2
++    movl (3 + 1)*4(CTX), %eax
++    movl (CTX, %eax, 4), %edx
++/* fix 57, 68: bswap of a 64-bit register and the rest below in 64-bit mode */
++#ifdef __x86_64__
++    bswap %rax
++    bswapq %r9
++/* fix 57: lretq, movabs, sysretl */
++    lretq
++    lretq $8
++    movabs $0x1122334455667788, %rax
++    movabsq $0x1122334455667788, %r11
++    sysretl
++    sysretq
++    sysret
++/* fix 50: immediates in 2^31..2^32-1 and 64-bit registers */
++    mov $0x80000000, %rdi
++    movq $0xffffffff, %rax
++    mov $0x7fffffff, %rax
++    movq $-1, %rax
++    movq $0x100000000, %rax
++    movl $0x80000000, %edi
++    movabsq $0x80000000, %rdx
++/* fix 19: 0F 01 group, rdrand/rdseed, rdpid */
++    rdtscp
++    clac
++    stac
++    xgetbv
++    xsetbv
++    monitor
++    mwait
++    swapgs
++    rdrand %ax
++    rdrand %ebx
++    rdrand %rcx
++    rdrand %r9d
++    rdseed %dx
++    rdseed %esi
++    rdseed %r10
++    rdpid %rax
++    rdpid %r8
++/* fix 24: three-byte opcode maps */
++    monitorx
++    mwaitx
++    clflushopt (%rdi)
++    clflushopt 8(%rax,%rcx,4)
++    clwb (%rsi)
++    invpcid (%rdi), %rax
++    invpcid 16(%rbx), %r9
++/* fix 28: xsave family */
++    xsave (%rdi)
++    xsave64 (%rdi)
++    xrstor (%rsi)
++    xrstor64 8(%rsi)
++    xsaveopt (%rdx)
++    xsaveopt64 (%r8)
++    xsavec (%rdi)
++    xsavec64 (%rdi)
++    xsaves (%rdi)
++    xsaves64 (%rdi)
++    xrstors (%rdi)
++    xrstors64 (%r11)
++/* fix 31: fsgsbase */
++    rdfsbase %eax
++    rdfsbase %rax
++    rdgsbase %ecx
++    rdgsbase %rcx
++    wrfsbase %edx
++    wrfsbase %rdx
++    wrgsbase %r8d
++    wrgsbase %r15
++/* fix 77 in 64-bit mode */
++    mov 8(%rsp), %fs
++    mov %fs, 8(%rsp)
++/* fix 91 in 64-bit mode */
++    call *%gs:16
++    jmp *%gs:(%rax)
++/* fix 63: code modes inside one object */
++    .code32
++    pushl %eax
++    movl $1, %eax
++    call *%eax
++    ljmp $8, $0x1000
++    .code64
++    pushq %rax
++    movq $1, %rax
++    call *%rax
++    .code16
++    pushw %ax
++    movw $1, %ax
++    movl $1, %eax
++    pushl %eax
++    .code32
++    .code64
++#endif
++#ifdef __i386__
++    rdpid %eax
++    invpcid (%edi), %eax
++    bswap %eax
++/* fix 75: @GOTOFF and _GLOBAL_OFFSET_TABLE_ (the 32-bit decompressor) */
++    addl $_GLOBAL_OFFSET_TABLE_+3, %edx
++    leal var2@GOTOFF(%edx), %eax
++    movl var2@GOTOFF(%edx), %ecx
++    movl $var2@GOTOFF, %eax
++    .long var2@GOTOFF
++#endif
++/* fix 81: .previous */
++    .data
++    .long 1
++    .previous
++    nop
++    .previous
++    .long 2
++    .previous
++var1: .long 0

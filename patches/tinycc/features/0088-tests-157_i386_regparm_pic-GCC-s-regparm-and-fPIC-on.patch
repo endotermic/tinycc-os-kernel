@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tests: 157_i386_regparm_pic: GCC's regparm and -fPIC on i386
+
+Direct and indirect regparm(3) calls with long long and structure
+arguments and structure returns, through function pointers in structures,
+arrays, globals and locals (fix 88 of the tinycc-os-kernel project called
+address 0 through a structure field); position independent code for
+globals, statics, strings, function pointers, long long, double and
+structure copies (fixes 74, 75); a symbol address minus a constant beyond
+32 bits signed as an initializer (78); the inline 64-bit shifts and bit
+scans under PIC (83, 87); the zero fill through a pointer (89).  The
+Makefile runs the file without and with -fPIC; i386 only, like
+98_al_ax_extend and 99_fastcall.
+---
+ tests/tests2/157_i386_regparm_pic.c      |  95 +++++++++++++++++++++++
+ tests/tests2/157_i386_regparm_pic.expect | Bin 0 -> 416 bytes
+ tests/tests2/Makefile                    |   5 ++
+ 3 files changed, 100 insertions(+)
+ create mode 100644 tests/tests2/157_i386_regparm_pic.c
+ create mode 100644 tests/tests2/157_i386_regparm_pic.expect
+
+diff --git a/tests/tests2/157_i386_regparm_pic.c b/tests/tests2/157_i386_regparm_pic.c
+new file mode 100644
+index 0000000..4eafe11
+--- /dev/null
++++ b/tests/tests2/157_i386_regparm_pic.c
+@@ -0,0 +1,95 @@
++/* i386: GCC's regparm calling convention (fixes 65, 88) and position
++   independent code (-fPIC, fixes 74, 75, 78, 83, 87, 89); the Makefile runs
++   this file without and with -fPIC (tinycc-os-kernel project). */
++#include <stdio.h>
++#include <string.h>
++
++#define RP __attribute__((regparm(3)))
++
++struct pair { int x, y; };
++struct triple { int a, b, c; };
++
++static int RP add3(int a, int b, int c) { return a * 100 + b * 10 + c; }
++static int RP add5(int a, int b, int c, int d, int e) { return a * 10000 + b * 1000 + c * 100 + d * 10 + e; }
++static long long RP ll_arg(int a, long long b, int c) { return a + b * 1000 + c; }
++static int RP struct_arg(struct pair p, int z) { return p.x + p.y * 10 + z * 100; }
++static int RP struct_arg3(struct triple t, int z) { return t.a + t.b * 10 + t.c * 100 + z * 1000; }
++static struct pair RP ret_struct(int a, int b) { struct pair p = { a, b }; return p; }
++static struct triple RP ret_struct3(int a, int b, int c) { struct triple t = { a, b, c }; return t; }
++static int RP recurse(int n, int acc, int step) { return n ? recurse(n - 1, acc + step, step) : acc; }
++static char RP chars(char a, short b, unsigned char c) { return a + b + c; }
++
++/* fix 88: indirect regparm calls */
++struct ops { int (RP *read)(int, int, int); int pad; };
++static struct ops ops_global = { add3, 0 };
++static int (RP *fn_global)(int, int, int) = add3;
++static int (RP *fn_array[2])(int, int, int) = { add3, add3 };
++
++static void test_regparm(void)
++{
++    struct ops ops_local = { add3, 1 }, *p = &ops_local;
++    int (RP *fn_local)(int, int, int) = add3;
++    struct pair q = ret_struct(4, 5);
++    struct triple t = ret_struct3(1, 2, 3);
++    int i = 1;
++    printf("regparm: %d %d %lld %d %d %d %d %d %d\n",
++           add3(1, 2, 3), add5(1, 2, 3, 4, 5), ll_arg(1, 0x100000002ll, 3),
++           struct_arg(q, 6), struct_arg3(t, 4), q.x * 10 + q.y, t.a + t.b + t.c,
++           recurse(5, 0, 3), chars(1, 2, 3));
++    printf("indirect: %d %d %d %d %d %d\n", p->read(1, 2, 3), ops_global.read(4, 5, 6),
++           fn_global(7, 8, 9), fn_array[i](2, 2, 2), fn_local(3, 3, 3), (*ops_local.read)(1, 1, 1));
++}
++
++/* fix 74, 75: PIC addressing of globals, statics, strings and functions */
++int pic_global = 5;
++static int pic_static = 6;
++static const char *names[] = { "zero", "one", "two" };
++static int twice(int x) { return 2 * x; }
++static int (*fnp)(int) = twice;
++static long long ll_global = 0x0123456789abcdefll;
++static double d_global = 1.5;
++static struct { char c[41]; } sg = { "forty-one bytes of struct data to copy.." };
++
++/* fix 78: a symbol address minus a constant beyond 32 bits signed */
++static char buf[16];
++static unsigned long pa = (unsigned long)buf - 0xC0000000;
++
++static int RP sum3(int a, int b, int c) { return a + b + c; }
++struct ops2 { int (RP *op)(int, int, int); };
++
++static void test_pic(unsigned count)
++{
++    int local = 1;
++    int *pp = &pic_global;
++    struct { char c[41]; } sl;
++    struct ops2 o = { sum3 }, *po = &o;
++    pic_global++; pic_static++; *pp += 10;
++    memcpy(&sl, &sg, sizeof sl);
++    printf("pic: %d %d %s %s %d %llx %.1f %c%c %d %lu %d\n",
++           pic_global, pic_static, names[1], names[pic_static % 3], fnp(21),
++           ll_global << count, d_global * pic_global, sl.c[0], sl.c[40], local,
++           (unsigned long)(pa + 0xC0000000 == (unsigned long)buf), po->op(1, 2, 3));
++    printf("inline: %llx %llx %llx %d %d %d\n", ll_global << count, ll_global >> (count + 30),
++           (unsigned long long)ll_global >> (count + 30), __builtin_clzll(ll_global >> count),
++           __builtin_ctzll(ll_global << (count + 2)), __builtin_ffsll(ll_global << 10));
++#ifdef __PIC__
++    printf("__PIC__ %d\n", __PIC__);
++#else
++    printf("not pic\n");
++#endif
++}
++
++/* fix 89: the zero fill of a compound literal stored through a pointer */
++struct lock { int a, b; };
++static void RP init_lock(struct lock *l, int v) { *l = (struct lock){ .b = v }; }
++
++int main(void)
++{
++    struct { char pre; struct lock l; char post; } __attribute__((packed)) s;
++    memset(&s, 0x55, sizeof s);
++    init_lock(&s.l, 7);
++    test_regparm();
++    test_pic(3);
++    printf("fill: %d %d %d %d\n", s.pre, s.l.a, s.l.b, s.post);
++    return 0;
++}
+diff --git a/tests/tests2/157_i386_regparm_pic.expect b/tests/tests2/157_i386_regparm_pic.expect
+new file mode 100644
+index 0000000000000000000000000000000000000000..586135b8f34c52371f67ac660bd40eb1b9c33589
+GIT binary patch
+literal 416
+zcmdT<K@Nj34BNS{@C&9kO-svlr``60ib0twF+dgn*TUG17fg|JuoGLZ`L%ZS-NKOF
+z!46E3qi-k%tr^}i*ph)L9!8cb^H6H;x8sSOM-w852-b>;F={Qnh{9u;^A}8rrlY6r
+zd2rc}O#ty#W4yq~?50zhb9=fvzJ4@}hLZ#}FB>F8jb)lz1P3iy!KwP6by9lVZz+LJ
+Fg+2p3V}1Yt
+
+literal 0
+HcmV?d00001
+
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 8757a3a..1da0b55 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -14,6 +14,7 @@ ifeq (-$(CONFIG_arm_eabi)-$(CONFIG_arm_vfp)-,-yes--)
+ endif
+ ifeq (,$(filter i386,$(ARCH)))
+  SKIP += 98_al_ax_extend.test 99_fastcall.test
++ SKIP += 157_i386_regparm_pic.test
+ endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+@@ -179,6 +180,10 @@ endif
+ 	done
+ 148_linker_symbols.test: GEN=$(T1)
+ 
++# the i386 regparm/PIC test runs without and with -fPIC
++157_i386_regparm_pic.test: T1 = ( $(TCC) -run $1 && $(TCC) -fPIC -run $1 )
++157_i386_regparm_pic.test: GEN = $(GEN-TCC)
++
+ # Filter source directory in warnings/errors (out-of-tree builds)
+ FILTER = 2>&1 | sed -e 's,$(SRC)/,,g'
+ 

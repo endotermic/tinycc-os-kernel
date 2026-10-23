@@ -80,3 +80,13 @@ bugfixes/0078-i386-gen-regparm-indirect-calls-spilled-the-wrong-va.patch
 bugfixes/0079-tccasm-the-local-label-relocation-fixup-read-a-symbo.patch
 bugfixes/0080-tccrun-a-static-musl-tcc-shares-its-libc-with-the-ru.patch
 compatibility/0081-include-limits.h-take-the-C-library-s-limits-first-f.patch
+bugfixes/0082-tccgen-the-l-bit-scan-builtins-have-the-width-of-lon.patch
+features/0083-tests-152_gnu_extensions-GNU-C-extensions-and-GCC-bu.patch
+features/0084-tests-153_dead_code-no-references-from-code-gcc-neve.patch
+features/0085-tests-154_cleanup_goto-cleanups-on-every-exit-path.patch
+features/0086-tests-155_x86_inline_asm-inline-assembler-forms-of-t.patch
+features/0087-tests-156_codegen_arith-checked-arithmetic-of-the-in.patch
+features/0088-tests-157_i386_regparm_pic-GCC-s-regparm-and-fPIC-on.patch
+features/0089-tests-the-driver-options-of-the-kernel-and-busybox-b.patch
+features/0090-tests-pp-24.S-predefined-macros-and-glued-pastes-in-.patch
+features/0091-tests-asmtest.S-the-assembler-forms-of-the-kernel-mu.patch

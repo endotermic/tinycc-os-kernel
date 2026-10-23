@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 16:30:28 +0300
+Subject: [PATCH] tccgen: the 'l' bit-scan builtins have the width of long
+
+__builtin_clzl, ctzl, ffsl and popcountl were folded and generated as
+64-bit operations on every target, so on i386 __builtin_clzl(1) gave 63
+instead of 31, as a constant and at run time alike.  The width is now
+that of long (LONG_SIZE): 32 bits on 32-bit targets.
+
+Fix 97 of the tinycc-os-kernel project (docs/FIX-LOG.md), found by the
+new tests2/152_gnu_extensions.
+---
+ tccgen.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index d214864..7284a09 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6037,7 +6037,8 @@ ST_FUNC void unary(void)
+         parse_builtin_params(0, "e");
+         if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
+             int kind = (t - TOK_builtin_clz) / 3;
+-            int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
++            int bits = (t - TOK_builtin_clz) % 3 == 2
++                       || ((t - TOK_builtin_clz) % 3 == 1 && LONG_SIZE == 8) ? 64 : 32;
+             uint64_t v = vtop->c.i;
+             if (bits == 32)
+                 v &= 0xffffffffu;
+@@ -6058,7 +6059,8 @@ ST_FUNC void unary(void)
+             vtop->type.t = VT_INT;
+         } else {
+             int kind = (t - TOK_builtin_clz) / 3;
+-            int bits = (t - TOK_builtin_clz) % 3 ? 64 : 32;
++            int bits = (t - TOK_builtin_clz) % 3 == 2
++                       || ((t - TOK_builtin_clz) % 3 == 1 && LONG_SIZE == 8) ? 64 : 32;
+ #if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
+             if (kind != 2) {
+                 /* bsr/bsf inline: no library function (e.g. in the kernel) */
