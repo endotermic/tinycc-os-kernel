@@ -95,7 +95,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the 12 kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 79 patches, the linker suite, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 81 patches, the linker suite, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers; `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -126,8 +126,12 @@ transfer, 2 minutes in all), `boot` boots the received kernel and checks for gen
 `AUTO=all` has the guest run `build-toolchain` first and build the kernel with its own,
 second-generation tcc and tld (`./run.sh --selfhost --auto=all`), and the same test run on a
 guest-built kernel (`KERNEL=out/<arch>/selfhost/bzImage scripts/selfhost-test.sh all`) builds
-generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23). Sizes and
-times are in `docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fourth and
+generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23).
+`./run.sh --selfhost --auto=test` rebuilds the toolchain and runs tcc's own test suite on it
+inside the guest (`build-toolchain --test`): ALL TESTS PASSED on both architectures
+(2026-10-23, after fixes 95 and 96, which only a statically linked musl tcc shows; the
+shared-object tests are skipped, the image has no dynamic loader). Sizes and times are in
+`docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fourth and
 fifth menu entries (`./run.sh --iso --selfhost` selects them).
 
 ## Layout
@@ -141,7 +145,7 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro) and the QEMU boot |
-| `patches/tinycc/` | 79 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/tinycc/` | 81 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc` (CC) and `tcc-hostcc` (HOSTCC) wrappers for Kbuild, `objtool-stub` |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |

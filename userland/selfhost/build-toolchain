@@ -6,6 +6,8 @@
 # and tld from /usr/src/tld.tar.gz, both installed into /usr/local, where build-kernel
 # finds them first.  GNU make (/usr/src/make-*.tar.gz) can be rebuilt as well (--make).
 # Usage: build-toolchain [--make] [--test]      Env: WORK (/build), JOBS, TCC (/usr/bin/tcc)
+#   --test runs tcc's test suite (make -k test) on the rebuilt compiler, log in $WORK/tcc-test.log;
+#   the exit status is 3 when tests failed (the toolchain is installed either way)
 set -e
 SRC=${SELFHOST_SRC:-/usr/src}
 WORK=${WORK:-/build}
@@ -44,10 +46,22 @@ make -j"$JOBS" cross-i386 GITHASH="$tag" GITMODF= >>"$log" 2>&1 || make i386-tcc
     || { grep -E 'error' "$log" | head; die "i386-tcc build failed (log: $log)"; }
 make -s install GITHASH="$tag" GITMODF= >>"$log" 2>&1 || die "tcc install failed"
 echo "   $("$PREFIX/bin/tcc" -v), $("$PREFIX/bin/i386-tcc" -v)"
+test_rc=0
 if [ -n "$test" ]; then
-    echo "== tinycc test suite (make test)"
-    if make -s test >>"$log" 2>&1 && grep -q 'ALL TESTS PASSED' "$log"; then echo "   ALL TESTS PASSED"
-    else echo "   some tests failed (see $log)"; fi
+    # the whole suite with -k (as scripts/build.sh tcc-test runs it on the host), its output in
+    # a log of its own that the automatic run (tcc.selfhost=test) sends to the host
+    tlog=$WORK/tcc-test.log
+    echo "== tinycc test suite (make -k test; log: $tlog)"
+    t2=$(date +%s)
+    # CONFIG_dll=no: this image has no dynamic loader, a shared object cannot run here
+    # (dlltest, tests2 113_btdll and 148_linker_symbols are skipped)
+    if make -k -s test CONFIG_dll=no >"$tlog" 2>&1 && grep -q 'ALL TESTS PASSED' "$tlog"; then
+        echo "   ALL TESTS PASSED in $(( $(date +%s) - t2 )) s"
+    else
+        test_rc=3
+        echo "   some tests FAILED ($(( $(date +%s) - t2 )) s); make targets with errors:"
+        grep -oE '\[[^]]*\] Error [0-9]+' "$tlog" | sort | uniq -c | sed 's/^/   /'
+    fi
 fi
 cd "$WORK"
 
@@ -72,3 +86,4 @@ fi
 t1=$(date +%s); el=$((t1 - t0))
 echo "== done in $((el / 60))m$((el % 60))s; installed in $PREFIX/bin: $(ls "$PREFIX/bin" | tr '\n' ' ')"
 echo "   build-kernel now uses $PREFIX/bin/tcc (TCC=/usr/bin/tcc for the shipped one)"
+exit $test_rc

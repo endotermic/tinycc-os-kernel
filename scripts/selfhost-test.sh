@@ -52,7 +52,11 @@ test_boot() {
     msg "booting the guest-built kernel: KERNEL=$O/selfhost/bzImage ./run.sh --nolibc"
     out=$(KERNEL="$O/selfhost/bzImage" TIMEOUT=60 "$ROOT/run.sh" --nolibc 2>&1 | tr -d '\r')
     echo "$out" | grep -E '^Linux version|^kernel:|^build:' | sed 's/^/   /'
-    gen=$(echo "$out" | sed -n 's/^build:  *#\([0-9]*\).*/\1/p')
+    # the generation from the kernel's own version line (one printk, so a kernel message
+    # cannot land inside it, as it can in the banner's "build:" line: "Run /init as init
+    # process" has), the banner's line as the fallback
+    gen=$(echo "$out" | sed -n 's/^Linux version .* #\([0-9][0-9]*\) .*/\1/p' | head -1)
+    [ -n "$gen" ] || gen=$(echo "$out" | sed -n 's/^build:  *#\([0-9]*\).*/\1/p')
     [ -n "$gen" ] || die "the guest-built kernel did not boot to the banner"
     [ "$gen" -ge 2 ] || die "the kernel booted but is generation $gen, not a guest build"
     echo "   generation $gen: a kernel built inside the guest boots"

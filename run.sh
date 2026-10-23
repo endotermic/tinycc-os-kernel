@@ -19,7 +19,9 @@
 #             self-hosting menu entry is selected.
 #   --auto    with --selfhost: the guest runs build-kernel and send-file by itself and shuts
 #             down (kernel command line tcc.selfhost=auto; --auto=all also rebuilds the
-#             toolchain first and uses it); scripts/selfhost-test.sh drives this
+#             toolchain first and uses it; --auto=test rebuilds the toolchain and runs tcc's
+#             test suite on it, no kernel: the logs come back); scripts/selfhost-test.sh
+#             drives the first two
 # Env: ARCH (x86_64, i386), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM when

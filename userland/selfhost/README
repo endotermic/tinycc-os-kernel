@@ -29,7 +29,8 @@ Commands:
                         the result is /build/linux/arch/x86/boot/bzImage.  Its uname -v
                         counts the generation: #1 was built on the host, #2 in here, ...
   build-toolchain       rebuild tcc + i386-tcc and tld from the sources into /usr/local;
-                        build-kernel then uses them (--make also rebuilds GNU make)
+                        build-kernel then uses them (--make also rebuilds GNU make, --test
+                        runs tcc's test suite on the rebuilt compiler: /build/tcc-test.log)
   send-file FILE...     copy files to the host over the second serial port (ttyS1); with
                         ./run.sh --selfhost the host gets them in out/<arch>/selfhost/
                         (scripts/recv-file.sh cuts them out of the capture)

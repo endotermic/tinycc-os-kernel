@@ -158,9 +158,9 @@ directly, which is also better code for gcc.
    without -O (gcc does it at -O1+ with a smaller limit).
 7. Self-hosting (done 2026-10-22, see the section below; `--auto=all`, the kernel built by
    the guest-built toolchain, and generation 3 verified on both architectures 2026-10-23):
-   what is left is `make test` of tcc in the guest (needs the test suite's expectations of a
-   glibc host reviewed). The RCU stall report that the serial transfer provoked was QEMU's
-   UART behaviour, not the compiler (see the section below).
+   tcc's own test suite inside the guest passes too, after fixes 95 and 96, so nothing is left
+   open there. The RCU stall report that the serial transfer provoked was QEMU's UART
+   behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 
 ## The i386 target
@@ -393,6 +393,23 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   copy of `build/x86_64/linux/.config` and boots with `KERNEL=<its bzImage> ./run.sh
   --selfhost`; it is the cheapest way to tell a tcc miscompile from a property of the
   kernel or QEMU.)
+* tcc's own test suite inside the guest (2026-10-23): `./run.sh --selfhost --auto=test`
+  (`tcc.selfhost=test`: `build-toolchain --test` and no kernel build; the logs come back as
+  `out/<arch>/selfhost/test/{build-toolchain,tcc-test}.log`) rebuilds tcc and runs `make -k
+  test CONFIG_dll=no` on the rebuilt compiler (the image has no dynamic loader, so dlltest,
+  113_btdll and 148_linker_symbols are skipped; backtrace and bounds checking are configured
+  out, as in the shipped compiler). The first run failed almost everywhere on both
+  architectures: every tests2 case (the program's output cut after its first line), test3 and
+  cross-test (tcc running its own source in memory), on i386 also memtest, 40_stdio and
+  46_grep (crashes), and 118_switch (warnings). Two compiler bugs, both visible only with a
+  statically linked musl tcc and therefore only in the guest: fix 95 (`-run` in a static tcc
+  linked a second, uninitialized libc into the image: a second malloc heap over tcc's own, a
+  NULL environ, a stdout that was never flushed) and fix 96 (fix 58's limits.h redefined by
+  musl's). With them: ALL TESTS PASSED in 6 s on x86_64 and 5 s on i386 (the whole run, with
+  the toolchain rebuild and the transfer, takes under 20 s per architecture), and the host's
+  glibc `make test` still passes. The guest's static tcc runs on the host as it is
+  (`-nostdinc -isystem build/<arch>/musl/install/include -L build/<arch>/musl/lib`), which is
+  how both bugs were debugged (FIX-LOG 95: an in-tree musl build with backtraces).
 
 ## Debugging recipes
 

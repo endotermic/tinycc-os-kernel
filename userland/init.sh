@@ -59,16 +59,24 @@ fi
 # the shell on /dev/console's device (cttyhack finds it: ttyS0, or tty0 = the active VT)
 banner
 # tcc.selfhost=auto (run.sh --selfhost --auto): rebuild the kernel (auto=all: the toolchain
-# first, then the kernel with it), send the result to the host and shut down, no shell
+# first, then the kernel with it; auto=test: the toolchain and tcc's test suite, no kernel),
+# send the results to the host and shut down, no shell
 case " $(cat /proc/cmdline) " in
     *" tcc.selfhost="*)
         mode=$(sed -n 's/.*tcc.selfhost=\([^ ]*\).*/\1/p' /proc/cmdline)
         echo "*** tcc.selfhost=$mode: automatic self-hosting run"
         rc=0
-        if [ "$mode" = all ]; then build-toolchain || rc=$?; fi
-        [ $rc != 0 ] || build-kernel || rc=$?
-        if [ $rc = 0 ]; then send-file /build/linux/arch/x86/boot/bzImage /build/build-kernel.log || rc=$?
-        else for f in /build/build-kernel.log /build/build-toolchain.log; do [ ! -f $f ] || send-file $f; done; fi
+        case $mode in
+            all) build-toolchain || rc=$?;;
+            test) build-toolchain --test || rc=$?;;
+        esac
+        if [ "$mode" = test ]; then
+            for f in /build/build-toolchain.log /build/tcc-test.log; do [ ! -f $f ] || send-file $f || rc=$?; done
+        else
+            [ $rc != 0 ] || build-kernel || rc=$?
+            if [ $rc = 0 ]; then send-file /build/linux/arch/x86/boot/bzImage /build/build-kernel.log || rc=$?
+            else for f in /build/build-kernel.log /build/build-toolchain.log; do [ ! -f $f ] || send-file $f; done; fi
+        fi
         echo "*** self-hosting run finished with status $rc, shutting down"
         exec reboot -f;;
 esac

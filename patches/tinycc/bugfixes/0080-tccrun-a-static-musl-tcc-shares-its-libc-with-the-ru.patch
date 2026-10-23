@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 15:38:11 +0300
+Subject: [PATCH] tccrun: a static musl tcc shares its libc with the -run image
+
+A statically linked tcc has no dynamic symbol table, so dlsym() cannot
+resolve the libc references of a -run image and libc.a is linked into the
+image instead.  That second libc instance is never initialized by
+__libc_start_main: its malloc runs a second brk heap over tcc's own and the
+two allocators corrupt each other ("tcc -run tcc.c" dies in alloc_meta, as
+does any allocation-heavy program), its environ is NULL, its stdout buffer is
+never flushed (a program's output ends after the first line when stdout is
+not a tty: every tests2 case failed in the self-hosting guest), its __libc
+has no auxv, page size or TLS sizes.
+
+Before libc.a is searched, define the symbols that carry that state -- the
+exports of the libc.a members that hold it, so none of them is loaded -- as
+the addresses of tcc's own copies (weak asm-labelled references: a
+dynamically linked musl tcc does not see the hidden ones and needs none of
+this).  The image then shares malloc, environ, the standard streams and the
+libc state with the running tcc, as it does with a shared libc.  The run
+memory of such a tcc is mapped in the low 2 GB (MAP_32BIT) so that the
+image's R_X86_64_PC32 references reach the executable at 0x400000.
+---
+ tcc.h    |  1 +
+ tccelf.c |  5 +++++
+ tccrun.c | 66 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 72 insertions(+)
+
+diff --git a/tcc.h b/tcc.h
+index 8ccb818..137fcd4 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1845,6 +1845,7 @@ ST_FUNC const char *dlerror(void);
+ ST_FUNC void *dlsym(void *handle, const char *symbol);
+ #endif
+ ST_FUNC void tcc_run_free(TCCState *s1);
++ST_FUNC void tcc_run_add_libc_syms(TCCState *s1);
+ #endif
+ 
+ /* ------------ tcctools.c ----------------- */
+diff --git a/tccelf.c b/tccelf.c
+index a7fe60d..a561526 100644
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -1950,6 +1950,11 @@ ST_FUNC void tcc_add_runtime(TCCState *s1)
+ #endif
+         if (lpthread)
+             tcc_add_library(s1, "pthread");
++#if defined TCC_IS_NATIVE && defined CONFIG_TCC_MUSL && !defined CONFIG_TCC_STATIC
++        /* a static tcc: share its libc state with the -run image (tccrun.c) */
++        if (s1->output_type == TCC_OUTPUT_MEMORY && s1->static_link)
++            tcc_run_add_libc_syms(s1);
++#endif
+         tcc_add_library(s1, "c");
+ #ifdef TCC_LIBGCC
+         if (!s1->static_link) {
+diff --git a/tccrun.c b/tccrun.c
+index 1003ea5..42c6fbd 100644
+--- a/tccrun.c
++++ b/tccrun.c
+@@ -113,6 +113,17 @@ static void win64_del_function_table(void *);
+ # define CONFIG_RUNMEM_VIRTUALALLOC 1
+ #endif
+ 
++/* A static musl tcc shares its own libc with the run image (tcc_run_add_libc_syms
++   below), and the image's R_X86_64_PC32 references to that data (stdout, environ,
++   __libc, the malloc state) must reach the executable, which tcc's linker places at
++   0x400000: the run memory is then mapped in the low 2 GB (MAP_32BIT) instead of
++   coming from malloc, whose memory sits at 0x7f... */
++#if defined CONFIG_TCC_MUSL && !defined CONFIG_TCC_STATIC && defined TCC_TARGET_X86_64 \
++    && !defined CONFIG_SELINUX && !CONFIG_RUNMEM_VIRTUALALLOC
++# define CONFIG_RUNMEM_MMAP32 1
++# include <sys/mman.h>
++#endif
++
+ static int rt_mem(TCCState *s1, int size)
+ {
+     void *ptr;
+@@ -139,6 +150,11 @@ static int rt_mem(TCCState *s1, int size)
+     ptr = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+     if (!ptr)
+         return tcc_error_noabort("tccrun: could not allocate memory");
++#elif CONFIG_RUNMEM_MMAP32
++    size += PAGESIZE;
++    ptr = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_32BIT, -1, 0);
++    if (ptr == MAP_FAILED)
++        return tcc_error_noabort("tccrun: could not map memory");
+ #else
+     ptr = tcc_malloc(size += PAGESIZE); /* one extra page to align malloc memory */
+ #endif
+@@ -200,6 +216,8 @@ ST_FUNC void tcc_run_free(TCCState *s1)
+     size = s1->run_size;
+ #ifdef CONFIG_SELINUX
+     munmap(ptr, size);
++#elif CONFIG_RUNMEM_MMAP32
++    munmap(ptr, size);
+ #elif CONFIG_RUNMEM_VIRTUALALLOC
+     VirtualFree(ptr, size, MEM_RELEASE);
+ #else
+@@ -271,6 +289,54 @@ LIBTCCAPI int tcc_run(TCCState *s1, int argc, char **argv)
+     return ret;
+ }
+ 
++/* ------------------------------------------------------------- */
++#if defined CONFIG_TCC_MUSL && !defined CONFIG_TCC_STATIC
++/* A statically linked tcc has no dynamic symbol table, so dlsym() cannot resolve the
++   libc references of a -run image and libc.a is linked into the image instead
++   (tcc_add_runtime with static_link).  That is a second libc instance in the process
++   that __libc_start_main never initialized: its malloc runs a second brk heap over
++   tcc's own and the two allocators corrupt each other ("tcc -run tcc.c" dies in
++   alloc_meta), its environ is NULL, its stdout buffer is never flushed (a program's
++   output ends after the first line when stdout is not a tty), its __libc has no
++   auxv, page size or TLS sizes.  Before libc.a is searched, define the symbols that
++   carry that state -- every export of the libc.a members that hold it, so that none
++   of those members gets loaded -- as the addresses of tcc's own copies: the image
++   then shares malloc, environ, the standard streams and the libc state with the
++   running tcc, as it does when tcc is linked dynamically.  The references are weak:
++   a dynamically linked musl tcc does not see the hidden ones and needs none of this
++   (dlsym works there), so it is skipped unless the hidden state is reachable. */
++#define RT_LIBC_SYMS \
++    X(malloc) X(__libc_malloc) X(__libc_malloc_impl) X(__bump_lockptr) \
++    X(__malloc_alloc_meta) X(__malloc_allzerop) X(__malloc_atfork) X(__malloc_lock) \
++    X(__malloc_context) X(__malloc_size_classes) X(__malloc_donate) \
++    X(__malloc_replaced) X(__aligned_alloc_replaced) \
++    X(free) X(__libc_free) X(realloc) X(__libc_realloc) X(calloc) X(__libc_calloc) \
++    X(aligned_alloc) X(memalign) X(posix_memalign) X(malloc_usable_size) \
++    X(__environ) X(___environ) X(_environ) X(environ) \
++    X(__stdin_FILE) X(__stdin_used) X(stdin) \
++    X(__stdout_FILE) X(__stdout_used) X(stdout) \
++    X(__stderr_FILE) X(__stderr_used) X(stderr) \
++    X(__ofl_lock) X(__ofl_unlock) X(__stdio_ofl_lockptr) \
++    X(__libc) X(__hwcap) X(__progname) X(__progname_full) \
++    X(program_invocation_name) X(program_invocation_short_name) \
++    X(__thread_list_lock) X(__copy_tls) X(__init_tp) X(__init_tls)
++
++#define X(s) extern char rt_libc_##s[] __asm__(#s) __attribute__((weak));
++RT_LIBC_SYMS
++#undef X
++
++ST_FUNC void tcc_run_add_libc_syms(TCCState *s1)
++{
++    if (!rt_libc___libc || !rt_libc___malloc_context)
++        return;
++    if (s1->verbose == 2)
++        printf("-> the running tcc's libc state (malloc, environ, stdio, __libc) for the image\n");
++#define X(s) if (rt_libc_##s) tcc_add_symbol(s1, #s, rt_libc_##s);
++    RT_LIBC_SYMS
++#undef X
++}
++#endif /* CONFIG_TCC_MUSL && !CONFIG_TCC_STATIC */
++
+ /* ------------------------------------------------------------- */
+ /* remove all STB_LOCAL symbols */
+ static void cleanup_symbols(TCCState *s1)

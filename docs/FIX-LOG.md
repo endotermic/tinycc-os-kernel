@@ -44,6 +44,8 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 92 | tinycc 0074 |
 | | | | | 93 | tinycc 0074 |
 | | | | | 94 | tinycc 0079 |
+| | | | | 95 | tinycc 0080 |
+| | | | | 96 | tinycc 0081 |
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -60,7 +62,9 @@ K14-K16 and the tld changes of 2026-10-23 are the i386 target (`ARCH=i386`, the 
 kernel; see `PORT-NOTES.md`, "The i386 target"): position-independent code for the
 decompressor and the vDSO, the 32-bit kernel's assembler forms and its freestanding
 arithmetic, four code generator bugs found by booting it (85, 88, 89, 91), and what musl
-and busybox asked of the inline assembler and tcc's own linker (90, 92, 93).
+and busybox asked of the inline assembler and tcc's own linker (90, 92, 93). Fixes 95 and 96
+(2026-10-23) came from running tcc's own test suite inside the self-hosting guest: `-run` in a
+statically linked musl tcc, and musl's `<limits.h>` against fix 58's file.
 
 ## Log
 
@@ -1112,6 +1116,58 @@ Wrapper (not tcc): until fix 60 `tcc-kcc` routed the arch/x86/entry/vdso/ C file
     Verification: the patched i386 tcc (musl, debug build) compiles klist.c and its object is
     byte-identical to the host i386-tcc's (14 088 bytes); `make test`; the i386 and x86_64
     self-hosting loops with the rebuilt guest compilers (see PORT-NOTES "Self-hosting").
+
+95. 2026-10-23, COMMITTED, `tccrun.c` (tcc_run_add_libc_syms, rt_mem), `tccelf.c`
+    (tcc_add_runtime), `tcc.h`.
+    Problem: tcc's `make test` inside the self-hosting guest (`./run.sh --selfhost --auto=test`:
+    build-toolchain --test, both architectures) failed almost everywhere: every tests2 case
+    with the program's output cut after its first line, test3 and cross-test (tcc compiling
+    and running its own source in memory) with a silent SIGSEGV, on i386 also memtest,
+    40_stdio and 46_grep. Reproduced on the host with the guest's own static musl tcc
+    (`-nostdinc -isystem build/x86_64/musl/install/include -L build/x86_64/musl/lib -run`):
+    `tcc -run prog.c | cat` prints one line, `fflush(stdout)` in the program does not help,
+    `environ` is NULL inside the program, and a program doing 10 000 reallocs dies; a `-bt`
+    build of the same tcc (an in-tree copy configured for musl) put the crash in musl's
+    `__malloc_alloc_meta` under `__libc_realloc`. Cause: a static tcc has no dynamic symbol
+    table, dlsym() resolves nothing, so tcc_add_runtime links libc.a into the run image
+    (static_link): a second libc instance that __libc_start_main never initialized. Its
+    mallocng runs a second brk heap over tcc's own and the two allocators corrupt each other;
+    its `__environ` is NULL; its stdout is line buffered until the first write finds no tty
+    and is never flushed afterwards (hence exactly one line); its `__libc` has no auxv, page
+    size or TLS sizes. Upstream's CONFIG_TCC_STATIC path (a four-entry dlsym() table) has the
+    same design and the same problem.
+    Fix: before libc.a is searched, the exports of the libc.a members that hold that state
+    (mallocng's malloc.o, lite_malloc.o, free.o, realloc.o, calloc.o, libc_calloc.o,
+    aligned_alloc.o, memalign.o, posix_memalign.o, malloc_usable_size.o, donate.o,
+    replaced.o; __environ.o; stdin.o, stdout.o, stderr.o, ofl.o; libc.o; __init_tls.o: 49
+    symbols) are defined as the addresses of tcc's own copies, taken through weak
+    `__asm__`-labelled references (a dynamically linked musl tcc sees none of the hidden ones
+    and is left alone). None of those members is loaded any more and the image shares
+    malloc, environ, the standard streams and `__libc` with the running tcc, as it does with
+    a shared libc. The run memory of such a tcc is mmap'ed with MAP_32BIT instead of
+    malloc'ed: the image's R_X86_64_PC32 references to that data must reach the executable,
+    which tcc's linker places at 0x400000 ("relocation '2' out of range" otherwise). All
+    under `CONFIG_TCC_MUSL && !CONFIG_TCC_STATIC` and memory output with static_link; glibc
+    builds are unchanged.
+    Verification: the in-tree musl build of the patched tree on the host: the realloc
+    program, piped output, environ, `tcc -run tcc.c -v` and `make -k test CONFIG_dll=no`
+    (ALL TESTS PASSED; dlltest, 113_btdll and 148_linker_symbols need a dynamic loader);
+    the glibc host `make test`; the guest runs on both architectures (PORT-NOTES,
+    "Self-hosting").
+
+96. 2026-10-23, COMMITTED, `include/limits.h` (fix 58's file).
+    Problem: on musl every program including `<limits.h>` got "CHAR_MIN redefined" and a
+    dozen more warnings (tests2/118_switch failed on them, in the guest and in the musl
+    build on the host): fix 58's limits.h defines the ISO limits before `#include_next`ing
+    the C library's file, as glibc expects when __GNUC__ is defined, but musl's limits.h
+    defines them all itself, with other spellings.
+    Fix: the C library's file first (glibc skips its own #include_next because
+    _GCC_LIMITS_H_ is defined by then and leaves the ISO limits out under __GNUC__), then
+    the limits under #ifndef, so a library that has them keeps its own. A second copy of the
+    file on the path (-I and -B) still passes on: the #include_next stays outside the guard.
+    Verification: CHAR_MIN, INT_MAX, LONG_MAX, PATH_MAX, MB_LEN_MAX printed by the musl tcc
+    (-128 2147483647 9223372036854775807 4096 4), by the glibc tcc and by gcc (... 4096 16)
+    agree per library, no warnings with -Wall; make test on both.
 
 tld (tools/tld, 2026-10-23, for the i386 target): `ld` applies R_386_GOTOFF and R_386_GOTPC
 against a linker-defined `_GLOBAL_OFFSET_TABLE_` (absolute 0 unless the script defines it;
