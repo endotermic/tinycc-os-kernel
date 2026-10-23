@@ -24,7 +24,7 @@
 #    the i386 kernel (ARCH=i386) is compiled by the i386-tcc cross compiler
 #    (scripts/build.sh), while TCC stays the host compiler of tcc-hostcc.
 #    -dumpmachine answers for that target (i686 when the compiler is the i386
-#    one or -m32 is given).
+#    one, by its name or its -v line, or -m32 is given).
 #
 # Env: TCC (tcc binary), KCC_TCC (the target compiler, default TCC),
 #      KCC_GCC (fallback compiler, default gcc),
@@ -45,7 +45,7 @@ for a in "$@"; do
         -m64) machine=x86_64-linux-gnu;;
         -Werror) werror=1;;
         -Wa,--version) echo "GNU assembler (tcc-kcc) 2.47"; exit 0;;
-        -dumpmachine) echo "$machine"; exit 0;;
+        -dumpmachine) case $machine$("$TCC" -v 2>/dev/null) in *i386*|*i686*) echo i686-linux-gnu;; *) echo x86_64-linux-gnu;; esac; exit 0;;
         -print-file-name=*) echo "${a#-print-file-name=}"; exit 0;;
         -print-libgcc-file-name) echo libgcc.a; exit 0;;
     esac

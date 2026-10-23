@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # build-kernel - rebuild the Linux kernel from the pruned source tree shipped in this image
 # (/usr/src/linux-*.tar.gz), with the toolchain installed here: tcc (every C and .S file, -S,
-# -E), i386-tcc (-m16, the real-mode code), tld (ld, nm, objcopy, readelf, ar, strip), GNU
-# make and busybox (sh, awk, sed, bc, tar, ...).  No gcc, no binutils, no flex/bison (the
-# Kconfig lexer and parser come pre-generated, see /usr/bin/flex and /usr/bin/bison).
+# -E), i386-tcc (-m16, the real-mode code; the i386 guest's tcc is that compiler itself), tld
+# (ld, nm, objcopy, readelf, ar, strip), GNU make and busybox (sh, awk, sed, bc, tar, ...).
+# No gcc, no binutils, no flex/bison (the Kconfig lexer and parser come pre-generated, see
+# /usr/bin/flex and /usr/bin/bison).
 # It is the same make line as the kernel step of scripts/build.sh on the host.
 #
 # Usage: build-kernel [-j N] [make-target...]      (default target: bzImage + the modules dir)
@@ -16,7 +17,8 @@
 #   build-toolchain made one, else /usr/bin/tcc), GEN (the generation number that becomes the
 #   kernel's "#N" in uname -v; default: the running kernel's + 1), SELFHOST_SRC (/usr/src),
 #   SELFHOST_SHARE (/usr/share/tinycc-os-kernel), SELFHOST_BIN (/usr/bin: the wrappers, tld,
-#   flex, bison), NO_TMPFS=1 (do not mount anything; scripts/selfhost-test.sh host does that).
+#   flex, bison), NO_TMPFS=1 (do not mount anything; scripts/selfhost-test.sh host does that),
+#   ARCH (x86_64 or i386: which kernel to build; default: the running machine's, uname -m).
 set -e
 SRC=${SELFHOST_SRC:-/usr/src}
 SHARE=${SELFHOST_SHARE:-/usr/share/tinycc-os-kernel}
@@ -30,7 +32,12 @@ die() { echo "build-kernel: $*" >&2; exit 1; }
 if [ -z "$TCC" ]; then
     if [ -x /usr/local/bin/tcc ]; then TCC=/usr/local/bin/tcc; else TCC=$(command -v tcc) || die "no tcc"; fi
 fi
-[ -x "$(dirname "$TCC")/i386-tcc" ] || die "no i386-tcc next to $TCC (tcc -m16 execs it for the real-mode code)"
+# the real-mode code is compiled with -m16: the x86_64 tcc execs the i386-tcc next to it, the
+# i386 tcc (the i386 guest) is that compiler itself
+case $("$TCC" -v 2>/dev/null) in
+    *"(i386 "*) ;;
+    *) [ -x "$(dirname "$TCC")/i386-tcc" ] || die "no i386-tcc next to $TCC (tcc -m16 execs it for the real-mode code)";;
+esac
 for t in ld nm objcopy readelf ar strip tcc-kcc tcc-hostcc objtool-stub flex bison; do
     [ -x "$BIN/$t" ] || die "no $BIN/$t"
 done
@@ -64,7 +71,8 @@ export TCC KCC_LOG KCONFIG_PREGEN=$SHARE/kconfig
 # the same toolchain variables as scripts/build.sh step_kernel; LEX/YACC are the copies of the
 # pre-generated files; the version string names the generation and the builder
 set -- "$@"
-case $(uname -m) in i?86) KARCH=i386; AFRAG=i386.config;; *) KARCH=x86; AFRAG=x86_64.config;; esac
+# the kernel's architecture: the machine this runs on (the guest), or ARCH from the host check
+case ${ARCH:-$(uname -m)} in i?86) KARCH=i386; AFRAG=i386.config;; *) KARCH=x86; AFRAG=x86_64.config;; esac
 MK="$MAKE ARCH=$KARCH CC=$BIN/tcc-kcc HOSTCC=$BIN/tcc-hostcc OBJTOOL=$BIN/objtool-stub \
 LD=$BIN/ld NM=$BIN/nm OBJCOPY=$BIN/objcopy READELF=$BIN/readelf AR=$BIN/ar STRIP=$BIN/strip \
 LEX=$BIN/flex YACC=$BIN/bison \

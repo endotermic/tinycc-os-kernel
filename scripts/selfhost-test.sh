@@ -12,22 +12,25 @@
 #   boot   boot the received bzImage (./run.sh --nolibc) and show its build line: "#2" is the
 #          second generation, a kernel built inside the first
 #   all    qemu, then boot
-# Env: ARCH (x86_64), JOBS, AUTO (auto: build-kernel only, the default; all: build-toolchain first
+# Env: ARCH (x86_64, i386), JOBS, AUTO (auto: build-kernel only, the default; all: build-toolchain first
 #      and build the kernel with the guest-built tcc and tld), TIMEOUT (seconds for the guest run,
 #      default 7200), MEM/SMP as in run.sh
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
-ARCH=${ARCH:-x86_64}; B=$BUILD/$ARCH; O=$OUT/$ARCH
+ARCH=${ARCH:-x86_64}; B=$BUILD/$ARCH; O=$OUT/$ARCH; export ARCH    # run.sh reads ARCH too
 stage=$B/selfhost/stage
 mode=${1:-all}
 test_host() {
     [ -d "$stage/usr/src" ] || die "no $stage: run scripts/build.sh selfhost first"
     [ -x "$SRC/tinycc/tcc" ] && [ -x "$SRC/tinycc/i386-tcc" ] || die "no host tcc/i386-tcc: scripts/build.sh host-tcc"
     W=$B/selfhost-test
-    msg "host check: build-kernel on the pruned tree with the image's toolchain (host tcc) -> $W"
+    msg "host check: build-kernel on the pruned tree with the image's toolchain (host tcc, ARCH=$ARCH) -> $W"
     rm -rf "$W"
-    env WORK="$W" NO_TMPFS=1 TCC="$SRC/tinycc/tcc" SELFHOST_SRC="$stage/usr/src" \
+    # the i386 kernel is compiled by the host's i386-tcc cross compiler (KCC_TCC, as in
+    # scripts/build.sh); inside the i386 guest tcc itself is that compiler
+    kcc_tcc=; [ "$ARCH" != i386 ] || kcc_tcc=$SRC/tinycc/i386-tcc
+    env WORK="$W" NO_TMPFS=1 ARCH="$ARCH" TCC="$SRC/tinycc/tcc" ${kcc_tcc:+KCC_TCC="$kcc_tcc"} SELFHOST_SRC="$stage/usr/src" \
         SELFHOST_SHARE="$stage/usr/share/tinycc-os-kernel" SELFHOST_BIN="$stage/usr/bin" \
         GEN=1 KBUILD_BUILD_HOST=selfhost-test JOBS="${JOBS:-$(nproc)}" \
         sh "$ROOT/userland/selfhost/build-kernel" || die "the host check failed"

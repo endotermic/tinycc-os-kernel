@@ -161,8 +161,7 @@ directly, which is also better code for gcc.
    it in /usr/local and `build-kernel` prefers it, but the automatic run `--auto=all` is the
    only path exercising it), a generation-3 run from inside generation 2, and `make test` of
    tcc in the guest (needs the test suite's expectations of a glibc host reviewed).
-8. Targets: arm64 (see README), other kernels; on i386 the self-hosting image is untested
-   and the setup code's early serial output doubles every character (see "The i386 target").
+8. Targets: arm64 (see README), other kernels.
 
 ## The i386 target
 
@@ -175,7 +174,7 @@ with the same tld (`-m elf_i386`), and builds musl, busybox and the guest tcc (c
 `--cpu=i386`, no cross compiler needed in the guest: `tcc -m16` is native) with `i386-tcc`
 and `i386-libtcc1.a`. The libc-free init has an `int $0x80` syscall path. Numbers of the
 first boot: 1900 tcc and 0 gcc invocations, a 1.8 MB bzImage, the kernel reports
-`Linux 7.3.0+ i686`.
+`Linux 7.3.0+ i686`. The i386 system is self-hosting as well (see "Self-hosting").
 
 What the 32-bit kernel needed from the toolchain (fixes 74-93, K14-K16, docs/FIX-LOG.md):
 
@@ -234,11 +233,15 @@ kernel; tcc's frames always have `%ebp`, so the saved frame pointers give a call
 without unwind info (`exc_page_fault`'s `pt_regs` is in `%eax` under `-mregparm=3`). Under
 TCG (`KVM=0`) `-d int` logs every exception with its address.
 
-Open on i386: the self-hosting image (`ARCH=i386 scripts/build.sh selfhost` and the guest's
-`build-kernel`, which now picks `ARCH=i386` from `uname -m`, are wired but have not been
-run); the real-mode setup's early serial console (`earlyprintk=serial`) prints every
-character twice ("eeaarrllyy ccoonnssoollee iinn sseettuupp ccooddee"), a -m16 code generation
-problem that the x86_64 boot (same setup code) does not show, not yet investigated.
+Not a bug (2026-10-23): with `earlyprintk=serial debug` the real-mode setup's line comes
+out as "eeaarrllyy ccoonnssoollee iinn sseettuupp ccooddee" on both the i386 and the x86_64
+kernel under `./run.sh`. The setup code's `putchar()` writes each character twice by design:
+through the BIOS teletype service (`int 0x10`) and to the UART. QEMU's `-nographic` turns
+graphics off, and SeaBIOS then enables its serial console ("sercon", fw_cfg
+`etc/sercon-port`), which forwards the teletype output to the same UART; the SeaBIOS banner
+and its `ESC[?7l ESC[2J` sequences on the serial line are that console. `-machine
+graphics=on` (or `-display none -vga std`) prints the line once. Nothing in the -m16 code
+generation is involved; the same boot with a gcc-built setup shows it as well.
 
 ## Self-hosting
 
@@ -315,6 +318,24 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   "generation 2" in the banner. Its bzImage is 2 065 920 bytes against the host's 2 008 576:
   busybox's gzip compresses differently and the version string differs (no `+`: no git in
   the guest, so setlocalversion adds nothing).
+* Re-run 2026-10-23 with the 79-patch compiler (after the i386 work changed i386-gen, tccasm
+  and the fixups): `scripts/selfhost-test.sh all` builds generation 2 in 1 min 21 s (1550
+  tcc, 0 gcc), transfers it in 28 s and boots it.
+* The i386 system is self-hosting too (2026-10-23): `ARCH=i386 scripts/build.sh selfhost`
+  makes `out/i386/initramfs-selfhost.cpio` (35 MB; the image ships only `tcc`, the i386
+  compiler itself handles `-m16`, so `build-kernel` requires `i386-tcc` only next to an
+  x86_64 tcc), `ARCH=i386 scripts/selfhost-test.sh all` builds generation 2 inside
+  qemu-system-i386 in 1 min 32 s (1516 tcc, 0 gcc, 187 MB of tmpfs, 868 MB of RAM seen by
+  the kernel without highmem) and boots the 1 875 968-byte result. Three things stood in
+  the way, none of them visible from the host check (`selfhost-test.sh host`, which now
+  takes `ARCH=i386` and uses the host's i386-tcc cross compiler): `build-kernel` demanded an
+  `i386-tcc` beside the compiler; tinyconfig leaves the 32-bit time_t system calls out and
+  musl prefers them when the values fit (busybox `touch` failed with ENOSYS at Kbuild's
+  first `.checked-*` stamp; `CONFIG_COMPAT_32BIT_TIME=y` in `i386.config`, FIX-LOG C1);
+  and the guest's own tcc, compiled by i386-tcc against musl, crashed on lib/klist.c: a
+  use-after-realloc in the local-label relocation fixup that glibc's allocator had hidden
+  (fix 94, patch 0079). The rule from fix 73 holds: only the guest run exercises the
+  tcc-compiled, musl-linked compiler.
 
 ## Debugging recipes
 
@@ -334,6 +355,7 @@ grep -c '^gcc ' build/x86_64/logs/kcc.log   # must stay 0
 BUILD=<gnu-linked tree> sh tools/tld/test.sh   # tld vs GNU ld on every kernel link (needs a GNU-linked build tree)
 ./run.sh --nolibc                        # smoke test: banner, reboot, QEMU exits
 ./run.sh -d int,cpu_reset -D qemu.log    # a hang or triple fault
+./run.sh -machine graphics=on -append "console=ttyS0 earlyprintk=serial debug"   # setup-code messages once (SeaBIOS's sercon echoes int 0x10 to the UART under -nographic)
 ./run.sh -S -gdb tcp::1234               # + gdb build/x86_64/linux/vmlinux
 ```
 

@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 13:29:47 +0300
+Subject: [PATCH] tccasm: the local-label relocation fixup read a symbol after
+ the table moved
+
+asm_fixup_local_label_relocs() kept a pointer into the symbol table
+across asm_section_sym(), which adds the section symbol of a section the
+statement created (the kernel's .pushsection .altinstructions in an
+ALTERNATIVE() under -fno-asynchronous-unwind-tables) and so may
+reallocate the table; the stale pointer then supplied st_value.  With
+glibc the old block was usually still readable; with musl's allocator
+the tcc compiled for i386 by tcc crashed on lib/klist.c in the i386
+self-hosting guest.  The value is read before the call.
+
+Fix 94 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ tccasm.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index e450876..e9bab2c 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -203,6 +203,7 @@ static void asm_fixup_local_label_relocs(TCCState *s1)
+             ElfSym *esym = &((ElfSym *)symtab_section->data)[symi];
+             const char *name;
+             Sym *secsym;
++            addr_t value;
+             if (esym->st_shndx == SHN_UNDEF || esym->st_shndx >= SHN_LORESERVE
+                 || ELFW(ST_BIND)(esym->st_info) != STB_LOCAL)
+                 continue;
+@@ -210,16 +211,19 @@ static void asm_fixup_local_label_relocs(TCCState *s1)
+             if (!((name[0] == 'L' && name[1] == '.' && name[2] == '.')
+                   || (name[0] == '.' && name[1] == 'L')))
+                 continue;
++            /* asm_section_sym() may add the section symbol, which can
++               reallocate the symbol table: esym is not valid after it */
++            value = esym->st_value;
+             secsym = asm_section_sym(s1, s1->sections[esym->st_shndx]);
+             if (!secsym->c || secsym->c == symi)
+                 continue;
+             rel->r_info = ELFW(R_INFO)(secsym->c, ELFW(R_TYPE)(rel->r_info));
+ #if SHT_RELX == SHT_RELA
+-            rel->r_addend += esym->st_value;
++            rel->r_addend += value;
+ #else
+             /* REL: the addend lives in the relocated data */
+             rel_add_addend(ELFW(R_TYPE)(rel->r_info),
+-                           s1->sections[sr->sh_info]->data + rel->r_offset, esym->st_value);
++                           s1->sections[sr->sh_info]->data + rel->r_offset, value);
+ #endif
+         }
+     }

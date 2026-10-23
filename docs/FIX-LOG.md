@@ -43,6 +43,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | 79 | tinycc 0074 | 85 | tinycc 0077 | 91 | tinycc 0074 |
 | | | | | 92 | tinycc 0074 |
 | | | | | 93 | tinycc 0074 |
+| | | | | 94 | tinycc 0079 |
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -1094,6 +1095,24 @@ Wrapper (not tcc): until fix 60 `tcc-kcc` routed the arch/x86/entry/vdso/ C file
     Verification: a program with a forward `jecxz` in inline asm linked and run by tcc
     itself; busybox links; `make test`.
 
+94. 2026-10-23, COMMITTED, `tccasm.c` asm_fixup_local_label_relocs() (code of fix 67).
+    Problem: the first i386 self-hosting run that got past `touch` (C1) ended with the guest's
+    tcc crashing on lib/klist.o ("Segmentation fault", error 4 in tcc). Reproduced on the host
+    with the guest's binary (the i386 tcc compiled by i386-tcc against musl) and the same
+    command line; the host's gcc-built i386-tcc and the x86_64 guest's tcc-built musl
+    i386-tcc compile the file. Bisecting the 80 options: it needs `-fno-asynchronous-
+    unwind-tables`; gdb on a `-g` build (the musl-tcc wrapper, ONE_SOURCE): the fixup loop
+    kept `esym`, a pointer into `symtab_section->data`, across asm_section_sym(), which
+    added the section symbol `L..altinstructions` for the `.pushsection .altinstructions`
+    an ALTERNATIVE() statement had just created and reallocated the table (gdb: `esym`
+    0xf7da72b0, the table now at 0xf7dfecd0); `esym->st_value` then read freed memory.
+    glibc's realloc left the old block readable, musl's allocator had unmapped it; a
+    use-after-realloc, not a code generation bug.
+    Fix: `st_value` is read into a local before the call and used after it.
+    Verification: the patched i386 tcc (musl, debug build) compiles klist.c and its object is
+    byte-identical to the host i386-tcc's (14 088 bytes); `make test`; the i386 and x86_64
+    self-hosting loops with the rebuilt guest compilers (see PORT-NOTES "Self-hosting").
+
 tld (tools/tld, 2026-10-23, for the i386 target): `ld` applies R_386_GOTOFF and R_386_GOTPC
 against a linker-defined `_GLOBAL_OFFSET_TABLE_` (absolute 0 unless the script defines it;
 no GOT is built) and refuses R_386_32 against a defined symbol in a PIE like the x86_64
@@ -1123,6 +1142,23 @@ K16. 2026-10-23, COMMITTED (upstreamable), `arch/x86/include/asm/pgtable.h`:
     pudp_test_and_clear_young() only with THP; otherwise the generic stub applies. On 32-bit
     x86 (two-level page tables, no THP) the arch declared a function it never defined, and
     clear_refs_pte_range()'s dead THP branch referenced it.
+C1. 2026-10-23, configuration (not a patch), `kernels/linux/i386.config`: `CONFIG_COMPAT_32BIT_TIME=y`.
+    Problem: the first i386 self-hosting run stopped at Kbuild's first `touch` ("Function not
+    implemented", `.checked-atomic-long.h`). tinyconfig leaves the 32-bit time_t system calls
+    out (COMPAT_32BIT_TIME defaults to y on 32-bit but allnoconfig says n), and musl's
+    utimensat() calls the time32 syscall (320) whenever the times fit in 32 bits, falling back
+    to the time64 one (412) only when 320 returns ENOSYS -- here it did, and so did the
+    further fallbacks futimesat/utimes. A probe in the guest: 412 -> 0, 320/271/265 -> ENOSYS;
+    the host check (`selfhost-test.sh host`) could not see it because the host's kernel has
+    the option. Verification: with the rebuilt i386 kernel (COMPAT_32BIT_TIME=y, 1 826 816
+    bytes) the guest build runs until fix 94's crash, and completes with that fix; see
+    docs/PORT-NOTES.md "Self-hosting".
+N1. 2026-10-23, not a bug: the real-mode setup's `earlyprintk=serial` output doubled every
+    character ("eeaarrllyy ccoonnssoollee") on i386 and, as it turned out, on x86_64 too. The
+    setup code's putchar() writes to the BIOS teletype (int 0x10) and to the UART; under QEMU
+    `-nographic` SeaBIOS turns its serial console on (fw_cfg etc/sercon-port) and forwards
+    the teletype output to the same UART. `-machine graphics=on` prints each character once.
+    No change to tcc's -m16 code generation; the item is closed in PORT-NOTES.
 K2. 2026-10-20, APPLIED (uncommitted), `mm/slab.h`: `typedef u128 freelist_full_t;` now under
     `#ifdef __SIZEOF_INT128__`, else a 16-byte `struct { u64 lo, hi; }` (only its size is used
     when system_has_cmpxchg128 is undefined).

@@ -77,3 +77,4 @@ features/0075-tccgen-32-bit-addends-wrap-unsigned-64-bit-division-.patch
 features/0076-i386-gen-inline-64-bit-shifts-by-a-variable-count-an.patch
 bugfixes/0077-tccgen-gotos-out-of-cleanup-scopes-gone-local-labels.patch
 bugfixes/0078-i386-gen-regparm-indirect-calls-spilled-the-wrong-va.patch
+bugfixes/0079-tccasm-the-local-label-relocation-fixup-read-a-symbo.patch

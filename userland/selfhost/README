@@ -13,7 +13,8 @@ carries what is needed to do that again, in here, without gcc, binutils, flex or
   /usr/src/tld.tar.gz        the linker suite (ld, nm, objcopy, readelf, ar, strip)
   /usr/src/make-*.tar.gz     GNU make
   /usr/bin/tcc, i386-tcc     the compiler (static, musl) and the i386 cross compiler that
-                             tcc -m16 runs for the kernel's real-mode code
+                             tcc -m16 runs for the kernel's real-mode code (the i386 image
+                             has only tcc: it is that compiler itself)
   /usr/bin/tld (ld nm objcopy readelf ar strip), /usr/bin/make
   /usr/bin/tcc-kcc, tcc-hostcc, objtool-stub    the Kbuild CC / HOSTCC / OBJTOOL wrappers
   /usr/bin/flex, bison       copy the pre-generated Kconfig lexer and parser from
@@ -30,8 +31,8 @@ Commands:
   build-toolchain       rebuild tcc + i386-tcc and tld from the sources into /usr/local;
                         build-kernel then uses them (--make also rebuilds GNU make)
   send-file FILE...     copy files to the host over the second serial port (ttyS1); with
-                        ./run.sh --selfhost the host gets them in out/x86_64/selfhost/
+                        ./run.sh --selfhost the host gets them in out/<arch>/selfhost/
                         (scripts/recv-file.sh cuts them out of the capture)
 
-The host boots the result with KERNEL=out/x86_64/selfhost/bzImage ./run.sh and the banner
+The host boots the result with KERNEL=out/<arch>/selfhost/bzImage ./run.sh and the banner
 shows generation #2.  Everything happens in RAM: ./run.sh --selfhost gives the machine 1 GB.

@@ -87,21 +87,22 @@ for TCG).
 
 ## Self-hosting
 
-`scripts/build.sh selfhost` (or `install.sh --selfhost`) makes `out/x86_64/initramfs-selfhost.cpio`:
+`scripts/build.sh selfhost` (or `install.sh --selfhost`; `ARCH=i386` for the 32-bit system) makes
+`out/<arch>/initramfs-selfhost.cpio`:
 the busybox image plus everything needed to rebuild the system inside the guest, without
 gcc, binutils, flex or bison:
 
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the 12 kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 78 patches, the linker suite, GNU make |
-| `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl) |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 79 patches, the linker suite, GNU make |
+| `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers; `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
 | `/usr/bin/build-kernel`, `build-toolchain`, `send-file` | the commands (`userland/selfhost/`), see `/usr/share/tinycc-os-kernel/README` |
 
 ```bash
-./run.sh --selfhost          # 1 GB of RAM, every CPU (SMP), ttyS1 -> out/x86_64/selfhost/ttyS1.bin
+./run.sh --selfhost          # 1 GB of RAM, every CPU (SMP), ttyS1 -> out/<arch>/selfhost/ttyS1.bin
 # in the guest:
 build-kernel                 # unpacks the tree to /build (tmpfs), tinyconfig + the fragments, the same
                              # make line as the host's kernel step; result: /build/linux/arch/x86/boot/bzImage
@@ -110,8 +111,8 @@ build-toolchain              # optional: tcc + i386-tcc and tld rebuilt from sou
                              # which build-kernel then uses (--make: GNU make as well)
 exit
 # on the host:
-scripts/recv-file.sh                               # -> out/x86_64/selfhost/bzImage (md5-checked)
-KERNEL=out/x86_64/selfhost/bzImage ./run.sh        # boots the guest-built kernel
+scripts/recv-file.sh                               # -> out/<arch>/selfhost/bzImage (md5-checked)
+KERNEL=out/<arch>/selfhost/bzImage ./run.sh        # boots the guest-built kernel
 ```
 
 The build number counts the generations: the host build is `#1`, a kernel built inside it
@@ -136,7 +137,7 @@ fourth and fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro) and the QEMU boot |
-| `patches/tinycc/` | 78 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/tinycc/` | 79 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc` (CC) and `tcc-hostcc` (HOSTCC) wrappers for Kbuild, `objtool-stub` |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
@@ -219,7 +220,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 | Arch | Status |
 |------|--------|
 | x86_64 | works: every file of the kernel is compiled or assembled by tcc (1546 invocations including Kconfig probes, 0 gcc) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; self-hosting (the kernel rebuilds itself inside the guest) |
-| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (1900 tcc invocations, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell. Not yet: the self-hosting image on i386 (`ARCH=i386 scripts/build.sh selfhost` is wired but untested). Details in `docs/PORT-NOTES.md`, "The i386 target" |
+| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (1900 tcc invocations, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; self-hosting as well (`ARCH=i386 scripts/selfhost-test.sh all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
 `install.sh --arch` accepts all three and explains what is missing for arm64. The scripts
