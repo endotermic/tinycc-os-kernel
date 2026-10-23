@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] i386-asm: the "X" constraint on i386, constants printed in
+ the width of their type
+
+The "X" constraint (any operand) was accepted on x86_64 only; gcc takes
+it everywhere.  A constant "i" operand printed as its 64-bit value, gcc
+prints it sign-extended in the width of its type: "i"(0x80000000u) is
+$-2147483648 (so "movq %1, %0" sign-extends as it does with gcc),
+"i"((unsigned char)200) is $-56, a _Bool is 0 or 1.
+
+Fix 100 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-asm.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 0e2989d..23b7c6f 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1618,10 +1618,10 @@ static inline int constraint_priority(const char *str)
+         case 'x':
+             pr = 3;
+             break;
++#endif
+         case 'X':
+             pr = 4;
+             break;
+-#endif
+         case '@':
+             /* "=@cc<cond>" flag output: needs a general register */
+             return 3;
+@@ -2122,6 +2122,19 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+            runtime_const_ptr() places `mov $0x0123456789abcdef, %reg`
+            and patches the 8 immediate bytes later */
+         val = sv->c.i;
++        if (!(r & VT_SYM)) {
++            /* like gcc, in the width of the operand's type and signed:
++               "i"(0x80000000u) is $-2147483648, "i"((unsigned char)200) $-56 */
++            int bt = sv->type.t & VT_BTYPE;
++            if (bt == VT_INT)
++                val = (int32_t)val;
++            else if (bt == VT_SHORT)
++                val = (int16_t)val;
++            else if (bt == VT_BYTE)
++                val = (int8_t)val;
++            else if (bt == VT_BOOL)
++                val = val != 0;
++        }
+         if (modifier == 'n')
+             val = -val;
+         cstr_printf(add_str, "%lld", val);

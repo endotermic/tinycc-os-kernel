@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] x86_64-link: the 8- and 16-bit relocations
+
+"jrcxz 1f" or "loop 1f" in inline asm produce R_X86_64_PC8 against the
+label; tcc's own linker stopped with "Unknown relocation type for got: 15"
+(the i386 linker learned R_386_8/16/PC8/PC16 earlier, the x86_64 one did
+not).  The four types are classified and applied with GNU ld's overflow
+check.
+
+Fix 103 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ x86_64-link.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/x86_64-link.c b/x86_64-link.c
+index 5229f3e..3ed95e1 100644
+--- a/x86_64-link.c
++++ b/x86_64-link.c
+@@ -43,6 +43,8 @@ ST_FUNC int code_reloc (int reloc_type)
+         case R_X86_64_COPY:
+         case R_X86_64_RELATIVE:
+         case R_X86_64_GOTOFF64:
++        case R_X86_64_16:
++        case R_X86_64_8:
+         case R_X86_64_TLSGD:
+         case R_X86_64_TLSLD:
+         case R_X86_64_DTPOFF32:
+@@ -53,6 +55,8 @@ ST_FUNC int code_reloc (int reloc_type)
+ 
+         case R_X86_64_PC32:
+         case R_X86_64_PC64:
++        case R_X86_64_PC16:
++        case R_X86_64_PC8:
+         case R_X86_64_PLT32:
+         case R_X86_64_PLTOFF64:
+         case R_X86_64_JUMP_SLOT:
+@@ -71,6 +75,8 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+         case R_X86_64_JUMP_SLOT:
+         case R_X86_64_COPY:
+         case R_X86_64_RELATIVE:
++        case R_X86_64_16:
++        case R_X86_64_8:
+             return NO_GOTPLT_ENTRY;
+ 
+ 	/* The following relocs wouldn't normally need GOT or PLT
+@@ -81,6 +87,8 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+         case R_X86_64_64:
+         case R_X86_64_PC32:
+         case R_X86_64_PC64:
++        case R_X86_64_PC16:
++        case R_X86_64_PC8:
+             return AUTO_GOTPLT_ENTRY;
+ 
+         case R_X86_64_GOTTPOFF:
+@@ -393,6 +401,36 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+                 }
+             }
+             break;
++        /* the 8- and 16-bit relocations of the assembler ("jrcxz 1f" and
++           the other rel8-only jumps, ".byte sym"), with GNU ld's overflow
++           check */
++        case R_X86_64_16:
++            val += read16le(ptr);
++            if (val + 0x8000 > 0x17fff)
++                goto overflow;
++            write16le(ptr, val);
++            break;
++        case R_X86_64_PC16:
++            val += (int16_t)read16le(ptr) - addr;
++            if ((int64_t)val != (int16_t)val)
++                goto overflow;
++            write16le(ptr, val);
++            break;
++        case R_X86_64_8:
++            val += *ptr;
++            if (val + 0x80 > 0x17f)
++                goto overflow;
++            *ptr = val;
++            break;
++        case R_X86_64_PC8:
++            val += (int8_t)*ptr - addr;
++            if ((int64_t)val != (int8_t)val) {
++            overflow:
++                tcc_error_noabort("relocation %d at %llx truncated to fit (value %llx)",
++                                  type, (unsigned long long)addr, (unsigned long long)val);
++            }
++            *ptr = val;
++            break;
+         case R_X86_64_NONE:
+             break;
+         case R_X86_64_RELATIVE:

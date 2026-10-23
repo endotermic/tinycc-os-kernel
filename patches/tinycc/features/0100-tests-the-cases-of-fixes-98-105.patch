@@ -1,0 +1,266 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] tests: the cases of fixes 98-105
+
+152_gnu_extensions: an alias to a static function defined later without
+a forward declaration, __auto_type of a const; 155_x86_inline_asm: a
+forward jecxz/jrcxz and loop (8-bit relocations through tcc's linker on
+both targets), "X" on i386, "i" operands of unsigned int, unsigned char
+and unsigned short printed as gcc prints them; 157_i386_regparm_pic:
+double, float and long double arguments, a variadic function and a
+function pointer with a double argument under regparm(3); asmtest.S: ud1
+in every size, movabs with small immediates, lar/lsl and segment-register
+moves to 64-bit registers, ljmpw/lcallw through memory, and the data label
+of the block renamed (var1 was defined twice) and made global, so the
+GOTOFF relocations spell the same for GNU as and tcc.  The whole file now
+disassembles like GNU as 2.47's except the two symbol names objdump picks
+for the section starts.
+---
+ tests/asmtest.S                          |  25 ++++++++++++++--
+ tests/tests2/152_gnu_extensions.c        |  12 ++++----
+ tests/tests2/152_gnu_extensions.expect   |   2 +-
+ tests/tests2/155_x86_inline_asm.c        |  36 ++++++++++++++++++-----
+ tests/tests2/155_x86_inline_asm.expect   |   3 +-
+ tests/tests2/157_i386_regparm_pic.c      |  11 ++++++-
+ tests/tests2/157_i386_regparm_pic.expect | Bin 416 -> 492 bytes
+ 7 files changed, 72 insertions(+), 17 deletions(-)
+
+diff --git a/tests/asmtest.S b/tests/asmtest.S
+index f4f9f4a..6e4ffc5 100644
+--- a/tests/asmtest.S
++++ b/tests/asmtest.S
+@@ -1191,11 +1191,31 @@ TEST_MMX_SSE_I8(psrlq)
+ #ifdef __x86_64__
+     bswap %rax
+     bswapq %r9
+-/* fix 57: lretq, movabs, sysretl */
++/* fix 57: lretq, movabs, sysretl; fix 98: ud1 in every size; fix 99: movabs
++   with a small immediate, no REX.W on lar/lsl and segment-register moves */
+     lretq
+     lretq $8
+     movabs $0x1122334455667788, %rax
+     movabsq $0x1122334455667788, %r11
++    movabs $-1, %rcx
++    movabs $1, %rdx
++    movabsq $0x80000000, %r9
++    ud1 (%edx), %rdi
++    ud1 %eax, %ebx
++    ud1l %eax, %ebx
++    ud1q %rax, %rbx
++    ud1 %ax, %bx
++    ud1 (%rdi), %r9
++    lar %bx, %rax
++    lsl %ax, %rdx
++    lar (%rbx), %rax
++    mov %gs, %rax
++    mov %rax, %gs
++    movq %gs, %rax
++    mov %gs, %r8
++    lcallw *(%rsi)
++    ljmpw *(%rsi)
++    ljmpw *(%esi)
+     sysretl
+     sysretq
+     sysret
+@@ -1298,4 +1318,5 @@ TEST_MMX_SSE_I8(psrlq)
+     .previous
+     .long 2
+     .previous
+-var1: .long 0
++    .globl var2
++var2: .long 0
+diff --git a/tests/tests2/152_gnu_extensions.c b/tests/tests2/152_gnu_extensions.c
+index 3e2578f..81a573b 100644
+--- a/tests/tests2/152_gnu_extensions.c
++++ b/tests/tests2/152_gnu_extensions.c
+@@ -1,6 +1,6 @@
+ /* GNU C extensions and GCC builtins used by the Linux kernel
+-   (fixes 5-9, 14, 17, 21, 22, 25, 29, 32, 39, 64 of the tinycc-os-kernel
+-   project; the numbers refer to its docs/FIX-LOG.md). */
++   (fixes 5-9, 14, 17, 21, 22, 25, 29, 32, 39, 64, 101, 102 of the
++   tinycc-os-kernel project; the numbers refer to its docs/FIX-LOG.md). */
+ #include <stdio.h>
+ 
+ /* fix 6: __attribute__((packed)) on an enum picks the smallest integer type */
+@@ -36,13 +36,15 @@ static void test_auto_type(void)
+     static int arr[3] = { 4, 5, 6 };
+     __auto_type i = 5;
+     __auto_type d = 2.5;
+-    __auto_type c = ci;
++    __auto_type c = ci;             /* the top-level qualifiers are dropped (fix 101) */
+     __auto_type p = &ci;
+     __auto_type a = arr;            /* decays to int * */
+     __auto_type s = "str";
+     __auto_type f = add_one;        /* function designator -> pointer */
+     __auto_type v = next_value();   /* evaluated once */
+     __auto_type se = ({ int t = 3; t * 2; });
++    _Static_assert(_Generic(&c, int *: 1, default: 0), "__auto_type drops const");
++    c = 8;
+     printf("auto_type: %d %d %d %d %d %d %c %d %d %d %d\n",
+            (int)sizeof i, (int)sizeof d, c, *p,
+            sizeof a == sizeof(int *), a[1], s[1], f(9),
+@@ -134,8 +136,8 @@ static void test_unions(void)
+            tu_before_val(&i), tu_before_val((int[]){ 55 }));
+ }
+ 
+-/* fix 17: alias to a target defined later in the unit */
+-static int alias_fn_target(int);
++/* fix 17: alias to a target defined later in the unit (fix 102: a static
++   function without a forward declaration) */
+ int alias_fn(int) __attribute__((alias("alias_fn_target")));
+ extern int alias_var __attribute__((alias("alias_var_target")));
+ static int alias_fn_target(int x) { return x + 1; }
+diff --git a/tests/tests2/152_gnu_extensions.expect b/tests/tests2/152_gnu_extensions.expect
+index a8f8156..dc9e8b8 100644
+--- a/tests/tests2/152_gnu_extensions.expect
++++ b/tests/tests2/152_gnu_extensions.expect
+@@ -1,5 +1,5 @@
+ packed enum: 200 c -1 300
+-auto_type: 4 8 7 7 1 5 t 10 1 1 6
++auto_type: 4 8 8 7 1 5 t 10 1 1 6
+ typeof_unqual: 10 5 7 6
+ overflow: 1/-2147483648 0/2147483648 1/4294967295 0/-1 1/0 0/4294967296 0/18446744065119617025 1/0 1/-9223372036854775808 0/-1 1/18446744073709551615 1/44 1/255 1/32767 0/-2 0/3/2
+ builtins: 0x3412 0x78563412 0x807060504030201 1 1 1 1 3
+diff --git a/tests/tests2/155_x86_inline_asm.c b/tests/tests2/155_x86_inline_asm.c
+index 200c9d2..c46927d 100644
+--- a/tests/tests2/155_x86_inline_asm.c
++++ b/tests/tests2/155_x86_inline_asm.c
+@@ -1,6 +1,6 @@
+ /* GCC inline assembler forms of the Linux kernel, musl and busybox on x86
+-   (fixes 10-13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 76, 80, 90
+-   and 92 of the tinycc-os-kernel project). */
++   (fixes 10-13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 76, 80, 90,
++   92, 93, 100, 103 and 104 of the tinycc-os-kernel project). */
+ #include <stdio.h>
+ 
+ /* fix 10: flag output constraints */
+@@ -145,18 +145,24 @@ static void test_regvar(void)
+     printf("regvar: %d %d\n", sp <= here && here - sp < 4096, current_sp == sp);
+ }
+ 
+-/* fix 49, 50, 57: 64-bit immediates */
++/* fix 49, 50, 57: 64-bit immediates; fix 100: a constant prints in the
++   width of its type, signed, as gcc prints it */
+ static void test_imm64(void)
+ {
++    int e, f;
+ #ifdef __x86_64__
+-    unsigned long a, b, c;
++    unsigned long a, b, c, d;
+     asm("movq %1, %0" : "=r"(a) : "i"(0x0123456789abcdefull));
+     asm("movq %1, %0" : "=r"(b) : "i"(0x80000000ul));
+     asm("movabsq $0x1122334455667788, %0" : "=r"(c));
+-    printf("imm64: %lx %lx %lx\n", a, b, c);
++    asm("movq %1, %0" : "=r"(d) : "i"(0x80000000u));
++    printf("imm64: %lx %lx %lx %lx", a, b, c, d);
+ #else
+-    printf("imm64: 123456789abcdef 80000000 1122334455667788\n");
++    printf("imm64: 123456789abcdef 80000000 1122334455667788 ffffffff80000000");
+ #endif
++    asm("movl %1, %0" : "=r"(e) : "i"((unsigned char)200));
++    asm("movl %1, %0" : "=r"(f) : "i"((unsigned short)40000));
++    printf(" %d %d\n", e, f);
+ }
+ 
+ /* fix 52 (x86_64), 90 (i386): x87 and SSE constraints */
+@@ -173,9 +179,9 @@ static void test_fp(void)
+     }
+     asm("fsqrt" : "=t"(r) : "0"(x + 8));
+     asm("fistpll %0" : "=m"(i) : "t"(r * 10) : "st");
++    asm("" : : "X"(d), "X"(k));         /* fix 100: "X" on i386 too */
+     printf("x87: %.1Lf %.1Lf %lld", x, r, i);
+ #ifdef __x86_64__
+-    asm("" : : "X"(d), "X"(k));
+     asm("sqrtsd %1, %0" : "=x"(sq) : "x"(d));
+     asm("cvtsd2si %1, %0" : "=r"(k) : "x"(sq * 100) : "xmm0", "xmm7");
+     printf(" sse: %.2f %d", sq, k);
+@@ -217,6 +223,21 @@ static void test_comba(void)
+ static void test_comba(void) { printf("comba: 2 fffffffa 3\n"); }
+ #endif
+ 
++/* fix 93, 103, 104: a rel8-only jump to a label defined later (an 8-bit
++   relocation through tcc's linker, from a statement far into .text) */
++static int test_jcxz(int c)
++{
++    int r = 7;
++#ifdef __x86_64__
++    asm volatile("jrcxz 1f\n\tmovl $1, %0\n1:" : "+r"(r) : "c"((long)c));
++    asm volatile("loop 1f\n\tmovl $0, %0\n1:" : "+r"(r) : "c"((long)c + 1));
++#else
++    asm volatile("jecxz 1f\n\tmovl $1, %0\n1:" : "+r"(r) : "c"(c));
++    asm volatile("loop 1f\n\tmovl $0, %0\n1:" : "+r"(r) : "c"(c + 1));
++#endif
++    return r;
++}
++
+ int main(void)
+ {
+     char stack_var;
+@@ -233,5 +254,6 @@ int main(void)
+     test_fp();
+     printf("clobbers: %d\n", test_clobbers(21));
+     test_comba();
++    printf("jcxz: %d %d %d\n", test_jcxz(0), test_jcxz(1), test_jcxz(2));
+     return 0;
+ }
+diff --git a/tests/tests2/155_x86_inline_asm.expect b/tests/tests2/155_x86_inline_asm.expect
+index 9428139..1f242f6 100644
+--- a/tests/tests2/155_x86_inline_asm.expect
++++ b/tests/tests2/155_x86_inline_asm.expect
+@@ -6,7 +6,8 @@ array m: 1010
+ macros: 1121 7
+ dead asm: 0 4
+ regvar: 1 1
+-imm64: 123456789abcdef 80000000 1122334455667788
++imm64: 123456789abcdef 80000000 1122334455667788 ffffffff80000000 -56 -25536
+ x87: 1.0 3.0 30 sse: 1.50 150
+ clobbers: 42
+ comba: 2 fffffffa 3
++jcxz: 0 1 1
+diff --git a/tests/tests2/157_i386_regparm_pic.c b/tests/tests2/157_i386_regparm_pic.c
+index 4eafe11..ae44fd8 100644
+--- a/tests/tests2/157_i386_regparm_pic.c
++++ b/tests/tests2/157_i386_regparm_pic.c
+@@ -1,4 +1,4 @@
+-/* i386: GCC's regparm calling convention (fixes 65, 88) and position
++/* i386: GCC's regparm calling convention (fixes 65, 88, 105) and position
+    independent code (-fPIC, fixes 74, 75, 78, 83, 87, 89); the Makefile runs
+    this file without and with -fPIC (tinycc-os-kernel project). */
+ #include <stdio.h>
+@@ -18,9 +18,16 @@ static struct pair RP ret_struct(int a, int b) { struct pair p = { a, b }; retur
+ static struct triple RP ret_struct3(int a, int b, int c) { struct triple t = { a, b, c }; return t; }
+ static int RP recurse(int n, int acc, int step) { return n ? recurse(n - 1, acc + step, step) : acc; }
+ static char RP chars(char a, short b, unsigned char c) { return a + b + c; }
++/* fix 105: floating point arguments take no register and stop nothing,
++   variadic functions take everything on the stack */
++static double RP dbl_arg(int a, double d, int b) { return a * 100 + d + b * 10; }
++static float RP flt_arg(float f, int a, long long b, int c) { return f + a + b + c; }
++static long double RP ld_arg(int a, long double x, int b) { return a * x + b; }
++static int RP variadic(int n, ...) { __builtin_va_list ap; int s = 0; __builtin_va_start(ap, n); while (n--) s += __builtin_va_arg(ap, int); __builtin_va_end(ap); return s; }
+ 
+ /* fix 88: indirect regparm calls */
+ struct ops { int (RP *read)(int, int, int); int pad; };
++static double (RP *fp_dbl)(int, double, int) = dbl_arg;
+ static struct ops ops_global = { add3, 0 };
+ static int (RP *fn_global)(int, int, int) = add3;
+ static int (RP *fn_array[2])(int, int, int) = { add3, add3 };
+@@ -38,6 +45,8 @@ static void test_regparm(void)
+            recurse(5, 0, 3), chars(1, 2, 3));
+     printf("indirect: %d %d %d %d %d %d\n", p->read(1, 2, 3), ops_global.read(4, 5, 6),
+            fn_global(7, 8, 9), fn_array[i](2, 2, 2), fn_local(3, 3, 3), (*ops_local.read)(1, 1, 1));
++    printf("float args: %.1f %.1f %.1Lf %d %.1f\n", dbl_arg(1, 2.5, 3), flt_arg(0.5f, 1, 1000ll, 2),
++           ld_arg(2, 1.5L, 1), variadic(3, 10, 20, 30), fp_dbl(4, 0.5, 5));
+ }
+ 
+ /* fix 74, 75: PIC addressing of globals, statics, strings and functions */
+diff --git a/tests/tests2/157_i386_regparm_pic.expect b/tests/tests2/157_i386_regparm_pic.expect
+index 586135b8f34c52371f67ac660bd40eb1b9c33589..9dd21787b997f2a62b7fc708604bf44cc0071ca5 100644
+GIT binary patch
+delta 92
+zcmZ3${Dyf#m}**1eqxD2Vo`drm4czMk)El7p@D%hkTTITP%tx4FfldIGo2WEfmnq}
+IliL`j0JugNmjD0&
+
+delta 17
+XcmaFEynuN^*yKXS#EEzFfK)XALIMXn
+

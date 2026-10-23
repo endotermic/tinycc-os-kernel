@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] tccasm, tccelf: a local label referenced by an 8/16-bit
+ relocation keeps its symbol
+
+Relocations against assembler local labels are rewritten against the
+section symbol with the label's offset as the addend; in a REL object the
+addend lives in the relocated field, and an 8- or 16-bit field cannot hold
+it: a forward "jecxz 1f" in inline asm more than 128 bytes into .text
+failed to link ("relocation 23 ... truncated to fit").  Such labels keep
+their own symbol (i386 only: x86_64 objects are RELA).
+
+Fix 104 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ tccasm.c |  7 +++++++
+ tccelf.c | 14 +++++++++++++-
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index e9bab2c..ca89134 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -211,6 +211,13 @@ static void asm_fixup_local_label_relocs(TCCState *s1)
+             if (!((name[0] == 'L' && name[1] == '.' && name[2] == '.')
+                   || (name[0] == '.' && name[1] == 'L')))
+                 continue;
++#ifdef TCC_TARGET_I386
++            /* an 8- or 16-bit field cannot hold the label's offset as its
++               in-place addend ("jecxz 1f" far into .text): keep the label */
++            if (ELFW(R_TYPE)(rel->r_info) == R_386_8 || ELFW(R_TYPE)(rel->r_info) == R_386_PC8
++                || ELFW(R_TYPE)(rel->r_info) == R_386_16 || ELFW(R_TYPE)(rel->r_info) == R_386_PC16)
++                continue;
++#endif
+             /* asm_section_sym() may add the section symbol, which can
+                reallocate the symbol table: esym is not valid after it */
+             value = esym->st_value;
+diff --git a/tccelf.c b/tccelf.c
+index a561526..52b9ae6 100644
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -233,8 +233,17 @@ ST_FUNC void tccelf_end_file(TCCState *s1)
+         if (sr->sh_type == SHT_RELX && sr->link == s)
+             for_each_elem(sr, 0, rel, ElfW_Rel) {
+                 int si = ELFW(R_SYM)(rel->r_info) - first_sym;
+-                if (si >= 0 && si < nb_syms)
++                if (si >= 0 && si < nb_syms && adj[si] != 2)
+                     adj[si] = 1;
++#ifdef TCC_TARGET_I386
++                /* an 8- or 16-bit field cannot hold the label's offset as
++                   its in-place addend: such a label keeps its symbol */
++                if (si >= 0 && si < nb_syms) {
++                    int t = ELFW(R_TYPE)(rel->r_info);
++                    if (t == R_386_8 || t == R_386_PC8 || t == R_386_16 || t == R_386_PC16)
++                        adj[si] = 2;
++                }
++#endif
+             }
+     }
+ 
+@@ -247,6 +256,8 @@ ST_FUNC void tccelf_end_file(TCCState *s1)
+                 tr[i] = 0; /* unreferenced: just drop it */
+                 continue;
+             }
++            if (adj[i] == 2)
++                goto keep;
+             if (!secsym[shndx])
+                 secsym[shndx] = set_elf_sym(s, 0, 0,
+                     ELFW(ST_INFO)(STB_LOCAL, STT_SECTION), 0, shndx, NULL);
+@@ -254,6 +265,7 @@ ST_FUNC void tccelf_end_file(TCCState *s1)
+             adj[i] = sym->st_value;
+             continue;
+         }
++    keep:
+         adj[i] = 0;
+         if (sym->st_shndx == SHN_UNDEF) {
+             int sym_bind = ELFW(ST_BIND)(sym->st_info);

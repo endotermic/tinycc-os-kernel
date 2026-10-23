@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] x86_64-asm: ud1 in every operand size, ljmpw/lcallw memory
+ forms in 64-bit mode
+
+The ud1 entry was declared under its bare name with OPC_WLX, which the
+size inference takes for the 'w' token: "ud1 %eax, %ebx" and the kernel's
+"ud1 (%edx), %rdi" got a 0x66 prefix, "ud1l"/"ud1q" were unknown.  The
+mnemonic gets its sized tokens (DEF_WLX) and the entry is the 'w' one, as
+for lar or bsf.  The 16-bit far jump and call through memory (66 ff /5,
+66 ff /3) exist in 64-bit mode; the entries had OPC_NO64 since the table
+merge, so asmtest.S's "ljmpw *(%esi)" was rejected.  Both as GNU as.
+
+Fix 98 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-tok.h   | 1 +
+ x86_64-asm.h | 6 +++---
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/i386-tok.h b/i386-tok.h
+index bdb128b..7331c74 100644
+--- a/i386-tok.h
++++ b/i386-tok.h
+@@ -272,6 +272,7 @@
+ 
+  DEF_WLX(lar)
+  DEF_WLX(lsl)
++ DEF_WLX(ud1)
+ 
+  /* generic FP ops */
+  DEF_FP(add)
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index c623220..c52032b 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -296,13 +296,13 @@ ALT(DEF_ASM_OP1(jmp, 0xeb, 0, 0, OPT_DISP8))
+ /* far calls and jumps: indirect, and the direct forms of 16/32-bit code */
+ ALT(DEF_ASM_OP1(lcall, 0xff, 3, OPC_MODRM, OPT_EA))
+ ALT(DEF_ASM_OP2(lcall, 0x9a, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+-    DEF_ASM_OP1(lcallw, 0xff, 3, OPC_MODRM | OPC_NO64, OPT_EA)
++    DEF_ASM_OP1(lcallw, 0xff, 3, OPC_MODRM, OPT_EA)
+ ALT(DEF_ASM_OP2(lcallw, 0x9a, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+     DEF_ASM_OP1(lcalll, 0xff, 3, OPC_MODRM | OPC_NO64, OPT_EA)
+ ALT(DEF_ASM_OP2(lcalll, 0x9a, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+ ALT(DEF_ASM_OP1(ljmp, 0xff, 5, OPC_MODRM, OPT_EA))
+ ALT(DEF_ASM_OP2(ljmp, 0xea, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+-    DEF_ASM_OP1(ljmpw, 0xff, 5, OPC_MODRM | OPC_NO64, OPT_EA)
++    DEF_ASM_OP1(ljmpw, 0xff, 5, OPC_MODRM, OPT_EA)
+ ALT(DEF_ASM_OP2(ljmpw, 0xea, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+     DEF_ASM_OP1(ljmpl, 0xff, 5, OPC_MODRM, OPT_EA)
+ ALT(DEF_ASM_OP2(ljmpl, 0xea, 0, OPC_NO64, OPT_IM16, OPT_IM32))
+@@ -319,7 +319,7 @@ ALT(DEF_ASM_OP1(setob, 0x0f90, 0, OPC_MODRM | OPC_TEST, OPT_REG8 | OPT_EA))
+ ALT(DEF_ASM_OP1(retq, 0xc2, 0, OPC_ONLY64, OPT_IM16))
+ ALT(DEF_ASM_OP1(ret, 0xc2, 0, 0, OPT_IM16))
+     /* ud1 r/m, r (the kernel's reachability annotation "ud1 (%edx), %rdi") */
+-    DEF_ASM_OP2(ud1, 0x0fb9, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT_REGW)
++ALT(DEF_ASM_OP2(ud1w, 0x0fb9, 0, OPC_MODRM | OPC_WLX, OPT_REGW | OPT_EA, OPT_REGW))
+ ALT(DEF_ASM_OP1(retl, 0xc2, 0, OPC_NO64, OPT_IM16))
+ ALT(DEF_ASM_OP1(retw, 0xc2, 0, 0, OPT_IM16))
+     DEF_ASM_OP0(lret, 0xcb)

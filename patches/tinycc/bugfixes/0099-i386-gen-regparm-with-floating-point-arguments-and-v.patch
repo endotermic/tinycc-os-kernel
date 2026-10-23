@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] i386-gen: regparm with floating-point arguments, and variadic
+ functions
+
+The caller took the first N arguments as the register ones and pushed the
+rest, the callee skipped floating-point arguments (gcc's rule: they take
+no register and stop nothing): f(int a, double d, int b) under regparm(3)
+or -mregparm=3 received half of the double in %edx and b from the stack.
+The caller now reorders the value stack so that the floating-point
+arguments and everything from the first integer argument that does not
+fit are pushed first and the register arguments last, as the prologue
+expects.  A variadic function takes all its arguments on the stack, with
+or without the attribute, as with gcc (-mregparm already did).
+
+Fix 105 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-gen.c | 31 ++++++++++++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index ffd50c3..3d44f10 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -741,16 +741,42 @@ ST_FUNC void gfunc_call(int nb_args)
+        vtop[-(nb_args-1)] (first) .. vtop[0] (last) */
+     func_sym = vtop[-nb_args].type.ref;
+     func_call = func_sym->f.func_call;
++    /* gcc passes all the arguments of a variadic function on the stack,
++       regparm or not */
++    if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3
++        && func_sym->f.func_type == FUNC_ELLIPSIS)
++        func_call = FUNC_CDECL;
+     regparm_nb = 0;
+     if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3 && nb_args) {
+         int *asize = tcc_malloc(2 * nb_args * sizeof(int)), *isfloat = asize + nb_args;
++        int nregs = func_call - FUNC_FASTCALL1 + 1, k, w;
++        SValue *tmp;
+         for (i = 0; i < nb_args; i++) {
+             SValue *sv = &vtop[-(nb_args - 1 - i)];
+             asize[i] = (sv->type.t & VT_BTYPE) == VT_LLONG ? 8
+                      : (sv->type.t & VT_BTYPE) == VT_STRUCT ? type_size(&sv->type, &align) : 4;
+             isfloat[i] = is_float(sv->type.t);
+         }
+-        regparm_nb = regparm_words(func_call - FUNC_FASTCALL1 + 1, asize, isfloat, nb_args);
++        regparm_nb = regparm_words(nregs, asize, isfloat, nb_args);
++        /* the register arguments are pushed last and popped: reorder the
++           value stack so that the stack arguments (floating point ones,
++           and everything from the first integer one that does not fit)
++           come first, in their order, then the register arguments
++           (regparm_words' rule once more, per argument) */
++        tmp = tcc_malloc(nb_args * sizeof *tmp);
++        for (i = 0, k = 0, w = 0; i < nb_args; i++)
++            if (!isfloat[i] && w < regparm_nb) {
++                tmp[k++] = vtop[-(nb_args - 1 - i)];
++                w += (asize[i] + 3) / 4;
++            }
++        for (i = 0, w = 0; i < nb_args; i++)
++            if (isfloat[i] || w >= regparm_nb)
++                tmp[k++] = vtop[-(nb_args - 1 - i)];
++            else
++                w += (asize[i] + 3) / 4;
++        for (i = 0; i < nb_args; i++)
++            vtop[-(nb_args - 1 - i)] = tmp[i];
++        tcc_free(tmp);
+         tcc_free(asize);
+     }
+     /* regparm: %eax, %edx and %ecx carry arguments, so an indirect call
+@@ -902,6 +928,9 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+ 
+     sym = func_type->ref;
+     func_call = sym->f.func_call;
++    if (func_call >= FUNC_FASTCALL1 && func_call <= FUNC_FASTCALL3
++        && sym->f.func_type == FUNC_ELLIPSIS)
++        func_call = FUNC_CDECL; /* see gfunc_call */
+     addr = 8;
+     loc = 0;
+     func_vc = 0;

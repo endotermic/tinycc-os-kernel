@@ -90,3 +90,12 @@ features/0088-tests-157_i386_regparm_pic-GCC-s-regparm-and-fPIC-on.patch
 features/0089-tests-the-driver-options-of-the-kernel-and-busybox-b.patch
 features/0090-tests-pp-24.S-predefined-macros-and-glued-pastes-in-.patch
 features/0091-tests-asmtest.S-the-assembler-forms-of-the-kernel-mu.patch
+bugfixes/0092-x86_64-asm-ud1-in-every-operand-size-ljmpw-lcallw-me.patch
+bugfixes/0093-i386-asm-no-REX.W-on-lar-lsl-and-segment-register-mo.patch
+compatibility/0094-i386-asm-the-X-constraint-on-i386-constants-printed-.patch
+compatibility/0095-tccgen-__auto_type-drops-the-top-level-qualifiers.patch
+compatibility/0096-tccgen-an-alias-to-a-static-function-defined-later-n.patch
+bugfixes/0097-x86_64-link-the-8-and-16-bit-relocations.patch
+bugfixes/0098-tccasm-tccelf-a-local-label-referenced-by-an-8-16-bi.patch
+bugfixes/0099-i386-gen-regparm-with-floating-point-arguments-and-v.patch
+features/0100-tests-the-cases-of-fixes-98-105.patch

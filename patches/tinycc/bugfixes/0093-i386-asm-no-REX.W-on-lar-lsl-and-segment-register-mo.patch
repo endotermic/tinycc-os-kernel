@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] i386-asm: no REX.W on lar/lsl and segment-register moves,
+ movabs with any immediate
+
+GNU as encodes "lar %ax,%rdx", "lsl %ax,%rdx", "mov %gs,%rax" and
+"mov %rax,%gs" without REX.W (the upper half of the destination is zero
+anyway); tcc added it, so asmtest.S's lar line never matched.  "movabs
+$-1, %rcx" was "bad operand": the mnemonic means the 64-bit immediate form
+whatever the value, so a small immediate is taken as a 64-bit one.
+
+Fix 99 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ i386-asm.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 4f1e235..0e2989d 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1036,6 +1036,10 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+             break;
+         next();
+     }
++    /* movabs: the immediate is always the 64-bit one, whatever its value */
++    if ((opcode == TOK_ASM_movabs || opcode == TOK_ASM_movabsq) && nb_ops == 2
++        && (ops[0].type & (OP_IM8 | OP_IM8S | OP_IM16 | OP_IM32 | OP_IM64)))
++        ops[0].type = OP_IM64;
+ 
+     s = 0; /* avoid warning */
+ 
+@@ -1286,6 +1290,12 @@ again:
+ 	      && opcode != TOK_ASM_call && opcode != TOK_ASM_jmp))
+ 	    && !default64)
+             rex64 = 1;
++        /* lar/lsl and a move between a segment register and a 64-bit
++           register: GNU as emits no REX.W (the upper half is zero anyway) */
++        if (rex64 && (((pa->instr_type & OPC_0F) && (pa->opcode == 0x02 || pa->opcode == 0x03))
++                      || (!(pa->instr_type & OPC_0F) && (pa->opcode == 0x8c || pa->opcode == 0x8e)
++                          && (alltypes & OP_SEG))))
++            rex64 = 0;
+     }
+ 
+     /* now generates the operation */

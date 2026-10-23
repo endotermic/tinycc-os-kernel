@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] tccgen: an alias to a static function defined later needs no
+ forward declaration
+
+"int f(int) __attribute__((alias("g"))); static int g(int x) {...}" failed
+with "alias target 'g' of 'f' is not defined": the static function, never
+called directly, was dropped as unreferenced before the pending alias was
+resolved (the kernel's SYSCALL_DEFINEx declares its target first, so it
+never saw this).  The targets of the pending aliases get their symbol
+before the deferred static functions are decided.
+
+Fix 102 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ tccgen.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 06cad38..6846de1 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -149,6 +149,7 @@ static void init_putv(init_params *p, CType *type, unsigned long c);
+ static void decl_initializer(init_params *p, CType *type, unsigned long c, int flags);
+ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r, int has_init, int v, int scope);
+ static void resolve_pending_aliases(void);
++static void mark_pending_alias_targets(void);
+ static int decl(int l);
+ static void expr_eq(void);
+ static void vpush_type_size(CType *type, int *a);
+@@ -429,6 +430,7 @@ ST_FUNC int tccgen_compile(TCCState *s1)
+     parse_flags = PARSE_FLAG_PREPROCESS | PARSE_FLAG_TOK_NUM | PARSE_FLAG_TOK_STR;
+     next();
+     decl(VT_CONST);
++    mark_pending_alias_targets();
+     gen_inline_functions(s1);
+     resolve_pending_aliases();
+     check_vstack();
+@@ -447,6 +449,18 @@ typedef struct PendingAlias { int v, target; } PendingAlias;
+ static PendingAlias **pending_aliases;
+ static int nb_pending_aliases;
+ 
++/* a static function defined after the alias that names it would be
++   dropped as unreferenced (gen_inline_functions): give it its symbol first */
++static void mark_pending_alias_targets(void)
++{
++    int i;
++    for (i = 0; i < nb_pending_aliases; i++) {
++        Sym *ts = sym_find(pending_aliases[i]->target);
++        if (ts && !ts->c && (ts->type.t & VT_BTYPE) == VT_FUNC)
++            put_extern_sym2(ts, SHN_UNDEF, 0, 0, 1);
++    }
++}
++
+ static void resolve_pending_aliases(void)
+ {
+     int i;

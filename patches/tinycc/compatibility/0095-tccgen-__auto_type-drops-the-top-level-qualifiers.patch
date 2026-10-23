@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 23 Oct 2026 17:14:09 +0300
+Subject: [PATCH] tccgen: __auto_type drops the top-level qualifiers
+
+"__auto_type c = ci;" with a const int ci kept the const (an assignment
+to c warned "assignment of read-only location"); gcc declares a plain int,
+as C23's auto does.  The pointee's qualifiers stay.
+
+Fix 101 of the tinycc-os-kernel project (docs/FIX-LOG.md).
+---
+ tccgen.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 7284a09..06cad38 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9171,7 +9171,7 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
+         expr_type(type, expr_eq);
+         /* as with typeof, except that arrays and functions decay and
+            a bit-field yields its underlying integer type */
+-        type->t &= ~(VT_STORAGE | VT_ARRAY | VT_VLA);
++        type->t &= ~(VT_STORAGE | VT_ARRAY | VT_VLA | VT_CONSTANT | VT_VOLATILE);
+         if (type->t & VT_BITFIELD)
+             type->t &= ~(VT_BITFIELD | (0xfffU << VT_STRUCT_SHIFT));
+         if ((type->t & VT_BTYPE) == VT_FUNC)
