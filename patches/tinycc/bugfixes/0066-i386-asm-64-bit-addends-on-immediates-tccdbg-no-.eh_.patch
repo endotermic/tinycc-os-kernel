@@ -1,4 +1,4 @@
-From 3e70529c3fd4d1bdaf4bf66031ed92f7c9267ec2 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 12:19:41 +0300
 Subject: [PATCH] i386-asm: 64-bit addends on immediates; tccdbg: no .eh_frame

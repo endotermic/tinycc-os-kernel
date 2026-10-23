@@ -1,4 +1,4 @@
-From a3ebbff383b1f13b40322e9ff96d1c6674ce236c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] tccasm: an array given to an "m" constraint is the array

@@ -1,4 +1,4 @@
-From 69a75b9a79f79818569e2f7603bfa36dadc8e850 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:25:19 +0300
 Subject: [PATCH] dma-direct: return early when CONFIG_DMA_COHERENT_POOL is

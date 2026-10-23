@@ -1,4 +1,4 @@
-From 6b3566338cf1488506ae162a482e590ac69decdf Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:20:59 +0300
 Subject: [PATCH] crypto: x86 - build the AVX2 and AVX-512 SHA-256 and BLAKE2s

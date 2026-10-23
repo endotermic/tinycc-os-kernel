@@ -1,4 +1,4 @@
-From 88e229d660f65e90e782d5741ad07c3dd77670cf Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:49:01 +0300
 Subject: [PATCH] libtcc: -m16, -mregparm=N and the x86 assembler code mode

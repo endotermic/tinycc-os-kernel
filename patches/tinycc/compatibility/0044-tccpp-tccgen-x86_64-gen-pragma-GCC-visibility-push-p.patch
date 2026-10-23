@@ -1,4 +1,4 @@
-From c97c2db06a74026b85e037c172e22c5c1e6f8a5f Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] tccpp, tccgen, x86_64-gen: #pragma GCC visibility push/pop

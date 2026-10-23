@@ -1,4 +1,4 @@
-From 40d40792aaefcef1ea1c08a0e848077ad733af9b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 12:26:11 +0300
 Subject: [PATCH] tccasm, i386-asm: forward labels in symbol differences are

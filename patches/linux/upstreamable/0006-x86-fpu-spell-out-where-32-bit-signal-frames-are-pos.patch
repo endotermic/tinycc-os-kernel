@@ -1,4 +1,4 @@
-From b292840af6b751cd6b47052e102472d17132d1a9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:25:19 +0300
 Subject: [PATCH] x86/fpu: spell out where 32-bit signal frames are possible

@@ -1,4 +1,4 @@
-From 6642abeaf919b5575c36f5aa4994115d257d242e Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:32:57 +0300
 Subject: [PATCH] include: a limits.h for code that makes tcc claim to be GCC

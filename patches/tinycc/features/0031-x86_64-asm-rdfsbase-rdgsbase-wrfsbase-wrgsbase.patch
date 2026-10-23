@@ -1,4 +1,4 @@
-From 087340fb001dae8f2c769be751ce94b31da34bc3 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] x86_64-asm: rdfsbase, rdgsbase, wrfsbase, wrgsbase

@@ -1,4 +1,4 @@
-From 712d0e7e514b39188b46286204125dd173a11808 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] i386-asm: print constant asm operands as 64-bit values

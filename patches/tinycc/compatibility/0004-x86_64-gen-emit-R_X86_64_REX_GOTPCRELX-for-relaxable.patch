@@ -1,4 +1,4 @@
-From 9496d04114f50ff4b187024faa7887376205761d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] x86_64-gen: emit R_X86_64_REX_GOTPCRELX for relaxable GOT

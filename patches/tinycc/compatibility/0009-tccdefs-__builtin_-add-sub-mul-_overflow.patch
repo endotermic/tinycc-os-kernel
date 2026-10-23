@@ -1,4 +1,4 @@
-From 8f6e9b10da34b9144f9ade09b8b1d8644805c418 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] tccdefs: __builtin_{add,sub,mul}_overflow

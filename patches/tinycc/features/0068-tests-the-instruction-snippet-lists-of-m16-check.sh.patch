@@ -1,4 +1,4 @@
-From 9c48d10974fd9f37e2dd18c249944072f06e5988 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 12:27:06 +0300
 Subject: [PATCH] tests: the instruction snippet lists of m16-check.sh

@@ -1,4 +1,4 @@
-From fb3dfee8658ed51dd8bf8aa9893c81f5622b6e85 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] libtcc: -Wl,--start-group / --end-group

@@ -1,4 +1,4 @@
-From ea2be9149f5c22135d327ef0ed017b6f2b858227 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] x86_64-gen: inline bsr/bsf for __builtin_clz, ctz and ffs

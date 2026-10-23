@@ -1,4 +1,4 @@
-From 36bfc5f99cb0e4c3f083328a72d1d0c5f111c1da Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] i386-asm: GCC flag output constraints "=@cc<cond>"

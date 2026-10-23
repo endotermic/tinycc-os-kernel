@@ -1,4 +1,4 @@
-From 18d70797155fcfd7ffeed860828955108b4cb21d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 12:37:12 +0300
 Subject: [PATCH] tccgen: init_putz without CONFIG_TCC_BCHECK

@@ -1,4 +1,4 @@
-From c54b98596f3f6cfb60cbb38bbeaa9b9098f46847 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:49:50 +0300
 Subject: [PATCH] tests: m16-check.sh, the -m16/-mregparm/.code16-.code64

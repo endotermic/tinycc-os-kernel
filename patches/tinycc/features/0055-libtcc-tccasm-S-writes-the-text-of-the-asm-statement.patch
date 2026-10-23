@@ -1,4 +1,4 @@
-From d2d3180e20d2f361ef8784071b86999c7e7c0130 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:18:38 +0300
 Subject: [PATCH] libtcc, tccasm: -S writes the text of the asm statements

@@ -1,4 +1,4 @@
-From 632da49c49e10204209a4701e27c60f464992658 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:25:18 +0300
 Subject: [PATCH] x86/cmpxchg: build the 128-bit cmpxchg helpers only with

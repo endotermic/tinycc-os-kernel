@@ -1,4 +1,4 @@
-From afd98666c4345f2914fb836e00534a8c9746e6f0 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:25:19 +0300
 Subject: [PATCH] dma-direct: check CONFIG_ARCH_HAS_DMA_SET_UNCACHED before

@@ -1,4 +1,4 @@
-From 5a3d86b205af47fc2c2ba637641157ba7a31fa95 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] tccgen: __builtin_strcmp folds two string literals

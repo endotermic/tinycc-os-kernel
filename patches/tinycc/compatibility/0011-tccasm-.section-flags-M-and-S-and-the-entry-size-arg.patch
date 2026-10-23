@@ -1,4 +1,4 @@
-From a4b16327730a9854f70ce6b00c00969cad999509 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] tccasm: .section flags "M" and "S" and the entry size

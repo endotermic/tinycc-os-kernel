@@ -1,4 +1,4 @@
-From cd78cfffa671daa67b117de75c149416b67d8f68 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:25:18 +0300
 Subject: [PATCH] x86/cpufeature: use the dynamic test for _static_cpu_has()

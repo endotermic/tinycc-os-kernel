@@ -14,7 +14,7 @@ name=$1; [ -n "$name" ] || die "usage: $0 [--category DIR] <component>"
 dir=$SRC/$name; pdir=$ROOT/patches/$name
 git -C "$dir" rev-parse -q --verify patched >/dev/null || die "src/$name has no 'patched' branch"
 tmp=$(mktemp -d)
-git -C "$dir" format-patch -q -N --no-signature -o "$tmp" base..patched
+git -C "$dir" format-patch -q -N --zero-commit --no-signature -o "$tmp" base..patched
 old=$([ -f "$pdir/series" ] && series_files "$pdir/series" || true)
 mkdir -p "$pdir"
 i=0; new_series=

@@ -1,4 +1,4 @@
-From 50f0432abc8721ad5e8b8b84f570527009e13dbb Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] tccpp: the _Pragma("...") operator

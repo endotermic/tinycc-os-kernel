@@ -1,4 +1,4 @@
-From c0e2c1a4cf7a221d186c1dc494b5ac2a5a3bc9ad Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:08 +0300
 Subject: [PATCH] tccgen: C23 typeof_unqual, __typeof_unqual, __typeof_unqual__

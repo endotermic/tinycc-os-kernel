@@ -16,7 +16,7 @@ for name; do
     dir=$SRC/$name
     [ -d "$dir/.git" ] || die "src/$name: not fetched (scripts/fetch.sh $name)"
     files=$(series_files "$series")
-    # fingerprint of the series without the "From <commit>" lines, which change on every export
+    # fingerprint of the series without the "From <commit>" lines (all zeros since --zero-commit, but older exports had real hashes)
     sum=$(cd "$ROOT/patches/$name" && cat $files | grep -v '^From [0-9a-f]\{40\} ' | sha256sum | cut -c1-16)
     stamp=$dir/.git/tcc-port-series
     if [ -z "$reset" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$sum" ] \

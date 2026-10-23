@@ -1,4 +1,4 @@
-From b48409603b1b1b7e533a40c6fc46c40419ad08ed Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tinycc-os-kernel <tinycc-os-kernel@localhost>
 Date: Thu, 22 Oct 2026 13:59:57 +0300
 Subject: [PATCH] tccasm: GNU as binary constants (0b1010) independent of the

@@ -1,4 +1,4 @@
-From 8c0d71223cef67715d0553de53d8604afe2427ba Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Wed, 21 Oct 2026 16:20:09 +0300
 Subject: [PATCH] tccgen: fold "x & 0" and "x * 0" to the constant

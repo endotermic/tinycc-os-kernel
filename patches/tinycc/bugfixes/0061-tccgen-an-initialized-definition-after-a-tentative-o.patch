@@ -1,4 +1,4 @@
-From 775dd3f074b583fc0c44b0b856ddf93e799dc76d Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:49:50 +0300
 Subject: [PATCH] tccgen: an initialized definition after a tentative one in a

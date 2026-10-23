@@ -1,4 +1,4 @@
-From 3da8c5e3e8bcc84f8cb29f040619b9ea1dfc81fd Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tinycc-os-kernel <tinycc-os-kernel@localhost>
 Date: Thu, 22 Oct 2026 13:27:27 +0300
 Subject: [PATCH] tccgen: a named section is aligned like its contents, not the

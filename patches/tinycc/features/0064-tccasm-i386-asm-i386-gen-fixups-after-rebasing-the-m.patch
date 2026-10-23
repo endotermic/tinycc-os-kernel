@@ -1,4 +1,4 @@
-From cebc2f45808278a9b201c735e55f1d74e0aa0157 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 12:04:25 +0300
 Subject: [PATCH] tccasm, i386-asm, i386-gen: fixups after rebasing the m16

@@ -1,4 +1,4 @@
-From 8202b8b2876b7403fb5216ca0746d5f79949b609 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
 Date: Thu, 22 Oct 2026 11:49:50 +0300
 Subject: [PATCH] i386-asm: runtime .code16/.code16gcc/.code32/.code64 for both
