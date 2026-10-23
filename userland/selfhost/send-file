@@ -5,8 +5,16 @@
 # goes out as a header line ">>> send-file NAME SIZE MD5" (on a line of its own: a newline
 # precedes it, since the previous file's last byte is arbitrary) followed by its bytes, and
 # scripts/recv-file.sh on the host cuts the files out of that capture and checks the sums.
-# Usage: send-file FILE...     Env: DEV (/dev/ttyS1)
-DEV=${DEV:-/dev/ttyS1}
+# The bytes go out in chunks, each through its own open and close of the port: closing a
+# serial port waits until its transmit buffer has drained, which ends the transmit
+# interrupt between chunks.  QEMU's 16550 raises the transmit-empty interrupt as soon as a
+# byte is written and traps every port write, so an uninterrupted stream keeps the CPU
+# that serves ttyS1 in one back-to-back interrupt (a new edge is pending at every return)
+# nested in a softirq that cannot finish; that CPU never gets back to idle, never passes
+# a quiescent state, and RCU reports a stall on it after 21 s (docs/PORT-NOTES.md,
+# "Self-hosting").  A drain every 32 KB costs ~0.5 s on a 2 MB file (~25 s).
+# Usage: send-file FILE...     Env: DEV (/dev/ttyS1), CHUNK (bytes per open, 32768)
+DEV=${DEV:-/dev/ttyS1}; CHUNK=${CHUNK:-32768}
 [ $# -gt 0 ] || { echo "usage: send-file FILE..." >&2; exit 2; }
 [ -c "$DEV" ] || { echo "send-file: no $DEV (CONFIG_SERIAL_8250_RUNTIME_UARTS >= 2, and QEMU -serial file:...)" >&2; exit 1; }
 # raw mode: no CR/LF translation, no echo, no flow control; the highest standard speed
@@ -17,7 +25,12 @@ for f; do
     size=$(wc -c < "$f"); sum=$(md5sum "$f" | cut -d' ' -f1)
     printf '\n%s %s %s %s\n' '>>> send-file' "$(basename "$f")" "$size" "$sum" > "$DEV"
     t0=$(date +%s)
-    cat "$f" > "$DEV"
+    n=0
+    while [ $((n * CHUNK)) -lt "$size" ]; do
+        dd if="$f" bs="$CHUNK" skip=$n count=1 status=none > "$DEV" \
+            || { echo "send-file: $f: write to $DEV failed at $((n * CHUNK))" >&2; exit 1; }
+        n=$((n + 1))
+    done
     t1=$(date +%s)
     echo "send-file: $f: $size bytes sent in $((t1 - t0)) s (md5 $sum)"
 done

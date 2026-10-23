@@ -159,8 +159,8 @@ directly, which is also better code for gcc.
 7. Self-hosting (done 2026-10-22, see the section below; `--auto=all`, the kernel built by
    the guest-built toolchain, and generation 3 verified on both architectures 2026-10-23):
    what is left is `make test` of tcc in the guest (needs the test suite's expectations of a
-   glibc host reviewed), and the RCU stall report that the serial transfer provokes (see the
-   section below).
+   glibc host reviewed). The RCU stall report that the serial transfer provoked was QEMU's
+   UART behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 
 ## The i386 target
@@ -357,18 +357,42 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   (`send-file` now starts every header on a line of its own, `recv-file.sh` no longer requires
   it). Kept on the host: `out/<arch>/selfhost/bzImage-gen2-auto` (shipped compiler),
   `bzImage-gen2-all` (guest-built compiler), `bzImage-gen3`, with their console and build logs.
-* An observation from these runs, not investigated: while `send-file` pushes the 2 MB bzImage
-  through ttyS1 (24-28 s), the kernel reports `rcu_sched detected stalls on CPUs/tasks` for
-  CPU 4 (`swapper/4`, "2 GPs behind", detected after 5252 jiffies = 21 s) with an NMI
-  backtrace that ends in the UART's `outb` to port 0x2f8 in interrupt context; 7 of 8 runs on
-  both architectures, always the CPU serving the ttyS1 interrupt. QEMU's 16550 raises THRE as
-  soon as a byte is written and every port write is a VM exit, so that CPU spends the whole
-  transfer in a back-to-back interrupt storm from idle. The transfer completes and the md5
-  matches, and the kernel is otherwise unaffected. Whether a gcc-built kernel of the same
-  configuration reports the same under the same storm, or whether this is a tcc miscompile in
-  the idle/irq-entry context tracking, is open (a `tcc -O0`-style build of `kernel/context_tracking.c`
-  and `kernel/rcu/tree.c` would be the first thing to compare); pacing `send-file` (a `usleep`
-  per 4 KB) would hide it rather than answer it.
+* The RCU stall during `send-file` (2026-10-23): while `send-file` pushed the 2 MB bzImage
+  through ttyS1 (24-28 s), the kernel reported `rcu_sched detected stalls on CPUs/tasks` for
+  the CPU serving the ttyS1 interrupt (`swapper/4`, "1-2 GPs behind", `idle=xxxx/0/0x3`,
+  detected after 5252 jiffies = 21 s) with an NMI backtrace ending in the UART's `outb`, in
+  7 of 8 self-hosting runs on both architectures. It is not a tcc miscompile: a kernel of the
+  same `.config` built with gcc 15.3 and GNU ld (`make O=build/x86_64/linux-gcc CC=gcc`,
+  booted with `KERNEL=`) reports the identical stall in 2 of 2 transfers, as does the tcc
+  kernel in 2 of 2 when `send-file` is run by hand on a 2 MB file; the symbolized
+  backtraces of both agree. The mechanism (what the counters show, not a guess): the CPU is
+  in `default_idle` -> timer interrupt -> `__irq_exit_rcu` -> `handle_softirqs` (interrupts
+  enabled) -> ttyS1 interrupt -> `serial8250_tx_chars` -> `outb`, which is exactly the remote
+  nesting value `0x3` in the report (1 for an interrupt taken from idle, +2 for one nested in
+  it). QEMU's 16550 transmits synchronously, raises the transmit-empty interrupt as soon as a
+  byte is written, and traps every port access, so one interrupt sends 16 bytes per pass,
+  the writer refills the 4 KB tty buffer long before it drains (it is woken at 256 bytes left,
+  a 3 ms margin), `serial8250_interrupt` gives up silently after 512 passes (8 KB, no
+  "too much work" message in this kernel) with the next edge already latched, and the next
+  interrupt is taken at the `iret` before a single instruction of the softirq runs. The
+  softirq never finishes, the CPU never returns to the idle loop (no extended quiescent
+  state, so the dynticks counter that `rcu_watching_snap_recheck` compares never moves),
+  and every tick lands nested inside the softirq, where `rcu_flavor_sched_clock_irq`
+  (non-preemptible RCU: `rcu_sched`) records no quiescent state. `/proc/softirqs` during a
+  transfer: SCHED on CPU 4 +13 against +1480 on every other CPU, the same on both compilers.
+  The stall is harmless (the transfer completes, the md5 matches) but it also holds that
+  CPU's timers and softirqs for the whole transfer. Fix: `send-file` writes the file in
+  32 KB chunks, each through its own open and close of the port; closing a serial port
+  waits until the transmit buffer has drained (`uart_wait_until_sent`, polled once a jiffy),
+  which ends the interrupt and lets the softirq finish and the CPU idle between chunks. The
+  drains cost nothing measurable (a 2 MB file: 26-27 s before and after), the RCU softirq on
+  that CPU runs at the normal rate again, and 2 of 2 transfers on each of x86_64 and i386 pass
+  without a report. Nothing in the kernel is changed; a real 16550 interrupts once per
+  16-byte FIFO at the baud rate and never produces this. (A gcc-built kernel of this
+  configuration is two minutes of `make O=build/x86_64/linux-gcc ARCH=x86_64 CC=gcc` on a
+  copy of `build/x86_64/linux/.config` and boots with `KERNEL=<its bzImage> ./run.sh
+  --selfhost`; it is the cheapest way to tell a tcc miscompile from a property of the
+  kernel or QEMU.)
 
 ## Debugging recipes
 
