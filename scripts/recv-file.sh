@@ -13,8 +13,9 @@ dir=${2:-$(dirname "$cap")}
 [ -s "$cap" ] || die "no capture at $cap (boot with ./run.sh --selfhost and run send-file in the guest)"
 mkdir -p "$dir"
 n=0
-# byte offsets of the header lines (grep -b counts bytes with LC_ALL=C)
-LC_ALL=C grep -aboE '^>>> send-file [^ ]+ [0-9]+ [0-9a-f]{32}$' "$cap" | while IFS=: read -r off line; do
+# byte offsets of the headers (grep -b counts bytes with LC_ALL=C); not anchored to a line start:
+# the header follows the previous file's last byte, which need not be a newline
+LC_ALL=C grep -aboE '>>> send-file [^ ]+ [0-9]+ [0-9a-f]{32}$' "$cap" | while IFS=: read -r off line; do
     set -- $line; name=$3 size=$4 sum=$5
     hdr=$(( ${#line} + 1 ))
     start=$(( off + hdr ))

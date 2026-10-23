@@ -34,11 +34,15 @@ cd tinycc
     --sysincludepaths='{B}/include:/usr/include' --libpaths='{B}:/usr/lib' \
     --crtprefix=/usr/lib --tcc-switches=-static --extra-cflags=-O2 \
     --config-backtrace=no --config-bcheck=no >>"$log" 2>&1 || { tail -20 "$log"; die "tcc configure failed"; }
-make -j"$JOBS" GITHASH="$(sed -n 's/^#define TCC_GITHASH "\(.*\)"/\1/p' config.h 2>/dev/null)" >>"$log" 2>&1 \
+# the version tag ("e23dabe+79p": base commit + patch count) comes from the installed tcc, whose
+# sources these are (scripts/build.sh archives the patched tree's HEAD): there is no git in
+# here, and without the override the Makefile would stamp the build "*" (modified)
+tag=$("$TCC" -v 2>/dev/null | sed -n 's/^tcc version [^ ]* \([^ ]*\) (.*/\1/p')
+make -j"$JOBS" GITHASH="$tag" GITMODF= >>"$log" 2>&1 \
     || { grep -E 'error' "$log" | head; die "tcc build failed (log: $log)"; }
-make -j"$JOBS" cross-i386 >>"$log" 2>&1 || make i386-tcc >>"$log" 2>&1 \
+make -j"$JOBS" cross-i386 GITHASH="$tag" GITMODF= >>"$log" 2>&1 || make i386-tcc GITHASH="$tag" GITMODF= >>"$log" 2>&1 \
     || { grep -E 'error' "$log" | head; die "i386-tcc build failed (log: $log)"; }
-make -s install >>"$log" 2>&1 || die "tcc install failed"
+make -s install GITHASH="$tag" GITMODF= >>"$log" 2>&1 || die "tcc install failed"
 echo "   $("$PREFIX/bin/tcc" -v), $("$PREFIX/bin/i386-tcc" -v)"
 if [ -n "$test" ]; then
     echo "== tinycc test suite (make test)"

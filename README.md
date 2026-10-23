@@ -123,8 +123,12 @@ the image's toolchain (49 s on 8 cores, a bzImage of the reference's size), `qem
 `./run.sh --selfhost --auto` (the guest runs `build-kernel` and `send-file` itself and shuts
 down: 1 min 34 s for the build on 8 virtual CPUs under KVM, 223 MB of tmpfs, 21 s for the
 transfer, 2 minutes in all), `boot` boots the received kernel and checks for generation 2.
-Sizes and times are in `docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the
-fourth and fifth menu entries (`./run.sh --iso --selfhost` selects them).
+`AUTO=all` has the guest run `build-toolchain` first and build the kernel with its own,
+second-generation tcc and tld (`./run.sh --selfhost --auto=all`), and the same test run on a
+guest-built kernel (`KERNEL=out/<arch>/selfhost/bzImage scripts/selfhost-test.sh all`) builds
+generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23). Sizes and
+times are in `docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fourth and
+fifth menu entries (`./run.sh --iso --selfhost` selects them).
 
 ## Layout
 

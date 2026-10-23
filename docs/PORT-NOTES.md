@@ -156,11 +156,11 @@ directly, which is also better code for gcc.
    update only the slot on C stores; patch 0037 folds trivial static functions also
    without -O; patch 0057 inlines memcpy/memset of constant size up to 4096 bytes also
    without -O (gcc does it at -O1+ with a smaller limit).
-7. Self-hosting (done 2026-10-22, see the section below): what is left is making the
-   guest-built tcc the one that builds the next kernel by default (`build-toolchain` installs
-   it in /usr/local and `build-kernel` prefers it, but the automatic run `--auto=all` is the
-   only path exercising it), a generation-3 run from inside generation 2, and `make test` of
-   tcc in the guest (needs the test suite's expectations of a glibc host reviewed).
+7. Self-hosting (done 2026-10-22, see the section below; `--auto=all`, the kernel built by
+   the guest-built toolchain, and generation 3 verified on both architectures 2026-10-23):
+   what is left is `make test` of tcc in the guest (needs the test suite's expectations of a
+   glibc host reviewed), and the RCU stall report that the serial transfer provokes (see the
+   section below).
 8. Targets: arm64 (see README), other kernels.
 
 ## The i386 target
@@ -336,6 +336,39 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   use-after-realloc in the local-label relocation fixup that glibc's allocator had hidden
   (fix 94, patch 0079). The rule from fix 73 holds: only the guest run exercises the
   tcc-compiled, musl-linked compiler.
+* The toolchain rebuilt inside the guest, and generation 3 (2026-10-23, both architectures):
+  `AUTO=all scripts/selfhost-test.sh all` (`./run.sh --selfhost --auto=all`) has the guest run
+  `build-toolchain` first: tcc + i386-tcc and tld are compiled from the shipped sources by the
+  shipped tcc and installed in /usr/local in 1 s (tcc compiles itself in well under a second
+  on 8 CPUs), and `build-kernel` then builds the kernel with that second-generation compiler:
+  x86_64 in 1 min 21 s (1550 tcc, 0 gcc; 2 065 920 bytes, the same size as with the shipped
+  compiler), i386 in 1 min 14 s (1516 tcc; 1 875 968 bytes); both boot. Generation 3 is the
+  same run booted on a generation-2 kernel (`KERNEL=out/<arch>/selfhost/bzImage-gen2-all
+  AUTO=all scripts/selfhost-test.sh all`; `build-kernel` takes the generation from the running
+  kernel's build number): `#3 SMP PREEMPT` in 1 min 22 s on x86_64 and 1 min 20 s on i386,
+  and both boot (`selfhost-test.sh boot` accepts any generation >= 2). The runs found three
+  script bugs, none of them in the compiler: `/init` matched only `tcc.selfhost=auto`, so
+  `--auto=all` had never run anything and the guest sat at a shell until the timeout (the
+  pattern is now `tcc.selfhost=*`); `build-toolchain` stamped the rebuilt compiler
+  `0.9.28rc *` (tcc's Makefile marks a tree without git "modified"; it now passes the shipped
+  compiler's own tag, `e23dabe+79p`, and `GITMODF=`, as `scripts/build.sh` does); and
+  `recv-file.sh` anchored the `>>> send-file` header to a line start, so the second file of a
+  transfer (build-kernel.log, sent right after the bzImage's last byte) was never cut out
+  (`send-file` now starts every header on a line of its own, `recv-file.sh` no longer requires
+  it). Kept on the host: `out/<arch>/selfhost/bzImage-gen2-auto` (shipped compiler),
+  `bzImage-gen2-all` (guest-built compiler), `bzImage-gen3`, with their console and build logs.
+* An observation from these runs, not investigated: while `send-file` pushes the 2 MB bzImage
+  through ttyS1 (24-28 s), the kernel reports `rcu_sched detected stalls on CPUs/tasks` for
+  CPU 4 (`swapper/4`, "2 GPs behind", detected after 5252 jiffies = 21 s) with an NMI
+  backtrace that ends in the UART's `outb` to port 0x2f8 in interrupt context; 7 of 8 runs on
+  both architectures, always the CPU serving the ttyS1 interrupt. QEMU's 16550 raises THRE as
+  soon as a byte is written and every port write is a VM exit, so that CPU spends the whole
+  transfer in a back-to-back interrupt storm from idle. The transfer completes and the md5
+  matches, and the kernel is otherwise unaffected. Whether a gcc-built kernel of the same
+  configuration reports the same under the same storm, or whether this is a tcc miscompile in
+  the idle/irq-entry context tracking, is open (a `tcc -O0`-style build of `kernel/context_tracking.c`
+  and `kernel/rcu/tree.c` would be the first thing to compare); pacing `send-file` (a `usleep`
+  per 4 KB) would hide it rather than answer it.
 
 ## Debugging recipes
 

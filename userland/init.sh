@@ -61,7 +61,7 @@ banner
 # tcc.selfhost=auto (run.sh --selfhost --auto): rebuild the kernel (auto=all: the toolchain
 # first, then the kernel with it), send the result to the host and shut down, no shell
 case " $(cat /proc/cmdline) " in
-    *" tcc.selfhost=auto"*)
+    *" tcc.selfhost="*)
         mode=$(sed -n 's/.*tcc.selfhost=\([^ ]*\).*/\1/p' /proc/cmdline)
         echo "*** tcc.selfhost=$mode: automatic self-hosting run"
         rc=0
