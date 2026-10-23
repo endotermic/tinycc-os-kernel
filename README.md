@@ -37,6 +37,8 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./install.sh --build distro --output iso --selfhost             # + the self-hosting image and its ISO entries
 ./install.sh --arch i386                                        # the 32-bit kernel and userland (out/i386)
 ARCH=i386 ./run.sh                                              # boots it in qemu-system-i386
+./install.sh --clean --arch i386                                # removes build/i386 and out/i386 (src/ stays)
+./install.sh --clean-all --dry-run                              # lists what a clean of every architecture would free
 ./run.sh                          # boots out/x86_64 in QEMU to a busybox shell; 'exit' ends QEMU
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
 ./run.sh --iso                    # the ISO (GRUB menu) with QEMU's display window; --efi: on OVMF
@@ -53,6 +55,18 @@ cannot tell for those two). Without a terminal, milestone lines are printed inst
 A build tree survives moving or renaming the repository: the steps re-run `configure` for
 musl, the guest tcc and GNU make when their `config.mak`/`config.status` record another path,
 and Kbuild recompiles what its dependency files point at.
+
+Cleaning up: `./install.sh --clean [--arch ARCH]` (= `scripts/build.sh clean`) removes the build
+trees, logs and results of one architecture, `build/<arch>/` and `out/<arch>/`; `--clean-all`
+(`clean-all`) those of every architecture. Both print what goes with its size, and `--dry-run`
+(`-n`, or `DRY_RUN=1`; build.sh takes the same spellings) prints that and removes nothing.
+build.sh checks its whole command line before it runs a step, so a mistyped step or option
+after `clean` aborts with nothing removed. The fetched sources in `src/` stay, so the next
+`install.sh` or `scripts/build.sh all` rebuilds without downloading (the host tcc is built
+in-tree in `src/tinycc` and stays too). `scripts/build.sh clean-src` removes the source trees
+and the downloaded tarball as well, but refuses while a tree has uncommitted changes, a stash,
+or more commits on top of `base` than its series lists: fixes are committed in `src/<name>` and
+exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
 
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
@@ -141,10 +155,10 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `sources.lock` | the four upstream components with URL, ref and exact commit |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
-| `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro) and the QEMU boot |
+| `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
 | `patches/tinycc/` | 100 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc` (CC) and `tcc-hostcc` (HOSTCC) wrappers for Kbuild, `objtool-stub` |
@@ -153,7 +167,7 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
 | `docs/PORT-NOTES.md` | how the port works, wrapper rules, open items, how to debug |
 | `docs/FIX-LOG.md` | the per-fix log (problem, fix, verification) with the fix-to-patch map |
-| `src/`, `build/`, `out/` | sources, build trees and results (not committed) |
+| `src/`, `build/`, `out/` | sources, build trees and results (not committed; `install.sh --clean` removes `build/<arch>` and `out/<arch>`, `scripts/build.sh clean-src` the sources, see [Quick start](#quick-start)) |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | BSD-2-Clause for the original parts, the upstream licenses for the patches; the path-to-license map (see [License](#license)) |
 
 ## Patches

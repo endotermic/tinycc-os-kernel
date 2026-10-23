@@ -431,6 +431,8 @@ BUILD=<gnu-linked tree> sh tools/tld/test.sh   # tld vs GNU ld on every kernel l
 ./run.sh -d int,cpu_reset -D qemu.log    # a hang or triple fault
 ./run.sh -machine graphics=on -append "console=ttyS0 earlyprintk=serial debug"   # setup-code messages once (SeaBIOS's sercon echoes int 0x10 to the UART under -nographic)
 ./run.sh -S -gdb tcp::1234               # + gdb build/x86_64/linux/vmlinux
+scripts/build.sh -n clean                # what a clean of build/x86_64 + out/x86_64 would free (ARCH=i386: the i386 trees)
+scripts/build.sh clean all               # a build from scratch; src/ (and the in-tree host tcc) stay, nothing is re-fetched
 ```
 
 After a tcc change: `make -C src/tinycc && make -C src/tinycc test`, commit, then

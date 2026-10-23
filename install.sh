@@ -5,6 +5,7 @@
 # output; the same choices are available as options for unattended use.
 #
 # Usage: ./install.sh [--build tcc|distro] [--arch ARCH] [--output initrd|iso|all] [--selfhost] [--jobs N] [--run] [--test]
+#        ./install.sh --clean [--arch ARCH] [--dry-run]  |  ./install.sh --clean-all [--dry-run]
 #   --build   tcc: only the patched Tiny C Compiler, installed into a staging tree and packed
 #                  as out/<arch>/tcc-<version>-<arch>-linux.tar.gz (extract with tar xzf ... -C /)
 #             distro: the kernel and the userland built with that compiler (default)
@@ -16,6 +17,11 @@
 #   --jobs    parallel jobs (default: nproc)
 #   --test    run tinycc's test suite after building it
 #   --run     boot the result in QEMU when done (./run.sh; distro only)
+#   --clean   remove the build trees, logs and results of --arch (build/<arch>/, out/<arch>/) and
+#             exit; --clean-all: those of every architecture (build/, out/).  Both print what goes
+#             with its size; --dry-run (-n) prints that and removes nothing.  The fetched sources (src/,
+#             with the host tcc built in src/tinycc) stay: scripts/build.sh clean-src removes them
+#             (only when they have no unexported work)
 #
 # Target status:
 #   x86_64  works: the tcc-built kernel boots the tcc-built busybox and tcc in QEMU
@@ -26,7 +32,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-build= arch= output= run= test= selfhost= jobs=${JOBS:-$(nproc)}
+build= arch= output= run= test= selfhost= clean= dry= jobs=${JOBS:-$(nproc)}
 usage() { sed -n '2,/^set -e/p' "$0" | sed '$d' | cut -c3-; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
     case $1 in
@@ -35,6 +41,7 @@ while [ $# -gt 0 ]; do
         --output) output=$2; shift 2;; --output=*) output=${1#*=}; shift;;
         --jobs) jobs=$2; shift 2;; --jobs=*) jobs=${1#*=}; shift;;
         --run) run=1; shift;; --test) test=1; shift;; --selfhost) selfhost=1; shift;;
+        --clean) clean=clean; shift;; --clean-all) clean=clean-all; shift;; --dry-run|-n) dry=1; shift;;
         -h|--help) usage;;
         *) echo "unknown option: $1" >&2; usage 2;;
     esac
@@ -47,7 +54,8 @@ ask() { # ask VAR "prompt" default choices...
     case $a in [1-9]) eval "set -- \$@"; eval "a=\${$a}";; esac
     eval "$v=\$a"
 }
-if [ -t 0 ] && [ -t 1 ]; then
+[ -z "$dry" ] || [ -n "$clean" ] || die "--dry-run goes with --clean or --clean-all"
+if [ -t 0 ] && [ -t 1 ] && [ -z "$clean" ]; then
     [ -n "$build" ] || ask build "What to build:" distro "tcc: only the patched Tiny C Compiler, as a tar.gz archive" "distro: the kernel and userland built with it"
     build=${build%%:*}
     if [ "$build" = distro ]; then
@@ -65,6 +73,9 @@ case $arch in
     *) die "unknown arch '$arch' (x86_64, i386, arm64)";;
 esac
 case $output in initrd|iso|all) ;; *) die "unknown output '$output' (initrd, iso, all)";; esac
+if [ -n "$clean" ]; then
+    DRY_RUN=${dry:-0} ARCH=$arch exec "$ROOT/scripts/build.sh" "$clean"
+fi
 for t in git make gcc; do have $t || die "$t is required"; done
 export ARCH=$arch JOBS=$jobs
 if [ "$build" = tcc ]; then

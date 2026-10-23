@@ -3,7 +3,7 @@
 # build.sh - build the pinned, patched sources (src/) into a kernel + initramfs images
 # (+ ISO) for one architecture.  Every step is skipped when its result exists.
 #
-# Usage: scripts/build.sh [step...]        default: all
+# Usage: scripts/build.sh [-n|--dry-run] [step...]        default: all
 #   host-tcc    tinycc in src/tinycc (in-tree build; this compiler builds everything else)
 #   tcc-test    run tinycc's own test suite (must print ALL TESTS PASSED)
 #   tcc-archive install the host tcc into a staging tree and pack it as out/<arch>/tcc-*.tar.gz
@@ -21,7 +21,18 @@
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
 #   all         host-tcc tld kernel musl busybox guest-tcc initramfs
-# Env: ARCH (x86_64, i386; arm64 is not implemented, see install.sh), JOBS, SRC/BUILD/OUT.
+#   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
+#               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
+#   clean-all   the same for every architecture: build/ and out/ as a whole
+#   clean-src   remove the fetched component trees src/<name> and src/.downloads (scripts/fetch.sh +
+#               scripts/patch.sh recreate them: a 2 GB download); refuses while a tree has
+#               uncommitted changes, a stash, or more commits on top of 'base' than
+#               patches/<name>/series lists (fixes are committed there and exported with
+#               scripts/export-patches.sh before the tree may go)
+# Every clean step prints what goes with its size (du -sh); -n/--dry-run (or DRY_RUN=1) prints
+# that and removes nothing.  The whole command line is checked before the first step runs: an
+# unknown step or option aborts with nothing done.
+# Env: ARCH (x86_64, i386; arm64 is not implemented, see install.sh), JOBS, SRC/BUILD/OUT, DRY_RUN.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
@@ -41,12 +52,14 @@ B=$BUILD/$ARCH; LOGS=$B/logs; O=$OUT/$ARCH
 # the source copies under build/ must not see this repository's own .git (tcc's and
 # busybox's version strings ask git about the tree they are built from)
 export GIT_CEILING_DIRECTORIES=$BUILD
-mkdir -p "$B" "$LOGS" "$O"
 # progress-bar totals for the two builds whose step count "make -n" cannot tell; corrected
 # from the real count after the first complete build (build/<arch>/steps/<name>)
 KERNEL_STEPS_DEFAULT=1190
 BUSYBOX_STEPS_DEFAULT=660
-STEPS=$B/steps; mkdir -p "$STEPS"
+STEPS=$B/steps
+# the build steps' directories (made right before a build step runs, so that the clean steps
+# leave nothing behind)
+prepare() { mkdir -p "$B" "$LOGS" "$O" "$STEPS"; }
 TCCSRC=$SRC/tinycc; TCC=$TCCSRC/tcc; TCC_TARGET=$TCCSRC/$TCC_TARGET; LIBTCC1=$TCCSRC/$LIBTCC1
 LINUX=$SRC/linux; MUSLSRC=$SRC/musl; BBSRC=$SRC/busybox
 MUSLB=$B/musl; MUSLP=$MUSLB/install; KHDR=$B/kernel-headers; MUSL_TCC=$B/musl-tcc
@@ -458,11 +471,70 @@ step_iso() {
     ARCH=$ARCH OUT=$OUT BUILD=$BUILD "$ROOT/boot/mkiso.sh"
 }
 
+# rel PATH: PATH relative to the repository when it lies inside it (for the messages)
+rel() { case $1 in "$ROOT"/*) echo "${1#"$ROOT"/}";; *) echo "$1";; esac; }
+# remove_trees LABEL PATH...: list the PATHs that exist with their sizes, then remove them
+# (DRY_RUN=1: list only)
+remove_trees() {
+    label=$1; shift
+    for p; do shift; [ ! -e "$p" ] || set -- "$@" "$p"; done     # keep the ones that exist
+    [ $# -gt 0 ] || { msg "$label: nothing to remove"; return 0; }
+    msg "$label"
+    du -sh "$@" | while IFS='	' read -r size p; do printf '   %6s  %s\n' "$size" "$(rel "$p")"; done
+    total=$(du -shc "$@" | tail -n 1 | cut -f1)
+    if [ "${DRY_RUN:-0}" != 0 ]; then echo "   $total would be freed; nothing was removed"; return 0; fi
+    rm -rf "$@"
+    echo "   $total freed"
+}
+
+step_clean() {
+    remove_trees "clean $ARCH: build trees, logs and results (src/ and the host tcc in src/tinycc stay)" "$B" "$O"
+    rmdir "$BUILD" "$OUT" 2>/dev/null || true      # the parents, when this was the last architecture
+}
+
+step_clean_all() {
+    remove_trees "clean-all: build trees, logs and results of every architecture (src/ stays)" "$BUILD" "$OUT"
+}
+
+step_clean_src() {
+    set --
+    for n in $(lock_names); do
+        d=$SRC/$n
+        [ -e "$d" ] || continue
+        if [ -d "$d/.git" ]; then
+            [ -z "$(git -C "$d" status --porcelain)" ] \
+                || die "src/$n has uncommitted changes (git -C src/$n status): commit and export them, or discard them, first"
+            [ -z "$(git -C "$d" stash list)" ] || die "src/$n has stashed changes (git -C src/$n stash list): apply or drop them first"
+            if git -C "$d" rev-parse -q --verify base >/dev/null; then
+                commits=$(git -C "$d" rev-list --count --branches ^base)
+                series=0; [ ! -f "$ROOT/patches/$n/series" ] || series=$(series_files "$ROOT/patches/$n/series" | wc -l)
+                [ "$commits" -le "$series" ] \
+                    || die "src/$n has $commits commits on top of 'base' but patches/$n/series lists $series: run scripts/export-patches.sh first"
+            fi
+        fi
+        set -- "$@" "$d"
+    done
+    remove_trees "clean-src: the fetched component trees (scripts/fetch.sh + scripts/patch.sh recreate them)" "$@" "$SRC/.downloads"
+    rmdir "$SRC" 2>/dev/null || true
+}
+
+# options first, then every step name is checked before any step runs (a typo after a clean
+# step must not cost a build tree)
+for s; do
+    shift
+    case $s in
+        -n|--dry-run) DRY_RUN=1;;
+        -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d' | cut -c3-; exit 0;;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        -*) die "unknown option '$s' (see the header of $0)";;
+        *) die "unknown step '$s' (see the header of $0)";;
+    esac
+done
 [ $# -gt 0 ] || set -- all
 for s; do
     case $s in
-        all) for t in host-tcc tld kernel musl busybox guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
-        host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|guest-tcc|guest-make|initramfs|selfhost|iso) "step_$(echo $s | tr - _)";;
-        *) die "unknown step '$s' (see the header of $0)";;
+        all) prepare; for t in host-tcc tld kernel musl busybox guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
+        *) prepare; "step_$(echo $s | tr - _)";;
     esac
 done
