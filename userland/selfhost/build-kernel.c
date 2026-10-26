@@ -339,7 +339,7 @@ int main(int argc, char **argv)
 {
     const char *src = env_or("SELFHOST_SRC", "/usr/src"), *share = env_or("SELFHOST_SHARE", "/usr/share/tinycc-os-kernel");
     const char *bin = env_or("SELFHOST_BIN", "/usr/bin"), *work = env_or("WORK", "/build"), *tcc = getenv("TCC");
-    const char *make, *karch, *afrag, *fragments[3];
+    const char *make, *karch, *afrag, *fragments[4];
     char *jobs = (char *)getenv("JOBS"), *tarball, *log, *kcc_log, *tccv, *gen = (char *)getenv("GEN"), *img = "arch/x86/boot/bzImage";
     char *v1, *v2, *v3;
     struct utsname u;
@@ -405,7 +405,7 @@ int main(int argc, char **argv)
     tarball = glob_first(fmt("%s/linux-*.tar.gz", src));
     if (!tarball)
         die("no %s/linux-*.tar.gz", src);
-    if (!is_file(fmt("%s/minimal.config", share)) || !is_file(fmt("%s/tcc.config", share)))
+    if (!is_file(fmt("%s/minimal.config", share)) || !is_file(fmt("%s/drivers.config", share)) || !is_file(fmt("%s/tcc.config", share)))
         die("no Kconfig fragments in %s", share);
     if (!is_file(fmt("%s/kconfig/lexer.lex.c", share)))
         die("no pre-generated Kconfig lexer in %s/kconfig", share);
@@ -476,7 +476,7 @@ int main(int argc, char **argv)
     argf(&mk, "KBUILD_BUILD_USER=%s", env_or("KBUILD_BUILD_USER", "tcc"));
     argf(&mk, "KBUILD_BUILD_HOST=%s", env_or("KBUILD_BUILD_HOST", "tinycc-os-guest"));
     if (!is_file(".config")) {
-        printf("== configuring: tinyconfig + minimal.config + %s + tcc.config, olddefconfig\n", afrag);
+        printf("== configuring: tinyconfig + minimal.config + drivers.config + %s + tcc.config, olddefconfig\n", afrag);
         cmd = mk;
         arg(&cmd, "-s");
         arg(&cmd, "tinyconfig");
@@ -486,10 +486,11 @@ int main(int argc, char **argv)
         }
     }
     fragments[0] = "minimal.config";
-    fragments[1] = afrag;
-    fragments[2] = "tcc.config";
+    fragments[1] = "drivers.config";
+    fragments[2] = afrag;
+    fragments[3] = "tcc.config";
     setenv("KCONFIG_CONFIG", ".config", 1);
-    for (k = 0; k < 3; k++) {
+    for (k = 0; k < 4; k++) {
         cmd.n = 0;
         arg(&cmd, "sh");
         arg(&cmd, "scripts/kconfig/merge_config.sh");

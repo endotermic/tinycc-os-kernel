@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:48:04 +0200
+Subject: [PATCH] tccgen: define the symbol of a label when its address is
+ taken after its definition
+
+The value of a statement expression may leave the block that declared the
+label before any code references it: 'return ({ __label__ l; l: &&l; })',
+the kernel's generic _THIS_IP_ (used by the 32-bit DRM code: no rip-relative
+lea there).  label_pop() defines the ELF symbols only of labels that already
+have one (s->c, set by the first relocation against them), so the symbol of
+such a label was never defined and the link failed with an undefined
+reference to '__here'.  When the address of an already defined label is
+taken, put_extern_sym() defines its symbol at once.
+---
+ tccgen.c                                |  7 +++++++
+ tests/tests2/161_gnu_extensions2.c      | 20 ++++++++++++++++++--
+ tests/tests2/161_gnu_extensions2.expect |  1 +
+ 3 files changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index d93e861..1831f5a 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6435,6 +6435,13 @@ ST_FUNC void unary(void)
+             mk_pointer(&s->type);
+             s->type.t |= VT_STATIC;
+         }
++        /* a label already defined gets its ELF symbol now: the value may
++           leave the statement expression that declared the label before any
++           code references it ("return ({ __label__ l; l: &&l; })", the
++           kernel's _THIS_IP_), and label_pop() only defines the symbols of
++           labels that were referenced by then */
++        if (s->r == LABEL_DEFINED)
++            put_extern_sym(s, cur_text_section, s->jind, 1);
+         vpushsym(&s->type, s);
+         next();
+         break;
+diff --git a/tests/tests2/161_gnu_extensions2.c b/tests/tests2/161_gnu_extensions2.c
+index 5e3a914..5de9909 100644
+--- a/tests/tests2/161_gnu_extensions2.c
++++ b/tests/tests2/161_gnu_extensions2.c
+@@ -1,7 +1,8 @@
+ /* GNU extensions met by the Linux kernel's device drivers (tinycc-os-kernel
+-   fixes 106-110): a transparent union taking a less qualified pointer, the
++   fixes 106-110, 112): a transparent union taking a less qualified pointer, the
+    typed overflow builtins, an attribute before a declarator of a list, a
+-   deep #include nesting and the type of an enumerator inside its list. */
++   deep #include nesting, the type of an enumerator inside its list and the
++   address of a label leaving its statement expression. */
+ #include <stdio.h>
+ #include "161_gnu_extensions2.h"
+ 
+@@ -86,8 +87,23 @@ static void test_enum(void)
+            sizeof(U32), sizeof(NEG), (int)(TAG_MAX == 0xfffffffeu), (int)(NO_TAG < 0));
+ }
+ 
++/* fix 112: the address of a label taken after its definition inside a
++   statement expression whose value leaves the expression before any code
++   uses it (the kernel's _THIS_IP_ as a return value): the label's symbol
++   was never defined, an undefined reference at link time */
++#define THIS_IP ({ __label__ here; here: (unsigned long)&&here; })
++static unsigned long ip1(void) { return THIS_IP; }
++static unsigned long ip2(void) { unsigned long a = THIS_IP, b = THIS_IP; return b - a; }
++static void test_label_addr(void)
++{
++    unsigned long p = ip1();
++    printf("label addr: %d %d\n", p > (unsigned long)ip1 && p < (unsigned long)ip1 + 64,
++           ip2() > 0 && ip2() < 64);
++}
++
+ int main(void)
+ {
++    test_label_addr();
+     test_enum();
+     test_transparent();
+     test_typed_overflow();
+diff --git a/tests/tests2/161_gnu_extensions2.expect b/tests/tests2/161_gnu_extensions2.expect
+index c6f370b..2ba5741 100644
+--- a/tests/tests2/161_gnu_extensions2.expect
++++ b/tests/tests2/161_gnu_extensions2.expect
+@@ -1,3 +1,4 @@
++label addr: 1 1
+ enum: 1 0 4 4 4 4 1 0
+ transparent: 11 33 -1 -1 120 1
+ typed overflow: 1 18446744073709551614 0 2 1 0 1 -2147483648 1 -9223372036854775808 1

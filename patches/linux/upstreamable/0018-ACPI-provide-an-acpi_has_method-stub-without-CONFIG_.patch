@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:23:54 +0200
+Subject: [PATCH] ACPI: provide an acpi_has_method() stub without CONFIG_ACPI
+
+btintel_set_dsm_reset_method() calls acpi_has_method() after an early
+return when ACPI_HANDLE() is NULL, which it always is without
+CONFIG_ACPI.  An optimizing compiler removes the dead call; one that
+keeps it (tinycc, or gcc -O0) leaves an undefined reference, since
+acpi_has_method() has no stub for the !ACPI case.  Give it one in
+acpi_bus.h, which btintel.c includes directly, so that drivers can use
+it unconditionally.
+
+Assisted-by: LLM
+---
+ include/acpi/acpi_bus.h | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/include/acpi/acpi_bus.h b/include/acpi/acpi_bus.h
+index a10a591c1..2cba28b8c 100644
+--- a/include/acpi/acpi_bus.h
++++ b/include/acpi/acpi_bus.h
+@@ -45,7 +45,14 @@ acpi_status
+ acpi_evaluate_ost(acpi_handle handle, u32 source_event, u32 status_code,
+ 		  struct acpi_buffer *status_buf);
+ 
++#ifdef CONFIG_ACPI
+ bool acpi_has_method(acpi_handle handle, char *name);
++#else
++static inline bool acpi_has_method(acpi_handle handle, char *name)
++{
++	return false;
++}
++#endif
+ acpi_status acpi_execute_simple_method(acpi_handle handle, char *method,
+ 				       u64 arg);
+ acpi_status acpi_evaluate_ej0(acpi_handle handle);

@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:33:23 +0200
+Subject: [PATCH] tccgen: an enumerator keeps the type of its expression inside
+ its list
+
+C23 6.7.3.3 (and GCC): while the enumerator list is parsed, a constant whose
+value does not fit int has the type of its initializing expression; it was
+pushed as int, so in 'enum { NO_TAG = -1U, MAX = NO_TAG - 1 }' NO_TAG - 1
+folded as a signed int (-2), the enum became long and NO_TAG a long.  The
+kernel's block layer compares an int tag with BLK_MQ_NO_TAG: the comparison
+was made in 64 bits (movslq, 0xffffffff), a tag of -1 never matched and
+__blk_mq_free_request() freed it through a NULL tag set (the Oops when the
+USB stick's SCSI scan freed its first request).  The final member types are
+now reset from the provisional ones (4294967295 as a decimal literal is a
+long expression, the enumerator an unsigned int as in gcc).
+---
+ tccgen.c                                | 26 +++++++++++++++++++++----
+ tests/tests2/161_gnu_extensions2.c      | 21 +++++++++++++++++---
+ tests/tests2/161_gnu_extensions2.expect |  1 +
+ 3 files changed, 41 insertions(+), 7 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 5dd5209..d93e861 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -154,6 +154,7 @@ static int decl(int l);
+ static void expr_eq(void);
+ static void vpush_type_size(CType *type, int *a);
+ static int is_compatible_unqualified_types(CType *type1, CType *type2);
++static void expr_const1(void);
+ static inline int64_t expr_const64(void);
+ static void vpush64(int ty, unsigned long long v);
+ static void vpush(CType *type);
+@@ -4697,7 +4698,8 @@ do_decl:
+         ps = &s->next;
+         if (u == VT_ENUM) {
+             long long ll = 0, pl = 0, nl = 0;
+-	    CType t;
++	    CType t, tt;
++            int et = VT_INT; /* the type of the initializing expression */
+             t.ref = s;
+             s->sym_scope = local_scope; /* anonymous symbol won't have set */
+             /* enum symbols have static storage */
+@@ -4711,12 +4713,26 @@ do_decl:
+                 next();
+                 if (tok == '=') {
+                     next();
+-		    ll = expr_const64();
++                    expr_const1();
++                    if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM | VT_NONCONST)) != VT_CONST)
++                        expect("constant expression");
++                    ll = vtop->c.i;
++                    et = vtop->type.t;
++                    vpop();
+                 }
+                 if (bt && !in_range(ll, t.t))
+ 		    tcc_error("enumerator '%s' out of range of its type",
+ 			get_tok_str(v, NULL));
+-                ss = sym_push(v, &t, VT_CONST, 0);
++                /* within the list a constant whose value does not fit int
++                   has the type of its expression (C23 6.7.3.3, as GCC):
++                   "NO_TAG = -1U, MAX = NO_TAG - 1" keeps NO_TAG an unsigned
++                   int, and MAX's expression folds as unsigned; the final
++                   types are set below */
++                tt = t;
++                if (!bt && ll != (int)ll)
++                    tt.t = (et & (VT_BTYPE | VT_UNSIGNED | VT_LONG))
++                         | VT_STATIC | VT_ENUM_VAL;
++                ss = sym_push(v, &tt, VT_CONST, 0);
+                 ss->enum_val = ll;
+                 *ps = ss, ps = &ss->next;
+                 if (ll < nl)
+@@ -4755,9 +4771,11 @@ do_decl:
+                 t.t = (nl >= -0x80 && pl <= 0x7f) ? VT_BYTE
+                     : (nl >= -0x8000 && pl <= 0x7fff) ? VT_SHORT : VT_INT;
+ 
+-            /* set type for enum members */
++            /* set type for enum members (the provisional types of the
++               list above are replaced) */
+             for (ss = s->next; ss; ss = ss->next) {
+                 ll = ss->enum_val;
++                ss->type.t = (ss->type.t & ~(VT_BTYPE | VT_UNSIGNED | VT_LONG)) | VT_INT;
+                 if (ll == (int)ll) /* default is int if it fits */
+                     continue;
+                 if (t.t & VT_UNSIGNED) {
+diff --git a/tests/tests2/161_gnu_extensions2.c b/tests/tests2/161_gnu_extensions2.c
+index 72958a2..5e3a914 100644
+--- a/tests/tests2/161_gnu_extensions2.c
++++ b/tests/tests2/161_gnu_extensions2.c
+@@ -1,7 +1,7 @@
+ /* GNU extensions met by the Linux kernel's device drivers (tinycc-os-kernel
+-   fixes 106-109): a transparent union taking a less qualified pointer, the
+-   typed overflow builtins, an attribute before a declarator of a list, and
+-   a deep #include nesting. */
++   fixes 106-110): a transparent union taking a less qualified pointer, the
++   typed overflow builtins, an attribute before a declarator of a list, a
++   deep #include nesting and the type of an enumerator inside its list. */
+ #include <stdio.h>
+ #include "161_gnu_extensions2.h"
+ 
+@@ -72,8 +72,23 @@ static int test_decl_attr(int x)
+     return c + e + s2 + s3 + ((long)&e % 16 == 0);
+ }
+ 
++/* fix 110: an enumerator referenced by a later one of the same list keeps
++   the type of its expression while the list is parsed (block/blk-mq.h:
++   "BLK_MQ_NO_TAG = -1U, BLK_MQ_TAG_MAX = BLK_MQ_NO_TAG - 1"); the kernel
++   compared an int tag with NO_TAG in 64 bits and freed a tag of -1 */
++enum { NO_TAG = -1U, TAG_MIN = 1, TAG_MAX = NO_TAG - 1 };
++enum { U32 = 4294967295 };
++enum { NEG = -1, POS = 0x7fffffff };
++static int is_no_tag(int tag) { return tag == NO_TAG; }
++static void test_enum(void)
++{
++    printf("enum: %d %d %zu %zu %zu %zu %d %d\n", is_no_tag(-1), is_no_tag(0), sizeof(NO_TAG), sizeof(TAG_MAX),
++           sizeof(U32), sizeof(NEG), (int)(TAG_MAX == 0xfffffffeu), (int)(NO_TAG < 0));
++}
++
+ int main(void)
+ {
++    test_enum();
+     test_transparent();
+     test_typed_overflow();
+     printf("decl attr: %d\n", test_decl_attr(1));
+diff --git a/tests/tests2/161_gnu_extensions2.expect b/tests/tests2/161_gnu_extensions2.expect
+index 436db0f..c6f370b 100644
+--- a/tests/tests2/161_gnu_extensions2.expect
++++ b/tests/tests2/161_gnu_extensions2.expect
+@@ -1,3 +1,4 @@
++enum: 1 0 4 4 4 4 1 0
+ transparent: 11 33 -1 -1 120 1
+ typed overflow: 1 18446744073709551614 0 2 1 0 1 -2147483648 1 -9223372036854775808 1
+ decl attr: 14

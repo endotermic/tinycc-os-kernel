@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] tccgen: transparent_union accepts a less qualified pointer,
+ void * and NULL
+
+GCC passes an argument to a transparent union parameter when it could be
+assigned to one of the members.  The exact match (is_compatible_
+unqualified_types) rejected the kernel's aes_encrypt(&key->aes, ...): the
+member is 'const struct aes_enckey *', the argument 'struct aes_enckey *'.
+When no member matches exactly, take the first pointer member whose target
+type is the argument's ignoring qualifiers, or where either side is void;
+an integer constant 0 goes into the first pointer member as a null pointer.
+
+The same commit lets an attribute precede a declarator of a declaration
+list, 'int a, __attribute__((unused)) b, c;' (drivers/gpu/drm/drm_modes.c
+writes 'int x, __maybe_unused y, z;'): the attribute is parsed into the
+declarator's attributes before type_decl().
+---
+ tccgen.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 6846de1..5dd5209 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -3731,6 +3731,29 @@ static void gen_cast_to_union(CType *type)
+         if (!(f->type.t & VT_BITFIELD)
+             && is_compatible_unqualified_types(&f->type, &st))
+             break;
++    if (!f) {
++        /* GCC: any argument that could be assigned to a member fits: a
++           pointer to a less qualified object ("const struct k *" member,
++           "struct k *" argument), a void pointer, a null pointer constant */
++        int null_const = is_integer_btype(st.t & VT_BTYPE)
++            && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++            && vtop->c.i == 0;
++        for (f = type->ref->next; f; f = f->next) {
++            CType *mt = &f->type, *mp, *sp;
++            if ((f->type.t & VT_BITFIELD) || (mt->t & VT_BTYPE) != VT_PTR)
++                continue;
++            if (null_const)
++                break;
++            if ((st.t & VT_BTYPE) != VT_PTR)
++                continue;
++            mp = pointed_type(mt), sp = pointed_type(&st);
++            if ((mp->t & VT_BTYPE) == VT_VOID || (sp->t & VT_BTYPE) == VT_VOID
++                || is_compatible_unqualified_types(mp, sp))
++                break;
++        }
++        if (null_const && f)
++            gen_cast(&f->type);
++    }
+     if (!f)
+         cast_error(&vtop->type, type);
+     if (!local_scope)
+@@ -9772,6 +9795,9 @@ static int decl(int l)
+         while (1) { /* iterate thru each declaration */
+             type = btype;
+ 	    ad = adbase;
++            /* GCC: attributes may precede a declarator of the list
++               ("int a, __attribute__((unused)) b, c;") */
++            parse_attribute(&ad);
+             type_decl(&type, &ad, &v, l == VT_CMP ? TYPE_DIRECT | TYPE_PARAM : TYPE_DIRECT);
+             /*ptype("decl", &type, v);*/
+             /* #pragma GCC visibility push(..) */

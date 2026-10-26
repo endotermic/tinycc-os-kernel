@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] tccpp: allow 200 nested #includes, as GCC
+
+INCLUDE_STACK_SIZE was 32; the kernel's block/blk-mq-dma.c nests 33
+headers deep (blk-mq-dma.c ... little_endian.h, linux/swab.h,
+uapi/linux/swab.h, uapi/asm/swab.h) and failed with '#include recursion
+too deep'.  GCC's limit is 200.
+---
+ tcc.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tcc.h b/tcc.h
+index 137fcd4..7fef0b5 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -421,7 +421,7 @@ extern long double strtold (const char *__nptr, char **__endptr);
+ 
+ /* -------------------------------------------- */
+ 
+-#define INCLUDE_STACK_SIZE  32
++#define INCLUDE_STACK_SIZE  200 /* GCC's limit; the Linux kernel nests 33 deep */
+ #define IFDEF_STACK_SIZE    64
+ #define VSTACK_SIZE         512
+ #define STRING_MAX_SIZE     1024

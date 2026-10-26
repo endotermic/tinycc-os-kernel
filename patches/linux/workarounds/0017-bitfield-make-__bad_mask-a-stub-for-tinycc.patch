@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:18:18 +0200
+Subject: [PATCH] bitfield: make __bad_mask() a stub for tinycc
+
+field_multiplier() calls the __bad_mask() canary when its argument is
+not a contiguous mask; an optimizing compiler inlines the helper into
+FIELD_PREP()/FIELD_GET() and the u32_encode_bits() family, sees that the
+condition is false for the constant masks and drops the call, so the
+extern is never referenced.  tinycc does not inline, keeps the call in
+every user (cfg80211, mac80211, ath9k, HD-audio: 25 objects) and fails
+the link.  Under __TINYC__ let the canary be an empty static inline, as
+seqlock.h already does for its canaries; the compile-time check stays
+with the other compilers.
+
+Assisted-by: LLM
+---
+ include/linux/bitfield.h | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/include/linux/bitfield.h b/include/linux/bitfield.h
+index 14f86e455..489600929 100644
+--- a/include/linux/bitfield.h
++++ b/include/linux/bitfield.h
+@@ -213,8 +213,17 @@
+ 
+ extern void __compiletime_error("value doesn't fit into mask")
+ __field_overflow(void);
++#ifdef __TINYC__
++/*
++ * tcc does not inline field_multiplier(): the call to the canary stays in
++ * every caller, so the mask check has to be a run-time no-op here (the
++ * compile-time check is made by the other compilers).
++ */
++static inline void __bad_mask(void) { }
++#else
+ extern void __compiletime_error("bad bitfield mask")
+ __bad_mask(void);
++#endif
+ static __always_inline u64 field_multiplier(u64 field)
+ {
+ 	if ((field | (field - 1)) & ((field | (field - 1)) + 1))

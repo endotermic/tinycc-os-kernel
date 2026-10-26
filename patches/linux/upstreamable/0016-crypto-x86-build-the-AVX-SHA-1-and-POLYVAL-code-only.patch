@@ -1,0 +1,180 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] crypto: x86 - build the AVX SHA-1 and POLYVAL code only if
+ the assembler can
+
+The AVX half of lib/crypto/x86/sha1-ssse3-and-avx.S, sha1-avx2-asm.S and
+polyval-pclmul-avx.S need an assembler with VEX encodings.  Every
+binutils the kernel supports has them, but a smaller assembler (the
+tinycc one, which does the rest of the x86_64 kernel) does not and
+cannot build the files at all; the SSSE3, SHA-NI and PCLMULQDQ versions
+next to them are plain SSE and assemble fine.
+
+Add a CONFIG_AS_AVX probe next to CONFIG_AS_AVX2 in
+arch/x86/Kconfig.assembler and build the AVX SHA-1 function, the AVX2
+SHA-1 file and the AVX POLYVAL file only when the probes pass; the glue
+code then dispatches to the SSSE3 SHA-1 and the PCLMULQDQ GHASH code and
+to the generic POLYVAL.  With a capable assembler nothing changes.
+
+Assisted-by: LLM
+---
+ arch/x86/Kconfig.assembler          |  5 +++++
+ lib/crypto/Makefile                 | 10 +++++++---
+ lib/crypto/x86/gf128hash.h          | 11 +++++++----
+ lib/crypto/x86/sha1-ssse3-and-avx.S |  4 ++++
+ lib/crypto/x86/sha1.h               |  8 ++++++++
+ 5 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/arch/x86/Kconfig.assembler b/arch/x86/Kconfig.assembler
+index a545474bf..b1f4f69cc 100644
+--- a/arch/x86/Kconfig.assembler
++++ b/arch/x86/Kconfig.assembler
+@@ -1,6 +1,11 @@
+ # SPDX-License-Identifier: GPL-2.0
+ # Copyright (C) 2020 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
+ 
++config AS_AVX
++	def_bool $(as-instr,vpaddd %xmm0$(comma)%xmm1$(comma)%xmm2)
++	help
++	  Supported by binutils >= 2.19 and LLVM integrated assembler
++
+ config AS_AVX2
+ 	def_bool $(as-instr,vpaddd %ymm0$(comma)%ymm1$(comma)%ymm2)
+ 	help
+diff --git a/lib/crypto/Makefile b/lib/crypto/Makefile
+index 195c4ea88..e47b8a4e2 100644
+--- a/lib/crypto/Makefile
++++ b/lib/crypto/Makefile
+@@ -173,8 +173,10 @@ OBJECT_FILES_NON_STANDARD_powerpc/ghashp8-ppc.o := y
+ endif
+ 
+ libgf128hash-$(CONFIG_RISCV) += riscv/ghash-riscv64-zvkg.o
+-libgf128hash-$(CONFIG_X86) += x86/ghash-pclmul.o \
+-			      x86/polyval-pclmul-avx.o
++libgf128hash-$(CONFIG_X86) += x86/ghash-pclmul.o
++ifeq ($(CONFIG_AS_AVX),y)
++libgf128hash-$(CONFIG_X86) += x86/polyval-pclmul-avx.o
++endif
+ endif # CONFIG_CRYPTO_LIB_GF128HASH_ARCH
+ 
+ # clean-files must be defined unconditionally
+@@ -290,8 +292,10 @@ libsha1-$(CONFIG_SPE) += powerpc/sha1-spe-asm.o
+ endif
+ libsha1-$(CONFIG_SPARC) += sparc/sha1_asm.o
+ libsha1-$(CONFIG_X86) += x86/sha1-ssse3-and-avx.o \
+-			 x86/sha1-avx2-asm.o \
+ 			 x86/sha1-ni-asm.o
++ifeq ($(CONFIG_AS_AVX2),y)
++libsha1-$(CONFIG_X86) += x86/sha1-avx2-asm.o
++endif
+ endif # CONFIG_CRYPTO_LIB_SHA1_ARCH
+ 
+ ################################################################################
+diff --git a/lib/crypto/x86/gf128hash.h b/lib/crypto/x86/gf128hash.h
+index 6b79b06ca..a8a0c095b 100644
+--- a/lib/crypto/x86/gf128hash.h
++++ b/lib/crypto/x86/gf128hash.h
+@@ -30,7 +30,8 @@ static void polyval_preparekey_arch(struct polyval_key *key,
+ {
+ 	static_assert(ARRAY_SIZE(key->h_powers) == NUM_H_POWERS);
+ 	memcpy(&key->h_powers[NUM_H_POWERS - 1], raw_key, POLYVAL_BLOCK_SIZE);
+-	if (static_branch_likely(&have_pclmul_avx) && irq_fpu_usable()) {
++	if (IS_ENABLED(CONFIG_AS_AVX) &&
++	    static_branch_likely(&have_pclmul_avx) && irq_fpu_usable()) {
+ 		kernel_fpu_begin();
+ 		for (int i = NUM_H_POWERS - 2; i >= 0; i--) {
+ 			key->h_powers[i] = key->h_powers[i + 1];
+@@ -53,7 +54,8 @@ static void polyval_mul_x86(struct polyval_elem *a,
+ {
+ 	if (static_branch_likely(&have_pclmul) && irq_fpu_usable()) {
+ 		kernel_fpu_begin();
+-		if (static_branch_likely(&have_pclmul_avx))
++		if (IS_ENABLED(CONFIG_AS_AVX) &&
++		    static_branch_likely(&have_pclmul_avx))
+ 			polyval_mul_pclmul_avx(a, b);
+ 		else
+ 			polyval_mul_pclmul(a, b);
+@@ -104,7 +106,8 @@ static void polyval_blocks_arch(struct polyval_elem *acc,
+ 				const struct polyval_key *key,
+ 				const u8 *data, size_t nblocks)
+ {
+-	if (static_branch_likely(&have_pclmul_avx) && irq_fpu_usable()) {
++	if (IS_ENABLED(CONFIG_AS_AVX) &&
++	    static_branch_likely(&have_pclmul_avx) && irq_fpu_usable()) {
+ 		do {
+ 			/* Allow rescheduling every 4 KiB. */
+ 			size_t n = min_t(size_t, nblocks,
+@@ -127,7 +130,7 @@ static void gf128hash_mod_init_arch(void)
+ {
+ 	if (boot_cpu_has(X86_FEATURE_PCLMULQDQ)) {
+ 		static_branch_enable(&have_pclmul);
+-		if (boot_cpu_has(X86_FEATURE_AVX))
++		if (IS_ENABLED(CONFIG_AS_AVX) && boot_cpu_has(X86_FEATURE_AVX))
+ 			static_branch_enable(&have_pclmul_avx);
+ 	}
+ }
+diff --git a/lib/crypto/x86/sha1-ssse3-and-avx.S b/lib/crypto/x86/sha1-ssse3-and-avx.S
+index 78b48cb09..0973800cd 100644
+--- a/lib/crypto/x86/sha1-ssse3-and-avx.S
++++ b/lib/crypto/x86/sha1-ssse3-and-avx.S
+@@ -465,6 +465,8 @@ W_PRECALC_SSSE3
+  */
+ SHA1_VECTOR_ASM     sha1_transform_ssse3
+ 
++#ifdef CONFIG_AS_AVX
++
+ .macro W_PRECALC_AVX
+ 
+ .purgem W_PRECALC_00_15
+@@ -549,3 +551,5 @@ W_PRECALC_AVX
+  *			   const u8 *data, size_t nblocks);
+  */
+ SHA1_VECTOR_ASM     sha1_transform_avx
++
++#endif /* CONFIG_AS_AVX */
+diff --git a/lib/crypto/x86/sha1.h b/lib/crypto/x86/sha1.h
+index c48a0131f..061fa1a42 100644
+--- a/lib/crypto/x86/sha1.h
++++ b/lib/crypto/x86/sha1.h
+@@ -25,9 +25,12 @@ DEFINE_STATIC_CALL(sha1_blocks_x86, sha1_blocks_generic);
+ 	}
+ 
+ DEFINE_X86_SHA1_FN(sha1_blocks_ssse3, sha1_transform_ssse3);
++#ifdef CONFIG_AS_AVX
+ DEFINE_X86_SHA1_FN(sha1_blocks_avx, sha1_transform_avx);
++#endif
+ DEFINE_X86_SHA1_FN(sha1_blocks_ni, sha1_ni_transform);
+ 
++#ifdef CONFIG_AS_AVX2
+ #define SHA1_AVX2_BLOCK_OPTSIZE 4 /* optimal 4*64 bytes of SHA1 blocks */
+ 
+ asmlinkage void sha1_transform_avx2(struct sha1_block_state *state,
+@@ -47,6 +50,7 @@ static void sha1_blocks_avx2(struct sha1_block_state *state,
+ 		sha1_blocks_generic(state, data, nblocks);
+ 	}
+ }
++#endif /* CONFIG_AS_AVX2 */
+ 
+ static void sha1_blocks(struct sha1_block_state *state,
+ 			const u8 *data, size_t nblocks)
+@@ -59,15 +63,19 @@ static void sha1_mod_init_arch(void)
+ {
+ 	if (boot_cpu_has(X86_FEATURE_SHA_NI)) {
+ 		static_call_update(sha1_blocks_x86, sha1_blocks_ni);
++#ifdef CONFIG_AS_AVX
+ 	} else if (cpu_has_xfeatures(XFEATURE_MASK_SSE | XFEATURE_MASK_YMM,
+ 				     NULL) &&
+ 		   boot_cpu_has(X86_FEATURE_AVX)) {
++#ifdef CONFIG_AS_AVX2
+ 		if (boot_cpu_has(X86_FEATURE_AVX2) &&
+ 		    boot_cpu_has(X86_FEATURE_BMI1) &&
+ 		    boot_cpu_has(X86_FEATURE_BMI2))
+ 			static_call_update(sha1_blocks_x86, sha1_blocks_avx2);
+ 		else
++#endif
+ 			static_call_update(sha1_blocks_x86, sha1_blocks_avx);
++#endif
+ 	} else if (boot_cpu_has(X86_FEATURE_SSSE3)) {
+ 		static_call_update(sha1_blocks_x86, sha1_blocks_ssse3);
+ 	}

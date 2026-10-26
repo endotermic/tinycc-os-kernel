@@ -153,9 +153,11 @@ directly, which is also better code for gcc.
 4. tcc polish: `__builtin_popcount*` still calls libtcc1; `_Pragma("pack")` only warns; the
    inline-stub fold is disabled with `-g`; `do { } while` in dead code only when
    delimitable.
-5. Coverage: only `minimal.config` on QEMU was tested; a larger config (SMP, modules,
-   KALLSYMS, ORC unwinder, jump labels/static calls) will meet more constructs; KALLSYMS
-   would also exercise tld's `nm` in link-vmlinux.sh.
+5. Coverage: `minimal.config` and, since 2026-10-26, `drivers.config` (PCI, networking,
+   Wi-Fi, Bluetooth, sound, USB, mouse, DRM: block, SCSI, USB, DRM, ALSA, mac80211, the
+   Bluetooth stack and the crypto library, see the section below) on QEMU; a larger config
+   (modules, KALLSYMS, ORC unwinder, jump labels/static calls) will meet more constructs;
+   KALLSYMS would also exercise tld's `nm` in link-vmlinux.sh.
 6. Semantics worth a second look before upstreaming: patch 0042 drops unused static
    functions regardless of -O (gcc only at -O1+); patch 0034 global register variables
    update only the slot on C stores; patch 0037 folds trivial static functions also
@@ -167,6 +169,43 @@ directly, which is also better code for gcc.
    open there. The RCU stall report that the serial transfer provoked was QEMU's UART
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
+
+## The device drivers (`kernels/linux/drivers.config`, 2026-10-26)
+
+The fragment turns on PCI, TCP/IP (IPv4/IPv6) with the Ethernet drivers QEMU and most PCs
+have (e1000/e1000e, RTL8139/RTL8169, virtio-net, USB CDC/RNDIS), Wi-Fi (cfg80211/mac80211,
+ath9k -- the one common PCI Wi-Fi driver that needs no firmware file -- and mac80211_hwsim),
+Bluetooth (btusb, hci_uart H4, vhci), ALSA (HD Audio with the generic, Realtek and Conexant
+codecs, AC'97, USB audio, the OSS /dev/dsp emulation), USB (xHCI/EHCI/OHCI/UHCI, HID, mass
+storage with SCSI disks, FAT and ext4), the PS/2 and USB mouse with mousedev and evdev, and
+DRM with the fbdev emulation (simpledrm for the firmware framebuffer, bochs-drm for QEMU's
+VGA, virtio-gpu), which sets the EDID-preferred mode, i.e. the display's native resolution.
+Everything is built in; the configuration grows from 1588 to about 3500 lines, the bzImage
+from 2.0 to 6.5 MB, the build from 1249 to about 1800 steps (2091 tcc invocations, 0 gcc).
+
+What it met (FIX-LOG 106-111, K17-K19): a transparent union with const pointer members
+taking non-const arguments (aes_encrypt), the typed overflow builtins (ecc.c), an attribute
+before a later declarator (drm_modes.c), 33 nested includes (blk-mq-dma.c), the kernel's
+first use of enumerators referenced inside their own list with a value that does not fit
+int (`BLK_MQ_NO_TAG = -1U, BLK_MQ_TAG_MAX = BLK_MQ_NO_TAG - 1`: the comparison with an int
+tag was made in 64 bits and the first SCSI request freed crashed the kernel -- the one bug
+that reached the boot), AES-NI/PCLMULQDQ/SSE4.1 opcodes for the assembler, the AVX SHA-1 and
+POLYVAL assembly gated like SHA-256's (K17), `__bad_mask()` as a stub (K18) and an
+`acpi_has_method()` stub for !ACPI (K19). The i386 build added two: the address of a label
+leaving its statement expression (the generic `_THIS_IP_`, 112) and `regparm(0)` ignored
+under `-mregparm=3` (113: the first C call of an `asmlinkage` assembly routine with
+arguments, `csum_partial`, passed them in registers; the first IPv6 packet's checksum ran
+off the end of memory), and K20: the K14 division helpers must be `asmlinkage` too, since
+tcc's libcalls are cdecl (every 64-bit division by a constant on i386 had been wrong). `tcc -run` also learnt to take a `#!` script with
+a foreign extension (udhcpc's default.script). Still open: the VEX/EVEX assembler (the AVX
+code paths stay out), `regulatory.db` is not in the image (cfg80211 uses the world domain).
+
+QEMU side: `run.sh` attaches the devices by default (`--no-devices`), the VGA with an EDID
+whose preferred mode is `RES` (so the direct boot has the framebuffer console now, not only
+the ISO), the e1000 on the user-mode network, HD Audio (`AUDIO=` backend), xHCI with a USB
+tablet and a stick image; `scripts/devices-test.sh` drives `userland/devices-test.c` in the
+guest (HTTP from the host, mouse motion over QMP) and checks the screen is at `RES`. QEMU
+emulates no Wi-Fi or Bluetooth hardware; mac80211_hwsim and vhci stand in for them.
 
 ## The i386 target
 
@@ -265,7 +304,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 15 kernel patches are
+  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 19 kernel patches are
   applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same

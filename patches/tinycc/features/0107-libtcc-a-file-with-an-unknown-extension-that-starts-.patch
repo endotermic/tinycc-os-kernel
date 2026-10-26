@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:33:23 +0200
+Subject: [PATCH] libtcc: a file with an unknown extension that starts with
+ '#!' is C
+
+tcc -run runs scripts through the kernel's #! mechanism; a script whose name
+has another extension (udhcpc's /usr/share/udhcpc/default.script) was taken
+for a binary ('unrecognized file type').  guess_filetype() looks at the first
+two bytes of such a file.
+---
+ libtcc.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index a1d4698..93f1e65 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -1206,8 +1206,19 @@ static int guess_filetype(const char *filename)
+                      || !PATHCMP(ext, "h")
+                      || !PATHCMP(ext, "i"))
+                 filetype = AFF_TYPE_C;
+-            else
+-                filetype |= AFF_TYPE_BIN;
++            else {
++                /* a script ("#!/usr/bin/tcc -run" first line) is C whatever
++                   its name, e.g. udhcpc's default.script */
++                char hdr[2];
++                int fd = open(filename, O_RDONLY | O_BINARY);
++                if (fd >= 0) {
++                    if (read(fd, hdr, 2) == 2 && hdr[0] == '#' && hdr[1] == '!')
++                        filetype = AFF_TYPE_C;
++                    close(fd);
++                }
++                if (!filetype)
++                    filetype |= AFF_TYPE_BIN;
++            }
+         } else {
+             filetype = AFF_TYPE_C;
+         }

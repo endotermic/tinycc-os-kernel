@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # run.sh - boot out/<arch> in QEMU on the serial console.  Extra arguments go to QEMU.
 # QEMU exits when the guest reboots (-no-reboot): 'exit' in the shell, or Ctrl-A X.
-# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--nolibc] [--selfhost [--auto]] [qemu args...]
+# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--no-devices] [--nolibc] [--selfhost [--auto]] [qemu args...]
 #        ./run.sh --list
 #   --arch    x86_64 or i386 (also ARCH in the environment).  Without it, run.sh looks at what
 #             is in place in out/<arch>/ (the ISO, or the kernel and the initramfs image a
@@ -19,6 +19,14 @@
 #   --vga     open QEMU's display window (standard VGA with EDID) for the VGA/framebuffer
 #             console and keyboard; the serial console stays on this terminal
 #   --no-vga  headless (-nographic) even with --iso
+#   --no-devices  only the serial ports and the VGA: without the emulated devices that the
+#             drivers of kernels/linux/drivers.config handle, which are attached by default:
+#             an e1000 Ethernet card on QEMU's user-mode network (DHCP, NAT to the host;
+#             10.0.2.2 is the host), an Intel HD Audio card with a codec (duplex), an xHCI USB
+#             controller with a USB tablet and a USB stick (USBSTICK below), and the standard
+#             VGA with an EDID that names RES as the preferred mode, which the bochs-drm
+#             driver sets (so the direct boot gets a framebuffer console too); the PS/2 mouse
+#             is always there.  The guest's devices-test checks all of them (scripts/devices-test.sh)
 #   --nolibc  use the libc-free smoke-test image (banner, reboot, exit in ~2 s)
 #   --selfhost  the self-hosting image (initramfs-selfhost.cpio from scripts/build.sh selfhost:
 #             the busybox image plus the kernel, tcc, tld and make sources and the toolchain to
@@ -33,25 +41,30 @@
 #             drives the first two
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
-# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (64M; 128M with --efi, 1G with --selfhost), KERNEL (a bzImage to boot instead of
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (128M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
 # host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
-# 1024x768 = XGA: the ISO gets it through an SMBIOS OEM string that GRUB reads for gfxpayload;
-# the direct boot stays on the VGA text console since the tcc kernel is built without the
-# real-mode video mode setting (CONFIG_X86_BOOT_VIDEO_MODES, kernels/linux/tcc.config), so
-# vga= is not passed; RES= (empty) leaves GRUB to its
-# defaults), OVMF (firmware path), TIMEOUT (seconds; default none on a terminal, 30 when stdin
+# 1024x768 = XGA: the preferred mode of the VGA's EDID, which the kernel's bochs-drm driver
+# sets, and for the ISO also GRUB's gfxpayload through an SMBIOS OEM string; the tcc kernel
+# is built without the real-mode video mode setting (CONFIG_X86_BOOT_VIDEO_MODES,
+# kernels/linux/tcc.config), so vga= is not passed; RES= (empty) leaves the EDID and GRUB to their
+# defaults), APPEND (extra kernel command line parameters for the direct boot, e.g.
+# tcc.devtest), AUDIO (QEMU audio backend of the sound card: none, the default, plays into
+# the void; pa, pipewire, alsa, sdl play on the host), USBSTICK (disk image attached as the
+# USB stick: out/<arch>/usbstick.img by default, created empty with 16 MB when missing;
+# USBSTICK= attaches none), OVMF (firmware path), TIMEOUT (seconds; default none on a terminal, 30 when stdin
 # is not a tty; 0 = none)
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-iso= efi= vga= selfhost= auto= form=shell list=
+iso= efi= vga= selfhost= auto= form=shell list= devices=1
 while [ $# -gt 0 ]; do
     case $1 in
         --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;;
         -h|--help) usage;;
         --list) list=1; shift;;
         --iso) iso=1; form=iso; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
+        --no-devices) devices=; shift;;
         --nolibc) form=nolibc; shift;;
         --selfhost) selfhost=1; form=selfhost; shift;;
         --auto) auto=auto; shift;; --auto=*) auto=${1#--auto=}; shift;;
@@ -148,15 +161,16 @@ if [ -n "$efi" ]; then
     esac
     MEM=${MEM:-128M}
 fi
-# screen resolution of QEMU's VGA for the ISO: the GRUB gfxpayload (see boot/mkiso.sh: read
-# from SMBIOS OEM string 1; ",," is a literal comma in a QEMU option value).  The direct boot
-# has no vga= any more: the tcc kernel's real-mode setup does not set video modes (K12 in
-# docs/FIX-LOG.md), the screen is the VGA text console there.
+# screen resolution of QEMU's VGA: the preferred mode of the VGA's EDID (bochs-drm sets it,
+# with or without --vga: the device is there headless too) and, for the ISO, the GRUB
+# gfxpayload (see boot/mkiso.sh: read from SMBIOS OEM string 1; ",," is a literal comma in
+# a QEMU option value).  The direct boot has no vga=: the tcc kernel's real-mode setup does
+# not set video modes (K12 in docs/FIX-LOG.md).
 RES=${RES-1024x768}
 # the self-hosting image: RAM for the source tree, the build and the compilers (see
 # userland/selfhost/build-kernel), the second UART captured to a file, GRUB's menu entry
 # and the guest's automatic run chosen through SMBIOS OEM strings / the command line
-cmdline="console=tty0 console=ttyS0"
+cmdline="console=tty0 console=ttyS0${APPEND:+ $APPEND}"
 if [ -n "$selfhost" ]; then
     MEM=${MEM:-1G}
     mkdir -p "$O/selfhost"
@@ -187,13 +201,30 @@ set -- -smp "$SMP,sockets=$SMP,cores=1,threads=1" "$@"
 # and QEMU warns once per virtual CPU; the host's own model has no such gap
 if [ "$KVM" != 0 ] && [ -w /dev/kvm ]; then set -- -accel kvm -cpu host "$@"
 elif [ "$KVM" != 0 ]; then echo "   /dev/kvm is not writable: software emulation (TCG), slow for compiling" >&2; fi
+# the emulated devices (--no-devices leaves them out; see the header)
+if [ -n "$devices" ]; then
+    # (the stick first, so that its usb-storage device follows the xHCI controller on the command line)
+    if [ -n "${USBSTICK-$O/usbstick.img}" ]; then
+        USBSTICK=${USBSTICK-$O/usbstick.img}
+        [ -f "$USBSTICK" ] || { mkdir -p "$(dirname "$USBSTICK")"; truncate -s 16M "$USBSTICK" || die "cannot create $USBSTICK"; }
+        set -- -drive if=none,id=usbstick,format=raw,file="$USBSTICK" -device usb-storage,drive=usbstick "$@"
+    fi
+    vgaopts="edid=on${RES:+,xres=${RES%x*},yres=${RES#*x}}"
+    set -- -vga none -device "VGA,$vgaopts" \
+           -nic user,model=e1000 \
+           -audiodev "${AUDIO:-none},id=snd0" -device intel-hda -device hda-duplex,audiodev=snd0 \
+           -device qemu-xhci,id=xhci -device usb-tablet "$@"
+else
+    set -- -nic none "$@"
+fi
 if [ -n "$iso" ] && [ -z "$vga" ]; then
     # the ISO boots to the screen by default: open the window when there is a display
     if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then vga=1; else echo "   no display: headless (--vga to force)" >&2; fi
 fi
 if [ "$vga" = 1 ]; then
-    set -- -vga std -serial mon:stdio "$@"      # window + serial on this terminal (Ctrl-A C: monitor)
+    set -- -serial mon:stdio "$@"               # window + serial on this terminal (Ctrl-A C: monitor)
+    [ -n "$devices" ] || set -- -vga std "$@"
 else
     set -- -nographic -serial mon:stdio "$@"    # explicit, so that --selfhost's -serial file: is the second port
 fi
-$TIMEOUT $QEMU -m "${MEM:-64M}" -no-reboot "$@"
+$TIMEOUT $QEMU -m "${MEM:-128M}" -no-reboot "$@"

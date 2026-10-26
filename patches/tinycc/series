@@ -99,3 +99,12 @@ bugfixes/0097-x86_64-link-the-8-and-16-bit-relocations.patch
 bugfixes/0098-tccasm-tccelf-a-local-label-referenced-by-an-8-16-bi.patch
 bugfixes/0099-i386-gen-regparm-with-floating-point-arguments-and-v.patch
 features/0100-tests-the-cases-of-fixes-98-105.patch
+features/0101-i386-asm-AES-NI-PCLMULQDQ-and-movntdqa.patch
+compatibility/0102-tccgen-transparent_union-accepts-a-less-qualified-po.patch
+compatibility/0103-tccpp-allow-200-nested-includes-as-GCC.patch
+compatibility/0104-tccdefs-the-typed-overflow-builtins.patch
+features/0105-tests-the-cases-of-fixes-106-109-161_gnu_extensions2.patch
+bugfixes/0106-tccgen-an-enumerator-keeps-the-type-of-its-expressio.patch
+features/0107-libtcc-a-file-with-an-unknown-extension-that-starts-.patch
+bugfixes/0108-tccgen-define-the-symbol-of-a-label-when-its-address.patch
+bugfixes/0109-i386-regparm-0-keeps-the-arguments-on-the-stack-unde.patch

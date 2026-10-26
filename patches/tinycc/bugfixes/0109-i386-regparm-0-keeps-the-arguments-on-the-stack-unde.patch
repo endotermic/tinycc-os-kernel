@@ -1,0 +1,210 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 22:06:57 +0200
+Subject: [PATCH] i386: regparm(0) keeps the arguments on the stack under
+ -mregparm
+
+__attribute__((regparm(0))), the kernel's asmlinkage, set nothing: the
+function got the -mregparm default like a function without an attribute,
+so the 32-bit kernel called csum_partial() (arch/x86/lib/checksum_32.S,
+which reads its arguments from the stack) with them in %eax/%edx/%ecx and
+the first IPv6 packet's checksum read beyond the end of memory.  A new
+FuncAttr bit, func_cdecl, records an explicit cdecl or regparm(0); the
+default is not applied to it, a redeclaration without the attribute is
+compatible with it and takes it over (merge_funcattr, also for a later
+prototype in patch_type), as with GCC.  Test 162 (i386, -mregparm=3)
+calls such functions the way assembly would.
+---
+ tcc.h                                 |  3 +-
+ tccgen.c                              | 33 +++++++++++++++++++--
+ tests/tests2/162_i386_mregparm.c      | 41 +++++++++++++++++++++++++++
+ tests/tests2/162_i386_mregparm.expect |  3 ++
+ tests/tests2/Makefile                 |  4 ++-
+ 5 files changed, 79 insertions(+), 5 deletions(-)
+ create mode 100644 tests/tests2/162_i386_mregparm.c
+ create mode 100644 tests/tests2/162_i386_mregparm.expect
+
+diff --git a/tcc.h b/tcc.h
+index 7fef0b5..06fd34e 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -523,7 +523,8 @@ struct FuncAttr {
+     func_alwinl : 1, /* always_inline */
+     func_fold   : 2, /* trivial body: 1 empty (void), 2 'return <const>' */
+     func_fval   : 12, /* the constant + 2048 (see inline_fold_check) */
+-    func_used   : 1; /* attribute((used)) */
++    func_used   : 1, /* attribute((used)) */
++    func_cdecl  : 1; /* an explicit cdecl/regparm(0): -mregparm does not apply */
+ };
+ 
+ /* symbol management */
+diff --git a/tccgen.c b/tccgen.c
+index 1831f5a..dec2bde 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -1250,7 +1250,7 @@ static void merge_symattr(struct SymAttr *sa, struct SymAttr *sa1)
+ /* Merge function attributes.  */
+ static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
+ {
+-    if (fa1->func_call && !fa->func_call)
++    if (fa1->func_call && !fa->func_call && !fa->func_cdecl)
+       fa->func_call = fa1->func_call;
+     if (fa1->func_type && !fa->func_type)
+       fa->func_type = fa1->func_type;
+@@ -1262,6 +1262,10 @@ static void merge_funcattr(struct FuncAttr *fa, struct FuncAttr *fa1)
+       fa->func_ctor = 1;
+     if (fa1->func_dtor)
+       fa->func_dtor = 1;
++    if (fa1->func_cdecl)
++      /* an explicit regparm(0) in either declaration wins over the
++         -mregparm default of the other */
++      fa->func_cdecl = 1, fa->func_call = FUNC_CDECL;
+     if (fa1->func_used)
+       fa->func_used = 1;
+ }
+@@ -1336,6 +1340,9 @@ static void patch_type(Sym *sym, CType *type)
+             sym->type.t &= ~VT_INLINE | static_proto;
+             if (ft1 == FUNC_OLD && ft2 != FUNC_OLD)
+                 sym->type.ref = type->ref;
++            else
++                /* attributes of a later prototype (regparm(0), noreturn) */
++                merge_funcattr(&sym->type.ref->f, &type->ref->f);
+         }
+ 
+     } else {
+@@ -2924,13 +2931,27 @@ static inline int is_null_pointer(SValue *p)
+ }
+ 
+ /* compare function types. OLD functions match any new functions */
++/* a function whose calling convention is only the -mregparm default: it is
++   compatible with, and takes over, an explicit regparm(0) declaration */
++static int is_default_regparm(struct FuncAttr *f)
++{
++#ifdef TCC_TARGET_I386
++    return tcc_state->regparm && !f->func_cdecl
++        && f->func_call == FUNC_FASTCALL1 + tcc_state->regparm - 1;
++#else
++    return 0;
++#endif
++}
++
+ static int is_compatible_func(CType *type1, CType *type2)
+ {
+     Sym *s1, *s2;
+ 
+     s1 = type1->ref;
+     s2 = type2->ref;
+-    if (s1->f.func_call != s2->f.func_call)
++    if (s1->f.func_call != s2->f.func_call
++        && !(s1->f.func_cdecl && is_default_regparm(&s2->f))
++        && !(s2->f.func_cdecl && is_default_regparm(&s1->f)))
+         return 0;
+     if (s1->f.func_type != s2->f.func_type
+         && s1->f.func_type != FUNC_OLD
+@@ -4239,6 +4260,7 @@ redo:
+         case TOK_CDECL2:
+         case TOK_CDECL3:
+             ad->f.func_call = FUNC_CDECL;
++            ad->f.func_cdecl = 1;
+             break;
+         case TOK_STDCALL1:
+         case TOK_STDCALL2:
+@@ -4256,6 +4278,10 @@ redo:
+                 n = 0;
+             if (n > 0)
+                 ad->f.func_call = FUNC_FASTCALL1 + n - 1;
++            else
++                /* regparm(0), the kernel's asmlinkage: the stack even
++                   under -mregparm (the asm callee reads it there) */
++                ad->f.func_call = FUNC_CDECL, ad->f.func_cdecl = 1;
+             skip(')');
+             break;
+         case TOK_FASTCALL1:
+@@ -5361,7 +5387,8 @@ static int post_type(CType *type, AttributeDef *ad, int storage, int td)
+         /* -mregparm=N: the calling convention of every function that
+            does not name one; variadic functions keep their arguments on
+            the stack, as with GCC */
+-        if (tcc_state->regparm && !ad->f.func_call && l != FUNC_ELLIPSIS)
++        if (tcc_state->regparm && !ad->f.func_call && !ad->f.func_cdecl
++            && l != FUNC_ELLIPSIS)
+             ad->f.func_call = FUNC_FASTCALL1 + tcc_state->regparm - 1;
+ #endif
+         sr->type = *type, s = sr;
+diff --git a/tests/tests2/162_i386_mregparm.c b/tests/tests2/162_i386_mregparm.c
+new file mode 100644
+index 0000000..e25f44c
+--- /dev/null
++++ b/tests/tests2/162_i386_mregparm.c
+@@ -0,0 +1,41 @@
++/* i386, compiled with -mregparm=3 (tinycc-os-kernel fix 113): every function
++   without an attribute takes its first arguments in registers, but an
++   explicit regparm(0) (the kernel's asmlinkage, for functions written in
++   assembly that read the stack) keeps them on the stack, also when another
++   declaration of the function names no convention; printf is variadic and
++   stays cdecl. */
++#include <stdio.h>
++
++/* the attribute on the prototype, the definition without it */
++int __attribute__((regparm(0))) stack3(int a, int b, int c);
++int stack3(int a, int b, int c) { return a * 100 + b * 10 + c; }
++/* the attribute on a later prototype only */
++int stack3b(int a, int b, int c);
++int __attribute__((regparm(0))) stack3b(int a, int b, int c);
++int stack3b(int a, int b, int c) { return a * 100 + b * 10 + c; }
++/* no attribute anywhere: the -mregparm default */
++int reg3(int a, int b, int c);
++int reg3(int a, int b, int c) { return a * 100 + b * 10 + c; }
++
++/* calls made by hand, the way an assembly caller or callee would make them */
++static int call_on_stack(int (*f)(int, int, int), int a, int b, int c)
++{
++    int r;
++    __asm__ volatile("pushl %4; pushl %3; pushl %2; call *%1; addl $12, %%esp"
++                     : "=a"(r) : "r"(f), "r"(a), "r"(b), "r"(c) : "edx", "ecx", "memory");
++    return r;
++}
++static int call_in_regs(int (*f)(int, int, int), int a, int b, int c)
++{
++    int r;
++    __asm__ volatile("call *%1" : "=a"(r) : "r"(f), "a"(a), "d"(b), "c"(c) : "memory");
++    return r;
++}
++
++int main(void)
++{
++    printf("stack3: %d %d\n", stack3(1, 2, 3), call_on_stack(stack3, 1, 2, 3));
++    printf("stack3b: %d %d\n", stack3b(4, 5, 6), call_on_stack(stack3b, 4, 5, 6));
++    printf("reg3: %d %d\n", reg3(7, 8, 9), call_in_regs(reg3, 7, 8, 9));
++    return 0;
++}
+diff --git a/tests/tests2/162_i386_mregparm.expect b/tests/tests2/162_i386_mregparm.expect
+new file mode 100644
+index 0000000..423dc4d
+--- /dev/null
++++ b/tests/tests2/162_i386_mregparm.expect
+@@ -0,0 +1,3 @@
++stack3: 123 123
++stack3b: 456 456
++reg3: 789 789
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index dc1a184..22bcbc6 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -14,7 +14,7 @@ ifeq (-$(CONFIG_arm_eabi)-$(CONFIG_arm_vfp)-,-yes--)
+ endif
+ ifeq (,$(filter i386,$(ARCH)))
+  SKIP += 98_al_ax_extend.test 99_fastcall.test
+- SKIP += 157_i386_regparm_pic.test
++ SKIP += 157_i386_regparm_pic.test 162_i386_mregparm.test
+ endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+@@ -184,6 +184,8 @@ endif
+ # the i386 regparm/PIC test runs without and with -fPIC
+ 157_i386_regparm_pic.test: T1 = ( $(TCC) -run $1 && $(TCC) -fPIC -run $1 )
+ 157_i386_regparm_pic.test: GEN = $(GEN-TCC)
++162_i386_mregparm.test: T1 = ( $(TCC) -mregparm=3 -run $1 )
++162_i386_mregparm.test: GEN = $(GEN-TCC)
+ 
+ # archives with circular references inside -Wl,--start-group/--end-group:
+ # a and a_helper in one archive (two members), b in another

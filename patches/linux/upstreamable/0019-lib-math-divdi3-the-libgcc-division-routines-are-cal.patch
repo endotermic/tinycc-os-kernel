@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 22:18:53 +0200
+Subject: [PATCH] lib/math/divdi3: the libgcc division routines are called with
+ stack arguments
+
+The compiler emits the calls to __divdi3, __moddi3, __udivdi3 and
+__umoddi3 the way it calls any libgcc routine, with both operands on
+the stack, also when the kernel is built with -mregparm=3 (tinycc, the
+only compiler that uses these; GCC strength-reduces the divisions).
+Compiled with the kernel's default convention the routines took the
+dividend from %eax:%edx and the divisor from where the caller had put
+the dividend: a 64-bit division by PAGE_SIZE in __find_get_block_slow()
+divided by zero when the first FAT filesystem was mounted on a 32-bit
+guest.  Give the four routines asmlinkage, so that they read their
+arguments from the stack.
+
+Assisted-by: LLM
+---
+ lib/math/divdi3.c | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/lib/math/divdi3.c b/lib/math/divdi3.c
+index 4d024f740..b4462b9df 100644
+--- a/lib/math/divdi3.c
++++ b/lib/math/divdi3.c
+@@ -7,15 +7,16 @@
+  * emits the calls (tinycc) gets them from here, on top of lib/math/div64.c.
+  */
+ #include <linux/export.h>
++#include <linux/linkage.h>
+ #include <linux/math64.h>
+ 
+-long long __divdi3(long long a, long long b)
++asmlinkage long long __divdi3(long long a, long long b)
+ {
+ 	return div64_s64(a, b);
+ }
+ EXPORT_SYMBOL(__divdi3);
+ 
+-long long __moddi3(long long a, long long b)
++asmlinkage long long __moddi3(long long a, long long b)
+ {
+ 	s64 rem;
+ 
+@@ -24,13 +25,13 @@ long long __moddi3(long long a, long long b)
+ }
+ EXPORT_SYMBOL(__moddi3);
+ 
+-unsigned long long __udivdi3(unsigned long long a, unsigned long long b)
++asmlinkage unsigned long long __udivdi3(unsigned long long a, unsigned long long b)
+ {
+ 	return div64_u64(a, b);
+ }
+ EXPORT_SYMBOL(__udivdi3);
+ 
+-unsigned long long __umoddi3(unsigned long long a, unsigned long long b)
++asmlinkage unsigned long long __umoddi3(unsigned long long a, unsigned long long b)
+ {
+ 	u64 rem;
+ 

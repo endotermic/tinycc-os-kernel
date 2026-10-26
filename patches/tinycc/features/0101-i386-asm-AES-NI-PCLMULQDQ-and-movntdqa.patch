@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] i386-asm: AES-NI, PCLMULQDQ and movntdqa
+
+aesenc, aesenclast, aesdec, aesdeclast, aesimc, aeskeygenassist (66 0F 38
+DC-DF, DB; 66 0F 3A DF), pclmulqdq (66 0F 3A 44) and SSE4.1's movntdqa
+(66 0F 38 2A), as the Linux kernel's lib/crypto/x86/aes-aesni.S,
+ghash-pclmul.S and drivers/gpu/drm/drm_cache.c use them.  Encodings
+byte-compared with GNU as.
+---
+ x86_64-asm.h | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index c52032b..25323bf 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -697,6 +697,16 @@ ALT(DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG32))
+     DEF_ASM_OP2(sha256rnds2, 0xcb, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
+     DEF_ASM_OP2(sha256msg1, 0xcc, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
+     DEF_ASM_OP2(sha256msg2, 0xcd, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    /* AES-NI, PCLMULQDQ and SSE4.1's movntdqa (the kernel's lib/crypto/x86/aes-aesni.S,
++       ghash-pclmul.S and drivers/gpu/drm/drm_cache.c) */
++    DEF_ASM_OP2(aesenc, 0x66dc, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(aesenclast, 0x66dd, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(aesdec, 0x66de, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(aesdeclast, 0x66df, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(aesimc, 0x66db, 0, OPC_MODRM | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(aeskeygenassist, 0x66df, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(pclmulqdq, 0x6644, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
++    DEF_ASM_OP2(movntdqa, 0x662a, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_SSE)
+ 
+     /* Control-Flow Enforcement */
+     DEF_ASM_OP0L(endbr64, 0xf30f1e, 7, OPC_MODRM)

@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] tests: the cases of fixes 106-109 (161_gnu_extensions2)
+
+A transparent union with const pointer members taking non-const, void and
+null pointers, the typed overflow builtins, an attribute before the second
+declarator of a declaration, and a header nested 41 deep.
+---
+ tests/tests2/161_gnu_extensions2.c      | 83 +++++++++++++++++++++++++
+ tests/tests2/161_gnu_extensions2.expect |  4 ++
+ tests/tests2/161_gnu_extensions2.h      |  7 +++
+ 3 files changed, 94 insertions(+)
+ create mode 100644 tests/tests2/161_gnu_extensions2.c
+ create mode 100644 tests/tests2/161_gnu_extensions2.expect
+ create mode 100644 tests/tests2/161_gnu_extensions2.h
+
+diff --git a/tests/tests2/161_gnu_extensions2.c b/tests/tests2/161_gnu_extensions2.c
+new file mode 100644
+index 0000000..72958a2
+--- /dev/null
++++ b/tests/tests2/161_gnu_extensions2.c
+@@ -0,0 +1,83 @@
++/* GNU extensions met by the Linux kernel's device drivers (tinycc-os-kernel
++   fixes 106-109): a transparent union taking a less qualified pointer, the
++   typed overflow builtins, an attribute before a declarator of a list, and
++   a deep #include nesting. */
++#include <stdio.h>
++#include "161_gnu_extensions2.h"
++
++/* fix 106: transparent_union with "const struct k *" members and a
++   "struct k *" (or void *, or NULL) argument, as lib/crypto/aes.c */
++struct enckey { int a; };
++struct fullkey { struct enckey enc; int b; };
++typedef union {
++    const struct enckey *enc_key;
++    const struct fullkey *full_key;
++} key_arg __attribute__((__transparent_union__));
++
++static int which_key(key_arg key, int tag)
++{
++    if (tag == 1)
++        return key.enc_key ? key.enc_key->a : -1;
++    return key.full_key ? key.full_key->b : -1;
++}
++
++typedef union {
++    const char *s;
++    const void *p;
++} str_arg __attribute__((transparent_union));
++
++static int first_char(str_arg a) { return a.s ? *a.s : 0; }
++
++static void test_transparent(void)
++{
++    struct enckey e = { 11 };
++    struct fullkey f = { { 22 }, 33 };
++    char buf[4] = "xyz";
++    struct enckey *ep = &e;
++    int i = 7;
++    printf("transparent: %d %d %d %d %d %d\n", which_key(ep, 1), which_key(&f, 2),
++           which_key((const struct enckey *)0, 1), which_key(0, 2),
++           first_char(buf), first_char(&i) == 7);
++}
++
++/* fix 107: the typed overflow builtins (crypto/ecc.c uses
++   __builtin_usubll_overflow) */
++static void test_typed_overflow(void)
++{
++    unsigned long long d1, d2;
++    unsigned u;
++    int si;
++    long long ll;
++    int b1 = __builtin_usubll_overflow(5ULL, 7ULL, &d1);
++    int b2 = __builtin_usubll_overflow(7ULL, 5ULL, &d2);
++    int b3 = __builtin_uadd_overflow(0xffffffffu, 1u, &u);
++    int b4 = __builtin_sadd_overflow(0x7fffffff, 1, &si);
++    int b5 = __builtin_smulll_overflow(1LL << 40, 1LL << 23, &ll);
++    int b6 = __builtin_umul_overflow(65536u, 65536u, &u);
++    printf("typed overflow: %d %llu %d %llu %d %u %d %d %d %lld %d\n",
++           b1, d1, b2, d2, b3, u, b4, si, b5, ll, b6);
++}
++
++/* fix 108: an attribute before a declarator that is not the first of its
++   declaration (drm_modes.c: "int a, __maybe_unused b, c;") */
++static int test_decl_attr(int x)
++{
++    int a, __attribute__((unused)) unused_var, c;
++    int d, __attribute__((aligned(16))) e;
++    static int s1, __attribute__((unused)) s2 = 3, s3 = 4;
++    a = x;
++    c = a + 1;
++    d = c;
++    e = d * 2;
++    return c + e + s2 + s3 + ((long)&e % 16 == 0);
++}
++
++int main(void)
++{
++    test_transparent();
++    test_typed_overflow();
++    printf("decl attr: %d\n", test_decl_attr(1));
++    /* fix 109: the header above included itself 40 times */
++    printf("include depth: %d\n", INCLUDE_DEPTH_REACHED);
++    return 0;
++}
+diff --git a/tests/tests2/161_gnu_extensions2.expect b/tests/tests2/161_gnu_extensions2.expect
+new file mode 100644
+index 0000000..436db0f
+--- /dev/null
++++ b/tests/tests2/161_gnu_extensions2.expect
+@@ -0,0 +1,4 @@
++transparent: 11 33 -1 -1 120 1
++typed overflow: 1 18446744073709551614 0 2 1 0 1 -2147483648 1 -9223372036854775808 1
++decl attr: 14
++include depth: 41
+diff --git a/tests/tests2/161_gnu_extensions2.h b/tests/tests2/161_gnu_extensions2.h
+new file mode 100644
+index 0000000..d082989
+--- /dev/null
++++ b/tests/tests2/161_gnu_extensions2.h
+@@ -0,0 +1,7 @@
++/* a header nested as deep as the Linux kernel's include chains: GCC allows
++   200 levels of #include, tcc allowed 32 (the kernel reaches 33) */
++#if __COUNTER__ < 40
++#include "161_gnu_extensions2.h"
++#else
++#define INCLUDE_DEPTH_REACHED 41
++#endif

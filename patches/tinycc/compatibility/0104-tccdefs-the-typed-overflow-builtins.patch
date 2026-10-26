@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 26 Oct 2026 21:14:06 +0200
+Subject: [PATCH] tccdefs: the typed overflow builtins
+
+__builtin_{s,u}{add,sub,mul}{,l,ll}_overflow on top of the type-generic
+__builtin_add/sub/mul_overflow: the kernel's crypto/ecc.c calls
+__builtin_usubll_overflow when the compiler has no __builtin_subcll.
+---
+ include/tccdefs.h | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 22af378..22d635e 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -228,6 +228,26 @@
+         int __big = sizeof(__a) + sizeof(__b) > 8 && __ma != 0 && __m / __ma != __mb; \
+         int __n = __m != 0 && (__tcc_ovf_neg(__a) != __tcc_ovf_neg(__b)); \
+         __tcc_ovf_store(__n, __m, __big, r); })
++    /* the typed forms: __builtin_{s,u}{add,sub,mul}{,l,ll}_overflow */
++    #define __tcc_ovf_typed(op, t, a, b, r) __builtin_##op##_overflow((t)(a), (t)(b), (t *)(r))
++    #define __builtin_sadd_overflow(a, b, r) __tcc_ovf_typed(add, int, a, b, r)
++    #define __builtin_saddl_overflow(a, b, r) __tcc_ovf_typed(add, long, a, b, r)
++    #define __builtin_saddll_overflow(a, b, r) __tcc_ovf_typed(add, long long, a, b, r)
++    #define __builtin_uadd_overflow(a, b, r) __tcc_ovf_typed(add, unsigned, a, b, r)
++    #define __builtin_uaddl_overflow(a, b, r) __tcc_ovf_typed(add, unsigned long, a, b, r)
++    #define __builtin_uaddll_overflow(a, b, r) __tcc_ovf_typed(add, unsigned long long, a, b, r)
++    #define __builtin_ssub_overflow(a, b, r) __tcc_ovf_typed(sub, int, a, b, r)
++    #define __builtin_ssubl_overflow(a, b, r) __tcc_ovf_typed(sub, long, a, b, r)
++    #define __builtin_ssubll_overflow(a, b, r) __tcc_ovf_typed(sub, long long, a, b, r)
++    #define __builtin_usub_overflow(a, b, r) __tcc_ovf_typed(sub, unsigned, a, b, r)
++    #define __builtin_usubl_overflow(a, b, r) __tcc_ovf_typed(sub, unsigned long, a, b, r)
++    #define __builtin_usubll_overflow(a, b, r) __tcc_ovf_typed(sub, unsigned long long, a, b, r)
++    #define __builtin_smul_overflow(a, b, r) __tcc_ovf_typed(mul, int, a, b, r)
++    #define __builtin_smull_overflow(a, b, r) __tcc_ovf_typed(mul, long, a, b, r)
++    #define __builtin_smulll_overflow(a, b, r) __tcc_ovf_typed(mul, long long, a, b, r)
++    #define __builtin_umul_overflow(a, b, r) __tcc_ovf_typed(mul, unsigned, a, b, r)
++    #define __builtin_umull_overflow(a, b, r) __tcc_ovf_typed(mul, unsigned long, a, b, r)
++    #define __builtin_umulll_overflow(a, b, r) __tcc_ovf_typed(mul, unsigned long long, a, b, r)
+ #if !defined __linux__ && !defined _WIN32
+     /* used by math.h */
+     #define __builtin_huge_val() 1e500

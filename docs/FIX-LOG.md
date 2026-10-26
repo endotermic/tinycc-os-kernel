@@ -50,12 +50,18 @@ that work, so one patch may hold several entries and one entry may span two patc
 | 98 | tinycc 0092 | 101 | tinycc 0095 | 104 | tinycc 0098 |
 | 99 | tinycc 0093 | 102 | tinycc 0096 | 105 | tinycc 0099 |
 | 100 | tinycc 0094 | 103 | tinycc 0097 | | |
+| 106 | tinycc 0102 | 108 | tinycc 0102 | 110 | tinycc 0106 |
+| 107 | tinycc 0104 | 109 | tinycc 0103 | 111 | tinycc 0107 |
+| | | | | 112 | tinycc 0108 |
+| | | | | 113 | tinycc 0109 |
 
-Tests: tinycc 0083-0091 and 0100 (see "Tests" below).
+Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
+cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
+an addition).
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
-K15 = 0014, K16 = 0015.
+K15 = 0014, K16 = 0015, K17 = 0016, K18 = 0017, K19 = 0018, K20 = 0019.
 
 Fixes 57-70 and K10-K12 (2026-10-22) made the kernel build independent of gcc and
 binutils: tcc assembles every `.S` file, compiles the real-mode code with `-m16`, produces
@@ -98,6 +104,8 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
 | `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105 |
 | `tests/tests2/158_link_group.c` | all | 53 |
+| `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112 |
+| `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -1442,3 +1450,162 @@ K1. 2026-10-20, APPLIED (uncommitted), `arch/x86/include/asm/cmpxchg_64.h`: wrap
     128-bit section (union __u128_halves .. system_has_cmpxchg128) in `#ifdef __SIZEOF_INT128__`,
     because <linux/types.h> only defines u128 under that macro and tcc has no __int128.
     Kconfig already reports CC_HAS_INT128=n for tcc, so nothing else uses 128-bit arithmetic.
+
+## The device drivers (2026-10-26)
+
+`kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,
+KMS video; see `kernels/README.md`) took the kernel from 1588 to about 3500 configuration lines
+and tcc through the block layer, SCSI, USB, DRM, ALSA, mac80211, the Bluetooth stack and the
+crypto library for the first time. The x86_64 build of it needed six compiler fixes, a set of
+assembler opcodes and three kernel patches, the i386 build and boot two more compiler fixes;
+the whole kernel is still compiled, assembled and linked by tcc and tld (x86_64: 2085 tcc
+invocations, 0 gcc, a 6.5 MB bzImage; i386: 2099, a 6.0 MB bzImage) and a kernel patch (K20) corrects the
+convention of the K14 division helpers.
+
+106. 2026-10-26, COMMITTED, `tccgen.c` (gen_cast_to_union).
+    Problem: `lib/crypto/aes.c` and `net/bluetooth/smp.c` call `aes_encrypt(&key->aes, ...)`
+    whose parameter is a transparent union of `const struct aes_enckey *` and `const struct
+    aes_key *`: the argument is a `struct aes_enckey *` (not const), the member match was an
+    exact one (fixes 25/32) and failed: "cannot convert 'struct aes_enckey *' to 'union
+    <anonymous>'". GCC passes any argument that could be assigned to a member.
+    Fix: when no member matches exactly, the first pointer member whose target type is the
+    argument's ignoring qualifiers (or either side void) takes it; an integer constant 0 goes
+    into the first pointer member as a null pointer.
+    Verification: 161 (const members, non-const, void and null arguments); aes.c and smp.c
+    compile; the Bluetooth stack initializes in the guest.
+
+107. 2026-10-26, COMMITTED, `include/tccdefs.h`.
+    Problem: `crypto/ecc.c` calls `__builtin_usubll_overflow()` when the compiler has no
+    `__builtin_subcll()`: implicit declaration. Only the type-generic
+    `__builtin_add/sub/mul_overflow` existed (fix 82).
+    Fix: the 18 typed forms `__builtin_{s,u}{add,sub,mul}{,l,ll}_overflow` as macros that cast
+    the operands and the result pointer and call the generic ones.
+    Verification: 161 (usubll, uadd, sadd, smulll, umul with and without overflow; gcc's
+    values); ecc.c compiles.
+
+108. 2026-10-26, COMMITTED, `tccgen.c` (decl0).
+    Problem: `drivers/gpu/drm/drm_modes.c`: `int vsyncandback_porch, __maybe_unused vback_porch,
+    hblank;` -- an attribute before a declarator that is not the first of its declaration:
+    "identifier expected".
+    Fix: `parse_attribute()` on the declarator's attributes before `type_decl()` at the top of
+    the declaration loop (the first declarator's attributes are taken by parse_btype already,
+    so nothing changes for it).
+    Verification: 161 (unused, aligned, in a static declaration list too); drm_modes.c compiles.
+
+109. 2026-10-26, COMMITTED, `tcc.h` (INCLUDE_STACK_SIZE 32 -> 200).
+    Problem: `block/blk-mq-dma.c` nests 33 headers deep (... little_endian.h, linux/swab.h,
+    uapi/linux/swab.h, uapi/asm/swab.h; `gcc -H` counts the same): "#include recursion too
+    deep" at a depth gcc allows (its limit is 200).
+    Fix: the stack holds 200 entries (pointers; the memory is negligible).
+    Verification: 161 includes a header that includes itself 40 times; blk-mq-dma.c compiles.
+
+110. 2026-10-26, COMMITTED, `tccgen.c` (struct_decl, enum part).
+    Problem: the first boot with the USB stick attached died with a NULL dereference in
+    `blk_mq_tag_is_reserved()` from `__blk_mq_free_request()` (the SCSI scan of the stick
+    freeing its first request; the trace resolved with System.map). The disassembly showed
+    `rq->tag != BLK_MQ_NO_TAG` compiled as `movslq %eax,%rax; mov $0xffffffff,%ecx; cmp
+    %rcx,%rax`: a 64-bit comparison of the sign-extended int tag with 0x00000000ffffffff,
+    which a tag of -1 never equals, so the function went on to put a tag that was never
+    taken through a NULL `hctx->tags`. `block/blk-mq.h` declares `enum { BLK_MQ_NO_TAG = -1U,
+    BLK_MQ_TAG_MIN = 1, BLK_MQ_TAG_MAX = BLK_MQ_NO_TAG - 1 }`: while the list is parsed every
+    enumerator was pushed as an `int`, so `BLK_MQ_NO_TAG - 1` folded as a signed int (-2),
+    the enum's range became [-2, 0xffffffff] and the enum and BLK_MQ_NO_TAG became `long`.
+    C23 6.7.3.3 (and GCC) give an enumerator whose value does not fit int the type of its
+    expression inside the list (unsigned int here), so the subtraction folds unsigned.
+    Fix: the enumerator's provisional type is its expression's type when the value does not
+    fit int; the final pass that types the members from the completed enum resets the
+    provisional types (a decimal 4294967295 is a `long` expression and ends as an unsigned
+    int, as in gcc).
+    Verification: 161 (`is_no_tag(-1)` true with an int argument, the sizes of the
+    constants, the folded value); `sizeof`/comparison results of eight enum shapes identical
+    to gcc's; the stick's SCSI scan completes and `/dev/sda` appears (see the boot below).
+
+111. 2026-10-26, COMMITTED, `libtcc.c` (guess_filetype).
+    Problem: `tcc -run` on a C script whose name has an unknown extension -- udhcpc's
+    `/usr/share/udhcpc/default.script`, a `#!/usr/bin/tcc -run` program as every script of the
+    image -- refused it as "unrecognized file type" (only `.c/.h/.i`, `.S/.s` and no extension
+    are C or assembly; anything else is a binary).
+    Fix: a file with an unknown extension whose first two bytes are `#!` is C.
+    Verification: the script runs under its name; udhcpc configures eth0 in the guest.
+
+112. 2026-10-26, COMMITTED, `tccgen.c` (unary, TOK_LAND).
+    Problem: the i386 kernel's link had an undefined `__here` from drm_mode_config.o. The
+    generic `_THIS_IP_` is `({ __label__ __here; __here: (unsigned long)&&__here; })` (x86_64
+    uses a rip-relative `lea` instead), and as a `return` value the statement expression's
+    value leaves the block before any code references the label; label_pop() defines the ELF
+    symbols only of labels that already have one (`s->c`, set by the first relocation), so
+    the kept label (LABEL_GONE) never got its symbol and the later relocation made an
+    undefined one. Reproducer: `unsigned long f(void) { return _THIS_IP_; }` on both targets
+    (as a call argument or in an `if` it worked by chance of evaluation order).
+    Fix: taking the address of an already defined label calls put_extern_sym() at once.
+    Verification: 161 (the address lies inside the function, two addresses differ by less
+    than 64 bytes); the i386 kernel links.
+
+113. 2026-10-26, COMMITTED, `tcc.h` (FuncAttr.func_cdecl), `tccgen.c` (parse_attribute,
+    post_type, merge_funcattr, is_compatible_func, patch_type).
+    Problem: the first i386 boot with networking died in `csum_partial` (arch/x86/lib/
+    checksum_32.S): a page fault in the unrolled adc block with ECX = 0x171ea6b blocks to go
+    and EDX (the length) = 0xc0dd3838, a pointer. The caller, mld_sendpack (the first IPv6
+    MLD report), had passed the arguments in %eax/%edx/%ecx: `pushl`×3 then `popl` into the
+    registers, the -mregparm=3 convention, while the assembly reads them from the stack. The
+    prototype is `asmlinkage` = `__attribute__((regparm(0)))`, and regparm(0) set nothing in
+    tcc (`if (n > 0) func_call = FASTCALL1 + n - 1`), so the function was indistinguishable
+    from one without an attribute and got the default (fix 65 added -mregparm). The x86_64
+    kernel has no asmlinkage callee that C calls with arguments through the stack, and the
+    earlier i386 kernels had no networking: csum_partial was the first.
+    Fix: a FuncAttr bit `func_cdecl` records an explicit cdecl or regparm(0); post_type does
+    not apply the -mregparm default to it; a redeclaration without the attribute is
+    compatible with it (is_compatible_func) and takes it over (merge_funcattr, now also
+    called for a later prototype in patch_type), as GCC merges attributes across
+    declarations.
+    Verification: 162 on i386 with -mregparm=3 (the attribute on the prototype or on a later
+    one, called from C and the way assembly calls, through pushed arguments; a function
+    without the attribute called through registers); the i386 guest's DHCP, ICMP, HTTP and
+    IPv6 checks pass (see below).
+
+K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: the four libgcc
+    division routines are `asmlinkage`. tcc calls `__divdi3` & co. the way it calls any libgcc
+    helper, with both operands on the stack, also under -mregparm=3, while the kernel compiled
+    them with its default register convention: `a` was taken from %eax:%edx (the caller's
+    leftovers) and `b` from where the caller had pushed `a`, so every 64-bit division by a
+    constant on i386 (`/ 8`, `/ 100`, `/ PAGE_SIZE`) had computed a wrong quotient since
+    K14 without anybody noticing, until `__find_get_block_slow()` divided by zero mounting
+    the first FAT filesystem (i386 devices-test). Found because fix 113 made regparm(0)
+    effective: before it the attribute would have changed nothing. (Not a tcc change: the
+    compiler's libcall convention is cdecl, as libtcc1's routines expect.)
+
+C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
+    and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the
+    regulatory database (whose firmware file is not in the image anyway) selects
+    SYSTEM_DATA_VERIFICATION -> X.509, RSA, ASN.1 and the OID registry, whose table
+    `lib/oid_registry_data.c` is generated by the Perl script `lib/build_OID_registry`: the
+    first host check of the self-hosting tree (`scripts/selfhost-test.sh host`) stopped on it
+    and on `crypto/rsapubkey.asn1.c` (the guest has no Perl; the .asn1 sources were not in
+    the pruned tree). Without the check neither is built. The option has a prompt only under
+    CERTIFICATION_ONUS (EXPERT), hence the first line.
+
+The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
+`aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's
+`movntdqa`, for `lib/crypto/x86/aes-aesni.S`, `ghash-pclmul.S` and `drivers/gpu/drm/drm_cache.c`.
+
+Kernel-side changes for the drivers build:
+K17. 2026-10-26, COMMITTED (upstreamable), `arch/x86/Kconfig.assembler` (CONFIG_AS_AVX),
+    `lib/crypto/Makefile`, `lib/crypto/x86/sha1-ssse3-and-avx.S`, `sha1.h`, `gf128hash.h`: the AVX
+    half of the SHA-1 file, the AVX2 SHA-1 file and the AVX POLYVAL file (VEX encodings, which
+    tcc's assembler does not have: `vmovdqu`, `vpclmulqdq`, `vzeroupper`, ...) are built only
+    when the AS_AVX / AS_AVX2 probes pass, as K11 (patch 0010) does for SHA-256 and BLAKE2s;
+    the glue dispatches to SSSE3, SHA-NI and PCLMULQDQ code, or the generic POLYVAL.
+K18. 2026-10-26, COMMITTED (workaround), `include/linux/bitfield.h`: under `__TINYC__` the
+    `__bad_mask()` canary is an empty static inline (as seqlock.h's canaries, K5). tcc does not
+    inline `field_multiplier()`, so the call stayed in every FIELD_PREP/FIELD_GET and
+    `u32_encode_bits()` user: 25 undefined references (cfg80211, mac80211, ath9k, HD-audio).
+    The compile-time mask check stays with the other compilers.
+K19. 2026-10-26, COMMITTED (upstreamable), `include/acpi/acpi_bus.h`: an `acpi_has_method()`
+    stub for !CONFIG_ACPI. `btintel_set_dsm_reset_method()` calls it after an early return on
+    `ACPI_HANDLE() == NULL`, which it always is without ACPI; gcc removes the dead call, tcc
+    keeps the undefined reference.
+C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS`/`SND_MIXER_OSS`
+    (the first merge reported them NOT APPLIED); `CONFIG_WLAN_VENDOR_VIRTUAL` does not exist
+    (mac80211_hwsim needs only MAC80211). cfg80211 reports "failed to load regulatory.db" at
+    boot (no firmware files in the image) and uses the world regulatory domain.
+

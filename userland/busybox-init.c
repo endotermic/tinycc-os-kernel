@@ -7,8 +7,10 @@
  * system is C run this way; there are no shell scripts in the image.
  *
  * It mounts the API filesystems (only /bin/busybox and /bin/sh exist in the cpio, so the
- * applets are called through busybox until --install has made the links), prints the
- * banner, then runs an interactive shell on PID 1's console.  The shell is a child, not
+ * applets are called through busybox until --install has made the links), brings the
+ * network up (DHCP on every Ethernet interface, udhcpc with the C script
+ * /usr/share/udhcpc/default.script), prints the banner with the devices found, then runs
+ * an interactive shell on PID 1's console.  The shell is a child, not
  * an exec: PID 1 exiting would panic the kernel.  When the shell ends ('exit' or Ctrl-D)
  * we reboot, and QEMU (-no-reboot) exits.
  */
@@ -25,6 +27,12 @@
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <dirent.h>
 #include <termios.h>
 
 static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
@@ -133,6 +141,168 @@ static char *capture_line(char *const argv[])
     return strdup(buf);
 }
 
+/* the entries of a directory that start with prefix (every entry with NULL), sorted, as
+ * "a b c" in a static buffer; their number is returned */
+static int list_dir(const char *dir, const char *prefix, char *out, size_t len)
+{
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    char *names[64];
+    int n = 0, i, j;
+    out[0] = 0;
+    if (!d)
+        return 0;
+    while ((e = readdir(d)) && n < 64)
+        if (e->d_name[0] != '.' && (!prefix || strncmp(e->d_name, prefix, strlen(prefix)) == 0))
+            names[n++] = strdup(e->d_name);
+    closedir(d);
+    for (i = 1; i < n; i++)   /* insertion sort: eth0 before eth1, input0 before input10 */
+        for (j = i; j > 0 && strcmp(names[j - 1], names[j]) > 0; j--) {
+            char *t = names[j]; names[j] = names[j - 1]; names[j - 1] = t;
+        }
+    for (i = 0; i < n; i++) {
+        if (strlen(out) + strlen(names[i]) + 2 < len) {
+            if (out[0])
+                strcat(out, " ");
+            strcat(out, names[i]);
+        }
+        free(names[i]);
+    }
+    return n;
+}
+
+/* the driver bound to a sysfs device, "" if none */
+static const char *driver_of(const char *devpath)
+{
+    static char link[256];
+    char path[300];
+    ssize_t n;
+    snprintf(path, sizeof path, "%s/driver", devpath);
+    n = readlink(path, link, sizeof link - 1);
+    if (n <= 0)
+        return "";
+    link[n] = 0;
+    return strrchr(link, '/') ? strrchr(link, '/') + 1 : link;
+}
+
+/* the IPv4 address of an interface, "" if it has none */
+static const char *ipv4_of(const char *ifname)
+{
+    static char addr[32];
+    struct ifreq ifr;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    addr[0] = 0;
+    memset(&ifr, 0, sizeof ifr);
+    snprintf(ifr.ifr_name, sizeof ifr.ifr_name, "%s", ifname);
+    if (fd >= 0 && ioctl(fd, SIOCGIFADDR, &ifr) == 0)
+        inet_ntop(AF_INET, &((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr, addr, sizeof addr);
+    if (fd >= 0)
+        close(fd);
+    return addr;
+}
+
+/* The network: the loopback up, DHCP on every Ethernet interface (udhcpc keeps running in
+ * the background for the renewals; without an answer it gives up after three tries and
+ * retries in the background).  QEMU's user-mode network answers at once. */
+static void network_up(void)
+{
+    char names[256], *name, *save;
+    runl("ifconfig", "lo", "up", NULL);
+    list_dir("/sys/class/net", "eth", names, sizeof names);
+    for (name = strtok_r(names, " ", &save); name; name = strtok_r(NULL, " ", &save)) {
+        /* up first: udhcpc's own deconfig step does it through the script, but a
+         * script failure must not leave it looping on a downed interface */
+        runl("ifconfig", name, "up", NULL);
+        runl("udhcpc", "-i", name, "-b", "-t", "3", "-T", "1", NULL);
+    }
+}
+
+/* the devices found, for the banner: one line for the network, one for the rest */
+static void device_lines(FILE *out)
+{
+    char names[256], path[300], line[512], *name, *save, *s, *p;
+    int n;
+    /* network: eth0 10.0.2.15 (e1000), wlan0 wlan1 (mac80211_hwsim); bluetooth: hci0 */
+    line[0] = 0;
+    list_dir("/sys/class/net", NULL, names, sizeof names);
+    for (name = strtok_r(names, " ", &save); name; name = strtok_r(NULL, " ", &save)) {
+        const char *ip, *drv;
+        if (strcmp(name, "lo") == 0 || strncmp(name, "hwsim", 5) == 0)
+            continue;
+        snprintf(path, sizeof path, "/sys/class/net/%s/device", name);
+        drv = driver_of(path);
+        ip = ipv4_of(name);
+        snprintf(path, sizeof path, "%s%s%s%s%s%s%s", line[0] ? ", " : "", name, *ip ? " " : "", ip,
+                 *drv ? " (" : "", drv, *drv ? ")" : "");
+        if (strlen(line) + strlen(path) < sizeof line)
+            strcat(line, path);
+    }
+    if (line[0] || exists("/sys/class/bluetooth")) {
+        fprintf(out, "*** network: %s", line[0] ? line : "no interface");
+        if (exists("/sys/class/bluetooth")) {
+            n = list_dir("/sys/class/bluetooth", "hci", names, sizeof names);
+            fprintf(out, "; bluetooth: %s", n ? names : "no controller (btusb, hci_uart, vhci)");
+        }
+        fprintf(out, "\n");
+    }
+    /* sound: HDA Intel (/dev/dsp); usb: 2 devices: ...; mouse: /dev/input/mice (name) */
+    line[0] = 0;
+    s = first_line("/proc/asound/cards");
+    if (exists("/proc/asound/cards")) {
+        if ((p = strchr(s, ':'))) {
+            while (*++p == ' ')
+                ;
+            snprintf(line, sizeof line, "sound: %s%s", p, exists("/dev/dsp") ? " (/dev/dsp)" : "");
+        } else
+            snprintf(line, sizeof line, "sound: no card");
+    }
+    free(s);
+    if (exists("/sys/bus/usb/devices")) {
+        char list[256] = "";
+        n = 0;
+        list_dir("/sys/bus/usb/devices", NULL, names, sizeof names);
+        for (name = strtok_r(names, " ", &save); name; name = strtok_r(NULL, " ", &save)) {
+            if (strchr(name, ':') || strncmp(name, "usb", 3) == 0)
+                continue;   /* interfaces and root hubs */
+            snprintf(path, sizeof path, "/sys/bus/usb/devices/%s/product", name);
+            s = first_line(path);
+            n++;
+            if (strlen(list) + strlen(s) + 3 < sizeof list) {
+                if (list[0])
+                    strcat(list, "; ");
+                strcat(list, s);
+            }
+            free(s);
+        }
+        snprintf(path, sizeof path, "%susb: %d device%s%s%s", line[0] ? "; " : "", n, n == 1 ? "" : "s",
+                 n ? ": " : "", list);
+        if (strlen(line) + strlen(path) < sizeof line)
+            strcat(line, path);
+    }
+    if (exists("/dev/input/mice")) {
+        char mice[128] = "";
+        list_dir("/sys/class/input", "mouse", names, sizeof names);
+        for (name = strtok_r(names, " ", &save); name; name = strtok_r(NULL, " ", &save)) {
+            snprintf(path, sizeof path, "/sys/class/input/%s/device/name", name);
+            s = first_line(path);
+            if (strlen(mice) + strlen(s) + 3 < sizeof mice) {
+                if (mice[0])
+                    strcat(mice, "; ");
+                strcat(mice, s);
+            }
+            free(s);
+        }
+        snprintf(path, sizeof path, "%smouse: /dev/input/mice%s%s%s", line[0] ? "; " : "", mice[0] ? " (" : "",
+                 mice, mice[0] ? ")" : "");
+        if (strlen(line) + strlen(path) < sizeof line)
+            strcat(line, path);
+    }
+    if (line[0])
+        fprintf(out, "*** %s\n", line);
+    if (is_exec("/usr/bin/devices-test"))
+        fprintf(out, "*** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)\n");
+}
+
 /* the value of "key:" in /proc/meminfo, in MB */
 static long meminfo_mb(const char *key)
 {
@@ -203,6 +373,7 @@ static void banner(FILE *out)
     } else if (exists("/dev/tty1")) {
         fprintf(out, "*** screen: VGA text console, tty1-tty6\n");
     }
+    device_lines(out);
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
     fflush(out);
 }
@@ -244,7 +415,7 @@ static void wait_for(pid_t pid)
             break;
 }
 
-static void shutdown(void)
+static void power_off(void)
 {
     fflush(NULL);
     /* let the console UART send what was printed: reboot(2) would cut the last line */
@@ -273,6 +444,7 @@ int main(void)
     if (!getenv("PATH"))
         setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
     chdir("/root");
+    network_up();
     /* A shell on the screen (tty1, keyboard) too, when there is one and /dev/console is
      * another device (the last "console=" of the command line, listed last in
      * console/active).  Not via cttyhack, which always picks that last console device. */
@@ -317,11 +489,18 @@ int main(void)
             }
         }
         printf("*** self-hosting run finished with status %d, shutting down\n", rc);
-        shutdown();
+        power_off();
+    }
+    /* tcc.devtest (scripts/devices-test.sh, run.sh APPEND=tcc.devtest[=http:PORT]): run the
+     * device checks and shut down, no shell */
+    if ((p = strstr(s, "tcc.devtest")) && (p == s || p[-1] == ' ')) {
+        int rc = runl("devices-test", NULL);
+        printf("*** devices-test finished with status %d, shutting down\n", rc);
+        power_off();
     }
     free(s);
     wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "sh", NULL }, 0));
     printf("*** shell exited, rebooting\n");
-    shutdown();
+    power_off();
     return 0;
 }

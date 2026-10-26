@@ -173,10 +173,10 @@ step_kernel() {
     need_src linux
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
     [ -x "$TCCSRC/i386-tcc" ] || die "no $TCCSRC/i386-tcc (the host-tcc step builds it): the real-mode code needs tcc -m16"
-    KFRAGS="minimal.config $ARCH.config tcc.config"
+    KFRAGS="minimal.config drivers.config $ARCH.config tcc.config"
     TLD=$B/tld; [ -x "$TLD/ld" ] || die "no $TLD/ld: run the tld step first"
     KB=$B/linux; mkdir -p "$KB"
-    msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
+    msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,drivers,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
     # the Kbuild wrappers are C programs (kernels/linux/*.c; the guest runs the same sources
     # as tcc -run scripts): compiled here by the host tcc for this build
     KCC=$B/kcc; mkdir -p "$KCC"
@@ -446,7 +446,7 @@ step_selfhost() {
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
     #    not in the guest), the kernel and tcc patches and the notes
-    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/$ARCH.config" "$ROOT/kernels/linux/tcc.config" "$STAGE/usr/share/tinycc-os-kernel/"
+    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/drivers.config" "$ROOT/kernels/linux/$ARCH.config" "$ROOT/kernels/linux/tcc.config" "$STAGE/usr/share/tinycc-os-kernel/"
     cp "$KB/scripts/kconfig/lexer.lex.c" "$KB/scripts/kconfig/parser.tab.c" "$KB/scripts/kconfig/parser.tab.h" \
         "$STAGE/usr/share/tinycc-os-kernel/kconfig/" || die "no pre-generated Kconfig lexer/parser in $KB/scripts/kconfig"
     cp -r "$ROOT/patches" "$STAGE/usr/share/tinycc-os-kernel/patches"
@@ -458,7 +458,7 @@ step_selfhost() {
     # 5. the image: the busybox image's manifest + the guest tcc tree + this tree
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox
+    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
       "$ROOT/userland/dir2list.sh" "$STAGE"
@@ -476,7 +476,7 @@ step_initramfs() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
-    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox
+    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
     # the busybox image's /init is a C script that /usr/bin/tcc runs (-run): it needs the guest tcc
     if [ ! -x "$BUSYBOX" ]; then

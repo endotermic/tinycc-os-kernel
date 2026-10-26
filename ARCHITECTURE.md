@@ -57,7 +57,7 @@ and `out/<arch>/`.
 |------|------------------|-------------|
 | `host-tcc` | tcc and the `i386-tcc` cross compiler, built in-tree from `src/tinycc`; `tcc-test` runs its test suite, `tcc-archive` packs the source for the guest | gcc, the only place it is used |
 | `tld` | the project's linker suite in `tools/tld/`, replacing binutils for the kernel: `ld`, `nm`, `objcopy`, `readelf`, `ar`, `strip` | host tcc |
-| `kernel` | `out/<arch>/bzImage` from `src/linux` with `tinyconfig` plus the fragments in `kernels/linux/` | tcc through the Kbuild wrappers, see below |
+| `kernel` | `out/<arch>/bzImage` from `src/linux` with `tinyconfig` plus the fragments in `kernels/linux/` (`minimal.config`, `drivers.config`: PCI, networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; the per-architecture and the tcc fragment) | tcc through the Kbuild wrappers, see below |
 | `musl`, `busybox` | a static musl libc and a static busybox linked against it | host tcc |
 | `guest-tcc`, `guest-make` | tcc (and `i386-tcc`) and GNU make as static musl binaries for the guest's `/usr/bin` | host tcc |
 | `initramfs` | `out/<arch>/initramfs.cpio` and `initramfs-nolibc.cpio` | `gen_init_cpio` from the kernel tree |
@@ -90,8 +90,10 @@ the guest.
 
 `userland/initramfs.list` is the manifest of the busybox image. It holds
 busybox with `/bin/sh`, the guest tcc tree (headers, `libtcc1.a`, musl's
-`crt*.o` and `libc.a`, listed by `userland/dir2list.sh`), `hello.c`, and
-`/init`, which is `userland/busybox-init.c` installed verbatim. The smoke-test
+`crt*.o` and `libc.a`, listed by `userland/dir2list.sh`), `hello.c`,
+`/init`, which is `userland/busybox-init.c` installed verbatim, udhcpc's
+event script (`userland/udhcpc-script.c`) and the device test
+(`userland/devices-test.c`), C scripts as well. The smoke-test
 image `initramfs-nolibc.cpio` holds only `userland/init.c`, a libc-free static
 binary that prints a banner and reboots.
 
@@ -107,10 +109,17 @@ installed under their command names.
 and starts QEMU:
 
 - Direct boot passes the kernel with `-kernel`, the cpio with `-initrd`, and
-  `console=tty0 console=ttyS0`, so the serial console lands on the terminal
-  through `-nographic -serial mon:stdio`. It gives the guest as many virtual
-  CPUs as the host has, up to eight, and uses KVM with the host CPU model when
-  `/dev/kvm` is writable.
+  `console=tty0 console=ttyS0` (plus `APPEND`), so the serial console lands on
+  the terminal through `-nographic -serial mon:stdio`. It gives the guest as
+  many virtual CPUs as the host has, up to eight, and uses KVM with the host
+  CPU model when `/dev/kvm` is writable.
+- The emulated devices for `kernels/linux/drivers.config` come along unless
+  `--no-devices`: an e1000 on QEMU's user-mode network, an HD Audio card with a
+  codec, an xHCI controller with a USB tablet and a USB stick image, and the
+  standard VGA with an EDID whose preferred mode is `RES`, so that the kernel's
+  bochs-drm driver sets that resolution. `scripts/devices-test.sh` boots this
+  way with `APPEND=tcc.devtest`, serves HTTP to the guest and moves the mouse
+  through QMP while the guest's `devices-test` checks every device.
 - `--iso` attaches the image as a CD-ROM and tells GRUB through an SMBIOS OEM
   string which menu entry and console order to use. `--efi` boots it through
   OVMF instead of SeaBIOS.
@@ -136,13 +145,18 @@ C program. It:
 
 1. mounts `devtmpfs`, `proc` and `sysfs` with `mount(2)`;
 2. runs `busybox --install -s` to create the applet links and sets `PATH`;
+   brings the loopback up and runs udhcpc on every Ethernet interface (its
+   event script is the C program `/usr/share/udhcpc/default.script`);
 3. prints the banner: kernel version, busybox and tcc builds, the generation
-   number from `/proc/version`, CPUs and memory, whether a framebuffer exists;
+   number from `/proc/version`, CPUs and memory, the screen (framebuffer size
+   and driver), the network interfaces with their addresses and drivers, the
+   Bluetooth controllers, the sound card, the USB devices and the mice;
 4. starts a shell on `/dev/tty1` when a screen is present and the serial port
    is the primary console;
 5. runs the `tcc.selfhost` mode if one was given (`auto` builds a kernel and
    sends it, `all` rebuilds the toolchain, `test` runs the tcc test suite and
-   sends the logs);
+   sends the logs), or `devices-test` when `tcc.devtest` was given, and shuts
+   down afterwards;
 6. runs `cttyhack sh` on the console, which is the busybox prompt you see;
 7. when that shell exits, drains the console, syncs, and calls
    `reboot(RB_AUTOBOOT)`, so QEMU exits.
@@ -160,11 +174,11 @@ in the loop: every script of the built system is a C program.
 | Path | Role |
 |------|------|
 | `install.sh`, `run.sh` | entry points |
-| `scripts/` | `fetch.sh`, `patch.sh`, `build.sh`, `lib.sh` (shared helpers, host check), `export-patches.sh`, `recv-file.sh`, `selfhost-test.sh` |
+| `scripts/` | `fetch.sh`, `patch.sh`, `build.sh`, `lib.sh` (shared helpers, host check), `export-patches.sh`, `recv-file.sh`, `selfhost-test.sh`, `devices-test.sh` |
 | `sources.lock`, `patches/` | pinned upstreams and the patch series |
 | `kernels/linux/` | kernel config fragments and the Kbuild wrapper sources |
 | `tools/tld/` | the linker suite |
-| `userland/` | `init.c`, `busybox-init.c`, `initramfs.list`, `dir2list.sh`, `selfhost/` C scripts |
+| `userland/` | `init.c`, `busybox-init.c`, `udhcpc-script.c`, `devices-test.c`, `initramfs.list`, `dir2list.sh`, `selfhost/` C scripts |
 | `boot/` | `mkiso.sh`, which also writes the GRUB menu into the ISO |
 | `docs/` | `PORT-NOTES.md` (how tcc was made to build the kernel), `FIX-LOG.md` (every tcc fix) |
 | `src/`, `build/`, `out/` | gitignored: patched sources, build trees, results |

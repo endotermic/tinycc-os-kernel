@@ -74,17 +74,33 @@ exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
 the serial terminal, and `./run.sh --iso` does so by default (`--no-vga` for headless); a
-shell runs on both consoles. On the ISO, GRUB sets a graphics mode before
-booting and hands its linear framebuffer to the kernel (simplefb + fbcon), on BIOS via VESA
-and on UEFI via GOP; booted directly with `-kernel`, the screen is the VGA text console
-(the tcc build leaves the real-mode video mode setting out, see `kernels/linux/tcc.config`,
-so `vga=` has no effect there).
-`gfxpayload=auto` in `boot/mkiso.sh` takes the monitor's preferred mode from EDID when the
-firmware reports one, so on real hardware the native resolution is used. QEMU's virtual
-display has no monitor to ask, so `run.sh` sets the resolution itself: XGA (1024x768) by
-default, `RES=1280x1024 ./run.sh` for another one, passed to the ISO's GRUB as an SMBIOS
-OEM string. The first menu entry makes the screen the primary console, the second the
-serial port.
+shell runs on both consoles. The screen is a KMS display at the native resolution
+(`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
+sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
+default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
+the framebuffer the firmware set up (UEFI GOP: the panel's native mode; on BIOS, GRUB's
+`gfxpayload=auto` in `boot/mkiso.sh` picks the EDID-preferred mode), and fbcon runs on
+top (DRM fbdev emulation). The tcc build leaves the real-mode video mode setting out
+(`kernels/linux/tcc.config`), so `vga=` has no effect. The ISO's first menu entry makes
+the screen the primary console, the second the serial port.
+
+Device drivers (`kernels/linux/drivers.config`, all built in): PCI; TCP/IP (IPv4, IPv6)
+over Ethernet (Intel e1000/e1000e, Realtek RTL8139/RTL8169, virtio-net, USB CDC/RNDIS),
+Wi-Fi (cfg80211/mac80211 with Atheros ath9k, which needs no firmware file, and the
+mac80211_hwsim virtual radios), Bluetooth (USB dongles, UART controllers, the vhci virtual
+controller), sound (ALSA: Intel HD Audio, AC'97, USB audio, with the OSS `/dev/dsp`
+emulation so that a raw write plays), USB (xHCI/EHCI/OHCI/UHCI, HID keyboards and mice,
+mass storage with FAT and ext4), the PS/2 and USB mouse (`/dev/input/mice`, evdev). `/init`
+brings the network up with DHCP (busybox udhcpc, its event script a C program) and the
+banner lists what was found. `run.sh` attaches QEMU's counterparts by default (`--no-devices`
+leaves them out): an e1000 on the user-mode network (the host is 10.0.2.2), an HD Audio card
+(`AUDIO=pa` or `pipewire` plays on the host), an xHCI controller with a USB tablet and a
+16 MB USB stick image (`out/<arch>/usbstick.img`), the VGA with the `RES` EDID. There is no
+emulated Wi-Fi or Bluetooth hardware in QEMU; the virtual radios and controller exercise the
+stacks. `scripts/devices-test.sh` boots the image and checks every device class unattended
+(`devices-test` in the guest: DHCP, ICMP and HTTP to the host, IPv6, the Wi-Fi interface
+up, a Bluetooth controller registered, a tone written to `/dev/dsp`, USB enumeration, a FAT
+filesystem on the stick, mouse motion sent through QMP, the screen at `RES`).
 
 The boot ends with:
 
@@ -92,8 +108,11 @@ The boot ends with:
 *** tinycc-os-kernel: Linux 7.3.0+ x86_64, #1 SMP PREEMPT ...
 *** every file of this kernel was compiled, assembled and linked by tinycc (tcc, tld)
 *** BusyBox v1.38.0 (static, musl -- compiled and linked by tinycc as well)
-*** tcc version 0.9.28rc e23dabe+71p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
-*** screen: VGA text console, tty1-tty6
+*** tcc version 0.9.28rc e23dabe+109p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
+*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6
+*** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
+*** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
+*** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
 ```
 
 The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
@@ -111,8 +130,8 @@ gcc, binutils, flex or bison:
 
 | In the guest | What |
 |------|------|
-| `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the 12 kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 100 patches, the linker suite, GNU make |
+| `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 109 patches, the linker suite, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -162,8 +181,8 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 100 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
+| `patches/tinycc/` | 109 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/linux/` | 19 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
@@ -252,8 +271,8 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 
 | Arch | Status |
 |------|--------|
-| x86_64 | works: every file of the kernel is compiled or assembled by tcc (1546 invocations including Kconfig probes, 0 gcc) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; self-hosting (the kernel rebuilds itself inside the guest) |
-| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (1900 tcc invocations, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
+| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2085 invocations including Kconfig probes with the drivers of 2026-10-26, 0 gcc) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 13 checks); self-hosting (the kernel rebuilds itself inside the guest) |
+| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2099 tcc invocations with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112 and 113 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
 `install.sh --arch` accepts all three and explains what is missing for arm64. The scripts
