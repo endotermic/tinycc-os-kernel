@@ -38,6 +38,11 @@ test_host() {
     hosttcc="$SRC/tinycc/tcc -B$SRC/tinycc -I$SRC/tinycc/include -run"
     mkdir -p "$W/bin"
     cp -a "$stage"/usr/bin/. "$W/bin/"
+    # the Kbuild wrappers: the binaries the kernel step compiled from the same sources
+    for w in tcc-kcc tcc-hostcc objtool-stub; do
+        [ -x "$B/kcc/$w" ] || die "no $B/kcc/$w: scripts/build.sh kernel"
+        cp "$B/kcc/$w" "$W/bin/$w"
+    done
     for c in flex bison send-file; do
         rm -f "$W/bin/$c"
         printf '#!/bin/sh\nexec %s "%s" "$@"\n' "$hosttcc" "$ROOT/userland/selfhost/$c.c" > "$W/bin/$c"

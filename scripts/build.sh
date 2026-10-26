@@ -8,7 +8,7 @@
 #   tcc-test    run tinycc's own test suite (must print ALL TESTS PASSED)
 #   tcc-archive install the host tcc into a staging tree and pack it as out/<arch>/tcc-*.tar.gz
 #   tld         tools/tld (ld, nm, objcopy, readelf, ar, strip replacement) compiled by the host tcc
-#   kernel      Linux: tinyconfig + kernels/linux/*.config, CC=kernels/linux/tcc-kcc, LD=tld
+#   kernel      Linux: tinyconfig + kernels/linux/*.config, CC=tcc-kcc (kernels/linux/tcc-kcc.c), LD=tld
 #   musl        musl libc, static, compiled by tcc (no src/complex: tcc has no _Complex)
 #   busybox     static busybox compiled and linked by tcc against that musl
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
@@ -160,19 +160,25 @@ step_kernel() {
     TLD=$B/tld; [ -x "$TLD/ld" ] || die "no $TLD/ld: run the tld step first"
     KB=$B/linux; mkdir -p "$KB"
     msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
+    # the Kbuild wrappers are C programs (kernels/linux/*.c; the guest runs the same sources
+    # as tcc -run scripts): compiled here by the host tcc for this build
+    KCC=$B/kcc; mkdir -p "$KCC"
+    for w in tcc-kcc tcc-hostcc objtool-stub; do
+        "$TCC" -B"$TCCSRC" -I"$TCCSRC/include" -O2 -o "$KCC/$w" "$ROOT/kernels/linux/$w.c" || die "$w build failed"
+    done
     KCC_LOG=$LOGS/kcc.log
     : >"$KCC_LOG"
     # TCC and KCC_LOG are given to this make only (not exported: GNU make re-exports a
     # variable that came from the environment with its own value, which would break the
     # musl-tcc wrapper during the tcc builds)
     # HOSTCC: the host tools (fixdep, kconfig, modpost, sorttable, relocs, vdso2c, ...) are
-    # compiled by tcc too; objtool needs libelf and is replaced by kernels/linux/objtool-stub
+    # compiled by tcc too; objtool needs libelf and is replaced by objtool-stub (kernels/linux/objtool-stub.c)
     # the binutils are tld's: LD/NM/OBJCOPY/READELF/AR/STRIP (no objdump is needed)
     # KBUILD_BUILD_VERSION=1: the build number counts the generations (uname -v "#1"); a kernel
     # built inside the guest by userland/selfhost/build-kernel is #2, and so on
     # KCC_TCC: the compiler tcc-kcc runs for the target code (TCC stays the host compiler for
     # tcc-hostcc); for i386 the cross compiler next to it
-    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$ROOT/kernels/linux/tcc-kcc HOSTCC=$ROOT/kernels/linux/tcc-hostcc OBJTOOL=$ROOT/kernels/linux/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1"
+    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc OBJTOOL=$KCC/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1"
     if [ ! -f "$KB/.config" ]; then
         $MK -s tinyconfig >"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "tinyconfig failed"
     fi
@@ -416,8 +422,9 @@ step_selfhost() {
     "$MUSL_TCC" -std=gnu99 -O2 -o "$STAGE/usr/bin/tld" "$ROOT"/tools/tld/*.c || die "tld (musl) build failed"
     for t in ld nm objcopy readelf ar strip; do ln -sf tld "$STAGE/usr/bin/$t"; done
     cp "$B/make/make" "$STAGE/usr/bin/make"
-    cp "$ROOT/kernels/linux/tcc-kcc" "$ROOT/kernels/linux/tcc-hostcc" "$ROOT/kernels/linux/objtool-stub" "$STAGE/usr/bin/"
-    # the commands are C scripts ("#!/usr/bin/tcc -run"), installed under their command names
+    # the Kbuild wrappers and the commands are C scripts ("#!/usr/bin/tcc -run"), installed
+    # under their command names
+    for w in tcc-kcc tcc-hostcc objtool-stub; do cp "$ROOT/kernels/linux/$w.c" "$STAGE/usr/bin/$w"; done
     for c in build-kernel build-toolchain send-file flex bison; do cp "$ROOT/userland/selfhost/$c.c" "$STAGE/usr/bin/$c"; done
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are

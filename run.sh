@@ -180,7 +180,9 @@ fi
 # puts every CPU in one package, which would leave the guest with one CPU).
 SMP=${SMP:-$(nproc 2>/dev/null || echo 1)}; [ "$SMP" -le 8 ] || SMP=8
 set -- -smp "$SMP,sockets=$SMP,cores=1,threads=1" "$@"
-if [ "$KVM" != 0 ] && [ -w /dev/kvm ]; then set -- -accel kvm "$@"
+# -cpu host with KVM: the default qemu64 model advertises SVM, which KVM cannot pass through,
+# and QEMU warns once per virtual CPU; the host's own model has no such gap
+if [ "$KVM" != 0 ] && [ -w /dev/kvm ]; then set -- -accel kvm -cpu host "$@"
 elif [ "$KVM" != 0 ]; then echo "   /dev/kvm is not writable: software emulation (TCG), slow for compiling" >&2; fi
 if [ -n "$iso" ] && [ -z "$vga" ]; then
     # the ISO boots to the screen by default: open the window when there is a display

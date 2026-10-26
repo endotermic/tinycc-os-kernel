@@ -114,8 +114,8 @@ ls -l "$OUT/$arch" | awk 'NR > 1 {print "   " $5 "\t" $9}'
 # architecture, so that they can be pasted as they are whatever else is built
 hint() { printf '   %-6s %-34s %s\n' "$1" "$2" "$3"; }
 hint "boot:" "./run.sh" "a menu of everything built (--list prints it), or directly:"
-hint "" "./run.sh --arch $arch" "the busybox shell with tcc ('exit' ends QEMU)"
-hint "" "./run.sh --arch $arch --nolibc" "the libc-free init: banner, reboot"
+hint "" "./run.sh --arch $arch" "the busybox shell with tcc; /init is a C script tcc runs ('exit' ends QEMU)"
+hint "" "./run.sh --arch $arch --nolibc" "the libc-free init, a static binary: banner, reboot"
 case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF)";; esac
-[ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file)"
+[ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file: C scripts tcc runs)"
 [ -z "$run" ] || exec "$ROOT/run.sh" --arch "$arch"

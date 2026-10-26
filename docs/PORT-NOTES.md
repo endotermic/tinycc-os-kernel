@@ -39,7 +39,12 @@ Remaining noise in the kernel build: objtool warnings (`unreachable instruction`
 `kernels/linux/tcc.config`) and empty orphan `.init.text`/`.init.data` sections in the
 decompressor objects (tcc creates a section as soon as a declaration carries the attribute).
 
-## How tcc is presented to Kbuild: `kernels/linux/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `tld`
+## How tcc is presented to Kbuild: `kernels/linux/tcc-kcc.c`, `tcc-hostcc.c`, `objtool-stub.c`, `tld`
+
+The three wrappers are C programs (since 2026-10-26; sh scripts before): `scripts/build.sh
+kernel` compiles them with the host tcc into `build/<arch>/kcc/` and passes those binaries as
+CC, HOSTCC and OBJTOOL; the self-hosting image carries the same sources under the command
+names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
 
 * tcc gets `-B<tccdir> -I<tccdir>/include -D__GNUC__=15 -D__GNUC_MINOR__=3
   -D__GNUC_PATCHLEVEL__=0` (scripts/cc-version.sh and compiler_types.h need a GCC
@@ -59,7 +64,7 @@ decompressor objects (tcc creates a section as soon as a declaration carries the
   `__GNUC__`; a modest version keeps glibc's headers off newer gcc extensions), with
   `-U__REDIRECT*` (glibc redefines them), `-D__USER_LABEL_PREFIX__=` and `-D__NO_INLINE__`
   (glibc's gnu89 extern inlines would be duplicate definitions).
-* `OBJTOOL=kernels/linux/objtool-stub` (kernel patch 0009): objtool needs libelf; with this
+* `OBJTOOL=objtool-stub` (`kernels/linux/objtool-stub.c`, kernel patch 0009): objtool needs libelf; with this
   config it only validates and records static-call sites, and the kernel works without them.
 * `LD NM OBJCOPY READELF AR STRIP` are `build/<arch>/tld/*` (`scripts/build.sh tld`
   compiles `tools/tld/*.c` with the host tcc). `ld -v` prints "GNU ld (tld) 2.47" for
@@ -275,13 +280,14 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   the directory of its own argv[0], so the two live side by side), `/usr/bin/tld` with the
   `ld nm objcopy readelf ar strip` links, `/usr/bin/make` (step guest-make: GNU make 4.4.1
   configured `--disable-nls --without-guile --disable-load`, builds with tcc in a second),
-  the Kbuild wrappers `tcc-kcc`, `tcc-hostcc`, `objtool-stub` (unchanged files; the wrappers
-  pass `-B` only when the tcc is an in-tree one, detected by `include/tccdefs.h` next to it),
+  the Kbuild wrappers `tcc-kcc`, `tcc-hostcc`, `objtool-stub` (the `kernels/linux/*.c` sources
+  as tcc -run scripts; the wrappers pass `-B` only when the tcc is an in-tree one, detected by
+  `include/tccdefs.h` next to it),
   `flex` and `bison` stand-ins that copy the lexer and parser generated on the host into
   `scripts/kconfig/` (`/usr/share/tinycc-os-kernel/kconfig/`), the Kconfig fragments, and
   the commands of `userland/selfhost/`. Every script of the system is C (since 2026-10-26):
-  `/init` (`userland/busybox-init.c`), `build-kernel`, `build-toolchain`, `send-file`, `flex`
-  and `bison` start with `#!/usr/bin/tcc -run`, so the kernel (`CONFIG_BINFMT_SCRIPT`) hands
+  `/init` (`userland/busybox-init.c`), `build-kernel`, `build-toolchain`, `send-file`, `flex`,
+  `bison` and the Kbuild wrappers start with `#!/usr/bin/tcc -run`, so the kernel (`CONFIG_BINFMT_SCRIPT`) hands
   them to the guest's static musl tcc, which compiles them in memory and runs `main()`; PID 1
   is tcc running `busybox-init.c`. They use only POSIX libc calls (fork/exec for make, tar
   and the compilers, `mount(2)`, termios, their own MD5), so the same sources also run under
@@ -428,7 +434,7 @@ grep -oE ' error: .*' $L/kernel.log | sed -E "s/'[^']*'/'X'/g; s/[0-9]+/N/g" | s
 grep -oE "undefined reference to \`[^']*'" $L/kernel.log | sort | uniq -c | sort -rn
 # rebuild one object with tcc outside Kbuild (objtool deletes failed objects); path as Kbuild prints it
 cmd=$(grep -E "^tcc (.*/)?fs/select.o ::" $L/kcc.log | head -1 | sed 's/^tcc [^:]*:: //')
-(cd build/x86_64/linux && TCC=$PWD/../../../src/tinycc/tcc eval "../../../kernels/linux/tcc-kcc $(echo "$cmd" | sed 's| -o [^ ]*\.o| -o /tmp/x.o|')")
+(cd build/x86_64/linux && TCC=$PWD/../../../src/tinycc/tcc eval "../kcc/tcc-kcc $(echo "$cmd" | sed 's| -o [^ ]*\.o| -o /tmp/x.o|')")
 # preprocess instead (swap -c for -E) to see the inline asm text a header produces
 build/x86_64/linux/tools/objtool/objtool --static-call --hacks=jump_label,noinstr /tmp/x.o
 echo 'rdgsbase %rax' > t.s && as t.s -o t.o && objdump -d t.o   # compare an encoding with GNU as

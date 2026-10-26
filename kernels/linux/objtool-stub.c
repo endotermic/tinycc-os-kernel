@@ -1,0 +1,14 @@
+#!/usr/bin/tcc -run
+/* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * objtool-stub: stands in for tools/objtool (OBJTOOL= in scripts/build.sh) where the
+ * real objtool cannot be built (no libelf).  It accepts every option and does nothing:
+ * with CONFIG_UNWINDER_GUESS, no jump labels, no mitigations and no IBT, objtool only
+ * validates and records static-call sites; without .static_call_sites the kernel keeps
+ * calling through the (always correct) trampolines, so the kernel stays functional.
+ * Compiled by scripts/build.sh for the host build, a C script (tcc -run) in the guest.
+ */
+int main(void)
+{
+    return 0;
+}
