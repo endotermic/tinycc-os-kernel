@@ -77,9 +77,9 @@ describe() { # describe ARCH FORM
 howto() { # howto ARCH FORM: what builds the missing files
     ao=; [ "$1" = x86_64 ] || ao=" --arch $1"
     case $2 in
-        iso) echo "./install.sh$ao --output iso  (or ARCH=$1 scripts/build.sh iso)";;
-        selfhost) echo "./install.sh$ao --selfhost  (or ARCH=$1 scripts/build.sh selfhost)";;
-        *) echo "./install.sh$ao  (or ARCH=$1 scripts/build.sh all)";;
+        iso) echo "./install.sh$ao --output iso  (or scripts/build.sh$ao iso)";;
+        selfhost) echo "./install.sh$ao --selfhost  (or scripts/build.sh$ao selfhost)";;
+        *) echo "./install.sh$ao  (or scripts/build.sh$ao all)";;
     esac
 }
 if [ -n "$list" ]; then
@@ -124,7 +124,7 @@ m=$(missing "$ARCH" "$form")
 O=$OUT/$ARCH
 case $form in nolibc) initrd=$O/initramfs-nolibc.cpio;; selfhost) initrd=$O/initramfs-selfhost.cpio;; *) initrd=$O/initramfs.cpio;; esac
 case $ARCH in x86_64) QEMU=qemu-system-x86_64;; i386) QEMU=qemu-system-i386;; *) die "ARCH=$ARCH: no QEMU setup";; esac
-have $QEMU || die "$QEMU not found"
+need_reset; need_qemu "$ARCH"; need_done
 if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 [ "$TIMEOUT" = 0 ] && TIMEOUT= || TIMEOUT="timeout $TIMEOUT"
 if [ -n "$efi" ]; then
@@ -134,7 +134,7 @@ if [ -n "$efi" ]; then
              /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd; do
         [ -n "$fw" ] || [ ! -f "$f" ] || fw=$f
     done
-    [ -f "$fw" ] || die "no OVMF firmware found (set OVMF=/path/to/OVMF.fd)"
+    [ -f "$fw" ] || die "no OVMF firmware found: sudo apt install ovmf  (or set OVMF=/path/to/OVMF.fd)"
     case $fw in
         *CODE*)
             vars=$(echo "$fw" | sed 's/CODE/VARS/'); tmpvars=${TMPDIR:-/tmp}/tcc-linux-ovmf-vars.$$.fd

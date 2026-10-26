@@ -10,6 +10,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+need_reset; need_tool git tar sha256sum:coreutils; need_download_tool; need_done
 [ $# -gt 0 ] || set -- $(lock_names)
 mkdir -p "$SRC"
 

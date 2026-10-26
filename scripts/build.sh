@@ -3,7 +3,7 @@
 # build.sh - build the pinned, patched sources (src/) into a kernel + initramfs images
 # (+ ISO) for one architecture.  Every step is skipped when its result exists.
 #
-# Usage: scripts/build.sh [-n|--dry-run] [step...]        default: all
+# Usage: scripts/build.sh [--arch ARCH] [-n|--dry-run] [step...]        default: all
 #   host-tcc    tinycc in src/tinycc (in-tree build; this compiler builds everything else)
 #   tcc-test    run tinycc's own test suite (must print ALL TESTS PASSED)
 #   tcc-archive install the host tcc into a staging tree and pack it as out/<arch>/tcc-*.tar.gz
@@ -32,10 +32,23 @@
 # Every clean step prints what goes with its size (du -sh); -n/--dry-run (or DRY_RUN=1) prints
 # that and removes nothing.  The whole command line is checked before the first step runs: an
 # unknown step or option aborts with nothing done.
-# Env: ARCH (x86_64, i386; arm64 is not implemented, see install.sh), JOBS, SRC/BUILD/OUT, DRY_RUN.
+# --arch ARCH: x86_64 (default) or i386, as install.sh and run.sh take it (arm64 is not implemented,
+#   see install.sh); the ARCH variable does the same.
+# Env: ARCH, JOBS, SRC/BUILD/OUT, DRY_RUN.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+# --arch first: everything below depends on the architecture; the other arguments are checked
+# at the end, before the first step runs
+n=$#
+while [ $n -gt 0 ]; do
+    n=$((n - 1))
+    case $1 in
+        --arch) [ $# -gt 1 ] || die "--arch needs an architecture (x86_64, i386)"; ARCH=$2; shift 2; n=$((n - 1));;
+        --arch=*) ARCH=${1#--arch=}; shift;;
+        *) set -- "$@" "$1"; shift;;
+    esac
+done
 ARCH=${ARCH:-x86_64}
 JOBS=${JOBS:-$(nproc)}
 # KARCH: the kernel's ARCH= (i386 selects the 32-bit kernel); TCC_TARGET: the compiler of the
@@ -46,7 +59,7 @@ JOBS=${JOBS:-$(nproc)}
 case $ARCH in
     x86_64) KARCH=x86;   KIMG=arch/x86/boot/bzImage; TCC_TARGET=tcc;      LIBTCC1=libtcc1.a;      TCC_CPU=x86_64; CROSS_I386=1;;
     i386)   KARCH=i386;  KIMG=arch/x86/boot/bzImage; TCC_TARGET=i386-tcc; LIBTCC1=i386-libtcc1.a; TCC_CPU=i386;   CROSS_I386=;;
-    *) die "ARCH=$ARCH is not implemented (x86_64, i386; see ./install.sh --help)";;
+    *) die "--arch $ARCH is not implemented (x86_64, i386; see ./install.sh --help)";;
 esac
 B=$BUILD/$ARCH; LOGS=$B/logs; O=$OUT/$ARCH
 # the source copies under build/ must not see this repository's own .git (tcc's and
@@ -540,6 +553,17 @@ for s; do
     esac
 done
 [ $# -gt 0 ] || set -- all
+# the host check for the steps asked for (scripts/lib.sh): the clean steps need nothing
+need_reset
+for s; do
+    case $s in
+        clean|clean-all|clean-src) ;;
+        iso) need_build_tools; need_iso_tools;;
+        selfhost) need_build_tools; need_download_tool;;
+        *) need_build_tools;;
+    esac
+done
+need_done
 for s; do
     case $s in
         all) prepare; for t in host-tcc tld kernel musl busybox guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;

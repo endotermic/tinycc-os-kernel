@@ -83,7 +83,16 @@ case $output in initrd|iso|all) ;; *) die "unknown output '$output' (initrd, iso
 if [ -n "$clean" ]; then
     DRY_RUN=${dry:-0} ARCH=$arch exec "$ROOT/scripts/build.sh" "$clean"
 fi
-for t in git make gcc; do have $t || die "$t is required"; done
+# the host check: everything the chosen build needs, named at once (scripts/lib.sh)
+need_reset
+need_tool git make gcc tar
+if [ "$build" != tcc ]; then
+    need_build_tools
+    [ -z "$selfhost" ] || need_download_tool
+    case $output in iso|all) need_iso_tools;; esac
+    [ -z "$run" ] || need_qemu "$arch"
+fi
+need_done
 export ARCH=$arch JOBS=$jobs
 if [ "$build" = tcc ]; then
     msg "tinycc-os-kernel: the patched tcc only ($arch), $jobs jobs"
@@ -98,7 +107,6 @@ if [ "$build" = tcc ]; then
     echo "   install: sudo tar xzf $OUT/$arch/tcc-*.tar.gz -C /      (puts tcc under /usr/local)"
     exit 0
 fi
-for t in flex bison bc cpio rsync; do have $t || die "$t is required"; done
 msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs"
 "$ROOT/scripts/fetch.sh"
 "$ROOT/scripts/patch.sh"

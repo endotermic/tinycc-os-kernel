@@ -170,7 +170,7 @@ directly, which is also better code for gcc.
 
 ## The i386 target
 
-`ARCH=i386` (2026-10-23; `install.sh --arch i386`, `./run.sh --arch i386`) builds the 32-bit
+`--arch i386` (2026-10-23; `install.sh`, `run.sh`, `scripts/build.sh` all take it) builds the 32-bit
 kernel from the same sources, patches and fragments: `scripts/build.sh` gives the kernel
 `ARCH=i386` (which forces `CONFIG_64BIT=n`; `kernels/linux/i386.config` only switches highmem
 off), runs the `i386-tcc` cross compiler as the target compiler through `tcc-kcc` (`KCC_TCC`;
@@ -335,10 +335,10 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
 * Re-run 2026-10-23 with the 79-patch compiler (after the i386 work changed i386-gen, tccasm
   and the fixups): `scripts/selfhost-test.sh all` builds generation 2 in 1 min 21 s (1550
   tcc, 0 gcc), transfers it in 28 s and boots it.
-* The i386 system is self-hosting too (2026-10-23): `ARCH=i386 scripts/build.sh selfhost`
+* The i386 system is self-hosting too (2026-10-23): `scripts/build.sh --arch i386 selfhost`
   makes `out/i386/initramfs-selfhost.cpio` (35 MB; the image ships only `tcc`, the i386
   compiler itself handles `-m16`, so `build-kernel` requires `i386-tcc` only next to an
-  x86_64 tcc), `ARCH=i386 scripts/selfhost-test.sh all` builds generation 2 inside
+  x86_64 tcc), `scripts/selfhost-test.sh --arch i386 all` builds generation 2 inside
   qemu-system-i386 in 1 min 32 s (1516 tcc, 0 gcc, 187 MB of tmpfs, 868 MB of RAM seen by
   the kernel without highmem) and boots the 1 875 968-byte result. Three things stood in
   the way, none of them visible from the host check (`selfhost-test.sh host`, which now
@@ -445,7 +445,7 @@ BUILD=<gnu-linked tree> sh tools/tld/test.sh   # tld vs GNU ld on every kernel l
 ./run.sh -d int,cpu_reset -D qemu.log    # a hang or triple fault
 ./run.sh -machine graphics=on -append "console=ttyS0 earlyprintk=serial debug"   # setup-code messages once (SeaBIOS's sercon echoes int 0x10 to the UART under -nographic)
 ./run.sh -S -gdb tcp::1234               # + gdb build/x86_64/linux/vmlinux
-scripts/build.sh -n clean                # what a clean of build/x86_64 + out/x86_64 would free (ARCH=i386: the i386 trees)
+scripts/build.sh -n clean                # what a clean of build/x86_64 + out/x86_64 would free (--arch i386: the i386 trees)
 scripts/build.sh clean all               # a build from scratch; src/ (and the in-tree host tcc) stay, nothing is re-fetched
 ```
 

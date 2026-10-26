@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: BSD-2-Clause
 # selfhost-test.sh - exercise the self-hosting image (scripts/build.sh selfhost).
-# Usage: scripts/selfhost-test.sh host|qemu|boot|all
+# Usage: scripts/selfhost-test.sh [--arch ARCH] host|qemu|boot|all
 #   host   unpack the pruned kernel tree from the image's staging area and build it on the host
 #          with the host tcc and the image's own tld, make, wrappers and flex/bison stand-ins
 #          (userland/selfhost/build-kernel.c run by the host tcc, WORK=build/<arch>/selfhost-test):
@@ -12,15 +12,17 @@
 #   boot   boot the received bzImage (./run.sh --nolibc) and show its build line: "#2" is the
 #          second generation, a kernel built inside the first
 #   all    qemu, then boot
-# Env: ARCH (x86_64, i386), JOBS, AUTO (auto: build-kernel only, the default; all: build-toolchain first
+# Env: ARCH (x86_64, i386; --arch does the same), JOBS, AUTO (auto: build-kernel only, the default; all: build-toolchain first
 #      and build the kernel with the guest-built tcc and tld), TIMEOUT (seconds for the guest run,
 #      default 7200), MEM/SMP as in run.sh
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+while [ $# -gt 0 ]; do case $1 in --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;; *) break;; esac; done
 ARCH=${ARCH:-x86_64}; B=$BUILD/$ARCH; O=$OUT/$ARCH; export ARCH    # run.sh reads ARCH too
 stage=$B/selfhost/stage
 mode=${1:-all}
+need_reset; case $mode in qemu|boot|all) need_qemu "$ARCH";; esac; need_tool md5sum:coreutils; need_done
 test_host() {
     [ -d "$stage/usr/src" ] || die "no $stage: run scripts/build.sh selfhost first"
     [ -x "$SRC/tinycc/tcc" ] && [ -x "$SRC/tinycc/i386-tcc" ] || die "no host tcc/i386-tcc: scripts/build.sh host-tcc"

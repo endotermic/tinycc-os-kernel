@@ -9,12 +9,10 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
 ARCH=${ARCH:-x86_64}
 O=$OUT/$ARCH; ISO=${1:-$O/tcc-linux-$ARCH.iso}
-for t in grub-mkrescue xorriso mformat; do have $t || die "$t not found (install grub-pc-bin grub-efi-amd64-bin xorriso mtools)"; done
 # grub-mkrescue puts a boot image on the ISO for every GRUB platform under /usr/lib/grub; both
 # are needed for the hybrid image: without i386-pc the ISO is UEFI-only and SeaBIOS (QEMU's
 # default firmware, ./run.sh --iso) fails with "Could not read from CDROM (code 0009)"
-[ -d /usr/lib/grub/i386-pc ] || die "no BIOS GRUB platform (/usr/lib/grub/i386-pc): the ISO would boot on UEFI only; install grub-pc-bin"
-[ -d /usr/lib/grub/x86_64-efi ] || die "no UEFI GRUB platform (/usr/lib/grub/x86_64-efi): the ISO would boot on BIOS only; install grub-efi-amd64-bin"
+need_reset; need_iso_tools; need_done
 [ -f "$O/bzImage" ] || die "no $O/bzImage: run scripts/build.sh first"
 R=$BUILD/$ARCH/iso-root
 rm -rf "$R" && mkdir -p "$R/boot/grub"

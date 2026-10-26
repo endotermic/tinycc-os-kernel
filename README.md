@@ -27,7 +27,8 @@ host tools and the links use no gcc and no binutils), binutils' `ar` for musl an
 flex, bison, bc, cpio, rsync, QEMU (`qemu-system-x86_64`); for the ISO also grub-pc-bin,
 grub-efi-amd64-bin, xorriso and mtools; for `--efi` OVMF; for the self-hosting image curl or
 wget (GNU make's tarball) and 1 GB of RAM for the guest (KVM access makes the guest build
-ten times faster).
+ten times faster). Every script checks what it needs when it starts and names the missing
+pieces with the `apt install` line, before doing anything.
 About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 
 ```bash
@@ -103,7 +104,7 @@ for TCG).
 
 ## Self-hosting
 
-`scripts/build.sh selfhost` (or `install.sh --selfhost`; `ARCH=i386` for the 32-bit system) makes
+`scripts/build.sh selfhost` (or `install.sh --selfhost`; `--arch i386` for the 32-bit system) makes
 `out/<arch>/initramfs-selfhost.cpio`:
 the busybox image plus everything needed to rebuild the system inside the guest, without
 gcc, binutils, flex or bison:
@@ -252,7 +253,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 | Arch | Status |
 |------|--------|
 | x86_64 | works: every file of the kernel is compiled or assembled by tcc (1546 invocations including Kconfig probes, 0 gcc) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; self-hosting (the kernel rebuilds itself inside the guest) |
-| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (1900 tcc invocations, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; self-hosting as well (`ARCH=i386 scripts/selfhost-test.sh all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
+| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (1900 tcc invocations, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
 `install.sh --arch` accepts all three and explains what is missing for arm64. The scripts

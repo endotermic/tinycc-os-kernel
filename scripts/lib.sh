@@ -15,6 +15,39 @@ msg() { printf '== %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# ---- host prerequisites ----------------------------------------------------------------
+# Every script checks what it needs on the host when it starts, before any work, and names
+# every missing piece at once with the Debian/Ubuntu packages that provide them:
+#   need_reset; need_tool TOOL[:PACKAGE]...; need_dir DIR:PACKAGE...; need_done
+# (PACKAGE defaults to the tool's name).  The sets below are what the scripts share.
+need_reset() { NEED_MISS=; NEED_PKGS=; }
+need_add() {
+    case " $NEED_MISS " in *" $1 "*) ;; *) NEED_MISS="$NEED_MISS $1";; esac
+    case " $NEED_PKGS " in *" $2 "*) ;; *) NEED_PKGS="$NEED_PKGS $2";; esac
+}
+need_tool() { for _t; do _n=${_t%%:*}; _p=${_t#*:}; [ "$_p" != "$_t" ] || _p=$_n; have "$_n" || need_add "$_n" "$_p"; done; }
+need_dir() { for _t; do _n=${_t%%:*}; [ -d "$_n" ] || need_add "$_n" "${_t#*:}"; done; }
+need_done() {
+    [ -n "$NEED_MISS" ] || return 0
+    printf 'error: missing on this host:%s\n' "$NEED_MISS" >&2
+    printf '       install with (Debian/Ubuntu package names):  sudo apt install%s\n' "$NEED_PKGS" >&2
+    exit 1
+}
+# what the build needs: git (sources, version tags), make, gcc (builds the host tcc and
+# gen_init_cpio; nothing else), binutils' ar (musl and busybox archives), the kernel's host
+# tools flex/bison/bc/rsync, cpio, tar
+need_build_tools() { need_tool git make gcc ar:binutils flex bison bc cpio rsync tar; }
+# downloads (fetch.sh: GNU make's release tarball): curl or wget
+need_download_tool() { have curl || have wget || need_add "curl (or wget)" curl; }
+# the ISO: grub-mkrescue with both GRUB platforms (without i386-pc the ISO is UEFI-only and
+# SeaBIOS fails with "Could not read from CDROM"), xorriso, mtools
+need_iso_tools() {
+    need_tool grub-mkrescue:grub2-common xorriso mformat:mtools
+    need_dir /usr/lib/grub/i386-pc:grub-pc-bin /usr/lib/grub/x86_64-efi:grub-efi-amd64-bin
+}
+# QEMU for the architecture (one package provides both system emulators)
+need_qemu() { case $1 in i386) need_tool qemu-system-i386:qemu-system-x86;; *) need_tool qemu-system-x86_64:qemu-system-x86;; esac; }
+
 # sources.lock accessors
 lock_names()  { awk '!/^#/ && NF >= 4 { print $1 }' "$LOCK"; }
 lock_field()  { awk -v n="$1" -v f="$2" '!/^#/ && $1 == n { print $f; exit }' "$LOCK"; }
