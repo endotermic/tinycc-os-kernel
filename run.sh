@@ -31,10 +31,12 @@
 #             toolchain first and uses it; --auto=test rebuilds the toolchain and runs tcc's
 #             test suite on it, no kernel: the logs come back); scripts/selfhost-test.sh
 #             drives the first two
-# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (64M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
+#   --        end of run.sh's options; everything after it goes to QEMU as it is
+#   -h, --help  this text
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (64M; 128M with --efi, 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
-# host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM when
-# /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
+# host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
+# host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
 # 1024x768 = XGA: the ISO gets it through an SMBIOS OEM string that GRUB reads for gfxpayload;
 # the direct boot stays on the VGA text console since the tcc kernel is built without the
 # real-mode video mode setting (CONFIG_X86_BOOT_VIDEO_MODES, kernels/linux/tcc.config), so
@@ -47,6 +49,7 @@ iso= efi= vga= selfhost= auto= form=shell list=
 while [ $# -gt 0 ]; do
     case $1 in
         --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;;
+        -h|--help) usage;;
         --list) list=1; shift;;
         --iso) iso=1; form=iso; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
         --nolibc) form=nolibc; shift;;

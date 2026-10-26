@@ -7,6 +7,10 @@
 # Needs: the build tree (vmlinux.a, the objects, *.lds, arch/x86/tools/{relocs,vdso2c},
 # GNU-linked vmlinux*, setup.*, realmode.*, compressed/vmlinux, vdso64.so*) and the host
 # binutils (nm, readelf, objcopy) for the comparisons.  LC_ALL=C like Kbuild.
+# Env: BUILD (see above), W (the work directory; default: a fresh mktemp -d /tmp/tld-test.XXXXXX),
+#      SRCTREE (the kernel source tree, for scripts/mksysmap; default: the one BUILD's Makefile
+#      includes, else ../src/linux of the repository)
+case ${1:-} in -h|--help) sed -n '3,/^[^#]/p' "$0" | sed '$d' | cut -c3-; exit 0;; esac
 export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 BUILD=${BUILD:-$HERE/../../build/x86_64/linux}

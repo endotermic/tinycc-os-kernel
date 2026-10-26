@@ -4,9 +4,11 @@
 # serial capture (run.sh --selfhost: out/<arch>/selfhost/ttyS1.bin) and verify their md5 sums.
 # Every file in the capture is preceded by a line ">>> send-file NAME SIZE MD5".
 # Usage: scripts/recv-file.sh [CAPTURE] [OUTDIR]   (defaults: out/<arch>/selfhost/ttyS1.bin and its directory)
+# Env: ARCH (x86_64, i386: the <arch> of the default capture path)
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+case ${1:-} in -h|--help) usage;; esac
 ARCH=${ARCH:-x86_64}
 cap=${1:-$OUT/$ARCH/selfhost/ttyS1.bin}
 dir=${2:-$(dirname "$cap")}

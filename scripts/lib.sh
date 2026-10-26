@@ -14,6 +14,14 @@ LOCK=$ROOT/sources.lock
 msg() { printf '== %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# usage [STATUS]: the script's documentation, which is its header comment (line 3 to the first
+# line that is not a comment), then exit.  Every script answers -h/--help with it (status 0,
+# stdout); with a non-zero status (a usage error) it goes to stderr.
+usage() {
+    if [ "${1:-0}" = 0 ]; then sed -n '3,/^[^#]/p' "$0" | sed '$d' | cut -c3-
+    else sed -n '3,/^[^#]/p' "$0" | sed '$d' | cut -c3- >&2; fi
+    exit "${1:-0}"
+}
 
 # ---- host prerequisites ----------------------------------------------------------------
 # Every script checks what it needs on the host when it starts, before any work, and names

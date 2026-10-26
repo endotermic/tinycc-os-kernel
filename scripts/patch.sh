@@ -7,6 +7,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+case ${1:-} in -h|--help) usage;; esac
 reset=
 [ "$1" = --reset ] && { reset=1; shift; }
 [ $# -gt 0 ] || set -- $(lock_names)

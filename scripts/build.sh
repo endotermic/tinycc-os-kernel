@@ -4,6 +4,11 @@
 # (+ ISO) for one architecture.  Every step is skipped when its result exists.
 #
 # Usage: scripts/build.sh [--arch ARCH] [-n|--dry-run] [step...]        default: all
+#   --arch ARCH   x86_64 (default) or i386, as install.sh and run.sh take it (arm64 is not
+#                 implemented, see install.sh); the ARCH variable does the same
+#   -n, --dry-run the clean steps print what would go and remove nothing (DRY_RUN=1 does the same)
+#   -h, --help    this text
+# Steps:
 #   host-tcc    tinycc in src/tinycc (in-tree build; this compiler builds everything else)
 #   tcc-test    run tinycc's own test suite (must print ALL TESTS PASSED)
 #   tcc-archive install the host tcc into a staging tree and pack it as out/<arch>/tcc-*.tar.gz
@@ -29,12 +34,11 @@
 #               uncommitted changes, a stash, or more commits on top of 'base' than
 #               patches/<name>/series lists (fixes are committed there and exported with
 #               scripts/export-patches.sh before the tree may go)
-# Every clean step prints what goes with its size (du -sh); -n/--dry-run (or DRY_RUN=1) prints
-# that and removes nothing.  The whole command line is checked before the first step runs: an
-# unknown step or option aborts with nothing done.
-# --arch ARCH: x86_64 (default) or i386, as install.sh and run.sh take it (arm64 is not implemented,
-#   see install.sh); the ARCH variable does the same.
-# Env: ARCH, JOBS, SRC/BUILD/OUT, DRY_RUN.
+# Every clean step prints what goes with its size (du -sh).  The whole command line is checked
+# before the first step runs: an unknown step or option aborts with nothing done.  Every step
+# first checks that the host has what it needs and names the missing packages.
+# Env: ARCH, JOBS (parallel jobs; default nproc), SRC/BUILD/OUT (the directories, see
+#   scripts/lib.sh), DRY_RUN.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
@@ -546,7 +550,7 @@ for s; do
     shift
     case $s in
         -n|--dry-run) DRY_RUN=1;;
-        -h|--help) sed -n '2,/^set -e/p' "$0" | sed '$d' | cut -c3-; exit 0;;
+        -h|--help) usage;;
         all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;

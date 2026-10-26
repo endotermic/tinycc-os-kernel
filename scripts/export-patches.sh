@@ -8,9 +8,10 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+case ${1:-} in -h|--help) usage;; esac
 cat_new=unsorted
 [ "$1" = --category ] && { cat_new=$2; shift 2; }
-name=$1; [ -n "$name" ] || die "usage: $0 [--category DIR] <component>"
+name=$1; [ -n "$name" ] || usage 2
 dir=$SRC/$name; pdir=$ROOT/patches/$name
 git -C "$dir" rev-parse -q --verify patched >/dev/null || die "src/$name has no 'patched' branch"
 tmp=$(mktemp -d)

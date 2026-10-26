@@ -10,11 +10,12 @@
 #                  as out/<arch>/tcc-<version>-<arch>-linux.tar.gz (extract with tar xzf ... -C /)
 #             distro: the kernel and the userland built with that compiler (default)
 #   --arch    x86_64 (default), i386 (the 32-bit x86 kernel), arm64 (not available, see the table below)
-#   --output  initrd: kernel + initramfs images (default); iso: also the bootable ISO; all
+#   --output  initrd: kernel + initramfs images (default); iso: the same plus the bootable ISO;
+#             all: the same as iso
 #   --selfhost  also the self-hosting image (initramfs-selfhost.cpio, and its ISO menu entries):
 #             the sources and the toolchain to rebuild the kernel and tcc inside the guest
 #             (./run.sh --selfhost; scripts/selfhost-test.sh); downloads GNU make's tarball too
-#   --jobs    parallel jobs (default: nproc)
+#   --jobs    parallel jobs (default: JOBS from the environment, else nproc)
 #   --test    run tinycc's test suite after building it
 #   --run     boot the result in QEMU when done (./run.sh; distro only)
 #   --clean   remove the build trees, logs and results of --arch (build/<arch>/, out/<arch>/) and
@@ -22,6 +23,7 @@
 #             with its size; --dry-run (-n) prints that and removes nothing.  The fetched sources (src/,
 #             with the host tcc built in src/tinycc) stay: scripts/build.sh clean-src removes them
 #             (only when they have no unexported work)
+#   -h, --help  this text
 #
 # Target status:
 #   x86_64  works: the tcc-built kernel boots the tcc-built busybox and tcc in QEMU
@@ -33,7 +35,6 @@ set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
 build= arch= output= run= test= selfhost= clean= dry= jobs=${JOBS:-$(nproc)}
-usage() { sed -n '2,/^set -e/p' "$0" | sed '$d' | cut -c3-; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
     case $1 in
         --build) build=$2; shift 2;; --build=*) build=${1#*=}; shift;;

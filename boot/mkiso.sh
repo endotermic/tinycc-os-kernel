@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # mkiso.sh - hybrid BIOS + UEFI bootable ISO of out/<arch>: GRUB (grub-mkrescue needs
 # grub-pc-bin, grub-efi-amd64-bin, xorriso and mtools) with the kernel and both initramfs
-# images; GRUB talks on the serial console like the kernel.
-# Usage: boot/mkiso.sh [out.iso]   Env: ARCH (x86_64), OUT, BUILD
+# images, plus the self-hosting image and its two menu entries when out/<arch>/initramfs-selfhost.cpio
+# exists; GRUB talks on the serial console like the kernel.
+# Usage: boot/mkiso.sh [out.iso]      (default: out/<arch>/tcc-linux-<arch>.iso)
+# Env: ARCH (x86_64, i386), OUT, BUILD (the directories, see scripts/lib.sh)
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
+case ${1:-} in -h|--help) usage;; -*) usage 2;; esac
 ARCH=${ARCH:-x86_64}
 O=$OUT/$ARCH; ISO=${1:-$O/tcc-linux-$ARCH.iso}
 # grub-mkrescue puts a boot image on the ISO for every GRUB platform under /usr/lib/grub; both

@@ -13,12 +13,13 @@
 #          second generation, a kernel built inside the first
 #   all    qemu, then boot
 # Env: ARCH (x86_64, i386; --arch does the same), JOBS, AUTO (auto: build-kernel only, the default; all: build-toolchain first
-#      and build the kernel with the guest-built tcc and tld), TIMEOUT (seconds for the guest run,
-#      default 7200), MEM/SMP as in run.sh
+#      and build the kernel with the guest-built tcc and tld; run.sh's --auto=test, which brings
+#      back test logs and no kernel, is not for this script), TIMEOUT (seconds for the guest
+#      run, default 7200), MEM/SMP as in run.sh
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
-while [ $# -gt 0 ]; do case $1 in --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;; *) break;; esac; done
+while [ $# -gt 0 ]; do case $1 in --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;; -h|--help) usage;; -*) usage 2;; *) break;; esac; done
 ARCH=${ARCH:-x86_64}; B=$BUILD/$ARCH; O=$OUT/$ARCH; export ARCH    # run.sh reads ARCH too
 stage=$B/selfhost/stage
 mode=${1:-all}
@@ -86,5 +87,5 @@ case $mode in
     qemu) test_qemu;;
     boot) test_boot;;
     all) test_qemu; test_boot;;
-    *) die "usage: $0 host|qemu|boot|all";;
+    *) usage 2;;
 esac
