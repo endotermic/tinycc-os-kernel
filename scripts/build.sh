@@ -417,8 +417,8 @@ step_selfhost() {
     for t in ld nm objcopy readelf ar strip; do ln -sf tld "$STAGE/usr/bin/$t"; done
     cp "$B/make/make" "$STAGE/usr/bin/make"
     cp "$ROOT/kernels/linux/tcc-kcc" "$ROOT/kernels/linux/tcc-hostcc" "$ROOT/kernels/linux/objtool-stub" "$STAGE/usr/bin/"
-    cp "$ROOT"/userland/selfhost/build-kernel "$ROOT"/userland/selfhost/build-toolchain "$ROOT"/userland/selfhost/send-file \
-       "$ROOT"/userland/selfhost/flex "$ROOT"/userland/selfhost/bison "$STAGE/usr/bin/"
+    # the commands are C scripts ("#!/usr/bin/tcc -run"), installed under their command names
+    for c in build-kernel build-toolchain send-file flex bison; do cp "$ROOT/userland/selfhost/$c.c" "$STAGE/usr/bin/$c"; done
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
     #    not in the guest), the kernel and tcc patches and the notes
@@ -434,7 +434,7 @@ step_selfhost() {
     # 5. the image: the busybox image's manifest + the guest tcc tree + this tree
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    export INIT_SH=$ROOT/userland/init.sh BUSYBOX=$B/busybox/busybox
+    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
       "$ROOT/userland/dir2list.sh" "$STAGE"
@@ -452,16 +452,18 @@ step_initramfs() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
-    export INIT=$B/init INIT_SH=$ROOT/userland/init.sh BUSYBOX=$B/busybox/busybox
+    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
-    if [ -x "$BUSYBOX" ]; then
+    # the busybox image's /init is a C script that /usr/bin/tcc runs (-run): it needs the guest tcc
+    if [ ! -x "$BUSYBOX" ]; then
+        echo "   no $BUSYBOX (busybox step): only the libc-free image was made" >&2
+    elif [ ! -x "$B/tcc-guest/stage/usr/bin/tcc" ]; then
+        echo "   no guest tcc (guest-tcc step): /init is a C script run by /usr/bin/tcc, only the libc-free image was made" >&2
+    else
         { cat "$ROOT/userland/initramfs.list"
-          if [ -x "$B/tcc-guest/stage/usr/bin/tcc" ]; then "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
-          else echo "   no guest tcc (guest-tcc step): initramfs without /usr/bin/tcc" >&2; fi
+          "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
         } > "$B/initramfs.gen.list"
         "$TOOLS/gen_init_cpio" "$B/initramfs.gen.list" > "$O/initramfs.cpio"
-    else
-        echo "   no $BUSYBOX (busybox step): only the libc-free image was made" >&2
     fi
     ls -l "$O"/*.cpio | awk '{print "   " $5 "\t" $9}'
 }

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: BSD-2-Clause
-# gen_init_cpio manifest of the default image: a static busybox and /init (init.sh),
-# which mounts devtmpfs/proc/sysfs and runs an interactive shell on the serial console.
-# ${BUSYBOX} and ${INIT_SH} are expanded by gen_init_cpio from the environment
-# (scripts/build.sh exports them).  /dev/console must exist before devtmpfs is
-# mounted so that PID 1 gets stdio.  scripts/build.sh appends the guest compiler
-# tree (userland/dir2list.sh) to this list.
+# gen_init_cpio manifest of the default image: a static busybox and /init (busybox-init.c,
+# a C script that /usr/bin/tcc runs with -run), which mounts devtmpfs/proc/sysfs and runs
+# an interactive shell on the serial console.  ${BUSYBOX} and ${BUSYBOX_INIT} are expanded
+# by gen_init_cpio from the environment (scripts/build.sh exports them).  /dev/console must
+# exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
+# guest compiler tree (userland/dir2list.sh) to this list: /init needs /usr/bin/tcc.
 dir   /dev          0755 0 0
 nod   /dev/console  0600 0 0 c 5 1
 dir   /bin          0755 0 0
@@ -18,4 +18,4 @@ dir   /tmp          1777 0 0
 dir   /root         0700 0 0
 file  /bin/busybox  ${BUSYBOX} 0755 0 0
 slink /bin/sh       busybox 0777 0 0
-file  /init         ${INIT_SH} 0755 0 0
+file  /init         ${BUSYBOX_INIT} 0755 0 0

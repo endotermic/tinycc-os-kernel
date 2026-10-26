@@ -279,7 +279,15 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   pass `-B` only when the tcc is an in-tree one, detected by `include/tccdefs.h` next to it),
   `flex` and `bison` stand-ins that copy the lexer and parser generated on the host into
   `scripts/kconfig/` (`/usr/share/tinycc-os-kernel/kconfig/`), the Kconfig fragments, and
-  the scripts of `userland/selfhost/`.
+  the commands of `userland/selfhost/`. Every script of the system is C (since 2026-10-26):
+  `/init` (`userland/busybox-init.c`), `build-kernel`, `build-toolchain`, `send-file`, `flex`
+  and `bison` start with `#!/usr/bin/tcc -run`, so the kernel (`CONFIG_BINFMT_SCRIPT`) hands
+  them to the guest's static musl tcc, which compiles them in memory and runs `main()`; PID 1
+  is tcc running `busybox-init.c`. They use only POSIX libc calls (fork/exec for make, tar
+  and the compilers, `mount(2)`, termios, their own MD5), so the same sources also run under
+  the host's glibc tcc: `scripts/selfhost-test.sh host` runs `build-kernel.c` that way, with
+  sh wrappers around the host tcc for the `flex`/`bison` stand-ins Kbuild calls by path.
+  The busybox image therefore needs `/usr/bin/tcc` (step guest-tcc) to boot at all.
 * `build-kernel`: mounts a tmpfs on /build (85% of RAM), unpacks the tree, `tinyconfig` +
   `merge_config.sh` of the fragments + `olddefconfig`, then the same make line as
   `scripts/build.sh step_kernel` (CC=tcc-kcc HOSTCC=tcc-hostcc OBJTOOL=objtool-stub

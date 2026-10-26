@@ -4,8 +4,8 @@
 # Usage: scripts/selfhost-test.sh host|qemu|boot|all
 #   host   unpack the pruned kernel tree from the image's staging area and build it on the host
 #          with the host tcc and the image's own tld, make, wrappers and flex/bison stand-ins
-#          (userland/selfhost/build-kernel with WORK=build/<arch>/selfhost-test): proves the
-#          pruned tree and the scripts in a minute, before the slow run inside the guest
+#          (userland/selfhost/build-kernel.c run by the host tcc, WORK=build/<arch>/selfhost-test):
+#          proves the pruned tree and the scripts in a minute, before the slow run inside the guest
 #   qemu   boot the image with ./run.sh --selfhost --auto (the guest runs build-kernel and
 #          send-file, then shuts down) and receive the bzImage into out/<arch>/selfhost/
 #          (scripts/recv-file.sh); the console goes to out/<arch>/selfhost/console.log too
@@ -30,10 +30,23 @@ test_host() {
     # the i386 kernel is compiled by the host's i386-tcc cross compiler (KCC_TCC, as in
     # scripts/build.sh); inside the i386 guest tcc itself is that compiler
     kcc_tcc=; [ "$ARCH" != i386 ] || kcc_tcc=$SRC/tinycc/i386-tcc
+    # The guest's commands are C scripts with "#!/usr/bin/tcc -run" lines; the host has no
+    # /usr/bin/tcc, so the host check runs them through the in-tree host tcc: build-kernel
+    # directly, flex and bison (Kbuild runs them by path, $BIN/flex) through wrappers in a
+    # bin directory of the check that holds a copy of the rest of the image's tools (a copy,
+    # not links: scripts/build.sh selfhost recreates the staging tree)
+    hosttcc="$SRC/tinycc/tcc -B$SRC/tinycc -I$SRC/tinycc/include -run"
+    mkdir -p "$W/bin"
+    cp -a "$stage"/usr/bin/. "$W/bin/"
+    for c in flex bison send-file; do
+        rm -f "$W/bin/$c"
+        printf '#!/bin/sh\nexec %s "%s" "$@"\n' "$hosttcc" "$ROOT/userland/selfhost/$c.c" > "$W/bin/$c"
+        chmod 755 "$W/bin/$c"
+    done
     env WORK="$W" NO_TMPFS=1 ARCH="$ARCH" TCC="$SRC/tinycc/tcc" ${kcc_tcc:+KCC_TCC="$kcc_tcc"} SELFHOST_SRC="$stage/usr/src" \
-        SELFHOST_SHARE="$stage/usr/share/tinycc-os-kernel" SELFHOST_BIN="$stage/usr/bin" \
+        SELFHOST_SHARE="$stage/usr/share/tinycc-os-kernel" SELFHOST_BIN="$W/bin" \
         GEN=1 KBUILD_BUILD_HOST=selfhost-test JOBS="${JOBS:-$(nproc)}" \
-        sh "$ROOT/userland/selfhost/build-kernel" || die "the host check failed"
+        $hosttcc "$ROOT/userland/selfhost/build-kernel.c" || die "the host check failed"
     echo "   reference: $(ls -l "$O/bzImage" | awk '{print $5}') bytes ($O/bzImage), pruned tree: $(ls -l "$W/linux/arch/x86/boot/bzImage" | awk '{print $5}') bytes"
 }
 test_qemu() {

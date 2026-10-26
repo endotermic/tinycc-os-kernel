@@ -115,7 +115,7 @@ gcc, binutils, flex or bison:
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers; `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
-| `/usr/bin/build-kernel`, `build-toolchain`, `send-file` | the commands (`userland/selfhost/`), see `/usr/share/tinycc-os-kernel/README` |
+| `/usr/bin/build-kernel`, `build-toolchain`, `send-file` | the commands (`userland/selfhost/`), see `/usr/share/tinycc-os-kernel/README`. Like `/init`, `flex` and `bison`, they are C scripts: a `#!/usr/bin/tcc -run` line, and tcc compiles and runs them in memory. The image has no shell scripts |
 
 ```bash
 ./run.sh --selfhost          # 1 GB of RAM, every CPU (SMP), ttyS1 -> out/<arch>/selfhost/ttyS1.bin
@@ -165,7 +165,7 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 | `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc` (CC) and `tcc-hostcc` (HOSTCC) wrappers for Kbuild, `objtool-stub` |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
-| `userland/` | the libc-free `init.c`, the busybox `/init` script, cpio manifests, `hello.c`; `selfhost/`: `build-kernel`, `build-toolchain`, `send-file`, the `flex`/`bison` stand-ins and the guest README |
+| `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
 | `docs/PORT-NOTES.md` | how the port works, wrapper rules, open items, how to debug |
 | `docs/FIX-LOG.md` | the per-fix log (problem, fix, verification) with the fix-to-patch map |

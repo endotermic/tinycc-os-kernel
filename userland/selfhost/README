@@ -19,6 +19,9 @@ carries what is needed to do that again, in here, without gcc, binutils, flex or
   /usr/bin/tcc-kcc, tcc-hostcc, objtool-stub    the Kbuild CC / HOSTCC / OBJTOOL wrappers
   /usr/bin/flex, bison       copy the pre-generated Kconfig lexer and parser from
                              /usr/share/tinycc-os-kernel/kconfig
+  The commands below, flex, bison and /init itself are C scripts: their first line is
+  "#!/usr/bin/tcc -run", so tcc compiles them in memory and runs them (cat /usr/bin/send-file).
+  There is no shell script in this system.
   /usr/share/tinycc-os-kernel/{minimal,tcc}.config    the Kconfig fragments
   /usr/share/tinycc-os-kernel/patches                 the tcc and kernel patch series
 
