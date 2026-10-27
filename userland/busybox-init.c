@@ -342,6 +342,8 @@ static void banner(FILE *out)
         fprintf(out, "*** %s is installed, static, musl libc:  try  tcc -run hello.c\n", s);
         free(s);
     }
+    if (is_exec("/usr/bin/nnn"))
+        fprintf(out, "*** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)\n");
     /* the build number counts the generations: #1 was built on the host (scripts/build.sh),
      * #2 inside a guest running #1, and so on (userland/selfhost/build-kernel sets
      * KBUILD_BUILD_VERSION and KBUILD_BUILD_HOST=tinycc-os-guest) */
@@ -443,6 +445,14 @@ int main(void)
     /* the kernel gives PID 1 no PATH; busybox's default, so that the shells see the same */
     if (!getenv("PATH"))
         setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", 1);
+    /* HOME (the kernel gives PID 1 HOME=/; the file manager nnn keeps its state in
+     * $HOME/.config/nnn) and nnn's opener: Enter on a file runs busybox vi on it (nnn's
+     * default is xdg-open, which the image has not) */
+    setenv("HOME", "/root", 1);
+    setenv("NNN_OPENER", "vi", 0);
+    /* -c: the opener is a terminal program, run in the foreground (without it nnn starts the
+     * opener detached from the terminal, as for a GUI program, and vi cannot run there) */
+    setenv("NNN_OPTS", "c", 0);
     chdir("/root");
     network_up();
     /* A shell on the screen (tty1, keyboard) too, when there is one and /dev/console is
@@ -453,8 +463,14 @@ int main(void)
         primary = p + 1;
     else if (*s)
         primary = s;
+    /* TERM for the curses programs (nnn): the VT is a "linux" terminal; the serial console
+     * is the host's terminal emulator behind QEMU, which is xterm-compatible.  libncursesw
+     * has both entries compiled in (scripts/build.sh ncurses: --with-fallbacks) */
+    setenv("TERM", "linux", 1);
     if (exists("/dev/tty1") && (!primary || strcmp(primary, "tty0") != 0))
         spawn_on_tty("/dev/tty1", (char *[]){ "sh", NULL }, 1);
+    if (primary && strncmp(primary, "ttyS", 4) == 0)
+        setenv("TERM", "xterm-256color", 1);
     free(s);
     /* the shell on /dev/console's device (cttyhack finds it: ttyS0, or tty0 = the active VT) */
     banner(stdout);

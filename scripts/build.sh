@@ -16,6 +16,9 @@
 #   kernel      Linux: tinyconfig + kernels/linux/*.config, CC=tcc-kcc (kernels/linux/tcc-kcc.c), LD=tld
 #   musl        musl libc, static, compiled by tcc (no src/complex: tcc has no _Complex)
 #   busybox     static busybox compiled and linked by tcc against that musl
+#   ncurses     ncurses, wide-char, static, musl, compiled by the host tcc, with the consoles'
+#               terminfo entries compiled in (no terminfo files in the image): the library nnn needs
+#   nnn         the nnn file manager, static, musl, against that ncurses -> /usr/bin/nnn in the images
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
 #   guest-make  GNU make, static, musl, compiled by the host tcc (the guest's make for self-hosting)
 #   initramfs   the libc-free init + the two cpio images -> out/<arch>/
@@ -25,7 +28,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -78,7 +81,10 @@ STEPS=$B/steps
 # leave nothing behind)
 prepare() { mkdir -p "$B" "$LOGS" "$O" "$STEPS"; }
 TCCSRC=$SRC/tinycc; TCC=$TCCSRC/tcc; TCC_TARGET=$TCCSRC/$TCC_TARGET; LIBTCC1=$TCCSRC/$LIBTCC1
-LINUX=$SRC/linux; MUSLSRC=$SRC/musl; BBSRC=$SRC/busybox
+LINUX=$SRC/linux; MUSLSRC=$SRC/musl; BBSRC=$SRC/busybox; NCSRC=$SRC/ncurses; NNNSRC=$SRC/nnn; FTSSRC=$SRC/musl-fts
+# the terminals a guest console can be (TERM is set by /init, userland/busybox-init.c): their
+# terminfo entries are compiled into libncursesw (step_ncurses), so the image carries none
+NCURSES_FALLBACKS=linux,vt100,vt102,vt220,xterm,xterm-256color,screen,screen-256color,tmux,tmux-256color,ansi,dumb
 MUSLB=$B/musl; MUSLP=$MUSLB/install; KHDR=$B/kernel-headers; MUSL_TCC=$B/musl-tcc
 
 need_src() {
@@ -312,6 +318,55 @@ step_busybox() {
     echo "   $(./busybox | head -1 | cut -d' ' -f1-2), $(file -b busybox | cut -d, -f1-2), $(ls -l busybox | awk '{print $5}') bytes"
 }
 
+step_ncurses() {
+    need_src ncurses
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    NC=$B/ncurses; mkdir -p "$NC"
+    msg "ncurses: $(lock_ref ncurses), wide-char, static, musl, CC=musl-tcc -> $NC/install"
+    cd "$NC"
+    # the libraries only (no programs, C++, Ada, manuals or tests): nnn needs libncursesw.
+    # --with-fallbacks compiles the terminfo entries of $NCURSES_FALLBACKS into the library
+    # (the host's tic and infocmp generate the table), --disable-db-install leaves the
+    # database out, so the guest needs no /usr/share/terminfo.  No pkg-config: nnn's Makefile
+    # is given the flags (step_nnn)
+    configured config.status "$MUSL_TCC" \
+        || "$NCSRC/configure" CC="$MUSL_TCC" --prefix=/usr --without-shared --with-normal --without-debug \
+            --without-profile --without-ada --without-cxx --without-cxx-binding --without-manpages --without-tests \
+            --without-progs --disable-db-install --with-fallbacks="$NCURSES_FALLBACKS" --enable-widec \
+            --disable-stripping --disable-rpath --disable-pkg-config --disable-pc-files \
+            --with-tic-path="$(command -v tic)" --with-infocmp-path="$(command -v infocmp)" \
+            >"$LOGS/ncurses-configure.log" 2>&1 \
+        || fail "$LOGS/ncurses-configure.log" "ncurses configure failed"
+    : >"$LOGS/ncurses.log"
+    run_progress "ncurses" "$(make_total)" "$LOGS/ncurses.log" make -j"$JOBS" || fail "$LOGS/ncurses.log" "ncurses build failed"
+    make install.libs install.includes DESTDIR="$NC/install" >>"$LOGS/ncurses.log" 2>&1 \
+        || fail "$LOGS/ncurses.log" "ncurses install failed"
+    [ -f "$NC/install/usr/lib/libncursesw.a" ] || fail "$LOGS/ncurses.log" "no libncursesw.a"
+    echo "   libncursesw.a: $(ls -l "$NC/install/usr/lib/libncursesw.a" | awk '{print $5}') bytes; terminfo compiled in: $(echo "$NCURSES_FALLBACKS" | tr ',' ' ')"
+}
+
+step_nnn() {
+    need_src nnn musl-fts
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    NC=$B/ncurses/install
+    [ -f "$NC/usr/lib/libncursesw.a" ] || die "no $NC/usr/lib/libncursesw.a: run the ncurses step first"
+    N=$B/nnn; STAGE=$N/stage
+    msg "nnn: $(lock_ref nnn), static, musl, CC=musl-tcc, against that ncurses -> $STAGE/usr/bin/nnn"
+    # build from a copy of the tracked files, so that src/nnn stays clean.  Upstream's Makefile,
+    # its curses flags pointed at the tcc-built ncurses (PKG_CONFIG=false: no pkg-config
+    # lookup), without readline (its default) and without X11 (no clipboard program in the
+    # guest).  nnn.c includes <fts.h>, which musl lacks: musl-fts gives the header (nnn calls
+    # nothing of it; directories are walked with nftw)
+    mkdir -p "$N/tree"
+    git -C "$NNNSRC" ls-files -z | rsync -a -0 --files-from=- "$NNNSRC/" "$N/tree/"
+    rm -f "$N/tree/nnn"          # relink against the current ncurses (one compile; rsync keeps the timestamps)
+    make -C "$N/tree" CC="$MUSL_TCC" PKG_CONFIG=false CFLAGS_OPTIMIZATION=-O2 \
+        CFLAGS_CURSES="-I$NC/usr/include -I$FTSSRC" LDLIBS_CURSES="-L$NC/usr/lib -lncursesw" O_NOX11=1 nnn \
+        >"$LOGS/nnn.log" 2>&1 || fail "$LOGS/nnn.log" "nnn build failed"
+    mkdir -p "$STAGE/usr/bin" && cp "$N/tree/nnn" "$STAGE/usr/bin/nnn"
+    echo "   nnn $("$STAGE/usr/bin/nnn" -V 2>/dev/null || echo "$(lock_ref nnn)"), $(file -b "$STAGE/usr/bin/nnn" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/nnn" | awk '{print $5}') bytes"
+}
+
 step_guest_tcc() {
     need_src tinycc
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -459,8 +514,10 @@ step_selfhost() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c
+    [ -d "$B/nnn/stage" ] || echo "   no $B/nnn/stage (nnn step): the image has no file manager" >&2
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
+      [ ! -d "$B/nnn/stage" ] || "$ROOT/userland/dir2list.sh" "$B/nnn/stage"
       "$ROOT/userland/dir2list.sh" "$STAGE"
     } > "$SH/initramfs-selfhost.gen.list"
     "$TOOLS/gen_init_cpio" "$SH/initramfs-selfhost.gen.list" > "$O/initramfs-selfhost.cpio"
@@ -484,8 +541,10 @@ step_initramfs() {
     elif [ ! -x "$B/tcc-guest/stage/usr/bin/tcc" ]; then
         echo "   no guest tcc (guest-tcc step): /init is a C script run by /usr/bin/tcc, only the libc-free image was made" >&2
     else
+        [ -d "$B/nnn/stage" ] || echo "   no $B/nnn/stage (nnn step): the image has no file manager" >&2
         { cat "$ROOT/userland/initramfs.list"
           "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
+          [ ! -d "$B/nnn/stage" ] || "$ROOT/userland/dir2list.sh" "$B/nnn/stage"
         } > "$B/initramfs.gen.list"
         "$TOOLS/gen_init_cpio" "$B/initramfs.gen.list" > "$O/initramfs.cpio"
     fi
@@ -551,7 +610,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -564,13 +623,14 @@ for s; do
         clean|clean-all|clean-src) ;;
         iso) need_build_tools; need_iso_tools;;
         selfhost) need_build_tools; need_download_tool;;
+        ncurses|all) need_build_tools; need_tool tic:ncurses-bin infocmp:ncurses-bin;;
         *) need_build_tools;;
     esac
 done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

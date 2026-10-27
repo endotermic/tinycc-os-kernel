@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 27 Oct 2026 18:56:22 +0200
+Subject: [PATCH] terminfo: smcup/rmcup for the Linux console, which has an
+ alternate screen
+
+The Linux console implements CSI ? 1049 h/l (drivers/tty/vt/vt.c,
+CSI_DEC_hl_ALT_SCREEN; Linux 7.3 here), but the linux entry has no
+smcup/rmcup, so curses programs (nnn) leave their last screen behind
+when they exit while programs that send the sequence unconditionally
+(busybox vi) restore what was there.  Give the entry the two
+capabilities; the fallback table compiled into libncursesw carries them
+(scripts/build.sh ncurses: --with-fallbacks).
+---
+ misc/terminfo.src | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/misc/terminfo.src b/misc/terminfo.src
+index 5d575b8..701bbfe 100644
+--- a/misc/terminfo.src
++++ b/misc/terminfo.src
+@@ -1089,8 +1089,12 @@ linux3.0|Linux 3.0 kernels,
+ 	kcbt=\E^I, E3=\E[3J, kcbt2=\E[Z, use=linux2.6,
+ 
+ # This is Linux console for ncurses.
++# The kernel's console implements the alternate screen (CSI ? 1049 h/l; drivers/tty/vt/vt.c,
++# CSI_DEC_hl_ALT_SCREEN, in Linux 7.3): with smcup/rmcup, curses programs give the screen back
++# as they found it when they exit, the way programs that send the sequence unconditionally
++# (busybox vi) already do on this console.
+ linux|Linux console,
+-	use=linux3.0,
++	rmcup=\E[?1049l, smcup=\E[?1049h, use=linux3.0,
+ 
+ # Subject: linux 2.6.26 vt back_color_erase
+ # Changes to the Linux console driver broke bce model as reported in

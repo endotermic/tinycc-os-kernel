@@ -1,0 +1,2 @@
+# patches/ncurses: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-terminfo-smcup-rmcup-for-the-Linux-console-which-has.patch

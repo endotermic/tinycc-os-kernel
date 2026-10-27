@@ -3,9 +3,11 @@
 # a C script that /usr/bin/tcc runs with -run), which mounts devtmpfs/proc/sysfs, brings the
 # network up and runs an interactive shell on the serial console, the udhcpc script and the
 # device test (C scripts too).  ${BUSYBOX}, ${BUSYBOX_INIT}, ${UDHCPC_SCRIPT} and
-# ${DEVICES_TEST} are expanded by gen_init_cpio from the environment (scripts/build.sh exports them).  /dev/console must
+# ${DEVICES_TEST} are expanded by gen_init_cpio from the environment (scripts/build.sh exports
+# them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
-# guest compiler tree (userland/dir2list.sh) to this list: /init needs /usr/bin/tcc.
+# guest compiler tree and nnn's staging tree (userland/dir2list.sh) to this list: /init
+# needs /usr/bin/tcc; nnn is the file manager (build/<arch>/nnn/stage).
 dir   /dev          0755 0 0
 nod   /dev/console  0600 0 0 c 5 1
 dir   /bin          0755 0 0

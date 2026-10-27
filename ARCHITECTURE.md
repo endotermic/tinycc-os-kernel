@@ -36,12 +36,14 @@ three scripts in order: `scripts/fetch.sh`, `scripts/patch.sh`,
 
 ## 2. Sources: `scripts/fetch.sh` and `scripts/patch.sh`
 
-`sources.lock` pins five upstreams by commit or tarball hash: tinycc, Linux,
-musl, busybox and GNU make. `fetch.sh` puts each into `src/<component>` on a
-branch `base`. `patch.sh` applies `patches/<component>/series` with `git am`
+`sources.lock` pins eight upstreams by commit or tarball hash: tinycc, Linux,
+musl, busybox, GNU make, ncurses, nnn and musl-fts. `fetch.sh` puts each into
+`src/<component>` on a branch `base`. `patch.sh` applies `patches/<component>/series` with `git am`
 onto a branch `patched`: the tcc patches are the compiler fixes (and their
 regression tests) that make the kernel compile and run, the kernel patches
-adapt Kbuild and a few sources to tcc.
+adapt Kbuild and a few sources to tcc, and the ncurses patch gives the `linux`
+terminfo entry smcup/rmcup, since this kernel's console has an alternate
+screen (CSI 1049), so that nnn restores the screen on exit as busybox vi does.
 
 Fixes are made as commits in `src/<component>` and exported back into
 `patches/` by `scripts/export-patches.sh`, so the patch series is the canonical
@@ -92,8 +94,11 @@ the guest.
 busybox with `/bin/sh`, the guest tcc tree (headers, `libtcc1.a`, musl's
 `crt*.o` and `libc.a`, listed by `userland/dir2list.sh`), `hello.c`,
 `/init`, which is `userland/busybox-init.c` installed verbatim, udhcpc's
-event script (`userland/udhcpc-script.c`) and the device test
-(`userland/devices-test.c`), C scripts as well. The smoke-test
+event script (`userland/udhcpc-script.c`), the device test
+(`userland/devices-test.c`), C scripts as well, and the nnn file manager
+(`/usr/bin/nnn`, static, built by tcc against a tcc-built ncurses whose
+library carries the consoles' terminfo entries, so the image has no terminfo
+files; `/init` sets TERM, HOME, `NNN_OPENER=vi` and `NNN_OPTS=c`). The smoke-test
 image `initramfs-nolibc.cpio` holds only `userland/init.c`, a libc-free static
 binary that prints a banner and reboots.
 

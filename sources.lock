@@ -10,3 +10,6 @@ linux    f47d223627f80cb7a1eb14c585fe6cb35de5e984  master  https://git.kernel.or
 musl     9fa28ece75d8a2191de7c5bb53bed224c5947417  v1.2.6  https://git.musl-libc.org/git/musl
 busybox  fc71374dfccd46448c62947269a35f1420d7ee28  1_38_0  https://git.busybox.net/busybox
 make     sha256:dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3  4.4.1   https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz,https://ftpmirror.gnu.org/make/make-4.4.1.tar.gz
+ncurses  sha256:136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6  6.5     https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz,https://ftpmirror.gnu.org/ncurses/ncurses-6.5.tar.gz
+nnn      5f1c78b2c591b12fcbdb5b84d16b7ecd28eb12dc  v5.3    https://github.com/jarun/nnn.git
+musl-fts 0bde52df588e8969879a2cae51c3a4774ec62472  v1.2.7  https://github.com/void-linux/musl-fts.git
