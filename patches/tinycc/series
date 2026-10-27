@@ -108,3 +108,4 @@ bugfixes/0106-tccgen-an-enumerator-keeps-the-type-of-its-expressio.patch
 features/0107-libtcc-a-file-with-an-unknown-extension-that-starts-.patch
 bugfixes/0108-tccgen-define-the-symbol-of-a-label-when-its-address.patch
 bugfixes/0109-i386-regparm-0-keeps-the-arguments-on-the-stack-unde.patch
+bugfixes/0110-i386-asm-a-64-bit-register-variable-in-an-asm-operan.patch

@@ -196,7 +196,11 @@ leaving its statement expression (the generic `_THIS_IP_`, 112) and `regparm(0)`
 under `-mregparm=3` (113: the first C call of an `asmlinkage` assembly routine with
 arguments, `csum_partial`, passed them in registers; the first IPv6 packet's checksum ran
 off the end of memory), and K20: the K14 division helpers must be `asmlinkage` too, since
-tcc's libcalls are cdecl (every 64-bit division by a constant on i386 had been wrong). `tcc -run` also learnt to take a `#!` script with
+tcc's libcalls are cdecl (every 64-bit division by a constant on i386 had been wrong). The
+interactive shell of the i386 guest then turned out to die on its first SIGCHLD (since the
+first i386 kernel): a 64-bit register variable in an asm operand (`__put_user_8`) took one
+register instead of the %eax:%edx pair, so every 32-bit signal frame had a corrupt xstate
+header (114). `tcc -run` also learnt to take a `#!` script with
 a foreign extension (udhcpc's default.script). Still open: the VEX/EVEX assembler (the AVX
 code paths stay out), `regulatory.db` is not in the image (cfg80211 uses the world domain).
 

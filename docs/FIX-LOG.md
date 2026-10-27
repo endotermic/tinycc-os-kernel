@@ -54,6 +54,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | 107 | tinycc 0104 | 109 | tinycc 0103 | 111 | tinycc 0107 |
 | | | | | 112 | tinycc 0108 |
 | | | | | 113 | tinycc 0109 |
+| | | | | 114 | tinycc 0110 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -102,7 +103,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/154_cleanup_goto.c` | all | 20, 85, 86 |
 | `tests/tests2/155_x86_inline_asm.c` | i386, x86_64 | 10, 11, 12, 13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 68, 76, 80, 90, 92, 93, 100, 103, 104 |
 | `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
-| `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105 |
+| `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105, 114 |
 | `tests/tests2/158_link_group.c` | all | 53 |
 | `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112 |
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
@@ -1457,7 +1458,8 @@ K1. 2026-10-20, APPLIED (uncommitted), `arch/x86/include/asm/cmpxchg_64.h`: wrap
 KMS video; see `kernels/README.md`) took the kernel from 1588 to about 3500 configuration lines
 and tcc through the block layer, SCSI, USB, DRM, ALSA, mac80211, the Bluetooth stack and the
 crypto library for the first time. The x86_64 build of it needed six compiler fixes, a set of
-assembler opcodes and three kernel patches, the i386 build and boot two more compiler fixes;
+assembler opcodes and three kernel patches, the i386 build and boot three more compiler fixes (the last, 114, for the
+shell's signal handling, found the day after);
 the whole kernel is still compiled, assembled and linked by tcc and tld (x86_64: 2085 tcc
 invocations, 0 gcc, a 6.5 MB bzImage; i386: 2099, a 6.0 MB bzImage) and a kernel patch (K20) corrects the
 convention of the K14 division helpers.
@@ -1574,6 +1576,28 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     effective: before it the attribute would have changed nothing. (Not a tcc change: the
     compiler's libcall convention is cdecl, as libtcc1's routines expect.)
 
+114. 2026-10-27, COMMITTED, `tcc.h` (ASMOperand.reg2), `i386-asm.c` (asm_compute_constraints,
+    asm_gen_code).
+    Problem (reported by the user: running tcc in the i386 guest made QEMU exit): every return
+    from a signal handler in the 32-bit guest was refused, "sh[108] bad frame in 32bit
+    sigreturn", so the interactive busybox shell died on the SIGCHLD of its first child and
+    init rebooted. The gen-2 kernel of 2026-10-23 did the same; the same busybox runs on the
+    host kernel. gdb on the guest (`run.sh -- -gdb tcp::1234`, breakpoints in the sigreturn
+    path): `copy_sigframe_from_user_to_xstate()` returned -EINVAL because the xstate header in
+    the user frame read `xfeatures = 0xc24ebcc4_00000003`, a kernel stack address in the high
+    half. `set_xfeature_in_sigframe()` reads and writes that 64-bit field with `__get_user`/
+    `__put_user`, whose i386 forms bind the value to a register variable (`register u64
+    __val_pu asm("%eax")`, "r"(__val_pu)) and expect the pair %eax:%edx (getuser.S/putuser.S:
+    `movl %eax,(%ecx); movl %edx,4(%ecx)`); tcc loaded only %eax and left %edx as it was.
+    Fix: a 64-bit register variable operand is a double register value: the named register
+    and GCC's next one (eax:edx, edx:ecx, ecx:ebx, ebx:esi, esi:edi) in a new `reg2`, loaded
+    and stored like the "A" constraint's pair, both allocated, and the generic 'r' allocation
+    no longer drops the pair.
+    Verification: 157 (input, output and read-write pairs on eax and edx; gcc agrees); the
+    i386 guest's shell survives `tcc -run hello.c`, a program's SIGUSR1 handler returns (the
+    SIGALRM one too, once C4 gave the kernel alarm()), devices-test still passes on both
+    architectures.
+
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the
     regulatory database (whose firmware file is not in the image anyway) selects
@@ -1583,6 +1607,12 @@ C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_
     and on `crypto/rsapubkey.asn1.c` (the guest has no Perl; the .asn1 sources were not in
     the pruned tree). Without the check neither is built. The option has a prompt only under
     CERTIFICATION_ONUS (EXPERT), hence the first line.
+
+C4. 2026-10-27, configuration, `kernels/linux/minimal.config`: `CONFIG_POSIX_TIMERS=y`. tinyconfig
+    leaves the POSIX clocks and timers out, so `alarm()`, `setitimer()` and the `timer_*` system
+    calls returned ENOSYS on both architectures; a program that arms an alarm and sleeps in
+    `pause()` waited forever (seen while checking fix 114 with a SIGALRM handler). Not a tcc
+    matter; the shell, udhcpc and ping worked because they wait in select/poll.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

@@ -1,0 +1,187 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 27 Oct 2026 17:11:15 +0200
+Subject: [PATCH] i386-asm: a 64-bit register variable in an asm operand is a
+ register pair
+
+GCC gives a 64-bit 'register long long v asm("eax")' the named register
+and the next one in its order, %eax:%edx (%edx:%ecx, %ecx:%ebx, %ebx:%esi,
+%esi:%edi).  The operand took only the named register: the kernel's
+__put_user_8() passed its value as "r"(__val_pu) with __val_pu bound to
+%eax, so %edx carried a leftover kernel address into the high half of the
+xstate header of every 32-bit signal frame, and sigreturn rejected the
+frame ("bad frame in 32bit sigreturn"): the interactive shell died on its
+first SIGCHLD.  ASMOperand gets reg2; such an operand is a double register
+value loaded into and stored from both registers, both are allocated, and
+the generic register allocation keeps the pair.  Test 157 (i386) reads the
+pair as input, output and read-write operand.
+---
+ i386-asm.c                               |  36 ++++++++++++++++++++---
+ tcc.h                                    |   1 +
+ tests/tests2/157_i386_regparm_pic.c      |  29 ++++++++++++++++++
+ tests/tests2/157_i386_regparm_pic.expect | Bin 492 -> 604 bytes
+ 4 files changed, 62 insertions(+), 4 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 23b7c6f..c331b56 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1749,6 +1749,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         op->input_index = -1;
+         op->ref_index = -1;
+         op->reg = -1;
++        op->reg2 = -1;
+         op->is_memory = 0;
+         op->is_rw = 0;
+         op->flag_cc = -1;
+@@ -1775,6 +1776,21 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+ 		   && (reg = op->vt->sym->r & VT_VALMASK) < VT_CONST) {
+ 	    op->priority = 1;
+ 	    op->reg = reg;
++#ifndef TCC_TARGET_X86_64
++            if ((op->vt->type.t & VT_BTYPE) == VT_LLONG) {
++                /* GCC: a 64-bit register variable takes the named register
++                   and the next one in GCC's order (eax:edx, edx:ecx,
++                   ecx:ebx, ebx:esi, esi:edi); the kernel's __put_user_8
++                   passes its value in %eax:%edx this way */
++                static const signed char pair[8] = {
++                    TREG_EDX, TREG_EBX, TREG_ECX, 6 /* esi */, -1, -1, 7 /* edi */, -1
++                };
++                if (reg >= 8 || pair[reg] < 0)
++                    tcc_error("no register pair for the 64-bit register variable of asm operand %d", i);
++                op->is_llong = 1;
++                op->reg2 = pair[reg];
++            }
++#endif
+         } else {
+             op->priority = constraint_priority(str);
+         }
+@@ -1835,9 +1851,16 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+ 	            tcc_error("asm regvar requests register that's taken already");
+ 	        reg = op->reg;
+ 	        regs_allocated[reg] |= reg_mask;
++	        if (op->reg2 >= 0)
++	            regs_allocated[op->reg2] |= reg_mask;
+ 	        continue;
+ 	    }
+ 	    reg = op->reg;
++	    if (op->reg2 >= 0) {
++	        if (is_reg_allocated(op->reg2))
++	            tcc_error("asm regvar requests register that's taken already");
++	        regs_allocated[op->reg2] |= reg_mask;
++	    }
+ 	}
+     try_next:
+         c = *str++;
+@@ -1958,8 +1981,10 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+             }
+             tcc_error("no free register for flag output '%s'", op->constraint);
+         reg_found:
+-            /* now we can reload in the register */
+-            op->is_llong = 0;
++            /* now we can reload in the register (a 64-bit register
++               variable keeps its pair) */
++            if (op->reg2 < 0)
++                op->is_llong = 0;
+             op->reg = reg;
+             regs_allocated[reg] |= reg_mask;
+             break;
+@@ -2022,6 +2047,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         /* if a reference is present for that operand, we assign it too */
+         if (op->input_index >= 0) {
+             operands[op->input_index].reg = op->reg;
++            operands[op->input_index].reg2 = op->reg2;
+             operands[op->input_index].is_llong = op->is_llong;
+         }
+     }
+@@ -2258,6 +2284,8 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+         op = &operands[i];
+         if (op->reg >= 0)
+             regs_allocated[op->reg] = 1;
++        if (op->reg2 >= 0)
++            regs_allocated[op->reg2] = 1;
+     }
+     if (!is_output) {
+         /* generate reg save code */
+@@ -2296,7 +2324,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+                         SValue sv;
+                         sv = *op->vt;
+                         sv.c.i += 4;
+-                        load(TREG_XDX, &sv);
++                        load(op->reg2 >= 0 ? op->reg2 : TREG_XDX, &sv);
+                     }
+                 }
+             }
+@@ -2326,7 +2354,7 @@ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands,
+                         SValue sv;
+                         sv = *op->vt;
+                         sv.c.i += 4;
+-                        store(TREG_XDX, &sv);
++                        store(op->reg2 >= 0 ? op->reg2 : TREG_XDX, &sv);
+                     }
+                 }
+                 if (is_x87_reg(op->reg))
+diff --git a/tcc.h b/tcc.h
+index 06fd34e..251081f 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -721,6 +721,7 @@ typedef struct ASMOperand {
+     int input_index; /* if >= 0, gives reference to an input constraint */
+     int priority; /* priority, used to assign registers */
+     int reg; /* if >= 0, register number used for this operand */
++    int reg2; /* the second register of a double register value (-1: %edx) */
+     int is_llong; /* true if double register value */
+     int is_memory; /* true if memory operand */
+     int is_rw;     /* for '+' modifier */
+diff --git a/tests/tests2/157_i386_regparm_pic.c b/tests/tests2/157_i386_regparm_pic.c
+index ae44fd8..b0ff5f8 100644
+--- a/tests/tests2/157_i386_regparm_pic.c
++++ b/tests/tests2/157_i386_regparm_pic.c
+@@ -92,8 +92,37 @@ static void test_pic(unsigned count)
+ struct lock { int a, b; };
+ static void RP init_lock(struct lock *l, int v) { *l = (struct lock){ .b = v }; }
+ 
++/* fix 114: a 64-bit register variable in an asm operand takes a register
++   pair, the named register and the next one in GCC's order (eax:edx,
++   edx:ecx), as the kernel's __put_user_8/__get_user_8 expect */
++static unsigned long long pair_in_eax(unsigned long long x)
++{
++    register unsigned long long v asm("eax") = x;
++    unsigned int lo, hi;
++    asm("movl %%eax, %0\n\tmovl %%edx, %1" : "=&r"(lo), "=&r"(hi) : "r"(v) : "ecx");
++    return lo | (unsigned long long)hi << 32;
++}
++static unsigned long long pair_out_edx(void)
++{
++    register unsigned long long v asm("edx");
++    asm("movl $0x11223344, %%edx\n\tmovl $0x55667788, %%ecx" : "=r"(v) : : "eax");
++    return v;
++}
++static unsigned long long pair_rw_eax(unsigned long long x)
++{
++    register unsigned long long v asm("eax") = x;
++    asm("addl $1, %%eax\n\tadcl $0, %%edx" : "+r"(v));
++    return v;
++}
++static void test_regvar_pair(void)
++{
++    printf("regvar pair: %llx %llx %llx\n", pair_in_eax(0x0123456789abcdefULL), pair_out_edx(),
++           pair_rw_eax(0xffffffffULL));
++}
++
+ int main(void)
+ {
++    test_regvar_pair();
+     struct { char pre; struct lock l; char post; } __attribute__((packed)) s;
+     memset(&s, 0x55, sizeof s);
+     init_lock(&s.l, 7);
+diff --git a/tests/tests2/157_i386_regparm_pic.expect b/tests/tests2/157_i386_regparm_pic.expect
+index 9dd21787b997f2a62b7fc708604bf44cc0071ca5..6e372dbd55625269edbfe790f2acd9700ecc9dc5 100644
+GIT binary patch
+delta 123
+zcmaFEe22xNC^fw-u}GmHF|)`@!O+Oq#MI2(!ZI-_IVCks!PL~u%-r0<!qCvj$k^D#
+VM8VJi3b-cxFeOjl-N~02r2v0jA-Dhl
+
+delta 14
+Wcmcb^@`ib$#gB>Bw<bF=NdW*es0Jti
+
