@@ -13,3 +13,5 @@ make     sha256:dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3
 ncurses  sha256:136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6  6.5     https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz,https://ftpmirror.gnu.org/ncurses/ncurses-6.5.tar.gz
 nnn      5f1c78b2c591b12fcbdb5b84d16b7ecd28eb12dc  v5.3    https://github.com/jarun/nnn.git
 musl-fts 0bde52df588e8969879a2cae51c3a4774ec62472  v1.2.7  https://github.com/void-linux/musl-fts.git
+links    sha256:7f0d54f4f7d1f094c25c9cbd657f98bc998311122563b1d757c9aeb1d3423b9e  2.30    http://links.twibright.com/download/links-2.30.tar.gz
+libressl sha256:7d02522ad5070b9adb32eb253ecabce181184a3750cf65abac0675ee908687c1  4.4.0   https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz,https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz

@@ -36,8 +36,8 @@ three scripts in order: `scripts/fetch.sh`, `scripts/patch.sh`,
 
 ## 2. Sources: `scripts/fetch.sh` and `scripts/patch.sh`
 
-`sources.lock` pins eight upstreams by commit or tarball hash: tinycc, Linux,
-musl, busybox, GNU make, ncurses, nnn and musl-fts. `fetch.sh` puts each into
+`sources.lock` pins ten upstreams by commit or tarball hash: tinycc, Linux,
+musl, busybox, GNU make, ncurses, nnn, musl-fts, LibreSSL and links. `fetch.sh` puts each into
 `src/<component>` on a branch `base`. `patch.sh` applies `patches/<component>/series` with `git am`
 onto a branch `patched`: the tcc patches are the compiler fixes (and their
 regression tests) that make the kernel compile and run, the kernel patches
@@ -61,6 +61,7 @@ and `out/<arch>/`.
 | `tld` | the project's linker suite in `tools/tld/`, replacing binutils for the kernel: `ld`, `nm`, `objcopy`, `readelf`, `ar`, `strip` | host tcc |
 | `kernel` | `out/<arch>/bzImage` from `src/linux` with `tinyconfig` plus the fragments in `kernels/linux/` (`minimal.config`, `drivers.config`: PCI, networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; the per-architecture and the tcc fragment) | tcc through the Kbuild wrappers, see below |
 | `musl`, `busybox` | a static musl libc and a static busybox linked against it | host tcc |
+| `ncurses`, `nnn`, `libressl`, `links` | the guest's extra programs and their libraries, static against that musl: libncursesw with the consoles' terminfo compiled in and the nnn file manager; LibreSSL's libcrypto/libssl/libtls (no assembly) with its `cert.pem` as the image's `/etc/ssl/cert.pem`, and the links web browser (text mode, http and https) | host tcc |
 | `guest-tcc`, `guest-make` | tcc (and `i386-tcc`) and GNU make as static musl binaries for the guest's `/usr/bin` | host tcc |
 | `initramfs` | `out/<arch>/initramfs.cpio` and `initramfs-nolibc.cpio` | `gen_init_cpio` from the kernel tree |
 | `selfhost` | `out/<arch>/selfhost/initramfs.cpio`, the busybox image plus everything needed to rebuild the system inside the guest | |
@@ -95,10 +96,13 @@ busybox with `/bin/sh`, the guest tcc tree (headers, `libtcc1.a`, musl's
 `crt*.o` and `libc.a`, listed by `userland/dir2list.sh`), `hello.c`,
 `/init`, which is `userland/busybox-init.c` installed verbatim, udhcpc's
 event script (`userland/udhcpc-script.c`), the device test
-(`userland/devices-test.c`), C scripts as well, and the nnn file manager
+(`userland/devices-test.c`), C scripts as well, the nnn file manager
 (`/usr/bin/nnn`, static, built by tcc against a tcc-built ncurses whose
 library carries the consoles' terminfo entries, so the image has no terminfo
-files; `/init` sets TERM, HOME, `NNN_OPENER=vi` and `NNN_OPTS=c`). The smoke-test
+files; `/init` sets TERM, HOME, `NNN_OPENER=vi` and `NNN_OPTS=c`) and the links
+web browser (`/usr/bin/links`, text mode, static, musl, with TLS from a
+tcc-built LibreSSL, whose root-certificate bundle is the image's
+`/etc/ssl/cert.pem`; the host is 10.0.2.2 on QEMU's user-mode network). The smoke-test
 image `initramfs-nolibc.cpio` holds only `userland/init.c`, a libc-free static
 binary that prints a banner and reboots.
 

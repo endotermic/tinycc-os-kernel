@@ -6,8 +6,10 @@
 # ${DEVICES_TEST} are expanded by gen_init_cpio from the environment (scripts/build.sh exports
 # them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
-# guest compiler tree and nnn's staging tree (userland/dir2list.sh) to this list: /init
-# needs /usr/bin/tcc; nnn is the file manager (build/<arch>/nnn/stage).
+# guest compiler tree and the staging trees of nnn, LibreSSL and links (userland/dir2list.sh)
+# to this list: /init needs /usr/bin/tcc; nnn is the file manager (build/<arch>/nnn/stage),
+# links the web browser (build/<arch>/links/stage), LibreSSL's tree holds the CA bundle
+# /etc/ssl/cert.pem that links verifies servers against (build/<arch>/libressl/stage).
 dir   /dev          0755 0 0
 nod   /dev/console  0600 0 0 c 5 1
 dir   /bin          0755 0 0

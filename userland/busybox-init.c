@@ -344,6 +344,11 @@ static void banner(FILE *out)
     }
     if (is_exec("/usr/bin/nnn"))
         fprintf(out, "*** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)\n");
+    /* links: text mode, TLS from the tcc-built LibreSSL (certificates verified against
+     * /etc/ssl/cert.pem); the host is 10.0.2.2 on the user-mode network (python3 -m
+     * http.server there serves a directory) */
+    if (is_exec("/usr/bin/links"))
+        fprintf(out, "*** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)\n");
     /* the build number counts the generations: #1 was built on the host (scripts/build.sh),
      * #2 inside a guest running #1, and so on (userland/selfhost/build-kernel sets
      * KBUILD_BUILD_VERSION and KBUILD_BUILD_HOST=tinycc-os-guest) */

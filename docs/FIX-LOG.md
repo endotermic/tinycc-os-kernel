@@ -1613,6 +1613,20 @@ C4. 2026-10-27, configuration, `kernels/linux/minimal.config`: `CONFIG_POSIX_TIM
     calls returned ENOSYS on both architectures; a program that arms an alarm and sleeps in
     `pause()` waited forever (seen while checking fix 114 with a SIGALRM handler). Not a tcc
     matter; the shell, udhcpc and ping worked because they wait in select/poll.
+C5. 2026-10-28, build recipe (not a patch), `scripts/build.sh` step `musl`: the i386 musl lacked
+    `compat/time32`. The step overrides musl's SRC_DIRS to leave `src/complex` out (tcc has no
+    `_Complex`) and listed `src/* src/malloc/<dir> crt ldso` only; musl's own list ends with
+    `$(COMPAT_SRC_DIRS)`, which `arch/i386/arch.mak` sets to `compat/time32`: the 64 functions
+    under their pre-time64 names (`select`, `time`, `gettimeofday`, `stat`, `nanosleep`, ...).
+    A program that includes the headers is redirected to the `__*_time64` names (`__REDIR`), so
+    busybox, tcc, make, ncurses and nnn linked; links' autoconf test `char select(); select();`
+    declares the function without a header, linked against the plain name and failed
+    ("unresolved reference to 'select'", "configure: error: select function not present").
+    Fix: the step reads COMPAT_SRC_DIRS from `arch/<ARCH>/arch.mak` (none on x86_64) and
+    rebuilds libc.a when the installed archive has no `select_time32.o`. Verification: the
+    i386 libc.a gains the 64 objects (`nm`: `T select`, `T time`, `T gettimeofday`), the i386
+    guest tcc tree is relinked from it, links configures and builds for i386 (1 599 455 bytes)
+    and dumps the host's page in the i386 guest; x86_64 unchanged (no arch.mak, step skipped).
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

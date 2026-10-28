@@ -110,6 +110,7 @@ The boot ends with:
 *** BusyBox v1.38.0 (static, musl -- compiled and linked by tinycc as well)
 *** tcc version 0.9.28rc e23dabe+110p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
+*** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
@@ -175,10 +176,10 @@ fifth menu entries (`./run.sh --iso --selfhost` selects them).
 
 | Path | What |
 |------|------|
-| `sources.lock` | the eight upstream components with URL, ref and exact commit or tarball hash |
+| `sources.lock` | the ten upstream components with URL, ref and exact commit or tarball hash |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
@@ -303,6 +304,8 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | ncurses | 6.5 (release tarball, sha256 in `sources.lock`; wide-char static library for nnn, the consoles' terminfo compiled in; 1 patch: smcup/rmcup for the Linux console, whose alternate screen the kernel implements) | 136d91bc... |
 | nnn | v5.3 (the guest's file manager, static, musl, built by tcc against that ncurses) | 5f1c78b2 |
 | musl-fts | v1.2.7 (only its `fts.h`: nnn includes the header, which musl lacks) | 0bde52df |
+| libressl | 4.4.0 (release tarball, sha256 in `sources.lock`; libcrypto, libssl and libtls, static, musl, built by tcc unpatched without assembly: the TLS library of links; its `cert.pem`, Mozilla's root store, is the guest's `/etc/ssl/cert.pem`) | 7d02522a... |
+| links | 2.30 (release tarball, sha256 in `sources.lock`; the guest's web browser: text mode, static, musl, built by tcc unpatched, with TLS from that LibreSSL, so http:// and https://) | 7f0d54f4... |
 
 ## License
 

@@ -113,7 +113,7 @@ msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hos
 "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" host-tcc
 [ -z "$test" ] || "$ROOT/scripts/build.sh" tcc-test
-"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn guest-tcc initramfs
+"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn libressl links guest-tcc initramfs
 [ -z "$selfhost" ] || "$ROOT/scripts/build.sh" selfhost
 case $output in iso|all) "$ROOT/scripts/build.sh" iso;; esac
 echo

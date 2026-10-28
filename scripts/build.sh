@@ -19,6 +19,11 @@
 #   ncurses     ncurses, wide-char, static, musl, compiled by the host tcc, with the consoles'
 #               terminfo entries compiled in (no terminfo files in the image): the library nnn needs
 #   nnn         the nnn file manager, static, musl, against that ncurses -> /usr/bin/nnn in the images
+#   libressl    LibreSSL's libcrypto, libssl and libtls, static, musl, compiled by the host tcc
+#               without assembly (the TLS library for links) -> build/<arch>/libressl/install, and
+#               its CA bundle as /etc/ssl/cert.pem in the images
+#   links       the links web browser, text mode, static, musl, with TLS from that LibreSSL
+#               (http:// and https://) -> /usr/bin/links (+ links2) in the images
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
 #   guest-make  GNU make, static, musl, compiled by the host tcc (the guest's make for self-hosting)
 #   initramfs   the libc-free init + the two cpio images -> out/<arch>/
@@ -28,7 +33,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn libressl links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -82,6 +87,7 @@ STEPS=$B/steps
 prepare() { mkdir -p "$B" "$LOGS" "$O" "$STEPS"; }
 TCCSRC=$SRC/tinycc; TCC=$TCCSRC/tcc; TCC_TARGET=$TCCSRC/$TCC_TARGET; LIBTCC1=$TCCSRC/$LIBTCC1
 LINUX=$SRC/linux; MUSLSRC=$SRC/musl; BBSRC=$SRC/busybox; NCSRC=$SRC/ncurses; NNNSRC=$SRC/nnn; FTSSRC=$SRC/musl-fts
+LINKSSRC=$SRC/links; LSSLSRC=$SRC/libressl
 # the terminals a guest console can be (TERM is set by /init, userland/busybox-init.c): their
 # terminfo entries are compiled into libncursesw (step_ncurses), so the image carries none
 NCURSES_FALLBACKS=linux,vt100,vt102,vt220,xterm,xterm-256color,screen,screen-256color,tmux,tmux-256color,ansi,dumb
@@ -240,15 +246,25 @@ step_musl() {
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
     msg "musl: CC=$(basename "$TCC_TARGET"), static, without src/complex -> $MUSLP"
     mkdir -p "$MUSLB"
-    if [ ! -f "$MUSLP/lib/libc.a" ]; then
-        cd "$MUSLB"
-        configured config.mak "CC = $TCC_TARGET" "srcdir = $MUSLSRC" "prefix = $MUSLP" \
-            || "$MUSLSRC/configure" CC="$TCC_TARGET" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
-            || fail "$LOGS/musl-configure.log" "musl configure failed"
-        srcdir=$(sed -n 's/^srcdir = //p' config.mak)
-        malloc=$(sed -n 's/^MALLOC_DIR = //p' config.mak)
-        dirs=$(for d in "$srcdir"/src/*; do [ "${d##*/}" = complex ] || printf '%s ' "$d"; done)
-        dirs="$dirs $srcdir/src/malloc/$malloc $srcdir/crt $srcdir/ldso"
+    cd "$MUSLB"
+    configured config.mak "CC = $TCC_TARGET" "srcdir = $MUSLSRC" "prefix = $MUSLP" \
+        || "$MUSLSRC/configure" CC="$TCC_TARGET" --prefix="$MUSLP" --disable-shared >"$LOGS/musl-configure.log" 2>&1 \
+        || fail "$LOGS/musl-configure.log" "musl configure failed"
+    srcdir=$(sed -n 's/^srcdir = //p' config.mak)
+    malloc=$(sed -n 's/^MALLOC_DIR = //p' config.mak)
+    # SRC_DIRS is musl's own list (Makefile: src/* src/malloc/$(MALLOC_DIR) crt ldso
+    # $(COMPAT_SRC_DIRS)) without src/complex.  COMPAT_SRC_DIRS comes from arch/<arch>/arch.mak:
+    # compat/time32 on the 32-bit architectures, the functions under their pre-time64 names
+    # (select, time, gettimeofday, stat, ...: the headers redirect a program that includes them
+    # to the __*_time64 names, but a configure test that declares `char select();` without a
+    # header links against the plain name and failed on i386 while the directory was missing)
+    compat=$(sed -n 's/^COMPAT_SRC_DIRS = //p' "$srcdir/arch/$(sed -n 's/^ARCH = //p' config.mak)/arch.mak" 2>/dev/null || true)   # (no arch.mak on x86_64)
+    dirs=$(for d in "$srcdir"/src/*; do [ "${d##*/}" = complex ] || printf '%s ' "$d"; done)
+    dirs="$dirs $srcdir/src/malloc/$malloc $srcdir/crt $srcdir/ldso"
+    for d in $compat; do dirs="$dirs $srcdir/$d"; done
+    # (re)build when libc.a is missing, or lacks the compat objects (an i386 tree built before
+    # 2026-10-28); make compiles the missing objects only
+    if [ ! -f "$MUSLP/lib/libc.a" ] || { [ -n "$compat" ] && ! ar t "$MUSLP/lib/libc.a" | grep -q '^select_time32\.o$'; }; then
         : >"$LOGS/musl.log"
         run_progress "musl" "$(make_total SRC_DIRS="$dirs")" "$LOGS/musl.log" make -j"$JOBS" SRC_DIRS="$dirs" \
             || fail "$LOGS/musl.log" "musl build failed"
@@ -367,6 +383,80 @@ step_nnn() {
     echo "   nnn $("$STAGE/usr/bin/nnn" -V 2>/dev/null || echo "$(lock_ref nnn)"), $(file -b "$STAGE/usr/bin/nnn" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/nnn" | awk '{print $5}') bytes"
 }
 
+step_libressl() {
+    need_src libressl
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    LS=$B/libressl; STAGE=$LS/stage; mkdir -p "$LS"
+    msg "libressl: $(lock_ref libressl), static, musl, no assembly, CC=musl-tcc -> $LS/install"
+    cd "$LS"
+    # LibreSSL portable rather than OpenSSL: links needs the OpenSSL API (--with-ssl), LibreSSL
+    # is plain C99 autotools with no perl in the build, its bignum code has 32-bit fallbacks
+    # for every __int128 path and the only inline asm sits behind OPENSSL_NO_ASM, which
+    # --disable-asm sets.  Static libraries only, no tests; the apps (openssl, nc, ocspcheck)
+    # are not built: their link lines carry -Wl,-z,relro, which tcc rejects, and the guest
+    # needs none of them, so the library directories are built and installed one by one.
+    # --host names the target explicitly (config.guess would run the host's compiler);
+    # --with-openssldir=/etc/ssl is where libcrypto's default verify paths look for cert.pem.
+    # Everything compiles with tcc unpatched.
+    configured config.status "$MUSL_TCC" \
+        || CC=$MUSL_TCC CFLAGS=-O2 "$LSSLSRC/configure" --host="$ARCH-linux-musl" --prefix=/usr \
+            --disable-shared --enable-static --disable-asm --disable-tests --with-openssldir=/etc/ssl \
+            >"$LOGS/libressl-configure.log" 2>&1 \
+        || fail "$LOGS/libressl-configure.log" "libressl configure failed"
+    : >"$LOGS/libressl.log"
+    for d in crypto ssl tls; do
+        run_progress "libressl/$d" "$(make_total -C "$d")" "$LOGS/libressl.log" make -C "$d" -j"$JOBS" \
+            || fail "$LOGS/libressl.log" "libressl $d build failed"
+    done
+    rm -rf "$LS/install"
+    for d in include crypto ssl tls; do
+        make -C "$d" install DESTDIR="$LS/install" >>"$LOGS/libressl.log" 2>&1 \
+            || fail "$LOGS/libressl.log" "libressl $d install failed"
+    done
+    [ -f "$LS/install/usr/lib/libssl.a" ] || fail "$LOGS/libressl.log" "no libssl.a"
+    # the CA bundle (LibreSSL ships Mozilla's root store as cert.pem, MPL-2.0) for the images
+    # (stage_lists): links verifies the servers' certificates against /etc/ssl/cert.pem
+    rm -rf "$STAGE"; mkdir -p "$STAGE/etc/ssl"
+    cp "$LSSLSRC/cert.pem" "$STAGE/etc/ssl/cert.pem"
+    echo "   libcrypto.a $(ls -l "$LS/install/usr/lib/libcrypto.a" | awk '{print $5}') bytes, libssl.a $(ls -l "$LS/install/usr/lib/libssl.a" | awk '{print $5}') bytes, libtls.a $(ls -l "$LS/install/usr/lib/libtls.a" | awk '{print $5}') bytes; cert.pem: $(grep -c 'BEGIN CERTIFICATE' "$STAGE/etc/ssl/cert.pem") root certificates"
+}
+
+step_links() {
+    need_src links
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    LSSL=$B/libressl/install/usr
+    [ -f "$LSSL/lib/libssl.a" ] || die "no $LSSL/lib/libssl.a: run the libressl step first"
+    LK=$B/links; STAGE=$LK/stage; mkdir -p "$LK"
+    msg "links: $(lock_ref links), text mode, static, musl, CC=musl-tcc, TLS from that LibreSSL -> $STAGE/usr/bin/links"
+    cd "$LK"
+    # text mode only (no graphics drivers, no image libraries, no freetype), TLS from the
+    # tcc-built LibreSSL (--with-ssl=DIR: -IDIR/include, -LDIR/lib -lssl -lcrypto;
+    # --disable-ssl-pkgconfig keeps the host's openssl.pc out), no compression libraries, no
+    # gpm, no libevent: a static binary that needs musl alone.  Every other library is switched
+    # off explicitly, so that configure cannot pick up a host library through tcc's default
+    # search paths.  An out-of-tree (VPATH) build keeps src/links clean.  configure takes CC and
+    # CFLAGS from the environment only: a CC=... argument is read as a host type.  links
+    # compiles with tcc unpatched.
+    configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" \
+        || CC=$MUSL_TCC CFLAGS=-O2 "$LINKSSRC/configure" --with-ssl="$LSSL" --disable-ssl-pkgconfig \
+            --without-x --without-fb --without-svgalib \
+            --without-directfb --without-zlib --without-brotli --without-zstd --without-bzip2 --without-lzma \
+            --without-lzip --without-openmp --without-libevent --without-gpm --without-freetype --without-libjpeg \
+            --without-libtiff --without-librsvg --without-libwebp --without-libavif \
+            >"$LOGS/links-configure.log" 2>&1 \
+        || fail "$LOGS/links-configure.log" "links configure failed"
+    grep -q '^SSL support:.*OPENSSL' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without SSL"
+    : >"$LOGS/links.log"
+    rm -f links                  # relink against the current LibreSSL
+    run_progress "links" "$(make_total)" "$LOGS/links.log" make -j"$JOBS" || fail "$LOGS/links.log" "links build failed"
+    [ -x links ] || fail "$LOGS/links.log" "no links binary"
+    # the staging tree appended to the images (stage_lists): /usr/bin/links, and links2, the
+    # name Debian gives the 2.x series
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin"
+    cp links "$STAGE/usr/bin/links" && ln -sf links "$STAGE/usr/bin/links2"
+    echo "   $(./links -version), text mode, TLS (LibreSSL $(lock_ref libressl)); $(file -b links | cut -d, -f1-2), $(ls -l links | awk '{print $5}') bytes"
+}
+
 step_guest_tcc() {
     need_src tinycc
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -462,6 +552,18 @@ kernel_source_list() (
     } | sed -E 's|//+|/|g; :a; s|(^\|/)\./|\1|; s|[^/]+/\.\./||; ta' | sort -u | while IFS= read -r f; do [ ! -f "$f" ] || echo "$f"; done
 )
 
+# stage_lists: the gen_init_cpio lines (userland/dir2list.sh) of the staging trees of the
+# optional programs, nnn and links, and of LibreSSL's CA bundle (/etc/ssl/cert.pem, which
+# links verifies certificates against), appended to the busybox image's manifest; a missing
+# tree (its step was not run) is named on stderr and the image is made without that part
+stage_lists() {
+    for p in "nnn:file manager" "libressl:CA certificates" "links:web browser"; do
+        d=$B/${p%%:*}/stage
+        if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
+        else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
+    done
+}
+
 step_selfhost() {
     need_src linux tinycc
     KB=$B/linux
@@ -514,10 +616,9 @@ step_selfhost() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c
-    [ -d "$B/nnn/stage" ] || echo "   no $B/nnn/stage (nnn step): the image has no file manager" >&2
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
-      [ ! -d "$B/nnn/stage" ] || "$ROOT/userland/dir2list.sh" "$B/nnn/stage"
+      stage_lists
       "$ROOT/userland/dir2list.sh" "$STAGE"
     } > "$SH/initramfs-selfhost.gen.list"
     "$TOOLS/gen_init_cpio" "$SH/initramfs-selfhost.gen.list" > "$O/initramfs-selfhost.cpio"
@@ -541,10 +642,9 @@ step_initramfs() {
     elif [ ! -x "$B/tcc-guest/stage/usr/bin/tcc" ]; then
         echo "   no guest tcc (guest-tcc step): /init is a C script run by /usr/bin/tcc, only the libc-free image was made" >&2
     else
-        [ -d "$B/nnn/stage" ] || echo "   no $B/nnn/stage (nnn step): the image has no file manager" >&2
         { cat "$ROOT/userland/initramfs.list"
           "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
-          [ ! -d "$B/nnn/stage" ] || "$ROOT/userland/dir2list.sh" "$B/nnn/stage"
+          stage_lists
         } > "$B/initramfs.gen.list"
         "$TOOLS/gen_init_cpio" "$B/initramfs.gen.list" > "$O/initramfs.cpio"
     fi
@@ -610,7 +710,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -630,7 +730,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac
