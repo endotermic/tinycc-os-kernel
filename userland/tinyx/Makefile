@@ -18,7 +18,11 @@ VENDOR ?= tinycc-os-kernel
 INCS = -I$(HERE) -I$(SRC)/include -I$(SRC)/Xext -I$(SRC)/damageext -I$(SRC)/xfixes -I$(SRC)/mi \
        -I$(SRC)/miext/shadow -I$(SRC)/miext/damage -I$(SRC)/render -I$(SRC)/randr -I$(SRC)/fb \
        -I$(SRC)/kdrive/src -I$(SRC)/kdrive/linux -I$(SRC)/kdrive/fbdev -I$(XP)/include
-DEFS = -DHAVE_DIX_CONFIG_H -DHAVE_KDRIVE_CONFIG_H -D_GNU_SOURCE \
+# HAVE_CONFIG_H too: automake defines it for every compile, and the kdrive sources include
+# kdrive-config.h under that name (the dix ones under HAVE_DIX_CONFIG_H).  Without it the
+# kdrive files saw no _XSERVER64 on x86_64, their KeySym was 8 bytes against the 4 of the
+# rest of the server, and the keyboard driver filled the keymap with every key two rows apart
+DEFS = -DHAVE_CONFIG_H -DHAVE_DIX_CONFIG_H -DHAVE_KDRIVE_CONFIG_H -D_GNU_SOURCE \
        -DVENDOR_STRING='"$(VENDOR)"' -DVENDOR_RELEASE=10000000
 ALL_CFLAGS = $(CFLAGS) $(DEFS) $(INCS)
 LIBS = -L$(XP)/lib -lXfont -lfontenc -lz -lm

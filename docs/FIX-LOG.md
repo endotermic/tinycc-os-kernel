@@ -1663,6 +1663,18 @@ C9. 2026-10-28, COMMITTED (patches/xdm/upstreamable/0001), xdm `xdm/session.c`: 
     xgettext) and libXaw compile with tcc unpatched. Verification: the greeter appears on the
     TinyX server, a wrong password is refused, ada's password opens the links session, q
     brings the greeter back.
+C10. 2026-10-28, build recipe (not a patch), `userland/tinyx/Makefile`: `-DHAVE_CONFIG_H`. On
+    x86_64 every key typed into the X server came out as another character (the greeter and
+    links alike; the text console was right). The kdrive sources (kdrive/src/kdrive.c,
+    kmode.c, kshadow.c, fbdev/fbinit.c) include kdrive-config.h under HAVE_CONFIG_H, the
+    macro automake defines for every compile, while the dix and os sources use
+    HAVE_DIX_CONFIG_H; the Makefile defined only the latter two, so those kdrive files were
+    compiled without _XSERVER64: their KeySym and XID were 8 bytes against the 4 of the rest
+    of the server, and the keymap rows were written with twice the stride they were read with
+    (XGetKeyboardMapping showed kernel key k at X keycode 8 + 2k: 12 = '1', 40 = 'q', 38 = Tab).
+    i386 never noticed (both sizes are 4). Not a tcc matter. Verification: the dumped
+    mapping has Escape at 9 and '1' at 10, the greeter takes `ada` and `lovelace`, the links
+    session opens on x86_64.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's
