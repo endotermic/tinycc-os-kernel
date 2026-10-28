@@ -1652,6 +1652,17 @@ C8. 2026-10-28, configuration, `kernels/linux/minimal.config`: `CONFIG_MULTIUSER
     unprivileged default shell (`user`, UID 1000) and the setuid-root busybox (su, login) and
     Xfbdev. Not a tcc matter. Verification: `id` on the console prints uid=1000(user), `su`
     gives uid=0, the setuid X server starts from the user's startx.
+C9. 2026-10-28, COMMITTED (patches/xdm/upstreamable/0001), xdm `xdm/session.c`: xdm loads its
+    greeter, libXdmGreet.so, with dlopen when a session starts; a static musl program has no
+    dynamic loading, so the login manager could never show its greeter. Under
+    GREET_USER_STATIC (a switch older xdm releases had) ManageSession calls GreetUser()
+    directly and skips dlopen/dlsym/dlclose; `scripts/build.sh xdm` compiles with it and
+    links xdm itself from make's objects plus the greeter's archive, since the Makefile's
+    own link line carries --export-dynamic for the dlopen (tcc rejects it; make -k). Not a
+    tcc matter. libICE, libSM, libXext, libXt, libXmu, libXpm (gettext off: its catalogs want
+    xgettext) and libXaw compile with tcc unpatched. Verification: the greeter appears on the
+    TinyX server, a wrong password is refused, ada's password opens the links session, q
+    brings the greeter back.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

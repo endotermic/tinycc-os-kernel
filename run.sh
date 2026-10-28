@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # run.sh - boot out/<arch> in QEMU on the serial console.  Extra arguments go to QEMU.
 # QEMU exits when the guest reboots (-no-reboot): 'exit' in the shell, or Ctrl-A X.
-# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--startx[=URL]] [--no-devices] [--nolibc] [--selfhost [--auto]] [qemu args...]
+# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--xdm] [--startx[=URL]] [--no-devices] [--nolibc] [--selfhost [--auto]] [qemu args...]
 #        ./run.sh --list
 #   --arch    x86_64 or i386 (also ARCH in the environment).  Without it, run.sh looks at what
 #             is in place in out/<arch>/ (the ISO, or the kernel and the initramfs image a
@@ -19,11 +19,15 @@
 #   --vga     open QEMU's display window (standard VGA with EDID) for the VGA/framebuffer
 #             console and keyboard; the serial console stays on this terminal
 #   --no-vga  headless (-nographic) even with --iso
-#   --startx  the graphical mode from the start: /init runs startx (TinyX's Xfbdev on the
-#             framebuffer and links -g on it, userland/startx.c; --startx=URL opens that page);
-#             kernel command line tcc.startx[=URL]; implies --vga when a display is available,
-#             since the result is on the screen.  The ISO's default menu entry is this mode
-#             (its second entry is the text console), so --iso needs no --startx and takes no URL
+#   --xdm     the graphical login from the start: /init runs xdm, which starts TinyX's Xfbdev
+#             on tty5, shows its greeter (with the helper text that lists the accounts and
+#             their passwords: ada/lovelace, grace/hopper, dennis/ritchie) and runs links -g as
+#             the session of whoever logs in (kernel command line tcc.xdm; userland/xdm/).
+#             The ISO's default menu entry is this mode, so --iso needs no --xdm
+#   --startx  the graphical mode without a login: /init runs startx as the console user
+#             (TinyX's Xfbdev and links -g on it, userland/startx.c; --startx=URL opens that
+#             page); kernel command line tcc.startx[=URL], direct boot only (the ISO has it as
+#             its second entry, without a URL).  Both imply --vga when a display is available
 #   --no-devices  only the serial ports and the VGA: without the emulated devices that the
 #             drivers of kernels/linux/drivers.config handle, which are attached by default:
 #             an e1000 Ethernet card on QEMU's user-mode network (DHCP, NAT to the host;
@@ -62,7 +66,7 @@
 # is not a tty; 0 = none)
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-iso= efi= vga= selfhost= auto= form=shell list= devices=1 startx=
+iso= efi= vga= selfhost= auto= form=shell list= devices=1 startx= xdm=
 while [ $# -gt 0 ]; do
     case $1 in
         --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;;
@@ -71,6 +75,7 @@ while [ $# -gt 0 ]; do
         --iso) iso=1; form=iso; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
         --no-devices) devices=; shift;;
         --startx) startx=tcc.startx; shift;; --startx=*) startx=tcc.startx=${1#--startx=}; shift;;
+        --xdm) xdm=tcc.xdm; shift;;
         --nolibc) form=nolibc; shift;;
         --selfhost) selfhost=1; form=selfhost; shift;;
         --auto) auto=auto; shift;; --auto=*) auto=${1#--auto=}; shift;;
@@ -78,10 +83,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -z "$auto" ] || [ -n "$selfhost" ] || die "--auto needs --selfhost"
-# the ISO's default menu entry is the graphical mode already (boot/mkiso.sh); its command line
-# is GRUB's, so a URL cannot be passed there
+# the ISO's default menu entry is the graphical login already and startx its second entry
+# (boot/mkiso.sh); the ISO's command line is GRUB's, so neither can be changed from here
+[ -z "$xdm" ] || [ -z "$iso" ] || xdm=
 [ "$startx" != tcc.startx ] || [ -z "$iso" ] || startx=
-[ -z "$startx" ] || [ -z "$iso" ] || die "--startx=URL goes with the direct boot only; the ISO boots into the graphical mode by default (without a page)"
+[ -z "$startx" ] || [ -z "$iso" ] || die "--startx=URL goes with the direct boot only; the ISO's menu has the graphical login and startx (without a page)"
+[ -z "$xdm" ] || [ -z "$startx" ] || die "--xdm and --startx exclude each other"
 # What a boot needs from out/<arch>/: the ISO, or the kernel (KERNEL overrides) and the
 # initramfs image of the form.  The table of what is in place drives --list, the menu and
 # the final check, so a missing file is named before QEMU starts.
@@ -180,7 +187,7 @@ RES=${RES-1024x768}
 # the self-hosting image: RAM for the source tree, the build and the compilers (see
 # userland/selfhost/build-kernel), the second UART captured to a file, GRUB's menu entry
 # and the guest's automatic run chosen through SMBIOS OEM strings / the command line
-cmdline="console=tty0 console=ttyS0${startx:+ $startx}${APPEND:+ $APPEND}"
+cmdline="console=tty0 console=ttyS0${xdm:+ $xdm}${startx:+ $startx}${APPEND:+ $APPEND}"
 if [ -n "$selfhost" ]; then
     MEM=${MEM:-1G}
     mkdir -p "$O/selfhost"
@@ -227,7 +234,7 @@ if [ -n "$devices" ]; then
 else
     set -- -nic none "$@"
 fi
-if { [ -n "$iso" ] || [ -n "$startx" ]; } && [ -z "$vga" ]; then
+if { [ -n "$iso" ] || [ -n "$startx" ] || [ -n "$xdm" ]; } && [ -z "$vga" ]; then
     # the ISO boots to the screen by default, and the graphical mode is on the screen: open
     # the window when there is a display
     if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then vga=1; else echo "   no display: headless (--vga to force)" >&2; fi

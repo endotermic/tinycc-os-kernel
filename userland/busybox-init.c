@@ -37,6 +37,10 @@
 #include <termios.h>
 #include <time.h>
 
+/* the account the consoles log in as (login -f: no password asked); the gettys and xdm
+ * ask the passwords of /etc/shadow */
+#define CONSOLE_USER "ada"
+
 static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 static int is_exec(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISREG(st.st_mode) && access(p, X_OK) == 0; }
 
@@ -381,14 +385,16 @@ static void banner(FILE *out)
         char *size = first_line("/sys/class/graphics/fb0/virtual_size"), *name = first_line("/sys/class/graphics/fb0/name");
         if ((p = strchr(size, ',')))
             *p = 'x';
-        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)\n", size, name);
+        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)\n", size, name);
         free(size);
         free(name);
     } else if (exists("/dev/tty1")) {
-        fprintf(out, "*** screen: VGA text console, tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)\n");
+        fprintf(out, "*** screen: VGA text console, tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)\n");
     }
     device_lines(out);
-    fprintf(out, "*** this shell is the user's (user, UID 1000, home /home/user); su gives root without a password: builds, mounts and the self-hosting commands need it\n");
+    fprintf(out, "*** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it\n");
+    if (is_exec("/usr/bin/xdm"))
+        fprintf(out, "*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is links -g\n");
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
     fflush(out);
 }
@@ -525,13 +531,14 @@ int main(void)
      * is the host's terminal emulator behind QEMU, which is xterm-compatible.  libncursesw
      * has both entries compiled in (scripts/build.sh ncurses: --with-fallbacks) */
     setenv("TERM", "linux", 1);
-    /* The consoles' shells are the unprivileged user's (/etc/passwd: user, UID 1000, home
-     * /home/user, no password): login -f skips the authentication, -p keeps the environment
-     * set above (TERM, PATH, the nnn variables); login sets HOME, USER and the identity and
-     * makes the terminal the user's.  su (busybox is setuid root, root has no password) gives
-     * a root shell for what needs it: builds, mounts, the self-hosting commands. */
+    /* The consoles' shells are an unprivileged user's (/etc/passwd: ada, UID 1000, home
+     * /home/ada; her password, lovelace, is for the login manager and the gettys): login -f
+     * skips the authentication, -p keeps the environment set above (TERM, PATH, the nnn
+     * variables); login sets HOME, USER and the identity and makes the terminal the user's.
+     * su (busybox is setuid root, root has no password) gives a root shell for what needs
+     * it: builds, mounts, the self-hosting commands. */
     if (exists("/dev/tty1") && (!primary || strcmp(primary, "tty0") != 0))
-        spawn_on_tty("/dev/tty1", (char *[]){ "login", "-p", "-f", "user", NULL }, 1);
+        spawn_on_tty("/dev/tty1", (char *[]){ "login", "-p", "-f", CONSOLE_USER, NULL }, 1);
     if (exists("/dev/tty1"))
         start_gettys();
     if (primary && strncmp(primary, "ttyS", 4) == 0)
@@ -595,10 +602,21 @@ int main(void)
         /* as the user, like a startx typed in a shell: su (root asks no password) runs the
          * command through the user's shell; Xfbdev is setuid root for its part */
         snprintf(cmd, sizeof cmd, "startx%s%s", url ? " " : "", url ? url : "");
-        spawn_on_tty(NULL, (char *[]){ "su", "user", "-c", cmd, NULL }, 0);
+        spawn_on_tty(NULL, (char *[]){ "su", CONSOLE_USER, "-c", cmd, NULL }, 0);
+    }
+    /* tcc.xdm (run.sh --xdm, the ISO's default entry): the graphical login: xdm starts the X
+     * server on tty5 (/etc/X11/xdm/Xservers), shows its greeter with the helper text, and
+     * runs the session (links -g, /etc/X11/xdm/Xsession) as whoever logs in; back to the
+     * greeter when the session ends.  Its log is /tmp/xdm.log. */
+    if ((p = strstr(s, "tcc.xdm")) && (p == s || p[-1] == ' ') && (p[7] == 0 || p[7] == ' ')) {
+        if (is_exec("/usr/bin/xdm")) {
+            printf("*** tcc.xdm: starting the graphical login (xdm, log /tmp/xdm.log)\n");
+            spawn_on_tty(NULL, (char *[]){ "xdm", "-nodaemon", "-config", "/etc/X11/xdm/xdm-config", NULL }, 0);
+        } else
+            printf("*** tcc.xdm: no /usr/bin/xdm in this image (scripts/build.sh xdm)\n");
     }
     free(s);
-    wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "login", "-p", "-f", "user", NULL }, 0));
+    wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "login", "-p", "-f", CONSOLE_USER, NULL }, 0));
     printf("*** shell exited, rebooting\n");
     power_off();
     return 0;

@@ -30,3 +30,12 @@ libxcb   sha256:2c69287424c9e2128cb47ffe92171e10417041ec2963bceafb65cb3fcf8f0b85
 libX11   sha256:ebb8a58549ddde50aa2e742b3b256557f451053d173be8dbfc2e8ac078eee1d6  1.8.14  https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.14.tar.gz
 libfontenc sha256:941630531501bb6f7cf9fecadbb8da66f0cfe1d55d840808f7a3d3e2fdb89b2b 1.1.9  https://xorg.freedesktop.org/archive/individual/lib/libfontenc-1.1.9.tar.gz
 libXfont sha256:59be6eab53f7b0feb6b7933c11d67d076ae2c0fd8921229c703fc7a4e9a80d6e  1.5.4   https://xorg.freedesktop.org/archive/individual/lib/libXfont-1.5.4.tar.gz
+# The login manager (2026-10-28, night): xdm and the toolkit libraries of its greeter (Xt, Xaw).
+libICE    sha256:1da62f732f8679c20045708a29372b82dff9e7eceee543ed488b845002b3b0ff  1.1.2   https://xorg.freedesktop.org/archive/individual/lib/libICE-1.1.2.tar.gz
+libSM     sha256:166b4b50d606cdd83f1ddc61b5b9162600034f848b3e32ccbb0e63536b7d6cdd  1.2.6   https://xorg.freedesktop.org/archive/individual/lib/libSM-1.2.6.tar.gz
+libXext   sha256:6564608dc3b816b0cfddf0c7ddc62bc579055dd70b2f28113a618df2acb64189  1.3.7   https://xorg.freedesktop.org/archive/individual/lib/libXext-1.3.7.tar.gz
+libXt     sha256:cf2212189869adb94ffd58c7d9a545a369b83d2274930bfbe148da354030b355  1.3.1   https://xorg.freedesktop.org/archive/individual/lib/libXt-1.3.1.tar.gz
+libXmu    sha256:5c8f44e26ccc9b14188599524e67ce788a205b38e297834babdeb12090be835b  1.3.1   https://xorg.freedesktop.org/archive/individual/lib/libXmu-1.3.1.tar.gz
+libXpm    sha256:736704d843459abbf769560ff8e443a5de4e6023082e7086c9d195253ada17ff  3.5.20  https://xorg.freedesktop.org/archive/individual/lib/libXpm-3.5.20.tar.gz
+libXaw    sha256:012f90adf8739f2f023d63a5fee1528949cf2aba92ef7ac1abcfc2ae9cf28798  1.0.16  https://xorg.freedesktop.org/archive/individual/lib/libXaw-1.0.16.tar.gz
+xdm       sha256:b1d1db9ba7fd96d50e0b6cf743be2b9ff954f7969a7a9b74d1951b89ec15ca9c  1.1.17  https://xorg.freedesktop.org/archive/individual/app/xdm-1.1.17.tar.gz

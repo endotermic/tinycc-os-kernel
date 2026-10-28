@@ -1,0 +1,25 @@
+! SPDX-License-Identifier: BSD-2-Clause
+! /etc/X11/xdm/xdm-config - xdm's own resources (xdm -config this file; /init runs it with
+! -nodaemon under tcc.xdm).  One local server, the TinyX Xfbdev on tty5 (Xservers), no XDMCP
+! (requestPort 0), MIT-MAGIC-COOKIE-1 authorization (the server's cookie file under
+! /var/run/xdm, the user's in the home directory), the C scripts of /etc/X11/xdm for the
+! setup, startup and session phases, and the greeter's resources in Xresources.
+DisplayManager.servers:         /etc/X11/xdm/Xservers
+DisplayManager.errorLogFile:    /tmp/xdm.log
+DisplayManager.pidFile:         /tmp/xdm.pid
+DisplayManager.authDir:         /var/run/xdm
+DisplayManager.requestPort:     0
+DisplayManager.removeDomainname: true
+DisplayManager*resources:       /etc/X11/xdm/Xresources
+DisplayManager*session:         /etc/X11/xdm/Xsession
+DisplayManager*failsafeClient:  /etc/X11/xdm/Xsession
+DisplayManager*startup:         /etc/X11/xdm/Xstartup
+DisplayManager._0.setup:        /etc/X11/xdm/Xsetup_0
+DisplayManager*authorize:       true
+DisplayManager*userAuthDir:     /tmp
+DisplayManager*userPath:        /usr/local/bin:/usr/bin:/bin
+DisplayManager*systemPath:      /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+DisplayManager*systemShell:     /bin/sh
+! root has no password; the greeter is for the three proof-of-concept accounts
+DisplayManager*allowRootLogin:  false
+DisplayManager*terminateServer: false

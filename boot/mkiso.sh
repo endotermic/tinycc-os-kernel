@@ -4,8 +4,9 @@
 # grub-pc-bin, grub-efi-amd64-bin, xorriso and mtools) with the kernel and both initramfs
 # images, plus the self-hosting image and its two menu entries when out/<arch>/initramfs-selfhost.cpio
 # exists; GRUB talks on the serial console like the kernel.  The default entry boots into the
-# graphical mode (tcc.startx: /init runs startx, the TinyX X server with links -g on the
-# screen); the text console entries follow it.
+# graphical login (tcc.xdm: /init runs xdm, whose greeter on the TinyX X server lists the
+# accounts and runs links -g as the session), the second into the graphical mode without a
+# login (tcc.startx); the text console entries follow.
 # Usage: boot/mkiso.sh [out.iso]      (default: out/<arch>/tcc-linux-<arch>.iso)
 # Env: ARCH (x86_64, i386), OUT, BUILD (the directories, see scripts/lib.sh)
 set -e
@@ -48,14 +49,19 @@ if smbios --type 11 --get-string 4 --set oem; then
     regexp --set 2:gfxpayload '(^| )gfxpayload=([^ ]*)' "$oem"
     if regexp --set 1:selfhost_args '(^| )menu=selfhost ?(.*)$' "$oem"; then
         regexp --set 2:selfhost_args '(^| )menu=selfhost ?(.*)$' "$oem"
-        set default=4
+        set default=5
     fi
 fi
 
-# the default: the graphical mode.  tcc.startx makes /init run startx after the banner: the
-# X server (TinyX's Xfbdev on the framebuffer) and the links browser in graphics mode on it;
-# the shell stays on the serial console, and q in links returns the screen to tty1
-menuentry "tinycc-os-kernel: graphical mode, the TinyX X server and the links browser, all compiled by tinycc" {
+# the default: the graphical login.  tcc.xdm makes /init run xdm after the banner: the X
+# server (TinyX's Xfbdev on the framebuffer, tty5), its greeter with the helper text that
+# lists the accounts and passwords, and the links browser in graphics mode as the session;
+# the shell stays on the serial console.  tcc.startx is the same screen without a login.
+menuentry "tinycc-os-kernel: graphical login (xdm on the TinyX X server, links as the session), all compiled by tinycc" {
+    linux /boot/bzImage console=ttyS0 console=tty0 tcc.xdm
+    initrd /boot/initramfs.cpio
+}
+menuentry "graphical mode without a login: the X server and the links browser as the console user" {
     linux /boot/bzImage console=ttyS0 console=tty0 tcc.startx
     initrd /boot/initramfs.cpio
 }

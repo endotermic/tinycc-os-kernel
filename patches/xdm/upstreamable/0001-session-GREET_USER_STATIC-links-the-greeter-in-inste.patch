@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Wed, 28 Oct 2026 17:17:43 +0200
+Subject: [PATCH] session: GREET_USER_STATIC links the greeter in instead of
+ dlopen
+
+xdm loads its greeter, libXdmGreet.so, with dlopen at session start.  A
+static build on a system without dynamic loading (musl, static binaries
+only) cannot do that; with GREET_USER_STATIC defined, ManageSession calls
+GreetUser() directly, which the greeter's objects provide when they are
+linked into xdm, and skips the dlopen/dlsym/dlclose.  Older xdm releases
+had the same switch.
+---
+ xdm/session.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/xdm/session.c b/xdm/session.c
+index d138c36..5d922a5 100644
+--- a/xdm/session.c
++++ b/xdm/session.c
+@@ -341,6 +341,12 @@ ManageSession (struct display *d)
+      */
+     LoadXloginResources (d);
+ 
++#ifdef GREET_USER_STATIC
++    /* the greeter is linked into xdm (a static build without dynamic loading) */
++    Debug ("ManageSession: the greeter is linked in\n");
++    greet_lib_handle = NULL;
++    greet_user_proc = GreetUser;
++#else
+     Debug ("ManageSession: loading greeter library %s\n", greeterLib);
+     greet_lib_handle = dlopen(greeterLib, RTLD_NOW);
+     if (greet_lib_handle != NULL)
+@@ -349,6 +355,7 @@ ManageSession (struct display *d)
+ 	LogError ("%s while loading %s\n", dlerror(), greeterLib);
+ 	exit(UNMANAGE_DISPLAY);
+ 	}
++#endif
+ 
+ #ifdef USE_SYSTEMD_DAEMON
+ 	/* Subsequent notifications will be ignored by systemd
+@@ -375,7 +382,8 @@ ManageSession (struct display *d)
+ 		Debug ("Client Started\n");
+ 
+                 /* Save memory; close library */
+-                dlclose(greet_lib_handle);
++                if (greet_lib_handle)
++                    dlclose(greet_lib_handle);
+ 
+ 		/*
+ 		 * Wait for session to end,

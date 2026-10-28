@@ -1,0 +1,28 @@
+! SPDX-License-Identifier: BSD-2-Clause
+! /etc/X11/xdm/Xresources - the greeter's look: the server's built-in 'fixed' font for
+! everything (the image has no other fonts), black on white, no logo, no shape extension.
+! The helper text with the accounts is a window of its own (xdm-help, Xsetup_0).
+xlogin*greeting:        Log in to tinycc-os-kernel
+xlogin*namePrompt:      name:\040
+xlogin*passwdPrompt:    password:\040
+xlogin*fail:            wrong name or password: see the text above
+xlogin*font:            fixed
+xlogin*greetFont:       fixed
+xlogin*promptFont:      fixed
+xlogin*failFont:        fixed
+xlogin*foreground:      black
+xlogin*background:      white
+xlogin*greetColor:      black
+xlogin*promptColor:     black
+xlogin*failColor:       black
+xlogin*hiColor:         black
+xlogin*shdColor:        black
+xlogin*borderWidth:     2
+xlogin*frameWidth:      3
+xlogin*innerFramesWidth: 1
+xlogin*sepWidth:        1
+xlogin*useShape:        false
+xlogin*echoPasswd:      true
+xlogin*echoPasswdChar:  *
+xlogin.Login.width:     560
+xlogin.Login.height:    170

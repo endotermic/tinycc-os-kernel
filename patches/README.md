@@ -9,9 +9,10 @@ Categories:
 
 * `tinycc/bugfixes`, `tinycc/compatibility` (with GCC and GNU as), `tinycc/features`
 * `linux/workarounds` (guarded by `__TINYC__`/`__SIZEOF_INT128__`), `linux/upstreamable`
-* `ncurses/upstreamable`, `tinyx/upstreamable`, `libXfont/upstreamable`: one patch each for the
-  guest's programs (the terminfo entry of the Linux console; the X server built against
-  xorgproto's headers alone; libXfont's weak stubs under tcc)
+* `ncurses/upstreamable`, `tinyx/upstreamable`, `libXfont/upstreamable`, `xdm/upstreamable`: one
+  patch each for the guest's programs (the terminfo entry of the Linux console; the X server
+  built against xorgproto's headers alone; libXfont's weak stubs under tcc; xdm's greeter
+  linked in instead of dlopened, for a static build)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

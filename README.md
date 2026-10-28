@@ -45,8 +45,9 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./run.sh --arch i386              # the 32-bit system; without --arch, a menu of what is built (on a terminal)
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
-./run.sh --iso                    # the ISO (GRUB menu: the graphical mode by default, then the text console) with QEMU's display window; --efi: on OVMF
-./run.sh --startx                 # direct boot into the graphical mode (TinyX + links -g); --startx=URL opens that page
+./run.sh --iso                    # the ISO (GRUB menu: the graphical login by default, then startx, then the text console) with QEMU's display window; --efi: on OVMF
+./run.sh --xdm                    # direct boot into the graphical login (xdm's greeter on TinyX; the session is links -g)
+./run.sh --startx                 # direct boot into the graphical mode without a login (TinyX + links -g); --startx=URL opens that page
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)
 ./run.sh --selfhost               # the self-hosting image: 1 GB, every CPU; inside: build-kernel, send-file
 scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel in the guest, boot it (#2)
@@ -76,13 +77,19 @@ exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
 the serial terminal, and `./run.sh --iso` does so by default (`--no-vga` for headless); a
-shell runs on both consoles, the unprivileged user's (`user`, UID 1000, home `/home/user`,
-logged in by `/init` with `login -f`; `su` gives root, neither has a password; the kernel
-has `CONFIG_MULTIUSER=y` for this, which tinyconfig leaves out). Builds, mounts and the
-self-hosting commands need root; `busybox` and the X server `Xfbdev` are setuid root
-(su and login keep the privilege, the other applets drop it; kdrive needs root for the
-framebuffer and the virtual terminal ioctls while links runs as the user). The ISO's default
-menu entry boots into the graphical mode
+shell runs on both consoles, an unprivileged user's (`ada`, UID 1000, logged in by `/init`
+with `login -f`; `su` gives root, which has no password; the kernel has `CONFIG_MULTIUSER=y`
+for this, which tinyconfig leaves out). The accounts of this proof of concept are `ada`,
+`grace` and `dennis` with the passwords `lovelace`, `hopper` and `ritchie` (`userland/etc/`,
+hashes in `/etc/shadow`). Builds, mounts and the self-hosting commands need root; `busybox`
+and the X server `Xfbdev` are setuid root (su and login keep the privilege, the other applets
+drop it; kdrive needs root for the framebuffer and the virtual terminal ioctls while the
+clients run as the user). The ISO's default menu entry boots into the graphical login:
+X.Org's xdm (`userland/xdm/`, its greeter linked in, since the static system cannot
+dlopen it) starts the TinyX server on tty5, shows its login box with a helper window that
+lists the accounts, and runs links in graphics mode as the session of whoever logs in; `q`
+in links ends the session and the greeter returns. The second entry is the graphical mode
+without a login
 (`tcc.startx`: the TinyX X server on the framebuffer with the links browser in graphics
 mode; the second entry is the text console, where `startx [URL]` opens the same, from the
 screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx` does the
@@ -124,11 +131,12 @@ The boot ends with:
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
 *** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)
-*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)
+*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
 *** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
-*** this shell is the user's (user, UID 1000, home /home/user); su gives root without a password: builds, mounts and the self-hosting commands need it
+*** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it
+*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is links -g
 ```
 
 The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
@@ -183,18 +191,19 @@ generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23).
 inside the guest (`build-toolchain --test`): ALL TESTS PASSED on both architectures
 (2026-10-23, after fixes 95 and 96, which only a statically linked musl tcc shows; the
 shared-object tests are skipped, the image has no dynamic loader). Sizes and times are in
-`docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fifth and
-sixth menu entries (`./run.sh --iso --selfhost` selects them).
+`docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the sixth and
+seventh menu entries (`./run.sh --iso --selfhost` selects them).
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `sources.lock` | the 22 upstream components with URL, ref and exact commit or tarball hash |
+| `sources.lock` | the 30 upstream components with URL, ref and exact commit or tarball hash |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
 | `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
+| `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |
 | `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
 | `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then `links -g`) and the guest's `passwd`/`group` |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
@@ -327,6 +336,8 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | zlib, libpng | 1.3.1, 1.6.59 (release tarballs; static, musl, built by tcc unpatched, libpng by hand without its configure; links' graphics mode needs libpng) | 9a93b2b7..., 86a3e4b5... |
 | xorgproto, xtrans, libXau, libXdmcp, xcb-proto, libxcb, libX11 | 2025.1, 1.6.0, 1.0.12, 1.1.5, 1.17.0, 1.17.0, 1.8.14 (release tarballs; the X protocol headers and the client libraries of links' X driver, static, musl, built by tcc unpatched with `scripts/pkg-config.sh`; libXdmcp for its header only) | d6f89f65..., 936b74c6..., 2402dd93..., 31a7abc4..., 392d3c96..., 2c692874..., ebb8a585... |
 | libfontenc, libXfont | 1.1.9, 1.5.4 (release tarballs; the server's font library with its built-in fonts, no FreeType; 1 patch: libXfont's stubs weak under tcc as under GCC) | 94163053..., 59be6eab... |
+| libICE, libSM, libXext, libXt, libXmu, libXpm, libXaw | 1.1.2, 1.2.6, 1.3.7, 1.3.1, 1.3.1, 3.5.20, 1.0.16 (release tarballs; the toolkit of xdm's greeter, static, musl, built by tcc unpatched) | 1da62f73..., 166b4b50..., 6564608d..., cf221218..., 5c8f44e2..., 736704d8..., 012f90ad... |
+| xdm | 1.1.17 (release tarball; the graphical login, static, no PAM; 1 patch: the greeter linked in instead of dlopened) | b1d1db9b... |
 
 ## License
 

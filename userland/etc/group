@@ -1,3 +1,5 @@
 root:x:0:
 tty:x:5:
-user:x:1000:
+ada:x:1000:
+grace:x:1001:
+dennis:x:1002:

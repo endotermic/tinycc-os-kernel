@@ -1,0 +1,5 @@
+The patches in this directory modify xdm (X.Org, https://gitlab.freedesktop.org/xorg/app/xdm),
+whose COPYING file collects MIT/X11-style permission notices (The Open Group, Keith Packard,
+Oracle and others).  The patches are released under the same terms: MIT (text in
+../../LICENSES/MIT.txt).  They are not part of the BSD-2-Clause license of the rest of this
+repository (see ../../REUSE.toml).

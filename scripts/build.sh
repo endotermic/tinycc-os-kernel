@@ -31,6 +31,9 @@
 #   tinyx       TinyX's Xfbdev (Tiny Core's kdrive X server, no XKB/xinput; userland/tinyx/Makefile,
 #               no autotools), with libXdmcp (header), libfontenc, libXfont 1 (built-in fonts, no
 #               FreeType) -> /usr/bin/Xfbdev and /usr/bin/startx (userland/startx.c) in the images
+#   xdm         the graphical login: X.Org's xdm with its greeter linked in (patches/xdm), after libICE,
+#               libSM, libXext, libXt, libXmu, libXpm, libXaw; its configuration and C scripts
+#               (userland/xdm/) and the helper text window xdm-help -> /usr/bin/xdm, /etc/X11/xdm in the images
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
 #               startx), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
@@ -43,7 +46,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx links guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -579,6 +582,73 @@ step_tinyx() {
     echo "   Xfbdev: $(file -b "$T/Xfbdev" | cut -d, -f1-2), $(ls -l "$T/Xfbdev" | awk '{print $5}') bytes; startx: userland/startx.c"
 }
 
+step_xdm() {
+    need_src xdm
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
+    x_env
+    # the toolkit of xdm's greeter: libICE and libSM (libXt wants them; no libuuid, libSM makes
+    # its own client IDs), libXext, libXt (app-defaults and the file search path under
+    # /etc/X11 and /usr/share/X11 of the guest, not the build tree; no XKB: TinyX has none),
+    # libXmu, libXpm (xdm's configure wants it even with the pixmap logos off) and libXaw
+    # (Xaw7 only).  All plain C autotools, static, built as the X client libraries were.
+    xlib_build libICE
+    xlib_build libSM --without-libuuid
+    xlib_build libXext
+    xlib_build libXt --disable-xkb --with-appdefaultdir=/usr/share/X11/app-defaults \
+        --with-xfile-search-path='/etc/X11/%L/%T/%N%C%S:/etc/X11/%l/%T/%N%C%S:/etc/X11/%T/%N%C%S:/etc/X11/%L/%T/%N%S:/etc/X11/%l/%T/%N%S:/etc/X11/%T/%N%S:/usr/share/X11/%L/%T/%N%C%S:/usr/share/X11/%l/%T/%N%C%S:/usr/share/X11/%T/%N%C%S:/usr/share/X11/%L/%T/%N%S:/usr/share/X11/%l/%T/%N%S:/usr/share/X11/%T/%N%S'
+    xlib_build libXmu
+    # (libXpm: without gettext, which musl's libc would satisfy and whose message catalogs
+    # then want xgettext on the host; the configure cache variable is the only switch)
+    ac_cv_search_gettext=no xlib_build libXpm --disable-open-zfile --disable-stat-zfile
+    xlib_build libXaw --disable-xaw6
+    XD=$XB/xdm; STAGE=$B/xdm/stage; mkdir -p "$XD" "$B/xdm"
+    msg "xdm: $(lock_ref xdm), static, musl, CC=musl-tcc, the greeter linked in -> $STAGE/usr/bin/xdm"
+    cd "$XD"
+    # xdm itself: no PAM (the greeter checks /etc/shadow with crypt()), no XDMCP's
+    # XDM-AUTHORIZATION-1, no Xinerama, no Xft, no pixmap logos, no xdmshell; its files
+    # under /etc/X11/xdm, logs and pid in /tmp, the servers' cookies in /var/run/xdm, the
+    # random bytes of the cookies from /dev/urandom.  The greeter is a module that xdm
+    # dlopens, which a static musl program cannot: patches/xdm links it in
+    # (GREET_USER_STATIC), and the xdm binary is linked here from the objects make built,
+    # with the greeter's archive and the toolkit libraries, since the Makefile does not
+    # know the greeter as a dependency of the program.
+    configured config.status "$MUSL_TCC" "--prefix=$XP" \
+        || CC=$MUSL_TCC CFLAGS="-O2 -DGREET_USER_STATIC" CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" \
+            "$SRC/xdm/configure" --host="$ARCH-linux-musl" --prefix="$XP" --disable-shared --enable-static \
+            --disable-dependency-tracking --without-pam --without-xinerama --without-xft --disable-xpm-logos \
+            --disable-xdm-auth --disable-xdmshell --with-random-device=/dev/urandom \
+            --with-xdmconfigdir=/etc/X11/xdm --with-xdmscriptdir=/etc/X11/xdm --with-xdmlibdir=/usr/lib/X11/xdm \
+            --with-logdir=/tmp --with-piddir=/tmp --with-authdir=/var/run/xdm --with-default-vt=vt5 \
+            --with-default-session=/etc/X11/xdm/Xsession --with-appdefaultdir=/usr/share/X11/app-defaults \
+            --without-xmlto --without-fop >"$LOGS/xdm-configure.log" 2>&1 \
+        || fail "$LOGS/xdm-configure.log" "xdm configure failed"
+    : >"$LOGS/xdm.log"
+    # make -k: the Makefile's own link of xdm fails (libtool passes --export-dynamic, for the
+    # dlopen that the patch removes, and tcc rejects it); everything else, the greeter's
+    # archive included, is built, and the program is linked below from the objects
+    run_progress "xdm" "$(make_total)" "$LOGS/xdm.log" make -k -j"$JOBS" || true
+    greet=$(ls greeter/.libs/libXdmGreet.a greeter/libXdmGreet.a 2>/dev/null | head -1)
+    [ -n "$greet" ] || fail "$LOGS/xdm.log" "no libXdmGreet.a (the greeter) in $XD/greeter"
+    objs=$(ls xdm/*.o 2>/dev/null)
+    [ -n "$objs" ] || fail "$LOGS/xdm.log" "no xdm objects in $XD/xdm"
+    "$MUSL_TCC" -O2 -o "$XD/xdm-static" $objs "$greet" \
+        $("$PKG_CONFIG" --libs xaw7 xmu xt sm ice xext xdmcp x11) -lSM -lICE -lXext -lX11 -lxcb -lXau \
+        >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm link (with the greeter) failed"
+    # the helper text window of the greeter (userland/xdm/xdm-help.c, Xlib, static)
+    "$MUSL_TCC" -O2 -I"$XP/include" -o "$XD/xdm-help" "$ROOT/userland/xdm/xdm-help.c" \
+        $("$PKG_CONFIG" --libs x11) >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm-help build failed"
+    # the staging tree appended to the images (stage_lists): xdm and the helper, xdm's
+    # configuration and its C scripts under /etc/X11/xdm, the greeter's resources as the
+    # Xlogin app-defaults file (xdm would load Xresources through xrdb, which the image has not)
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/X11/xdm" "$STAGE/usr/share/X11/app-defaults"
+    cp "$XD/xdm-static" "$STAGE/usr/bin/xdm"; cp "$XD/xdm-help" "$STAGE/usr/bin/xdm-help"
+    cp "$ROOT/userland/xdm/xdm-config" "$ROOT/userland/xdm/Xservers" "$STAGE/etc/X11/xdm/"
+    cp "$ROOT/userland/xdm/Xresources" "$STAGE/usr/share/X11/app-defaults/Xlogin"
+    for c in Xsession Xsetup_0 Xstartup; do cp "$ROOT/userland/xdm/$c.c" "$STAGE/etc/X11/xdm/$c"; chmod 755 "$STAGE/etc/X11/xdm/$c"; done
+    echo "   xdm: $(file -b "$STAGE/usr/bin/xdm" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/xdm" | awk '{print $5}') bytes; xdm-help $(ls -l "$XD/xdm-help" | awk '{print $5}') bytes; /etc/X11/xdm: $(ls "$STAGE/etc/X11/xdm" | tr '\n' ' ')"
+}
+
 step_links() {
     need_src links
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -725,7 +795,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -878,7 +948,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -898,7 +968,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

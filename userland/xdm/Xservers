@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# /etc/X11/xdm/Xservers - the X servers xdm manages: display :0 on this machine, TinyX's
+# Xfbdev on the framebuffer with its built-in fonts, pinned to virtual terminal 5 (tty1 is
+# the console shell, tty2-tty4 the gettys)
+:0 local /usr/bin/Xfbdev :0 -fp built-ins vt5

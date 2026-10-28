@@ -1,0 +1,2 @@
+# patches/xdm: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-session-GREET_USER_STATIC-links-the-greeter-in-inste.patch
