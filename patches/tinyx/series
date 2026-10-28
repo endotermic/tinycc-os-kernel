@@ -1,0 +1,2 @@
+# patches/tinyx: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-Include-the-protocol-headers-of-xorgproto-not-the-cl.patch

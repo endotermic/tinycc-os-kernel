@@ -2,9 +2,10 @@
 # gen_init_cpio manifest of the default image: a static busybox, /init (busybox-init.c,
 # a C script that /usr/bin/tcc runs with -run), which mounts devtmpfs/proc/sysfs, brings the
 # network up and runs an interactive shell on the serial console, the udhcpc script and the
-# device test (C scripts too).  ${BUSYBOX}, ${BUSYBOX_INIT}, ${UDHCPC_SCRIPT} and
-# ${DEVICES_TEST} are expanded by gen_init_cpio from the environment (scripts/build.sh exports
-# them).  /dev/console must
+# device test (C scripts too), and /etc/passwd and /etc/group (userland/etc/: root without a
+# password, for the logins that getty offers on tty2-tty4).  ${BUSYBOX}, ${BUSYBOX_INIT},
+# ${UDHCPC_SCRIPT}, ${DEVICES_TEST} and ${ETC} are expanded by gen_init_cpio from the
+# environment (scripts/build.sh exports them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
 # guest compiler tree and the staging trees of nnn, LibreSSL and links (userland/dir2list.sh)
 # to this list: /init needs /usr/bin/tcc; nnn is the file manager (build/<arch>/nnn/stage),
@@ -31,3 +32,6 @@ file  /init         ${BUSYBOX_INIT} 0755 0 0
 # the DHCP client's event script (udhcpc runs it; C, see udhcpc-script.c) and the device test
 file  /usr/share/udhcpc/default.script ${UDHCPC_SCRIPT} 0755 0 0
 file  /usr/bin/devices-test ${DEVICES_TEST} 0755 0 0
+# the accounts: root (no password) is all there is; login (from getty on tty2-tty4) reads them
+file  /etc/passwd  ${ETC}/passwd 0644 0 0
+file  /etc/group   ${ETC}/group 0644 0 0

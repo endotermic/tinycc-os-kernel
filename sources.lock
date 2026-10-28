@@ -15,3 +15,18 @@ nnn      5f1c78b2c591b12fcbdb5b84d16b7ecd28eb12dc  v5.3    https://github.com/ja
 musl-fts 0bde52df588e8969879a2cae51c3a4774ec62472  v1.2.7  https://github.com/void-linux/musl-fts.git
 links    sha256:7f0d54f4f7d1f094c25c9cbd657f98bc998311122563b1d757c9aeb1d3423b9e  2.30    http://links.twibright.com/download/links-2.30.tar.gz
 libressl sha256:7d02522ad5070b9adb32eb253ecabce181184a3750cf65abac0675ee908687c1  4.4.0   https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz,https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz
+# The graphical mode (2026-10-28): TinyX (Tiny Core's kdrive Xfbdev fork of X server 1.2:
+# no XKB, no xinput, builds without autotools from userland/tinyx/Makefile), the X.Org
+# protocol headers and client libraries links' X driver needs, and the libraries behind them.
+tinyx    feab72ca891bc04b18763763e15ee4e532369cdf  master  https://github.com/tinycorelinux/tinyx.git
+zlib     sha256:9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23  1.3.1   https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz,https://zlib.net/fossils/zlib-1.3.1.tar.gz
+libpng   sha256:86a3e4b501f7f50e392c4e456ea158893e9a595b1c63eb88c7bb9f6cf8772dad  1.6.59  https://downloads.sourceforge.net/project/libpng/libpng16/1.6.59/libpng-1.6.59.tar.gz
+xorgproto sha256:d6f89f65bafb8c9b735e0515882b8a1511e8e864dde5e9513e191629369f2256 2025.1  https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.gz
+xtrans   sha256:936b74c60b19c317c3f3cb1b114575032528dbdaf428740483200ea874c2ca0a  1.6.0   https://xorg.freedesktop.org/archive/individual/lib/xtrans-1.6.0.tar.gz
+libXau   sha256:2402dd938da4d0a332349ab3d3586606175e19cb32cb9fe013c19f1dc922dcee  1.0.12  https://xorg.freedesktop.org/archive/individual/lib/libXau-1.0.12.tar.gz
+libXdmcp sha256:31a7abc4f129dcf6f27ae912c3eedcb94d25ad2e8f317f69df6eda0bc4e4f2f3  1.1.5   https://xorg.freedesktop.org/archive/individual/lib/libXdmcp-1.1.5.tar.gz
+xcb-proto sha256:392d3c9690f8c8202a68fdb89c16fd55159ab8d65000a6da213f4a1576e97a16 1.17.0  https://xorg.freedesktop.org/archive/individual/xcb/xcb-proto-1.17.0.tar.gz
+libxcb   sha256:2c69287424c9e2128cb47ffe92171e10417041ec2963bceafb65cb3fcf8f0b85  1.17.0  https://xorg.freedesktop.org/archive/individual/xcb/libxcb-1.17.0.tar.gz
+libX11   sha256:ebb8a58549ddde50aa2e742b3b256557f451053d173be8dbfc2e8ac078eee1d6  1.8.14  https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.14.tar.gz
+libfontenc sha256:941630531501bb6f7cf9fecadbb8da66f0cfe1d55d840808f7a3d3e2fdb89b2b 1.1.9  https://xorg.freedesktop.org/archive/individual/lib/libfontenc-1.1.9.tar.gz
+libXfont sha256:59be6eab53f7b0feb6b7933c11d67d076ae2c0fd8921229c703fc7a4e9a80d6e  1.5.4   https://xorg.freedesktop.org/archive/individual/lib/libXfont-1.5.4.tar.gz

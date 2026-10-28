@@ -24,7 +24,8 @@ scripts and patches never break when upstream moves.
 
 Requirements: git, GNU make, gcc (only to build tcc itself on the host; the kernel, its
 host tools and the links use no gcc and no binutils), binutils' `ar` for musl and busybox,
-flex, bison, bc, cpio, rsync, QEMU (`qemu-system-x86_64`); for the ISO also grub-pc-bin,
+flex, bison, bc, cpio, rsync, python3 and cpp (the X libraries: libxcb's C is generated from
+xcb-proto's XML, libX11's tables are preprocessed), QEMU (`qemu-system-x86_64`); for the ISO also grub-pc-bin,
 grub-efi-amd64-bin, xorriso and mtools; for `--efi` OVMF; for the self-hosting image curl or
 wget (GNU make's tarball) and 1 GB of RAM for the guest (KVM access makes the guest build
 ten times faster). Every script checks what it needs when it starts and names the missing
@@ -44,7 +45,8 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./run.sh --arch i386              # the 32-bit system; without --arch, a menu of what is built (on a terminal)
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
-./run.sh --iso                    # the ISO (GRUB menu) with QEMU's display window; --efi: on OVMF
+./run.sh --iso                    # the ISO (GRUB menu: the graphical mode by default, then the text console) with QEMU's display window; --efi: on OVMF
+./run.sh --startx                 # direct boot into the graphical mode (TinyX + links -g); --startx=URL opens that page
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)
 ./run.sh --selfhost               # the self-hosting image: 1 GB, every CPU; inside: build-kernel, send-file
 scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel in the guest, boot it (#2)
@@ -74,7 +76,11 @@ exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
 the serial terminal, and `./run.sh --iso` does so by default (`--no-vga` for headless); a
-shell runs on both consoles. The screen is a KMS display at the native resolution
+shell runs on both consoles. The ISO's default menu entry boots into the graphical mode
+(`tcc.startx`: the TinyX X server on the framebuffer with the links browser in graphics
+mode; the second entry is the text console, where `startx [URL]` opens the same, from the
+screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx` does the
+same for the direct boot. The screen is a KMS display at the native resolution
 (`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
 sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
@@ -111,7 +117,8 @@ The boot ends with:
 *** tcc version 0.9.28rc e23dabe+110p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)
+*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
 *** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
@@ -169,17 +176,20 @@ generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23).
 inside the guest (`build-toolchain --test`): ALL TESTS PASSED on both architectures
 (2026-10-23, after fixes 95 and 96, which only a statically linked musl tcc shows; the
 shared-object tests are skipped, the image has no dynamic loader). Sizes and times are in
-`docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fourth and
-fifth menu entries (`./run.sh --iso --selfhost` selects them).
+`docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the fifth and
+sixth menu entries (`./run.sh --iso --selfhost` selects them).
 
 ## Layout
 
 | Path | What |
 |------|------|
-| `sources.lock` | the ten upstream components with URL, ref and exact commit or tarball hash |
+| `sources.lock` | the 22 upstream components with URL, ref and exact commit or tarball hash |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
+| `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
+| `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then `links -g`) and the guest's `passwd`/`group` |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
@@ -305,7 +315,11 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | nnn | v5.3 (the guest's file manager, static, musl, built by tcc against that ncurses) | 5f1c78b2 |
 | musl-fts | v1.2.7 (only its `fts.h`: nnn includes the header, which musl lacks) | 0bde52df |
 | libressl | 4.4.0 (release tarball, sha256 in `sources.lock`; libcrypto, libssl and libtls, static, musl, built by tcc unpatched without assembly: the TLS library of links; its `cert.pem`, Mozilla's root store, is the guest's `/etc/ssl/cert.pem`) | 7d02522a... |
-| links | 2.30 (release tarball, sha256 in `sources.lock`; the guest's web browser: text mode, static, musl, built by tcc unpatched, with TLS from that LibreSSL, so http:// and https://) | 7f0d54f4... |
+| links | 2.30 (release tarball, sha256 in `sources.lock`; the guest's web browser: text mode and graphics mode (its X driver on the TinyX server: `startx`), static, musl, built by tcc unpatched, with TLS from that LibreSSL, so http:// and https://) | 7f0d54f4... |
+| tinyx | master, 2024 (Tiny Core's kdrive fork of X server 1.2: Xfbdev on the framebuffer, no XKB, no xinput; built by `userland/tinyx/Makefile` without autotools; 1 patch: xorgproto's headers instead of libXext's and libXtst's) | feab72ca |
+| zlib, libpng | 1.3.1, 1.6.59 (release tarballs; static, musl, built by tcc unpatched, libpng by hand without its configure; links' graphics mode needs libpng) | 9a93b2b7..., 86a3e4b5... |
+| xorgproto, xtrans, libXau, libXdmcp, xcb-proto, libxcb, libX11 | 2025.1, 1.6.0, 1.0.12, 1.1.5, 1.17.0, 1.17.0, 1.8.14 (release tarballs; the X protocol headers and the client libraries of links' X driver, static, musl, built by tcc unpatched with `scripts/pkg-config.sh`; libXdmcp for its header only) | d6f89f65..., 936b74c6..., 2402dd93..., 31a7abc4..., 392d3c96..., 2c692874..., ebb8a585... |
+| libfontenc, libXfont | 1.1.9, 1.5.4 (release tarballs; the server's font library with its built-in fonts, no FreeType; 1 patch: libXfont's stubs weak under tcc as under GCC) | 94163053..., 59be6eab... |
 
 ## License
 

@@ -30,3 +30,15 @@ path = ["patches/ncurses/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Thomas E. Dickey", "Free Software Foundation, Inc.", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "X11"
+
+[[annotations]]
+path = ["patches/tinyx/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The X.Org Foundation and the X server authors", "Tiny Core Linux", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "GPL-3.0-only"
+
+[[annotations]]
+path = ["patches/libXfont/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The Open Group", "Keith Packard", "The X.Org Foundation", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"

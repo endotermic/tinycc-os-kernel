@@ -1,0 +1,7 @@
+The patches in this directory modify TinyX (https://github.com/tinycorelinux/tinyx), Tiny
+Core's fork of the X.Org kdrive servers.  The X.Org code it carries is under the MIT/X11
+licenses of its COPYING file; Tiny Core's README states that its own changes are GPLv3, so
+the tree as a whole is distributed under the GNU General Public License version 3.  These
+patches are released under the same terms: GPL-3.0-only (text in ../../LICENSES/GPL-3.0-only.txt;
+the MIT text, for the unchanged X.Org parts, in ../../LICENSES/MIT.txt).  They are not part
+of the BSD-2-Clause license of the rest of this repository (see ../../REUSE.toml).

@@ -1,0 +1,2 @@
+# patches/libXfont: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-stubs-weak-symbols-with-the-Tiny-C-Compiler-too.patch

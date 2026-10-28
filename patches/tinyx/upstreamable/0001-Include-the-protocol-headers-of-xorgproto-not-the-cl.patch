@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Wed, 28 Oct 2026 15:25:10 +0200
+Subject: [PATCH] Include the protocol headers of xorgproto, not the client
+ libraries' headers
+
+Xext/sync.c took <X11/extensions/sync.h> from libXext, mi/miinitext.c
+<X11/extensions/XTest.h> from libXtst, mi/miscrinit.c <X11/extensions/XShm.h>
+from libXext and dix/main.c, os/WaitFor.c, Xext/dpms.c and Xext/saver.c
+<X11/extensions/dpms.h> from libXext.  Those are client library headers;
+the server needs only what xorgproto provides: syncproto.h (which, under
+_SYNC_SERVER, is all that sync.h included), xtestconst.h
+(XTestExtensionName), shmproto.h (the request structures; the server's
+own shmint.h declares the functions) and dpmsconst.h (the DPMS modes).
+The server then builds with the protocol headers alone, without libXext
+or libXtst installed.
+---
+ Xext/dpms.c    | 2 +-
+ Xext/saver.c   | 2 +-
+ Xext/sync.c    | 2 +-
+ dix/main.c     | 2 +-
+ mi/miinitext.c | 2 +-
+ mi/miscrinit.c | 2 +-
+ os/WaitFor.c   | 2 +-
+ 7 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/Xext/dpms.c b/Xext/dpms.c
+index b75f482..b262a97 100644
+--- a/Xext/dpms.c
++++ b/Xext/dpms.c
+@@ -44,7 +44,7 @@ Equipment Corporation.
+ #include "extnsionst.h"
+ #include "opaque.h"
+ #define DPMS_SERVER
+-#include <X11/extensions/dpms.h>
++#include <X11/extensions/dpmsconst.h>
+ #include <X11/extensions/dpmsproto.h>
+ #include "dpmsproc.h"
+ #include "extinit.h"
+diff --git a/Xext/saver.c b/Xext/saver.c
+index 0ba9928..db2fcba 100644
+--- a/Xext/saver.c
++++ b/Xext/saver.c
+@@ -47,7 +47,7 @@ in this Software without prior written authorization from the X Consortium.
+ #include "colormapst.h"
+ #ifdef DPMSExtension
+ #define DPMS_SERVER
+-#include <X11/extensions/dpms.h>
++#include <X11/extensions/dpmsconst.h>
+ #endif
+ 
+ #include <stdio.h>
+diff --git a/Xext/sync.c b/Xext/sync.c
+index 460cc5e..b40d628 100644
+--- a/Xext/sync.c
++++ b/Xext/sync.c
+@@ -65,7 +65,7 @@ PERFORMANCE OF THIS SOFTWARE.
+ #include "resource.h"
+ #include "opaque.h"
+ #define _SYNC_SERVER
+-#include <X11/extensions/sync.h>
++#include <X11/extensions/syncproto.h>
+ #include <X11/extensions/syncstr.h>
+ 
+ #include <stdio.h>
+diff --git a/dix/main.c b/dix/main.c
+index a2c3a25..55a1249 100644
+--- a/dix/main.c
++++ b/dix/main.c
+@@ -101,7 +101,7 @@ Equipment Corporation.
+ 
+ #ifdef DPMSExtension
+ #define DPMS_SERVER
+-#include <X11/extensions/dpms.h>
++#include <X11/extensions/dpmsconst.h>
+ #include "dpmsproc.h"
+ #endif
+ 
+diff --git a/mi/miinitext.c b/mi/miinitext.c
+index 5edb683..b4913cb 100644
+--- a/mi/miinitext.c
++++ b/mi/miinitext.c
+@@ -91,7 +91,7 @@ typedef void (*InitExtension)(INITARGS);
+ #define _XSHM_SERVER_
+ #include <X11/extensions/shmstr.h>
+ #define _XTEST_SERVER_
+-#include <X11/extensions/XTest.h>
++#include <X11/extensions/xtestconst.h>
+ #ifdef XF86BIGFONT
+ #include <X11/extensions/xf86bigfproto.h>
+ #endif
+diff --git a/mi/miscrinit.c b/mi/miscrinit.c
+index 6bd4df7..258a299 100644
+--- a/mi/miscrinit.c
++++ b/mi/miscrinit.c
+@@ -39,7 +39,7 @@ from The Open Group.
+ #include "dix.h"
+ #include "miline.h"
+ #define _XSHM_SERVER_
+-#include <X11/extensions/XShm.h>
++#include <X11/extensions/shmproto.h>
+ #include "shmint.h"
+ 
+ /* We use this structure to propogate some information from miScreenInit to
+diff --git a/os/WaitFor.c b/os/WaitFor.c
+index a337103..19d6a3a 100644
+--- a/os/WaitFor.c
++++ b/os/WaitFor.c
+@@ -94,7 +94,7 @@ mffs(fd_mask mask)
+ 
+ #ifdef DPMSExtension
+ #define DPMS_SERVER
+-#include <X11/extensions/dpms.h>
++#include <X11/extensions/dpmsconst.h>
+ #endif
+ 
+ struct _OsTimerRec {

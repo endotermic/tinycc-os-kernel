@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Wed, 28 Oct 2026 15:31:49 +0200
+Subject: [PATCH] stubs: weak symbols with the Tiny C Compiler too
+
+stubs.h makes the stub definitions (serverGeneration, ErrorF, the font
+client hooks) weak only under GCC 3 and later on ELF, so that an X server
+linking the library statically overrides them.  tcc generates ELF, supports
+__attribute__((weak)), and defines neither __GNUC__ nor __ELF__; without
+the attribute a static link of a server against libXfont.a fails with
+'serverGeneration' defined twice.  Accept __TINYC__ as well.
+---
+ src/stubs/stubs.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/stubs/stubs.h b/src/stubs/stubs.h
+index 9e71806..c86d5f8 100644
+--- a/src/stubs/stubs.h
++++ b/src/stubs/stubs.h
+@@ -10,7 +10,7 @@
+ #endif
+ 
+ /* this probably works for Mach-O too, but probably not for PE */
+-#if defined(__ELF__) && defined(__GNUC__) && (__GNUC__ >= 3)
++#if (defined(__ELF__) && defined(__GNUC__) && (__GNUC__ >= 3)) || defined(__TINYC__)
+ #define weak __attribute__((weak))
+ #else
+ #define weak

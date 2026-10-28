@@ -113,7 +113,7 @@ msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hos
 "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" host-tcc
 [ -z "$test" ] || "$ROOT/scripts/build.sh" tcc-test
-"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn libressl links guest-tcc initramfs
+"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx links guest-tcc initramfs
 [ -z "$selfhost" ] || "$ROOT/scripts/build.sh" selfhost
 case $output in iso|all) "$ROOT/scripts/build.sh" iso;; esac
 echo
@@ -125,6 +125,7 @@ hint() { printf '   %-6s %-34s %s\n' "$1" "$2" "$3"; }
 hint "boot:" "./run.sh" "a menu of everything built (--list prints it), or directly:"
 hint "" "./run.sh --arch $arch" "the busybox shell with tcc; /init is a C script tcc runs ('exit' ends QEMU)"
 hint "" "./run.sh --arch $arch --nolibc" "the libc-free init, a static binary: banner, reboot"
-case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF)";; esac
+case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF); its default entry is the graphical mode";; esac
+hint "" "./run.sh --arch $arch --startx" "the graphical mode: TinyX's X server with the links browser (startx in the shell does the same)"
 [ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file: C scripts tcc runs)"
 [ -z "$run" ] || exec "$ROOT/run.sh" --arch "$arch"

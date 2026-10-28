@@ -34,6 +34,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <termios.h>
+#include <time.h>
 
 static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
 static int is_exec(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISREG(st.st_mode) && access(p, X_OK) == 0; }
@@ -349,6 +350,11 @@ static void banner(FILE *out)
      * http.server there serves a directory) */
     if (is_exec("/usr/bin/links"))
         fprintf(out, "*** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)\n");
+    /* the graphical mode: TinyX's Xfbdev on the framebuffer and links -g on it (startx,
+     * userland/startx.c); the server takes a free virtual terminal and switches the screen
+     * to it, back when links ends */
+    if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0"))
+        fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)\n");
     /* the build number counts the generations: #1 was built on the host (scripts/build.sh),
      * #2 inside a guest running #1, and so on (userland/selfhost/build-kernel sets
      * KBUILD_BUILD_VERSION and KBUILD_BUILD_HOST=tinycc-os-guest) */
@@ -374,11 +380,11 @@ static void banner(FILE *out)
         char *size = first_line("/sys/class/graphics/fb0/virtual_size"), *name = first_line("/sys/class/graphics/fb0/name");
         if ((p = strchr(size, ',')))
             *p = 'x';
-        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6\n", size, name);
+        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)\n", size, name);
         free(size);
         free(name);
     } else if (exists("/dev/tty1")) {
-        fprintf(out, "*** screen: VGA text console, tty1-tty6\n");
+        fprintf(out, "*** screen: VGA text console, tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)\n");
     }
     device_lines(out);
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
@@ -412,14 +418,59 @@ static pid_t spawn_on_tty(const char *tty, char *const argv[], int with_banner)
     return -1;
 }
 
+/* The logins on the other virtual terminals, tty2-tty4 (Alt-F2 to Alt-F4 on the screen):
+ * a getty on each, which runs login (/etc/passwd: root, no password) and then the shell;
+ * when the session ends, a new getty.  tty1 keeps the shell with the banner, the X server
+ * (startx) takes the next free terminal after these. */
+#define NGETTY 3
+static struct { const char *tty; pid_t pid; time_t started; } gettys[NGETTY] = { { "tty2" }, { "tty3" }, { "tty4" } };
+
+static void spawn_getty(int i)
+{
+    char dev[32];
+    snprintf(dev, sizeof dev, "/dev/%s", gettys[i].tty);
+    gettys[i].pid = -1;
+    if (!exists(dev))
+        return;
+    gettys[i].started = time(NULL);
+    /* getty opens the terminal itself and makes it the controlling terminal of its new
+     * session (spawn_on_tty's setsid); "linux" is the TERM it gives login */
+    gettys[i].pid = spawn_on_tty(NULL, (char *[]){ "getty", "38400", (char *)gettys[i].tty, "linux", NULL }, 0);
+}
+
+static void start_gettys(void)
+{
+    int i;
+    for (i = 0; i < NGETTY; i++)
+        spawn_getty(i);
+}
+
+/* a child of PID 1 ended: a getty's session gets a new getty (after a second when the last
+ * one ended at once, so that a terminal that cannot be opened does not make init spin) */
+static void reaped(pid_t pid)
+{
+    int i;
+    for (i = 0; i < NGETTY; i++)
+        if (gettys[i].pid == pid) {
+            if (time(NULL) - gettys[i].started < 2)
+                sleep(1);
+            spawn_getty(i);
+        }
+}
+
 static void wait_for(pid_t pid)
 {
     int st;
     pid_t p;
     /* PID 1 reaps every orphan that ends meanwhile as well */
-    while ((p = waitpid(-1, &st, 0)) != pid)
-        if (p < 0 && errno != EINTR)
-            break;
+    while ((p = waitpid(-1, &st, 0)) != pid) {
+        if (p < 0) {
+            if (errno != EINTR)
+                break;
+            continue;
+        }
+        reaped(p);
+    }
 }
 
 static void power_off(void)
@@ -474,6 +525,8 @@ int main(void)
     setenv("TERM", "linux", 1);
     if (exists("/dev/tty1") && (!primary || strcmp(primary, "tty0") != 0))
         spawn_on_tty("/dev/tty1", (char *[]){ "sh", NULL }, 1);
+    if (exists("/dev/tty1"))
+        start_gettys();
     if (primary && strncmp(primary, "ttyS", 4) == 0)
         setenv("TERM", "xterm-256color", 1);
     free(s);
@@ -518,6 +571,20 @@ int main(void)
         int rc = runl("devices-test", NULL);
         printf("*** devices-test finished with status %d, shutting down\n", rc);
         power_off();
+    }
+    /* tcc.startx[=URL] (run.sh --startx, APPEND=tcc.startx=URL): the graphical mode from the
+     * start: startx (the X server on the screen and links -g on it, userland/startx.c),
+     * detached, its messages on this console; the shell below is there as usual */
+    if ((p = strstr(s, "tcc.startx")) && (p == s || p[-1] == ' ')) {
+        char *url = NULL, *e;
+        p += strlen("tcc.startx");
+        if (*p == '=') {
+            url = p + 1;
+            if ((e = strchr(url, ' ')))
+                *e = 0;
+        }
+        printf("*** tcc.startx: starting the graphical mode (startx%s%s)\n", url ? " " : "", url ? url : "");
+        spawn_on_tty(NULL, (char *[]){ "startx", url, NULL }, 0);
     }
     free(s);
     wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "sh", NULL }, 0));

@@ -1627,6 +1627,25 @@ C5. 2026-10-28, build recipe (not a patch), `scripts/build.sh` step `musl`: the 
     i386 libc.a gains the 64 objects (`nm`: `T select`, `T time`, `T gettimeofday`), the i386
     guest tcc tree is relinked from it, links configures and builds for i386 (1 599 455 bytes)
     and dumps the host's page in the i386 guest; x86_64 unchanged (no arch.mak, step skipped).
+C6. 2026-10-28, COMMITTED (patches/tinyx/upstreamable/0001), TinyX `Xext/sync.c`, `mi/miinitext.c`,
+    `mi/miscrinit.c`, `dix/main.c`, `os/WaitFor.c`, `Xext/dpms.c`, `Xext/saver.c`: the server
+    included four client-library headers, `<X11/extensions/sync.h>`, `XShm.h` and `dpms.h`
+    (libXext) and `XTest.h` (libXtst), for server-side macros and extension names that
+    xorgproto provides itself (`syncproto.h`, which is all `sync.h` included under
+    `_SYNC_SERVER`; `shmproto.h`; `dpmsconst.h`; `xtestconst.h`). Not a tcc matter: the
+    build (`userland/tinyx/Makefile`, against xorgproto 2025.1 alone, no libXext or libXtst)
+    stopped on the missing headers. Verification: all 184 objects compile, Xfbdev runs.
+C7. 2026-10-28, COMMITTED (patches/libXfont/upstreamable/0001), libXfont `src/stubs/stubs.h`:
+    the stubs (`serverGeneration`, `ErrorF`, the font client hooks) are weak only under
+    `__ELF__ && __GNUC__ >= 3`; tcc defines neither macro but supports
+    `__attribute__((weak))`, so the static link of Xfbdev against libXfont.a failed with
+    "link symbol 'serverGeneration' defined twice" (tcc's linker pulls the stub member and
+    sees two strong definitions). `|| defined(__TINYC__)` on that condition. Verification:
+    `nm libXfont.a` shows `W register_fpe_functions` etc., the server links and its own
+    `serverGeneration` is used (the display comes up).
+    Everything else of the graphical mode (zlib, libpng, xorgproto, xtrans, libXau, libXdmcp,
+    xcb-proto, libxcb, libX11: 1356 build steps, libfontenc, TinyX's 184 files, links with
+    graphics) compiles with tcc unpatched; no tcc fix was needed.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

@@ -43,8 +43,9 @@ need_done() {
 }
 # what the build needs: git (sources, version tags), make, gcc (builds the host tcc and
 # gen_init_cpio; nothing else), binutils' ar (musl and busybox archives), the kernel's host
-# tools flex/bison/bc/rsync, cpio, tar
-need_build_tools() { need_tool git make gcc ar:binutils flex bison bc cpio rsync tar; }
+# tools flex/bison/bc/rsync, cpio, tar, and for the X libraries python3 (libxcb's C is
+# generated from xcb-proto's XML) and cpp (libX11's keysym and compose tables)
+need_build_tools() { need_tool git make gcc ar:binutils flex bison bc cpio rsync tar python3 cpp; }
 # downloads (fetch.sh: GNU make's release tarball): curl or wget
 need_download_tool() { have curl || have wget || need_add "curl (or wget)" curl; }
 # the ISO: grub-mkrescue with both GRUB platforms (without i386-pc the ISO is UEFI-only and
