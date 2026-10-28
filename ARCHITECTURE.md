@@ -110,8 +110,11 @@ server `/usr/bin/Xfbdev` (TinyX, kdrive on the framebuffer) with `/usr/bin/start
 (`userland/startx.c`: starts the server on a free virtual terminal, waits for its
 SIGUSR1, runs `links -g` the size of the screen on it, stops the server when links ends;
 `tcc.startx[=URL]` on the kernel command line, `run.sh --startx`, runs it at boot), and
-`/etc/passwd` and `/etc/group` (`userland/etc/`: root without a password, for the
-gettys that `/init` keeps on tty2-tty4). The smoke-test
+`/etc/passwd` and `/etc/group` (`userland/etc/`: root and the unprivileged `user`,
+UID 1000 with `/home/user`, neither with a password; `/init` logs the consoles in as the
+user with `login -p -f user`, runs the boot-time startx through `su user -c`, and keeps a
+getty on tty2-tty4; `busybox` is setuid root for su and login, `Xfbdev` for the
+framebuffer and the virtual terminal ioctls). The smoke-test
 image `initramfs-nolibc.cpio` holds only `userland/init.c`, a libc-free static
 binary that prints a banner and reboots.
 

@@ -2,8 +2,9 @@
 # gen_init_cpio manifest of the default image: a static busybox, /init (busybox-init.c,
 # a C script that /usr/bin/tcc runs with -run), which mounts devtmpfs/proc/sysfs, brings the
 # network up and runs an interactive shell on the serial console, the udhcpc script and the
-# device test (C scripts too), and /etc/passwd and /etc/group (userland/etc/: root without a
-# password, for the logins that getty offers on tty2-tty4).  ${BUSYBOX}, ${BUSYBOX_INIT},
+# device test (C scripts too), /etc/passwd and /etc/group (userland/etc/: root and the
+# unprivileged user, neither with a password; the consoles log in as the user with login -f,
+# getty offers a login on tty2-tty4) and the user's home.  ${BUSYBOX}, ${BUSYBOX_INIT},
 # ${UDHCPC_SCRIPT}, ${DEVICES_TEST} and ${ETC} are expanded by gen_init_cpio from the
 # environment (scripts/build.sh exports them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
@@ -26,12 +27,16 @@ dir   /etc          0755 0 0
 dir   /mnt          0755 0 0
 dir   /usr/share    0755 0 0
 dir   /usr/share/udhcpc 0755 0 0
-file  /bin/busybox  ${BUSYBOX} 0755 0 0
+# setuid root (CONFIG_FEATURE_SUID: only su, login and passwd keep the privilege, the
+# other applets drop it): su gives the user a root shell, login switches to the user
+file  /bin/busybox  ${BUSYBOX} 4755 0 0
 slink /bin/sh       busybox 0777 0 0
 file  /init         ${BUSYBOX_INIT} 0755 0 0
 # the DHCP client's event script (udhcpc runs it; C, see udhcpc-script.c) and the device test
 file  /usr/share/udhcpc/default.script ${UDHCPC_SCRIPT} 0755 0 0
 file  /usr/bin/devices-test ${DEVICES_TEST} 0755 0 0
-# the accounts: root (no password) is all there is; login (from getty on tty2-tty4) reads them
+# the accounts: root and user (UID 1000), no passwords; login and su read them
 file  /etc/passwd  ${ETC}/passwd 0644 0 0
 file  /etc/group   ${ETC}/group 0644 0 0
+dir   /home        0755 0 0
+dir   /home/user   0755 1000 1000

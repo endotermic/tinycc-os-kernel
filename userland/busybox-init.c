@@ -9,8 +9,9 @@
  * It mounts the API filesystems (only /bin/busybox and /bin/sh exist in the cpio, so the
  * applets are called through busybox until --install has made the links), brings the
  * network up (DHCP on every Ethernet interface, udhcpc with the C script
- * /usr/share/udhcpc/default.script), prints the banner with the devices found, then runs
- * an interactive shell on PID 1's console.  The shell is a child, not
+ * /usr/share/udhcpc/default.script), prints the banner with the devices found, keeps a
+ * getty on tty2-tty4, then runs an interactive shell on PID 1's console as the unprivileged
+ * user (login -f user; su gives root).  The shell is a child, not
  * an exec: PID 1 exiting would panic the kernel.  When the shell ends ('exit' or Ctrl-D)
  * we reboot, and QEMU (-no-reboot) exits.
  */
@@ -380,13 +381,14 @@ static void banner(FILE *out)
         char *size = first_line("/sys/class/graphics/fb0/virtual_size"), *name = first_line("/sys/class/graphics/fb0/name");
         if ((p = strchr(size, ',')))
             *p = 'x';
-        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)\n", size, name);
+        fprintf(out, "*** screen: framebuffer %s (%s), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)\n", size, name);
         free(size);
         free(name);
     } else if (exists("/dev/tty1")) {
-        fprintf(out, "*** screen: VGA text console, tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)\n");
+        fprintf(out, "*** screen: VGA text console, tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)\n");
     }
     device_lines(out);
+    fprintf(out, "*** this shell is the user's (user, UID 1000, home /home/user); su gives root without a password: builds, mounts and the self-hosting commands need it\n");
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
     fflush(out);
 }
@@ -523,8 +525,13 @@ int main(void)
      * is the host's terminal emulator behind QEMU, which is xterm-compatible.  libncursesw
      * has both entries compiled in (scripts/build.sh ncurses: --with-fallbacks) */
     setenv("TERM", "linux", 1);
+    /* The consoles' shells are the unprivileged user's (/etc/passwd: user, UID 1000, home
+     * /home/user, no password): login -f skips the authentication, -p keeps the environment
+     * set above (TERM, PATH, the nnn variables); login sets HOME, USER and the identity and
+     * makes the terminal the user's.  su (busybox is setuid root, root has no password) gives
+     * a root shell for what needs it: builds, mounts, the self-hosting commands. */
     if (exists("/dev/tty1") && (!primary || strcmp(primary, "tty0") != 0))
-        spawn_on_tty("/dev/tty1", (char *[]){ "sh", NULL }, 1);
+        spawn_on_tty("/dev/tty1", (char *[]){ "login", "-p", "-f", "user", NULL }, 1);
     if (exists("/dev/tty1"))
         start_gettys();
     if (primary && strncmp(primary, "ttyS", 4) == 0)
@@ -583,11 +590,15 @@ int main(void)
             if ((e = strchr(url, ' ')))
                 *e = 0;
         }
+        char cmd[512];
         printf("*** tcc.startx: starting the graphical mode (startx%s%s)\n", url ? " " : "", url ? url : "");
-        spawn_on_tty(NULL, (char *[]){ "startx", url, NULL }, 0);
+        /* as the user, like a startx typed in a shell: su (root asks no password) runs the
+         * command through the user's shell; Xfbdev is setuid root for its part */
+        snprintf(cmd, sizeof cmd, "startx%s%s", url ? " " : "", url ? url : "");
+        spawn_on_tty(NULL, (char *[]){ "su", "user", "-c", cmd, NULL }, 0);
     }
     free(s);
-    wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "sh", NULL }, 0));
+    wait_for(spawn_on_tty(NULL, (char *[]){ "cttyhack", "login", "-p", "-f", "user", NULL }, 0));
     printf("*** shell exited, rebooting\n");
     power_off();
     return 0;

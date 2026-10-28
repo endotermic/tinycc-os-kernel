@@ -571,6 +571,10 @@ step_tinyx() {
     # script that starts it on a free virtual terminal and runs links -g on it
     rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin"
     cp "$T/Xfbdev" "$STAGE/usr/bin/Xfbdev"
+    # setuid root in the image (dir2list.sh keeps the bit): the consoles' shells are the
+    # unprivileged user's, and kdrive needs root for the framebuffer, the mouse and the
+    # virtual terminal ioctls (VT_ACTIVATE, KDSETMODE); the clients run as the user
+    chmod 4755 "$STAGE/usr/bin/Xfbdev"
     cp "$ROOT/userland/startx.c" "$STAGE/usr/bin/startx"; chmod 755 "$STAGE/usr/bin/startx"
     echo "   Xfbdev: $(file -b "$T/Xfbdev" | cut -d, -f1-2), $(ls -l "$T/Xfbdev" | awk '{print $5}') bytes; startx: userland/startx.c"
 }

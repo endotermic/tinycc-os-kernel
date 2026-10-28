@@ -1646,6 +1646,12 @@ C7. 2026-10-28, COMMITTED (patches/libXfont/upstreamable/0001), libXfont `src/st
     Everything else of the graphical mode (zlib, libpng, xorgproto, xtrans, libXau, libXdmcp,
     xcb-proto, libxcb, libX11: 1356 build steps, libfontenc, TinyX's 184 files, links with
     graphics) compiles with tcc unpatched; no tcc fix was needed.
+C8. 2026-10-28, configuration, `kernels/linux/minimal.config`: `CONFIG_MULTIUSER=y`. tinyconfig
+    leaves users, groups and capabilities out: every process is UID 0 and `setuid()` fails
+    with EPERM, so `login -f user` and `su` could not switch identity. Needed for the
+    unprivileged default shell (`user`, UID 1000) and the setuid-root busybox (su, login) and
+    Xfbdev. Not a tcc matter. Verification: `id` on the console prints uid=1000(user), `su`
+    gives uid=0, the setuid X server starts from the user's startx.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

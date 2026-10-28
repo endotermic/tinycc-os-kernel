@@ -76,7 +76,13 @@ exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
 the serial terminal, and `./run.sh --iso` does so by default (`--no-vga` for headless); a
-shell runs on both consoles. The ISO's default menu entry boots into the graphical mode
+shell runs on both consoles, the unprivileged user's (`user`, UID 1000, home `/home/user`,
+logged in by `/init` with `login -f`; `su` gives root, neither has a password; the kernel
+has `CONFIG_MULTIUSER=y` for this, which tinyconfig leaves out). Builds, mounts and the
+self-hosting commands need root; `busybox` and the X server `Xfbdev` are setuid root
+(su and login keep the privilege, the other applets drop it; kdrive needs root for the
+framebuffer and the virtual terminal ioctls while links runs as the user). The ISO's default
+menu entry boots into the graphical mode
 (`tcc.startx`: the TinyX X server on the framebuffer with the links browser in graphics
 mode; the second entry is the text console, where `startx [URL]` opens the same, from the
 screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx` does the
@@ -118,10 +124,11 @@ The boot ends with:
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
 *** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)
-*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: root, no password)
+*** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4: user or root, no passwords)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
 *** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
+*** this shell is the user's (user, UID 1000, home /home/user); su gives root without a password: builds, mounts and the self-hosting commands need it
 ```
 
 The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
