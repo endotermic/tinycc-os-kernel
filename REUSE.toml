@@ -24,3 +24,9 @@ path = ["patches/tinycc/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["The Tiny C Compiler authors", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["patches/ncurses/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Thomas E. Dickey", "Free Software Foundation, Inc.", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "X11"

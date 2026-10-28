@@ -1,0 +1,5 @@
+The patches in this directory modify ncurses and are derivative works of it.
+They are licensed under ncurses' license, the X11 license (SPDX: X11; the text,
+ncurses' COPYING, is in ../../LICENSES/X11.txt), not under the BSD-2-Clause
+license of the rest of tinycc-os-kernel.  The `series` file and the directory
+layout are BSD-2-Clause like the rest of the repository.

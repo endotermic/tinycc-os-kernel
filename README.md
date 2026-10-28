@@ -313,8 +313,8 @@ The original parts of this repository (the scripts, `tools/tld`, `kernels/`, `us
 `boot/`, the documentation, the `series` files) are under the
 [BSD-2-Clause](LICENSE) license, so that they can be used by GPL and by BSD projects
 alike. The patches are derivative works of the component they modify and carry its
-license: `patches/linux/` is GPL-2.0-only, `patches/tinycc/` is LGPL-2.1-or-later (texts in
-`LICENSES/`, notes in `patches/<component>/LICENSE`). A future component gets the same
+license: `patches/linux/` is GPL-2.0-only, `patches/tinycc/` is LGPL-2.1-or-later,
+`patches/ncurses/` is X11 (texts in `LICENSES/`, notes in `patches/<component>/LICENSE`). A future component gets the same
 treatment: `patches/freebsd/` would be BSD-2-Clause, `patches/openbsd/` ISC, `patches/hurd/`
 GPL-2.0-or-later.
 
