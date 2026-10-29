@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Thu, 29 Oct 2026 10:00:32 +0200
+Subject: [PATCH] font: draw text with Xft directly when Pango is not available
+
+Since 2.4 the Xft font path goes through Pango (pango_xft_render_layout_line);
+without Pango, USE_XFT only allocates Xft colors and every string is drawn with
+a core X font, so a <Font> such as "Sans-11" warns "could not load font" and
+falls back to "fixed".  On a system without Pango (here: a static musl system
+built by tcc, where glib and HarfBuzz are out of reach) this restores the 2.3
+behaviour as a third variant of the font code: the fonts are XftFonts (opened
+by XLFD when the name looks like one, by fontconfig name otherwise), measured
+with XftTextExtentsUtf8 and drawn with XftDrawStringUtf8, clipped to the width
+given.  The Pango and the core-font variants are unchanged.
+---
+ src/font.c | 57 ++++++++++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 49 insertions(+), 8 deletions(-)
+
+diff --git a/src/font.c b/src/font.c
+index f06493b..c85a6d7 100644
+--- a/src/font.c
++++ b/src/font.c
+@@ -32,8 +32,10 @@
+ #  endif
+ #endif
+ 
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+ static const char *DEFAULT_FONT = "12";
++#elif defined(USE_XFT)
++static const char *DEFAULT_FONT = "Sans-10";
+ #else
+ static const char *DEFAULT_FONT = "fixed";
+ #endif
+@@ -63,12 +65,14 @@ static int font_heights[FONT_COUNT];
+ static int font_ascents[FONT_COUNT];
+ static PangoFontMap *font_map;
+ static PangoContext *font_context;
++#elif defined(USE_XFT)
++static XftFont *fonts[FONT_COUNT];
+ #else
+ static XFontStruct *fonts[FONT_COUNT];
+ #endif
+ static char *fontNames[FONT_COUNT];
+ 
+-#ifdef USE_PANGO
++#if defined(USE_PANGO) || defined(USE_XFT)
+ static int IsXlfd(const char *str);
+ #endif
+ 
+@@ -167,6 +171,22 @@ void StartupFonts(void)
+         font_ascents[x] = 0;
+         font_heights[x] = 0;
+       }
++#elif defined(USE_XFT)
++      /* Xft without Pango: the font is an XftFont, drawn with Xft directly. */
++      if(fontNames[x]) {
++         if(IsXlfd(fontNames[x])) {
++            fonts[x] = JXftFontOpenXlfd(display, rootScreen, fontNames[x]);
++         }
++         if(!fonts[x]) {
++            fonts[x] = JXftFontOpenName(display, rootScreen, fontNames[x]);
++         }
++         if(JUNLIKELY(!fonts[x])) {
++            Warning(_("could not load font: %s"), fontNames[x]);
++         }
++      }
++      if(!fonts[x]) {
++         fonts[x] = JXftFontOpenName(display, rootScreen, DEFAULT_FONT);
++      }
+ #else /* USE_PANGO */
+       if(fontNames[x]) {
+          fonts[x] = JXLoadQueryFont(display, fontNames[x]);
+@@ -191,9 +211,12 @@ void ShutdownFonts(void)
+    unsigned int x;
+    for(x = 0; x < FONT_COUNT; x++) {
+       if(fonts[x]) {
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+          g_object_unref(fonts[x]);
+          fonts[x] = NULL;
++#elif defined(USE_XFT)
++         JXftFontClose(display, fonts[x]);
++         fonts[x] = NULL;
+ #else
+          JXFreeFont(display, fonts[x]);
+          fonts[x] = NULL;
+@@ -229,7 +252,7 @@ void DestroyFonts(void)
+ }
+ 
+ /** Determine if a font string is likely XLFD. */
+-#ifdef USE_PANGO
++#if defined(USE_PANGO) || defined(USE_XFT)
+ int IsXlfd(const char *str)
+ {
+    /* Valid XLFD should have 14 '-'s. */
+@@ -316,18 +339,24 @@ int GetStringWidth(FontType ft, const char *str)
+    char *utf8String;
+    int result;
+ 
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+    PangoRectangle rect;
++#elif defined(USE_XFT)
++   XGlyphInfo extents;
+ #endif
+ 
+    /* Convert to UTF-8 if necessary. */
+    utf8String = GetUTF8String(str);
+ 
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+    pango_layout_set_text(fonts[ft], utf8String, -1);
+    pango_layout_set_width(fonts[ft], -1);
+    pango_layout_get_extents(fonts[ft], NULL, &rect);
+    result = (rect.width + PANGO_SCALE - 1) / PANGO_SCALE;
++#elif defined(USE_XFT)
++   JXftTextExtentsUtf8(display, fonts[ft], (const unsigned char*)utf8String,
++                       strlen(utf8String), &extents);
++   result = extents.xOff;
+ #else
+    result = XTextWidth(fonts[ft], utf8String, strlen(utf8String));
+ #endif
+@@ -369,10 +398,12 @@ void RenderString(Drawable d, FontType font, ColorType color,
+    Region renderRegion;
+    int len;
+    char *utf8String;
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+    XftDraw *xd;
+    PangoLayoutLine *line;
+    XftColor *xc;
++#elif defined(USE_XFT)
++   XftDraw *xd;
+ #else
+    XGCValues gcValues;
+    unsigned long gcMask;
+@@ -398,7 +429,7 @@ void RenderString(Drawable d, FontType font, ColorType color,
+    renderRegion = XCreateRegion();
+    XUnionRectWithRegion(&rect, renderRegion, renderRegion);
+ 
+-#ifdef USE_PANGO
++#if defined(USE_PANGO)
+ 
+    pango_layout_set_text(fonts[font], str, -1);
+    pango_layout_set_width(fonts[font], width * PANGO_SCALE);
+@@ -415,6 +446,16 @@ void RenderString(Drawable d, FontType font, ColorType color,
+       y * PANGO_SCALE + font_ascents[font]);
+ 
+    JXftDrawDestroy(xd);
++#elif defined(USE_XFT)
++
++   /* Xft without Pango: draw the UTF-8 string with the XftFont, clipped to the
++    * width given. */
++   xd = JXftDrawCreate(display, d, rootVisual, rootColormap);
++   JXftDrawSetClip(xd, renderRegion);
++   JXftDrawStringUtf8(xd, GetXftColor(color), fonts[font],
++                      x, y + fonts[font]->ascent,
++                      (const unsigned char*)utf8String, len);
++   JXftDrawDestroy(xd);
+ #else
+ 
+    gcMask = GCGraphicsExposures;

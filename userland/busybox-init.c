@@ -355,11 +355,15 @@ static void banner(FILE *out)
      * http.server there serves a directory) */
     if (is_exec("/usr/bin/links"))
         fprintf(out, "*** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)\n");
-    /* the graphical mode: TinyX's Xfbdev on the framebuffer and links -g on it (startx,
-     * userland/startx.c); the server takes a free virtual terminal and switches the screen
-     * to it, back when links ends */
-    if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0"))
-        fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)\n");
+    /* the graphical mode: TinyX's Xfbdev on the framebuffer, the JWM window manager (when
+     * the image has it) and links -g on it (startx, userland/startx.c); the server takes a
+     * free virtual terminal and switches the screen to it, back when the session ends */
+    if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0")) {
+        if (is_exec("/usr/bin/jwm"))
+            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it)\n");
+        else
+            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)\n");
+    }
     /* the build number counts the generations: #1 was built on the host (scripts/build.sh),
      * #2 inside a guest running #1, and so on (userland/selfhost/build-kernel sets
      * KBUILD_BUILD_VERSION and KBUILD_BUILD_HOST=tinycc-os-guest) */
@@ -394,7 +398,8 @@ static void banner(FILE *out)
     device_lines(out);
     fprintf(out, "*** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it\n");
     if (is_exec("/usr/bin/xdm"))
-        fprintf(out, "*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is links -g\n");
+        fprintf(out, "*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is %s\n",
+                is_exec("/usr/bin/jwm") ? "JWM with links -g (Log out in JWM's menu returns to the greeter)" : "links -g");
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
     fflush(out);
 }

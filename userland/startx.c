@@ -2,9 +2,12 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * startx - the graphical mode: start the X server (TinyX's Xfbdev on /dev/fb0, on a free
- * virtual terminal, which it switches the screen to) and run the links web browser in its
- * graphics mode on it; when links ends, stop the server, and the screen returns to the
- * text console it came from.  A C script run by tcc, like every script of this system.
+ * virtual terminal, which it switches the screen to), the JWM window manager and the links
+ * web browser in its graphics mode on it; when the window manager ends (its menu's Log out,
+ * Alt-F1), stop the server, and the screen returns to the text console it came from.  In an
+ * image without /usr/bin/jwm (the jwm step not built) links alone runs, the size of the
+ * screen, and the session ends with it.  A C script run by tcc, like every script of this
+ * system.
  *
  * Usage: startx [links arguments...]        e.g.  startx https://linux.org/
  *   no arguments: links opens with no page (its menu is on the Escape key / the top line)
@@ -89,13 +92,14 @@ int main(int argc, char **argv)
 {
     const char *display = getenv("DISPLAY");
     char **largv;
-    pid_t server, client, p;
+    pid_t server, client, wm, p;
     sigset_t set, old;
-    int st, i, n, ready = 0, rc;
+    int st, i, n, ready = 0, rc, have_wm;
     char mode[32];
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         printf("usage: startx [links arguments...]   (e.g. startx https://linux.org/)\n"
-               "starts the X server (Xfbdev) on a free virtual terminal and links -g on it;\n"
+               "starts the X server (Xfbdev) on a free virtual terminal, the JWM window manager\n"
+               "and links -g on it (Log out in JWM's menu ends it);\n"
                "env: DISPLAY (:0), XSERVER_OPTS (extra Xfbdev options), XLOG (%s)\n", xlog);
         return 0;
     }
@@ -149,17 +153,19 @@ int main(int argc, char **argv)
         waitpid(server, &st, 0);
         return 1;
     }
-    printf("startx: X server ready on %s (log: %s), running links -g on it\n", display, xlog);
+    /* the window manager when the image has it: JWM manages the windows, and its exit
+     * (Log out in its menu) ends the session.  Without it links runs alone, its window the
+     * size of the screen (-mode WxH from the framebuffer: "1024,768" in sysfs; links'
+     * default size leaves a margin for a window manager's decorations). */
+    have_wm = access("/usr/bin/jwm", X_OK) == 0;
+    printf("startx: X server ready on %s (log: %s), running %slinks -g on it\n", display, xlog,
+           have_wm ? "jwm and " : "");
     fflush(stdout);
-    /* links -g -mode WxH [arguments]: the browser in graphics mode, its X driver on
-     * DISPLAY, its window the size of the screen (its default leaves a margin for a window
-     * manager's decorations, and there is no window manager here); the size comes from the
-     * framebuffer ("1024,768" in sysfs) */
     largv = calloc(argc + 6, sizeof *largv);
     n = 0;
     largv[n++] = "links";
     largv[n++] = "-g";
-    {
+    if (!have_wm) {
         FILE *f = fopen("/sys/class/graphics/fb0/virtual_size", "r");
         int w = 0, h = 0;
         if (f) {
@@ -173,27 +179,43 @@ int main(int argc, char **argv)
     }
     for (i = 1; i < argc; i++)
         largv[n++] = argv[i];
+    wm = -1;
+    if (have_wm) {
+        wm = fork();
+        if (wm == 0) {
+            execl("/usr/bin/jwm", "jwm", (char *)NULL);
+            perror("startx: jwm");
+            _exit(127);
+        }
+    }
     client = fork();
     if (client == 0) {
         execvp(largv[0], largv);
         perror("startx: links");
         _exit(127);
     }
+    /* the session: until the window manager ends (or, without one, links), or the server dies */
     rc = 1;
     while ((p = waitpid(-1, &st, 0)) > 0) {
-        if (p == client) {
+        if (p == wm || (p == client && wm < 0)) {
             rc = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
             break;
+        }
+        if (p == client) {
+            client = -1;        /* links closed: the session goes on under the window manager */
+            continue;
         }
         if (p == server) {
             fprintf(stderr, "startx: the X server died\n");
             print_log();
-            kill(client, SIGTERM);
-            waitpid(client, &st, 0);
+            if (client > 0) { kill(client, SIGTERM); waitpid(client, &st, 0); }
+            if (wm > 0) { kill(wm, SIGTERM); waitpid(wm, &st, 0); }
             return 1;
         }
     }
-    /* links is done: stop the server, which switches the screen back to the text console */
+    /* the session is over: stop the clients still running and the server, which switches
+     * the screen back to the text console */
+    if (p == wm && client > 0) { kill(client, SIGTERM); waitpid(client, &st, 0); }
     kill(server, SIGTERM);
     waitpid(server, &st, 0);
     return rc;

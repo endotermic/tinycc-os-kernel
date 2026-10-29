@@ -468,6 +468,69 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   (`-nostdinc -isystem build/<arch>/musl/install/include -L build/<arch>/musl/lib`), which is
   how both bugs were debugged (FIX-LOG 95: an in-tree musl build with backtraces).
 
+## The window manager: JWM with every optional library (2026-10-29)
+
+JWM 2.4.6 is the guest's window manager, built by `scripts/build.sh jwm` (between xdm and
+links) with everything its configure can switch on under tcc: PNG and JPEG icons (libpng,
+IJG's jpeg-9f), XPM and XBM icons (libXpm, Xlib), Xft fonts (libXft on FreeType 2.15.0 and
+fontconfig 2.16.0 with expat 2.9.0), XRender (libXrender), the Shape extension (libXext), Xmu
+and Xinerama. All of it compiles with tcc unpatched: 9 new release tarballs in `sources.lock`,
+no new tcc fix. Out of reach, and off: SVG icons (librsvg is Rust since 2.41, its last C
+release wants glib, pango and gdk-pixbuf) and Pango (glib and HarfBuzz: meson, C++).
+
+What needed care:
+
+* **Pango is JWM's only text path for Xft.** Since 2.4, `USE_XFT` without `USE_PANGO` just
+  allocates Xft colors; every string is drawn with a core X font, so `<Font>Sans-11</Font>`
+  warned "could not load font" and the tray came up in `fixed`. `patches/jwm/upstreamable/0001`
+  restores the 2.3 behaviour as a third variant of `src/font.c`: XftFonts opened by name
+  (fontconfig) or XLFD, measured with `XftTextExtentsUtf8`, drawn with `XftDrawStringUtf8`
+  clipped to the width given. Patch 0002 gives tcc `__builtin_expect` for JLIKELY (jwm.h
+  tested `__GNUC__` only and printed a warning per file).
+* **fontconfig needs gperf at build time** (its release tarball ships `fcobjshash.gperf.h`,
+  not the generated `fcobjshash.h`), and the host has none. `userland/fontconfig/gperf.sh`
+  (sh + awk, passed as `GPERF=` to make) reads the gperf input and emits a table with a
+  linear search behind the same two static functions; `fc-match Sans-11` resolves to
+  `DejaVuSans.ttf` on the host and in the guest. Its paths are the guest's
+  (`--with-baseconfigdir=/etc/fonts`, templates under `/usr/share/fontconfig/conf.avail`,
+  cache `/var/cache/fontconfig`, 1777 in `initramfs.list`), so it is installed under a
+  DESTDIR and split: library, headers and `.pc` into `build/<arch>/x/usr`, the
+  configuration into the staging tree. The default template set (21 symlinks) is kept.
+* **The link order.** JWM's Makefile links with `$(LDFLAGS)` as configure built it,
+  `-lX11` first; tcc's linker is single-pass, so `LIBS` carries the whole static closure
+  (from `scripts/pkg-config.sh --libs xft xinerama xpm xmu xext x11`, plus `-ljpeg -lpng16
+  -lz -lm -lX11 -lxcb -lXau`) for the configure probes, and make is run with that order
+  as `LDFLAGS`. configure takes `PKGCONFIG` from the environment (pkg-config.sh), which
+  is how the FreeType include directory reaches `CFLAGS`. JWM builds in its source tree
+  only (`#include "../config.h"`): the step rsyncs `src/jwm` into `build/<arch>/x/jwm`.
+* **The initramfs outgrew the rootfs.** With `CONFIG_TMPFS` the kernel unpacks the
+  initramfs into a tmpfs sized at half of the memory present at that moment: 33 MB on a
+  128 MB machine. The image went from 24 to 33 MB (jwm 2.7 MB, fc-list and fc-match 2.1 MB
+  each, fonts 1.8 MB, the libraries inside links unchanged) and the unpacking stopped
+  short of its last entries, silently (`/usr/bin/links`, last in `stage_lists`, was
+  missing; fontconfig could not write its cache; `stat -f /` showed 0 free blocks).
+  `rootfstype=ramfs` on every kernel command line (`run.sh`, `boot/mkiso.sh`) makes the
+  rootfs a ramfs, which has no cap; the ISO's seven GRUB entries carry it too.
+* **The session.** `userland/startx.c` and `userland/xdm/Xsession.c` start `links -g` and
+  then JWM; the session lasts as long as JWM (Log out in its menu, confirm dialog), links
+  may come and go. Without `/usr/bin/jwm` in the image both fall back to links alone, the
+  size of the screen, as before. `/etc/system.jwmrc` (`userland/jwm/system.jwmrc`): the
+  menu on any mouse button over the desktop, the tray's Menu button and Alt-F1 (links,
+  links on the host's http.server, Restart, Log out), a tray along the bottom with pager
+  (two desktops), task list and clock, Xft fonts `Sans-11` (DejaVu Sans through
+  fontconfig's aliases), five hand-drawn 16x16 XPM icons (`userland/jwm/icons/`, generated
+  pixel art under the repository's license), click-to-focus.
+
+Verified on x86_64 (headless QEMU, QMP screendumps, the keys through `send-key`, commands
+over the serial console): `--startx` shows the tray in DejaVu Sans with the XPM icons, links
+managed and listed; Alt-F1 opens the menu, the second entry opens a second links on the
+host's `python3 -m http.server`; a user `~/.jwmrc` with `<Background type="image">` on a
+JPEG and a PNG menu icon (both generated on the host and fetched with wget) renders the
+wallpaper and the icon; Log out, OK ends the session and the text console returns;
+`--xdm`: ada logs in to the same session and Log out brings the greeter back; the rebuilt
+ISO boots its default entry with `rootfstype=ramfs` into the greeter. Not verified: i386
+(not built on this machine at the moment) and a real keyboard.
+
 ## Debugging recipes
 
 ```bash

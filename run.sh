@@ -21,11 +21,13 @@
 #   --no-vga  headless (-nographic) even with --iso
 #   --xdm     the graphical login from the start: /init runs xdm, which starts TinyX's Xfbdev
 #             on tty5, shows its greeter (with the helper text that lists the accounts and
-#             their passwords: ada/lovelace, grace/hopper, dennis/ritchie) and runs links -g as
+#             their passwords: ada/lovelace, grace/hopper, dennis/ritchie) and runs the JWM window
+#             manager with links -g as
 #             the session of whoever logs in (kernel command line tcc.xdm; userland/xdm/).
 #             The ISO's default menu entry is this mode, so --iso needs no --xdm
 #   --startx  the graphical mode without a login: /init runs startx as the console user
-#             (TinyX's Xfbdev and links -g on it, userland/startx.c; --startx=URL opens that
+#             (TinyX's Xfbdev, the JWM window manager and links -g on it, userland/startx.c;
+#             --startx=URL opens that
 #             page); kernel command line tcc.startx[=URL], direct boot only (the ISO has it as
 #             its second entry, without a URL).  Both imply --vga when a display is available
 #   --no-devices  only the serial ports and the VGA: without the emulated devices that the
@@ -187,7 +189,11 @@ RES=${RES-1024x768}
 # the self-hosting image: RAM for the source tree, the build and the compilers (see
 # userland/selfhost/build-kernel), the second UART captured to a file, GRUB's menu entry
 # and the guest's automatic run chosen through SMBIOS OEM strings / the command line
-cmdline="console=tty0 console=ttyS0${xdm:+ $xdm}${startx:+ $startx}${APPEND:+ $APPEND}"
+# rootfstype=ramfs: with CONFIG_TMPFS the kernel unpacks the initramfs into a tmpfs sized at
+# half of the memory it has at that moment (33 MB on a 128 MB machine), which the image
+# outgrew with the window manager (2026-10-29): the unpacking stopped short of its last
+# files, silently.  ramfs has no size cap (the initramfs is in RAM either way)
+cmdline="console=tty0 console=ttyS0 rootfstype=ramfs${xdm:+ $xdm}${startx:+ $startx}${APPEND:+ $APPEND}"
 if [ -n "$selfhost" ]; then
     MEM=${MEM:-1G}
     mkdir -p "$O/selfhost"

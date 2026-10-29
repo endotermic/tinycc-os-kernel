@@ -1675,6 +1675,36 @@ C10. 2026-10-28, build recipe (not a patch), `userland/tinyx/Makefile`: `-DHAVE_
     i386 never noticed (both sizes are 4). Not a tcc matter. Verification: the dumped
     mapping has Escape at 9 and '1' at 10, the greeter takes `ada` and `lovelace`, the links
     session opens on x86_64.
+C11. 2026-10-29, COMMITTED (patches/jwm/upstreamable/0001), JWM `src/font.c`: since JWM 2.4
+    the Xft fonts are drawn through Pango only; without Pango (glib and HarfBuzz are out of
+    reach for tcc: meson, C++) `USE_XFT` allocated Xft colors and nothing else, every
+    `<Font>` such as `Sans-11` warned "could not load font" and the tray, menus and titles
+    came up in the core `fixed` font. The patch restores the direct Xft text path of JWM 2.3
+    as a third variant next to the Pango and the core-font ones: XftFonts opened by XLFD or
+    fontconfig name, measured with XftTextExtentsUtf8, drawn with XftDrawStringUtf8 clipped
+    to the width. Not a tcc matter. Verification: a diagnostic client (XftFontOpenName) had
+    shown Xft itself working on TinyX (RENDER present, 75 dpi, DejaVu Sans matched); with
+    the patch the tray, task list, menu and title bars render in antialiased DejaVu Sans
+    (QMP screendump), no font warning on the console.
+C12. 2026-10-29, COMMITTED (patches/jwm/upstreamable/0002), JWM `src/jwm.h`: JLIKELY/JUNLIKELY
+    use `__builtin_expect` under `__GNUC__` only and `#warning` otherwise; tcc defines
+    `__TINYC__` and has the builtin. 48 warnings per build gone. Cosmetic.
+C13. 2026-10-29, build recipe (not a patch), `userland/fontconfig/gperf.sh`: fontconfig
+    generates `src/fcobjshash.h` with gperf during the build (the release tarball ships only
+    the `.gperf.h` source) and the host has no gperf; the stand-in emits a table and a linear
+    search behind gperf's two static functions (`FcObjectTypeHash`, `FcObjectTypeLookup`),
+    passed as `GPERF=` to make. Verification: `fc-match Sans-11` -> `DejaVuSans.ttf "DejaVu
+    Sans" "Book"` with the static fc-match on the host (FONTCONFIG_FILE on the staging tree)
+    and in the guest; `fc-list` lists the three faces.
+C14. 2026-10-29, configuration, `run.sh` and `boot/mkiso.sh`: `rootfstype=ramfs` on every kernel
+    command line. With CONFIG_TMPFS the initramfs is unpacked into a tmpfs sized at half of
+    the memory present at that early moment, 33 288 kB on a 128 MB machine; the image grew
+    from 24 to 33 MB with the window manager and the unpacking stopped short of its last
+    entries without a message on the console: `/usr/bin/links` (last in `stage_lists`) was
+    missing, `stat -f /` showed 0 free blocks, wget and fontconfig's cache failed with
+    ENOSPC. ramfs has no size cap. Not a tcc matter. Verification: `/proc/mounts` shows
+    `rootfs / rootfs rw`, links is present and runs, the cache is written; the ISO's
+    default entry boots with the parameter (`/proc/cmdline`).
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

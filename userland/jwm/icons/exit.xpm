@@ -1,0 +1,26 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* exit.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons) */
+static char *exit_xpm[] = {
+"16 16 4 1",
+".	c None",
+"d	c #5a3a1a",
+"r	c #d03030",
+"y	c #c89b5a",
+"................",
+".dddddddd.......",
+".dyyyyyyd.......",
+".dyyyyyyd.......",
+".dyyyyyyd.......",
+".dyyyyyyd...r...",
+".dyyyyyyd...rr..",
+".dyyyyyydrrrrrr.",
+".dyyyyyydrrrrrrr",
+".dyyyyyydrrrrrr.",
+".dyyyyyyd...rr..",
+".dyyyyyyd...r...",
+".dyyyyyyd.......",
+".dyyyyyyd.......",
+".dddddddd.......",
+"................"
+};

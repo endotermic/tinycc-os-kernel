@@ -48,3 +48,9 @@ path = ["patches/xdm/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["The Open Group", "Keith Packard", "The X.Org Foundation", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/jwm/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Joe Wingbermuehle", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"

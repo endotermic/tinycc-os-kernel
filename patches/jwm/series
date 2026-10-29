@@ -1,0 +1,3 @@
+# patches/jwm: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-font-draw-text-with-Xft-directly-when-Pango-is-not-a.patch
+upstreamable/0002-jwm.h-JLIKELY-JUNLIKELY-with-tcc-s-__builtin_expect.patch

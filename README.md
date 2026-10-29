@@ -46,8 +46,8 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
 ./run.sh --iso                    # the ISO (GRUB menu: the graphical login by default, then startx, then the text console) with QEMU's display window; --efi: on OVMF
-./run.sh --xdm                    # direct boot into the graphical login (xdm's greeter on TinyX; the session is links -g)
-./run.sh --startx                 # direct boot into the graphical mode without a login (TinyX + links -g); --startx=URL opens that page
+./run.sh --xdm                    # direct boot into the graphical login (xdm's greeter on TinyX; the session is JWM with links -g)
+./run.sh --startx                 # direct boot into the graphical mode without a login (TinyX + JWM + links -g); --startx=URL opens that page
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)
 ./run.sh --selfhost               # the self-hosting image: 1 GB, every CPU; inside: build-kernel, send-file
 scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel in the guest, boot it (#2)
@@ -87,13 +87,18 @@ drop it; kdrive needs root for the framebuffer and the virtual terminal ioctls w
 clients run as the user). The ISO's default menu entry boots into the graphical login:
 X.Org's xdm (`userland/xdm/`, its greeter linked in, since the static system cannot
 dlopen it) starts the TinyX server on tty5, shows its login box with a helper window that
-lists the accounts, and runs links in graphics mode as the session of whoever logs in; `q`
-in links ends the session and the greeter returns. The second entry is the graphical mode
-without a login
-(`tcc.startx`: the TinyX X server on the framebuffer with the links browser in graphics
-mode; the second entry is the text console, where `startx [URL]` opens the same, from the
-screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx` does the
-same for the direct boot. The screen is a KMS display at the native resolution
+lists the accounts, and runs the JWM window manager (`userland/jwm/`, 2026-10-29: Xft
+fonts through FreeType and fontconfig with the DejaVu faces, PNG/JPEG/XPM/XBM icons, a
+tray with pager, task list and clock, two desktops) with links in graphics mode under it
+as the session of whoever logs in; JWM's menu (any mouse button on the desktop, the tray's
+Menu button, Alt-F1) starts links, restarts JWM or logs out, and the greeter returns. The
+second entry is the graphical mode without a login
+(`tcc.startx`: the TinyX X server on the framebuffer with JWM and the links browser in
+graphics mode; the third entry is the text console, where `startx [URL]` opens the same,
+from the screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx`
+does the same for the direct boot. The root filesystem is a ramfs (`rootfstype=ramfs` on
+every kernel command line): the tmpfs the kernel would use is capped at half of the early
+memory, 33 MB on a 128 MB machine, which the image has outgrown. The screen is a KMS display at the native resolution
 (`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
 sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
@@ -130,13 +135,13 @@ The boot ends with:
 *** tcc version 0.9.28rc e23dabe+110p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
 *** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
 *** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it
-*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is links -g
+*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is JWM with links -g (Log out in JWM's menu returns to the greeter)
 ```
 
 The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
@@ -198,14 +203,15 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 
 | Path | What |
 |------|------|
-| `sources.lock` | the 30 upstream components with URL, ref and exact commit or tarball hash |
+| `sources.lock` | the 39 upstream components with URL, ref and exact commit or tarball hash |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
 | `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |
 | `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
-| `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then `links -g`) and the guest's `passwd`/`group` |
+| `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then JWM and `links -g`) and the guest's `passwd`/`group` |
+| `userland/jwm/`, `userland/fontconfig/` | JWM's system configuration (`/etc/system.jwmrc`) and the menu's XPM icons; `gperf.sh`, the stand-in for gperf that fontconfig's build needs |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
@@ -338,6 +344,11 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | libfontenc, libXfont | 1.1.9, 1.5.4 (release tarballs; the server's font library with its built-in fonts, no FreeType; 1 patch: libXfont's stubs weak under tcc as under GCC) | 94163053..., 59be6eab... |
 | libICE, libSM, libXext, libXt, libXmu, libXpm, libXaw | 1.1.2, 1.2.6, 1.3.7, 1.3.1, 1.3.1, 3.5.20, 1.0.16 (release tarballs; the toolkit of xdm's greeter, static, musl, built by tcc unpatched) | 1da62f73..., 166b4b50..., 6564608d..., cf221218..., 5c8f44e2..., 736704d8..., 012f90ad... |
 | xdm | 1.1.17 (release tarball; the graphical login, static, no PAM; 1 patch: the greeter linked in instead of dlopened) | b1d1db9b... |
+| jwm | 2.4.6 (release tarball; the window manager, static, musl, with every optional library tcc can build: Xft, XRender, Xinerama, PNG, JPEG, XPM, XBM, Shape, Xmu; 2 patches: text drawn with Xft directly where Pango is absent, `__builtin_expect` under tcc) | b5871ec2... |
+| libXrender, libXinerama, libXft | 0.9.13, 1.1.5, 2.3.9 (release tarballs; static, musl, built by tcc unpatched) | bf264b68..., 2efa855c..., 47c157fb... |
+| expat, freetype, fontconfig | 2.9.0, 2.15.0, 2.16.0 (release tarballs; the Xft font stack, static, musl, built by tcc unpatched; fontconfig's object-name hash generated by `userland/fontconfig/gperf.sh` in place of gperf, which the host lacks; its configuration is the image's `/etc/fonts`) | 16afbb9c..., 91866274..., 6a33dc55... |
+| jpeg | 9f (IJG's libjpeg, release tarball; static, musl, built by tcc unpatched: JWM's JPEG icons and wallpapers) | 04705c11... |
+| dejavu-fonts | 2.37 (release tarball; DejaVu Sans, Sans Bold and Sans Mono as the image's `/usr/share/fonts/TTF`, Bitstream Vera license, with the license file) | fa9ca4d1... |
 
 ## License
 

@@ -1,0 +1,25 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* jwm.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons) */
+static char *jwm_xpm[] = {
+"16 16 3 1",
+"B	c #2a6fb0",
+"b	c #1b4a78",
+"w	c #ffffff",
+"bbbbbbbbbbbbbbbb",
+"bBBBBBBBBBBBBBBb",
+"bBBBBwwwwwwwBBBb",
+"bBBBBwwwwwwwBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBBBBBBBwwBBBBBb",
+"bBwwBBBBwwBBBBBb",
+"bBwwBBBBwwBBBBBb",
+"bBBwwBBwwBBBBBBb",
+"bBBBwwwwBBBBBBBb",
+"bBBBBBBBBBBBBBBb",
+"bbbbbbbbbbbbbbbb"
+};

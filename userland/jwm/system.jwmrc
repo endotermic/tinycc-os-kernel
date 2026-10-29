@@ -1,0 +1,151 @@
+<?xml version="1.0"?>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!--
+  /etc/system.jwmrc - the configuration of JWM, the window manager of the graphical mode
+  (startx) and of xdm's sessions.  JWM reads ~/.jwmrc first and this file when a user has
+  none.  Fonts are Xft names resolved by fontconfig (/etc/fonts, /usr/share/fonts/TTF: the
+  DejaVu faces); the icons are XPM files in /usr/share/jwm (userland/jwm/icons/); PNG, JPEG
+  and XBM icons load too.  The menu opens on any mouse button on the desktop, on the tray's
+  Menu button and on Alt-F1; Exit ends the session (back to the greeter under xdm, back to
+  the text console under startx).  Edit and choose Restart to reload.
+-->
+<JWM>
+
+    <!-- The root menu: the programs of this system. -->
+    <RootMenu onroot="123">
+        <Program icon="web-browser" label="Web browser (links)">links -g</Program>
+        <Program icon="web-browser" label="Web browser: the host's http.server (10.0.2.2:8000)">links -g http://10.0.2.2:8000/</Program>
+        <Separator/>
+        <Restart label="Restart JWM" icon="restart"/>
+        <Exit label="Log out" confirm="true" icon="exit"/>
+    </RootMenu>
+
+    <!-- The tray along the bottom: the menu button, the pager of the two desktops, the
+         task list and a clock. -->
+    <Tray x="0" y="-1" height="28" autohide="off">
+        <TrayButton icon="jwm" label="Menu">root:1</TrayButton>
+        <Spacer width="4"/>
+        <Pager labeled="true"/>
+        <Spacer width="4"/>
+        <TaskList maxwidth="256"/>
+        <Dock/>
+        <Clock format="%H:%M"/>
+    </Tray>
+
+    <!-- Visual styles: Xft fonts (DejaVu Sans through fontconfig's aliases). -->
+    <WindowStyle decorations="flat">
+        <Font>Sans-11:bold</Font>
+        <Width>4</Width>
+        <Height>24</Height>
+        <Corner>4</Corner>
+        <Foreground>#d0d0d0</Foreground>
+        <Background>#3c3c3c</Background>
+        <Outline>#202020</Outline>
+        <Active>
+            <Foreground>#ffffff</Foreground>
+            <Background>#2a6fb0</Background>
+            <Outline>#1b4a78</Outline>
+        </Active>
+    </WindowStyle>
+    <TrayStyle decorations="flat">
+        <Font>Sans-11</Font>
+        <Background>#2b2b2b</Background>
+        <Foreground>#e0e0e0</Foreground>
+        <Outline>#1a1a1a</Outline>
+    </TrayStyle>
+    <TaskListStyle list="all" group="false">
+        <Font>Sans-11</Font>
+        <Active>
+            <Foreground>#ffffff</Foreground>
+            <Background>#2a6fb0</Background>
+        </Active>
+        <Minimized>
+            <Foreground>#a0a0a0</Foreground>
+            <Background>#2b2b2b</Background>
+        </Minimized>
+        <Foreground>#e0e0e0</Foreground>
+        <Background>#3c3c3c</Background>
+    </TaskListStyle>
+    <PagerStyle>
+        <Foreground>#555555</Foreground>
+        <Background>#2b2b2b</Background>
+        <Text>#ffffff</Text>
+        <Active>
+            <Foreground>#2a6fb0</Foreground>
+            <Background>#1b4a78</Background>
+        </Active>
+    </PagerStyle>
+    <MenuStyle decorations="flat">
+        <Font>Sans-11</Font>
+        <Foreground>#e0e0e0</Foreground>
+        <Background>#2b2b2b</Background>
+        <Outline>#1a1a1a</Outline>
+        <Active>
+            <Foreground>#ffffff</Foreground>
+            <Background>#2a6fb0</Background>
+        </Active>
+    </MenuStyle>
+    <PopupStyle>
+        <Font>Sans-10</Font>
+        <Foreground>#000000</Foreground>
+        <Background>#f0e68c</Background>
+    </PopupStyle>
+
+    <!-- Where the icons named above are found. -->
+    <IconPath>/usr/share/jwm</IconPath>
+
+    <!-- Two virtual desktops with a plain background (a Background of type="image"
+         takes a PNG or JPEG file). -->
+    <Desktops width="2" height="1">
+        <Background type="solid">#1e3a52</Background>
+    </Desktops>
+
+    <DoubleClickSpeed>400</DoubleClickSpeed>
+    <DoubleClickDelta>2</DoubleClickDelta>
+    <FocusModel>click</FocusModel>
+    <SnapMode distance="10">border</SnapMode>
+    <MoveMode>opaque</MoveMode>
+    <ResizeMode>opaque</ResizeMode>
+
+    <!-- Key bindings (A: Alt). -->
+    <Key key="Up">up</Key>
+    <Key key="Down">down</Key>
+    <Key key="Right">right</Key>
+    <Key key="Left">left</Key>
+    <Key key="Return">select</Key>
+    <Key key="Escape">escape</Key>
+    <Key mask="A" key="Tab">nextstacked</Key>
+    <Key mask="A" key="F4">close</Key>
+    <Key mask="A" key="#">desktop#</Key>
+    <Key mask="A" key="F1">root:1</Key>
+    <Key mask="A" key="F2">window</Key>
+    <Key mask="A" key="F10">maximize</Key>
+    <Key mask="A" key="Right">rdesktop</Key>
+    <Key mask="A" key="Left">ldesktop</Key>
+
+    <!-- Mouse bindings. -->
+    <Mouse context="root" button="4">ldesktop</Mouse>
+    <Mouse context="root" button="5">rdesktop</Mouse>
+    <Mouse context="title" button="1">move</Mouse>
+    <Mouse context="title" button="2">move</Mouse>
+    <Mouse context="title" button="3">window</Mouse>
+    <Mouse context="title" button="4">shade</Mouse>
+    <Mouse context="title" button="5">shade</Mouse>
+    <Mouse context="title" button="11">maximize</Mouse>
+    <Mouse context="icon" button="1">window</Mouse>
+    <Mouse context="icon" button="2">move</Mouse>
+    <Mouse context="icon" button="3">window</Mouse>
+    <Mouse context="border" button="1">resize</Mouse>
+    <Mouse context="border" button="2">move</Mouse>
+    <Mouse context="border" button="3">window</Mouse>
+    <Mouse context="close" button="-1">close</Mouse>
+    <Mouse context="close" button="2">move</Mouse>
+    <Mouse context="close" button="-3">close</Mouse>
+    <Mouse context="maximize" button="-1">maximize</Mouse>
+    <Mouse context="maximize" button="-2">maxv</Mouse>
+    <Mouse context="maximize" button="-3">maxh</Mouse>
+    <Mouse context="minimize" button="-1">minimize</Mouse>
+    <Mouse context="minimize" button="2">move</Mouse>
+    <Mouse context="minimize" button="-3">shade</Mouse>
+
+</JWM>

@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Thu, 29 Oct 2026 10:00:32 +0200
+Subject: [PATCH] jwm.h: JLIKELY/JUNLIKELY with tcc's __builtin_expect
+
+tcc defines __TINYC__ rather than __GNUC__ but has __builtin_expect; without
+this every compile of jwm.h printed the 'not available with this compiler'
+warning.
+---
+ src/jwm.h | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/jwm.h b/src/jwm.h
+index 4a172cb..ecb9afc 100644
+--- a/src/jwm.h
++++ b/src/jwm.h
+@@ -138,6 +138,9 @@
+ #     define JLIKELY(x) (x)
+ #     define JUNLIKELY(x) (x)
+ #  endif
++#elif defined(__TINYC__)
++#  define JLIKELY(x)   __builtin_expect(!!(x), 1)
++#  define JUNLIKELY(x) __builtin_expect(!!(x), 0)
+ #else
+ #  warning "JLIKELY/JUNLIKELY not available with this compiler"
+ #  define JLIKELY(x) (x)

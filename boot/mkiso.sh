@@ -58,33 +58,33 @@ fi
 # lists the accounts and passwords, and the links browser in graphics mode as the session;
 # the shell stays on the serial console.  tcc.startx is the same screen without a login.
 menuentry "tinycc-os-kernel: graphical login (xdm on the TinyX X server, links as the session), all compiled by tinycc" {
-    linux /boot/bzImage console=ttyS0 console=tty0 tcc.xdm
+    linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs tcc.xdm
     initrd /boot/initramfs.cpio
 }
 menuentry "graphical mode without a login: the X server and the links browser as the console user" {
-    linux /boot/bzImage console=ttyS0 console=tty0 tcc.startx
+    linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs tcc.startx
     initrd /boot/initramfs.cpio
 }
 menuentry "text console: Linux, busybox and tcc (screen + serial; startx opens the graphical mode)" {
-    linux /boot/bzImage console=ttyS0 console=tty0
+    linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs
     initrd /boot/initramfs.cpio
 }
 menuentry "the same, serial console first (QEMU -nographic, headless machines)" {
-    linux /boot/bzImage console=tty0 console=ttyS0
+    linux /boot/bzImage console=tty0 console=ttyS0 rootfstype=ramfs
     initrd /boot/initramfs.cpio
 }
 menuentry "smoke test: libc-free init, prints a banner and reboots" {
-    linux /boot/bzImage console=tty0 console=ttyS0
+    linux /boot/bzImage console=tty0 console=ttyS0 rootfstype=ramfs
     initrd /boot/initramfs-nolibc.cpio
 }
 CFG
 [ -z "$selfhost" ] || cat >> "$R/boot/grub/grub.cfg" <<'CFG'
 menuentry "self-hosting: the same plus the sources and the toolchain to rebuild the kernel and tcc inside (needs 1 GB)" {
-    linux /boot/bzImage console=tty0 console=ttyS0 $selfhost_args
+    linux /boot/bzImage console=tty0 console=ttyS0 rootfstype=ramfs $selfhost_args
     initrd /boot/initramfs-selfhost.cpio
 }
 menuentry "self-hosting, screen first" {
-    linux /boot/bzImage console=ttyS0 console=tty0 $selfhost_args
+    linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs $selfhost_args
     initrd /boot/initramfs-selfhost.cpio
 }
 CFG

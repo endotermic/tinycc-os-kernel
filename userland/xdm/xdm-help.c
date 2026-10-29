@@ -20,9 +20,10 @@ static const char *lines[] = {
     "like the kernel, musl, busybox and everything else on this screen.",
     "",
     "Proof-of-concept accounts (name / password):   ada / lovelace     grace / hopper     dennis / ritchie",
-    "Type the name, Enter, the password, Enter.  The session is the links web browser in graphics mode;",
-    "Escape opens its menu, g asks for an address (http://10.0.2.2:8000/ is the host under QEMU),",
-    "q ends the session and this screen returns.  root has no password and cannot log in here:",
+    "Type the name, Enter, the password, Enter.  The session is the JWM window manager with the links",
+    "web browser in graphics mode (Escape opens its menu, g asks for an address; http://10.0.2.2:8000/",
+    "is the host under QEMU).  JWM's menu is on the desktop, the tray's Menu button and Alt-F1;",
+    "its Log out ends the session and this screen returns.  root has no password and cannot log in here:",
     "the text consoles (tty1, the serial port; Alt-F2..F4 when no X server runs) log in as ada,",
     "and su gives root there.  Nothing is saved across a reboot: the system lives in the initramfs.",
     NULL

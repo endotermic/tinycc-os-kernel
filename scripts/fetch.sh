@@ -15,21 +15,27 @@ need_reset; need_tool git tar sha256sum:coreutils; need_download_tool; need_done
 [ $# -gt 0 ] || set -- $(lock_names)
 mkdir -p "$SRC"
 
-# fetch_tarball NAME SHA256 VERSION: download NAME-VERSION.tar.gz, check it, unpack it into
-# src/NAME and make that a git repository with one commit on branch 'base' (patch.sh and
-# build.sh treat every component alike).  The tarball is kept in src/.downloads/ (the
-# self-hosting image ships it).
+# fetch_tarball NAME SHA256 VERSION: download NAME-VERSION.tar.gz (.tar.xz or .tar.bz2 when
+# the URLs end so: jwm, fontconfig and the DejaVu fonts publish no gzip tarball), check it,
+# unpack it into src/NAME and make that a git repository with one commit on branch 'base'
+# (patch.sh and build.sh treat every component alike).  The tarball is kept in
+# src/.downloads/ (the self-hosting image ships it).
 fetch_tarball() {
     name=$1 sum=$2 ver=$3
-    dir=$SRC/$name; dl=$SRC/.downloads; tb=$dl/$name-$ver.tar.gz
+    case $(lock_urls "$name") in
+        *.tar.xz*) ext=tar.xz; have xz || die "$name: xz is needed to unpack a .tar.xz tarball (package xz-utils)";;
+        *.tar.bz2*) ext=tar.bz2; have bzip2 || die "$name: bzip2 is needed to unpack a .tar.bz2 tarball (package bzip2)";;
+        *) ext=tar.gz;;
+    esac
+    dir=$SRC/$name; dl=$SRC/.downloads; tb=$dl/$name-$ver.$ext
     stamp=$dir/.git/tcc-port-tarball
     if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$sum" ] && [ -f "$tb" ]; then
-        msg "$name: already unpacked from $name-$ver.tar.gz ($(git -C "$dir" rev-parse --abbrev-ref HEAD))"
+        msg "$name: already unpacked from $name-$ver.$ext ($(git -C "$dir" rev-parse --abbrev-ref HEAD))"
         return
     fi
     mkdir -p "$dl"
     if ! [ -f "$tb" ] || [ "$(sha256sum "$tb" | cut -d' ' -f1)" != "$sum" ]; then
-        msg "$name: downloading $name-$ver.tar.gz"
+        msg "$name: downloading $name-$ver.$ext"
         got=
         for url in $(lock_urls "$name"); do
             rm -f "$tb.part"
@@ -44,9 +50,9 @@ fetch_tarball() {
         [ -n "$got" ] || die "$name: could not download a tarball with sha256 $sum from any URL"
         echo "   $(ls -l "$tb" | awk '{print $5}') bytes from $got, sha256 verified"
     fi
-    msg "$name: unpacking $name-$ver.tar.gz into src/$name"
+    msg "$name: unpacking $name-$ver.$ext into src/$name"
     rm -rf "$dir"; mkdir -p "$dir"
-    tar xzf "$tb" -C "$dir" --strip-components=1
+    tar xf "$tb" -C "$dir" --strip-components=1
     git -C "$dir" init -q
     git -C "$dir" add -A
     git -C "$dir" -c user.name=tinycc-os-kernel -c user.email=fetch@tinycc-os-kernel \

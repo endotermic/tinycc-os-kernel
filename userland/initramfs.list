@@ -49,3 +49,7 @@ dir   /home/dennis 0755 1002 1002
 dir   /var         0755 0 0
 dir   /var/run     0755 0 0
 dir   /var/run/xdm 0700 0 0
+# fontconfig's cache (the jwm step: /etc/fonts/fonts.conf names it), written by whoever
+# first uses the fonts: world-writable like /tmp
+dir   /var/cache   0755 0 0
+dir   /var/cache/fontconfig 1777 0 0

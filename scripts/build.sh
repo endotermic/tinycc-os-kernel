@@ -34,6 +34,11 @@
 #   xdm         the graphical login: X.Org's xdm with its greeter linked in (patches/xdm), after libICE,
 #               libSM, libXext, libXt, libXmu, libXpm, libXaw; its configuration and C scripts
 #               (userland/xdm/) and the helper text window xdm-help -> /usr/bin/xdm, /etc/X11/xdm in the images
+#   jwm         the window manager: JWM with every optional library it can use (libXrender, Xinerama,
+#               libXft fonts from FreeType + fontconfig + expat, libjpeg; libpng, libXpm, libXext,
+#               libXmu from the steps above), static, musl; the DejaVu fonts, fontconfig's
+#               configuration, fc-list/fc-match, the menu's icons and /etc/system.jwmrc
+#               (userland/jwm/) in the images; startx and xdm's Xsession run it with links -g
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
 #               startx), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
@@ -46,7 +51,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm links guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -649,6 +654,97 @@ step_xdm() {
     echo "   xdm: $(file -b "$STAGE/usr/bin/xdm" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/xdm" | awk '{print $5}') bytes; xdm-help $(ls -l "$XD/xdm-help" | awk '{print $5}') bytes; /etc/X11/xdm: $(ls "$STAGE/etc/X11/xdm" | tr '\n' ' ')"
 }
 
+step_jwm() {
+    need_src libXrender libXinerama expat freetype fontconfig libXft jpeg dejavu-fonts jwm
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] && [ -f "$XP/lib/libpng16.a" ] || die "no libX11.a or libpng16.a in $XP: run the zlib, libpng and xlibs steps first"
+    [ -f "$XP/lib/libXpm.a" ] && [ -f "$XP/lib/libXmu.a" ] && [ -f "$XP/lib/libXext.a" ] || die "no libXpm.a, libXmu.a or libXext.a in $XP: run the xdm step first"
+    x_env
+    # Everything JWM can optionally use, static in $XP like the X client libraries (the
+    # SVG path, librsvg + cairo, is out of reach: librsvg is Rust since 2.41 and its last C
+    # release wants glib, pango and gdk-pixbuf; pango wants glib and harfbuzz, built with
+    # meson and C++.  Everything else is plain C autotools):
+    # - libXrender (XRender) and libXinerama;
+    # - the Xft font stack: expat (fontconfig's XML parser; no xmlwf, examples, tests or
+    #   docs), FreeType (zlib and libpng from $XP; no bzip2, Brotli, HarfBuzz, librsvg),
+    #   fontconfig (below) and libXft;
+    # - IJG's libjpeg (jpeg-9f; its cjpeg/djpeg land in $XP/bin and are not shipped).
+    xlib_build libXrender
+    xlib_build libXinerama
+    xlib_build expat --without-xmlwf --without-examples --without-tests --without-docbook
+    xlib_build freetype --with-zlib=yes --with-png=yes --with-harfbuzz=no --with-brotli=no --with-bzip2=no \
+        --with-librsvg=no --disable-freetype-config
+    # fontconfig: its paths are the guest's (the configuration in /etc/fonts, the templates
+    # in /usr/share/fontconfig/conf.avail, the fonts in /usr/share/fonts, the cache in
+    # /var/cache/fontconfig), so it is installed under a DESTDIR: the library, headers and
+    # .pc go to $XP, the configuration to the staging tree.  No gettext, no documentation,
+    # no iconv, expat rather than libxml2, and no fc-cache run at install time (the cache
+    # is built in the guest at first use).  gperf, which generates its object-name hash at
+    # build time and which this host does not have, is replaced by userland/fontconfig/
+    # gperf.sh (a linear search with gperf's interface; GPERF= on make's command line
+    # overrides the "missing gperf" the configure recorded).
+    FC=$XB/fontconfig; FCD=$FC/dest; mkdir -p "$FC"; cd "$FC"
+    msg "fontconfig: $(lock_ref fontconfig), static, musl, CC=musl-tcc, expat, gperf stand-in -> $XP, configuration for /etc/fonts"
+    configured config.status "$MUSL_TCC" "--prefix=$XP" \
+        || CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" CC_FOR_BUILD=gcc PYTHON=python3 \
+            "$SRC/fontconfig/configure" --host="$ARCH-linux-musl" --prefix="$XP" --disable-shared --enable-static \
+            --disable-dependency-tracking --disable-nls --disable-docs --disable-docbook --disable-cache-build \
+            --disable-iconv --disable-libxml2 --with-expat="$XP" \
+            --with-default-fonts=/usr/share/fonts --with-add-fonts=no --with-cache-dir=/var/cache/fontconfig \
+            --with-baseconfigdir=/etc/fonts --with-configdir=/etc/fonts/conf.d \
+            --with-templatedir=/usr/share/fontconfig/conf.avail --with-xmldir=/usr/share/xml/fontconfig \
+            >"$LOGS/fontconfig-configure.log" 2>&1 \
+        || fail "$LOGS/fontconfig-configure.log" "fontconfig configure failed"
+    : >"$LOGS/fontconfig.log"
+    set -- GPERF="$ROOT/userland/fontconfig/gperf.sh"
+    run_progress "fontconfig" "$(make_total "$@")" "$LOGS/fontconfig.log" make "$@" -j"$JOBS" || fail "$LOGS/fontconfig.log" "fontconfig build failed"
+    rm -rf "$FCD"
+    make "$@" install DESTDIR="$FCD" >>"$LOGS/fontconfig.log" 2>&1 || fail "$LOGS/fontconfig.log" "fontconfig install failed"
+    [ -f "$FCD$XP/lib/libfontconfig.a" ] && [ -f "$FCD/etc/fonts/fonts.conf" ] || fail "$LOGS/fontconfig.log" "fontconfig installed neither libfontconfig.a nor fonts.conf"
+    cp -a "$FCD$XP/." "$XP/"
+    xlib_build libXft
+    xlib_build jpeg
+    JW=$XB/jwm; STAGE=$B/jwm/stage; mkdir -p "$B/jwm"
+    msg "jwm: $(lock_ref jwm), static, musl, CC=musl-tcc, Xft + XRender + Xinerama + PNG/JPEG/XPM/XBM icons -> $STAGE/usr/bin/jwm"
+    # JWM builds in its source tree only (its sources include ../config.h): a copy of the
+    # tree under build/.  Its configure takes pkg-config from PKGCONFIG (scripts/pkg-config.sh
+    # here, so the Xft flags carry FreeType's include directory), everything else from the
+    # -I/-L flags and the library probes; LIBS carries the whole static closure, so that the
+    # probes link under tcc's single-pass linker whatever order configure tries.  No NLS
+    # (gettext), no cairo/rsvg (SVG), no pango.  The link itself is done here, not by its
+    # Makefile, which puts -lX11 first and the libraries that need it after.
+    XLIBS="$("$PKG_CONFIG" --libs xft xinerama xpm xmu xext x11) -ljpeg -lpng16 -lz -lm -lX11 -lxcb -lXau"
+    rsync -a --delete --exclude .git "$SRC/jwm/" "$JW/"
+    cd "$JW"
+    CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" LIBS="$XLIBS" PKGCONFIG=$PKG_CONFIG \
+        ./configure --prefix=/usr --sysconfdir=/etc --x-includes="$XP/include" --x-libraries="$XP/lib" \
+        --disable-nls --disable-cairo --disable-rsvg --disable-pango >"$LOGS/jwm-configure.log" 2>&1 \
+        || fail "$LOGS/jwm-configure.log" "jwm configure failed"
+    for f in "PNG:      yes" "JPEG:     yes" "XPM:      yes" "XBM:      yes" "XFT:      yes" "XRender:  yes" "Shape:    yes" "Xmu:      yes" "Xinerama: yes"; do
+        grep -q "^    $f" "$LOGS/jwm-configure.log" || fail "$LOGS/jwm-configure.log" "jwm configured without ${f%%:*}"
+    done
+    : >"$LOGS/jwm.log"
+    run_progress "jwm" "$(make_total -C src)" "$LOGS/jwm.log" make -C src -j"$JOBS" LDFLAGS="-L$XP/lib $XLIBS" \
+        || fail "$LOGS/jwm.log" "jwm build failed"
+    [ -x src/jwm ] || fail "$LOGS/jwm.log" "no jwm binary"
+    # the staging tree appended to the images (stage_lists): jwm, its system configuration
+    # with the menu's icons (userland/jwm/), fontconfig's configuration and templates,
+    # fc-list and fc-match (what fontconfig sees, for debugging), and three DejaVu faces
+    # (Sans, Sans Bold, Sans Mono; Bitstream Vera license, the file next to them) as the
+    # fonts Xft draws with
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc" "$STAGE/usr/share/jwm" "$STAGE/usr/share/fonts/TTF"
+    cp src/jwm "$STAGE/usr/bin/jwm"
+    cp "$ROOT/userland/jwm/system.jwmrc" "$STAGE/etc/system.jwmrc"
+    cp "$ROOT"/userland/jwm/icons/*.xpm "$STAGE/usr/share/jwm/"
+    cp -a "$FCD/etc/fonts" "$STAGE/etc/fonts"
+    mkdir -p "$STAGE/usr/share"; cp -a "$FCD/usr/share/fontconfig" "$STAGE/usr/share/fontconfig"
+    [ ! -d "$FCD/usr/share/xml" ] || cp -a "$FCD/usr/share/xml" "$STAGE/usr/share/xml"
+    rm -f "$STAGE"/etc/fonts/conf.d/README
+    cp "$FCD$XP/bin/fc-list" "$FCD$XP/bin/fc-match" "$STAGE/usr/bin/"
+    for f in DejaVuSans.ttf DejaVuSans-Bold.ttf DejaVuSansMono.ttf; do cp "$SRC/dejavu-fonts/ttf/$f" "$STAGE/usr/share/fonts/TTF/"; done
+    cp "$SRC/dejavu-fonts/LICENSE" "$STAGE/usr/share/fonts/TTF/LICENSE.DejaVu"
+    echo "   jwm: $(file -b src/jwm | cut -d, -f1-2), $(ls -l src/jwm | awk '{print $5}') bytes; fc-list $(ls -l "$STAGE/usr/bin/fc-list" | awk '{print $5}') bytes; fonts: $(ls "$STAGE/usr/share/fonts/TTF" | grep -c ttf) DejaVu faces; /etc/fonts/conf.d: $(ls "$STAGE/etc/fonts/conf.d" | wc -l) files"
+}
 step_links() {
     need_src links
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -795,7 +891,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -948,7 +1044,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -968,7 +1064,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

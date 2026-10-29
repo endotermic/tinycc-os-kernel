@@ -1,0 +1,5 @@
+The patches in this directory modify JWM (Joe's Window Manager, https://joewing.net/projects/jwm/,
+https://github.com/joewing/jwm), which is released under the MIT license (its LICENSE file,
+copyright Joe Wingbermuehle).  The patches are released under the same terms: MIT (text in
+../../LICENSES/MIT.txt).  They are not part of the BSD-2-Clause license of the rest of this
+repository (see ../../REUSE.toml).

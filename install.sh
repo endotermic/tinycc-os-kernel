@@ -113,7 +113,7 @@ msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hos
 "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" host-tcc
 [ -z "$test" ] || "$ROOT/scripts/build.sh" tcc-test
-"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm links guest-tcc initramfs
+"$ROOT/scripts/build.sh" tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm links guest-tcc initramfs
 [ -z "$selfhost" ] || "$ROOT/scripts/build.sh" selfhost
 case $output in iso|all) "$ROOT/scripts/build.sh" iso;; esac
 echo
@@ -126,7 +126,7 @@ hint "boot:" "./run.sh" "a menu of everything built (--list prints it), or direc
 hint "" "./run.sh --arch $arch" "the busybox shell with tcc; /init is a C script tcc runs ('exit' ends QEMU)"
 hint "" "./run.sh --arch $arch --nolibc" "the libc-free init, a static binary: banner, reboot"
 case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF); its default entry is the graphical mode";; esac
-hint "" "./run.sh --arch $arch --xdm" "the graphical login: xdm's greeter on TinyX's X server (accounts ada/lovelace, grace/hopper, dennis/ritchie), links as the session"
-hint "" "./run.sh --arch $arch --startx" "the graphical mode without a login: the X server with the links browser (startx in a shell does the same)"
+hint "" "./run.sh --arch $arch --xdm" "the graphical login: xdm's greeter on TinyX's X server (accounts ada/lovelace, grace/hopper, dennis/ritchie), JWM with links as the session"
+hint "" "./run.sh --arch $arch --startx" "the graphical mode without a login: the X server with the JWM window manager and the links browser (startx in a shell does the same)"
 [ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file: C scripts tcc runs)"
 [ -z "$run" ] || exec "$ROOT/run.sh" --arch "$arch"

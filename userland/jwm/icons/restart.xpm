@@ -1,0 +1,24 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* restart.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons) */
+static char *restart_xpm[] = {
+"16 16 2 1",
+".	c None",
+"g	c #3cb043",
+"................",
+"....ggggg...g...",
+"..gg.....gg.gg..",
+".g.........ggg..",
+".g........gggg..",
+"g...............",
+"g...............",
+"g...............",
+"...............g",
+"...............g",
+"...............g",
+"..gggg........g.",
+"..ggg.........g.",
+"..gg.gg.....gg..",
+"...g...ggggg....",
+"................"
+};

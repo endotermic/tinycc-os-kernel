@@ -1,0 +1,26 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* web-browser.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons) */
+static char *web_browser_xpm[] = {
+"16 16 4 1",
+".	c None",
+"B	c #3f8fd6",
+"o	c #1b4a78",
+"w	c #dff1ff",
+"................",
+".....oooooo.....",
+"...ooBBBBBBoo...",
+"..oBBBwBBwBBBo..",
+".oBBBBwBBwBBBBo.",
+".oBwwwwwwwwwwBo.",
+"oBBBBBwBBwBBBBBo",
+"oBBBBBwBBwBBBBBo",
+"owwwwwwwwwwwwwwo",
+"oBBBBBwBBwBBBBBo",
+"oBBBBBwBBwBBBBBo",
+".oBwwwwwwwwwwBo.",
+".oBBBBwBBwBBBBo.",
+"..oBBBwBBwBBBo..",
+"...ooBBBBBBoo...",
+".....oooooo....."
+};
