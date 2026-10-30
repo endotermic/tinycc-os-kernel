@@ -91,7 +91,10 @@ lists the accounts, and runs the JWM window manager (`userland/jwm/`, 2026-10-29
 fonts through FreeType and fontconfig with the DejaVu faces, PNG/JPEG/XPM/XBM icons, a
 tray with pager, task list and clock, two desktops) with links in graphics mode under it
 as the session of whoever logs in; JWM's menu (any mouse button on the desktop, the tray's
-Menu button, Alt-F1) starts links, restarts JWM or logs out, and the greeter returns. The
+Menu button, Alt-F1) opens a terminal (mlterm 3.9.5, `userland/mlterm/`, 2026-10-30:
+UTF-8, Xft text in DejaVu Sans Mono, the scrollbar on the right, several ptys per window on
+Control+F2-F4; also on Ctrl-Alt-T, and the terminal links runs programs in), starts links,
+restarts JWM or logs out, and the greeter returns. The
 second entry is the graphical mode without a login
 (`tcc.startx`: the TinyX X server on the framebuffer with JWM and the links browser in
 graphics mode; the third entry is the text console, where `startx [URL]` opens the same,
@@ -135,7 +138,7 @@ The boot ends with:
 *** tcc version 0.9.28rc e23dabe+110p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it)
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
@@ -206,12 +209,13 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `sources.lock` | the 39 upstream components with URL, ref and exact commit or tarball hash |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
 | `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |
 | `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
 | `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then JWM and `links -g`) and the guest's `passwd`/`group` |
 | `userland/jwm/`, `userland/fontconfig/` | JWM's system configuration (`/etc/system.jwmrc`) and the menu's XPM icons; `gperf.sh`, the stand-in for gperf that fontconfig's build needs |
+| `userland/mlterm/` | the terminal emulator's system configuration (`/etc/mlterm/main`, `key`, `aafont`: UTF-8, TERM, the Xft engine with DejaVu Sans Mono, the scrollbar on the right, the pty keys) |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |

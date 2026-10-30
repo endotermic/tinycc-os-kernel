@@ -531,6 +531,71 @@ wallpaper and the icon; Log out, OK ends the session and the text console return
 ISO boots its default entry with `rootfstype=ramfs` into the greeter. Not verified: i386
 (not built on this machine at the moment) and a real keyboard.
 
+## The terminal emulator: mlterm (2026-10-30)
+
+mlterm 3.9.5 is the guest's terminal emulator, built by `scripts/build.sh mlterm` (between jwm
+and links; in `all` and install.sh) from the release tarball pinned in `sources.lock` (the
+GitHub release carries only the signature, the tarball is on SourceForge). It was chosen over
+st (no scrollback or scrollbar without patches), xvt (Latin-1 only), rxvt/mrxvt (dead,
+autoconf), xterm (the whole Xt/Xaw stack, 90 000 lines) and rxvt-unicode (C++): plain C,
+full UTF-8, a scrollbar, several terminals per window switched with keys (no tab bar), and
+an Xft text path on the font stack the jwm step already builds.
+
+* **Static plugins.** mlterm loads its type engines (xcore, xft, cairo), libmef's character
+  tables, the scrollbar views other than `simple`, the BiDi/Indic modules and the input
+  methods with dlopen; a static musl program cannot. `--disable-shared` alone makes its
+  configure drop the plugin scrollbars (`simple` stays) and the kbd input method;
+  `--disable-dl-type`, `--disable-dl-table`, `--disable-dl-ctl` link the type engines and
+  the tables in (`-DNO_DYNAMIC_LOAD_TYPE`). Off: cairo, fribidi, Indic, OpenType layout
+  (harfbuzz), images (mlimgloader wants gdk-pixbuf), libssh2, brltty, utmp (musl has none),
+  every input method library; of the tools only mlclient (opens a window or a pty in a running
+  mlterm through its daemon socket). The configure summary is checked for `Type engines:
+  xcore xft`, `Scrollbars: simple` and `External tools: mlclient`.
+* **The link (FIX-LOG C15).** The Xft closure from `scripts/pkg-config.sh` is in LIBS for the
+  configure probes and comes out in the right order on mlterm's own link line (its XFT_LIBS
+  is the pkg-config answer); the only failure was libtool's `-rpath /usr/local/lib`, which
+  the step removes from the generated `main/Makefile`. 5.6 MB static on x86_64, 4.8 MB on
+  i386, compiled in about 13 s. No patches/mlterm.
+* **Pseudo terminals (FIX-LOG C16).** `CONFIG_UNIX98_PTYS=y` in `minimal.config`, `/init`
+  mounts devpts on `/dev/pts`. The kernel rebuild after the config change took 1m14s.
+* **Configuration** (`userland/mlterm/`, staged as `/etc/mlterm`; `~/.mlterm/` overrides):
+  `main` sets `encoding = UTF-8` (the guest runs in musl's C locale, whose codeset is ASCII,
+  and mlterm's `auto` would follow it), `termtype = xterm-256color` (an entry compiled into
+  the guest's ncurses; there is none for "mlterm"), the Xft engine with anti-aliasing and
+  `only_use_unicode_font`, 14 pt, 80x25, `scrollbar_mode = right` with the `simple` view
+  (the setting the user asked for, `mlterm --sbmod=right --sbview=simple`, so that every
+  start gets it), 1000 lines of scrollback, light grey on near-black, `input_method = none`
+  (no XIM: the image has no X locale files), a visual bell, the title "Terminal (mlterm)";
+  `aafont` maps DEFAULT and ISO10646_UCS4_1 to DejaVu Sans Mono (the only monospace face in
+  the image; fontconfig resolves it); `key` binds Control+Shift+t / Right / Left / n to a new
+  pty, the next and previous pty and a new window. mlterm keeps one key per function
+  (`ui_shortcut_parse` replaces the map entry), so these replace the defaults Control+F2,
+  F3, F4 and F1; a first version of the file also had `Button7=NEXT_PTY` and
+  `Button6=PREV_PTY`, which silently undid the two arrow bindings, found when neither
+  Control+Shift+Left nor the default Control+F4 switched (the keys reached mlterm, `cat -v`
+  showed `^[[1;6D` and `^[[1;5S`, and were forwarded as unmatched).
+* **Where it is started.** JWM's menu has "Terminal (mlterm)" first, with a new 16x16 XPM
+  (`userland/jwm/icons/terminal.xpm`), and `Ctrl-Alt-T` runs `exec:mlterm`
+  (`userland/jwm/system.jwmrc`). links runs its "run in terminal" programs through
+  `$LINKS_XTERM` (links' os_dep.c, default `xterm -e`): `userland/startx.c` and
+  `userland/xdm/Xsession.c` set `LINKS_XTERM="mlterm -e"` when `/usr/bin/mlterm` exists,
+  before the window manager and links are forked, so JWM's menu entries inherit it too.
+  The banner (`/init`) and xdm's helper text name it.
+
+Verified on x86_64 (headless QEMU, QMP screendumps, `send-key`, commands over the serial
+console): `DISPLAY=:0 mlterm -e sh -c '...'` from the serial console as ada opens a window
+JWM decorates and lists, DejaVu Sans Mono anti-aliased, the scrollbar on the right, the shell
+on `/dev/pts/0` with `TERM=xterm-256color`; the menu entry "Terminal (mlterm)" with its icon
+and Ctrl-Alt-T open the window (title "Terminal (mlterm)" in JWM's title bar and task list),
+typed commands run, Shift-Prior scrolls back, Control+Shift+t opens a second pty
+(`/dev/pts/1`), Control+Shift+Right/Left switch between them, `exit` in the second returns
+to the first, and links' environment (`/proc/PID/environ`) carries `LINKS_XTERM=mlterm -e`.
+The same on i386 (`--startx`: Ctrl-Alt-T, both pty keys, `TERM`, `LINKS_XTERM`, devpts
+mounted) and under xdm on x86_64 (`--xdm`, ada logs in: the session's mlterm runs as ada
+in `/home/ada` with `LINKS_XTERM` set by Xsession, the pty keys switch). Both ISOs rebuilt
+(60.5 MB x86_64, 53.5 MB i386; the images grew by mlterm's 5.6 / 4.8 MB). The ISOs' default
+entries were not booted again (the kernel and initramfs are the ones tested directly).
+
 ## Debugging recipes
 
 ```bash

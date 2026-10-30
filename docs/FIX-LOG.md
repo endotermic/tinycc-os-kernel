@@ -1705,6 +1705,21 @@ C14. 2026-10-29, configuration, `run.sh` and `boot/mkiso.sh`: `rootfstype=ramfs`
     ENOSPC. ramfs has no size cap. Not a tcc matter. Verification: `/proc/mounts` shows
     `rootfs / rootfs rw`, links is present and runs, the cache is written; the ISO's
     default entry boots with the parameter (`/proc/cmdline`).
+C15. 2026-10-30, build recipe (not a patch), `scripts/build.sh` step `mlterm`: mlterm's
+    `main/Makefile.in` links with `-L/usr/local/lib -R/usr/local/lib` (and compiles with
+    `-I/usr/local/include`), a host path the guest has no use for; libtool rewrites `-R DIR`
+    into `-rpath DIR` on the final link line, an option tcc does not have ("tcc: error:
+    invalid option -- '-rpath'"; tcc takes `-Wl,-rpath=`), so the link of `main/mlterm`
+    failed after every object had compiled. The step deletes the three flags from the
+    generated `main/Makefile` after configure. Everything else in mlterm 3.9.5 (baselib,
+    encodefilter with its tables, vtemu, uitoolkit with the xcore and Xft type engines,
+    main, mlclient) compiles and links with tcc unpatched, 13 s on x86_64.
+C16. 2026-10-30, configuration, `kernels/linux/minimal.config` and `userland/busybox-init.c`:
+    `CONFIG_UNIX98_PTYS=y` (the trim had it off: no program needed a pseudo terminal until
+    the terminal emulator) and `/init` mounts devpts on `/dev/pts` (`mode=620,ptmxmode=666`)
+    after devtmpfs; without them mlterm's `posix_openpt` has no `/dev/ptmx` and the slave
+    no `/dev/pts/N`. Not a tcc matter. Verification: `mount` in the guest shows devpts, a
+    shell inside mlterm reports `/dev/pts/0`.
 
 The asm opcodes (patch 0101, `x86_64-asm.h`, byte-compared with GNU as): `aesenc`,
 `aesenclast`, `aesdec`, `aesdeclast`, `aesimc`, `aeskeygenassist`, `pclmulqdq` and SSE4.1's

@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# /etc/mlterm/aafont - the fonts of mlterm's Xft type engine, by character set (the fonts of
+# the xcore engine would be in /etc/mlterm/font).  The image carries the DejaVu faces only
+# (/usr/share/fonts/TTF, fontconfig's configuration in /etc/fonts): DejaVu Sans Mono for
+# everything; main sets only_use_unicode_font, so the ISO10646 entry serves every charset.
+DEFAULT = DejaVu Sans Mono
+ISO10646_UCS4_1 = DejaVu Sans Mono

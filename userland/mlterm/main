@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# /etc/mlterm/main - the system-wide settings of mlterm, the terminal emulator of the
+# graphical mode (JWM's menu entry "Terminal", Ctrl-Alt-T, and links' "run in terminal",
+# which goes through LINKS_XTERM="mlterm -e", set by startx and xdm's Xsession).  mlterm
+# reads this file first and ~/.mlterm/main after it; a command-line option overrides both
+# (mlterm --sbmod=left).  etc/main in the mlterm source lists every key (man mlterm).
+
+# UTF-8 whatever the locale says (the guest runs in musl's C locale, whose codeset is ASCII)
+encoding = UTF-8
+# TERM: an entry compiled into the guest's ncurses (scripts/build.sh NCURSES_FALLBACKS;
+# there is none for "mlterm")
+termtype = xterm-256color
+
+# Text through Xft: DejaVu Sans Mono via fontconfig (/etc/mlterm/aafont), anti-aliased; the
+# xcore engine (the server's built-in fixed font) stays available: --type-engine=xcore
+type_engine = xft
+use_anti_alias = true
+only_use_unicode_font = true
+fontsize = 14
+geometry = 80x25
+
+# The scrollbar on the right, the built-in "simple" view (the others are plugins, which
+# the static build cannot load); 1000 lines of scrollback
+scrollbar_mode = right
+scrollbar_view_name = simple
+sb_fg_color = gray
+sb_bg_color = black
+logsize = 1000
+
+fg_color = #d0d0d0
+bg_color = #101010
+# the window's title and icon name (JWM's title bar and task list); a program's own OSC
+# title sequence replaces them
+title = Terminal (mlterm)
+icon_name = mlterm
+# no XIM: the image has no X locale files, keys come straight from the core keymap
+input_method = none
+# a flash rather than a beep (the HDA codec is often silent under QEMU)
+bel_mode = visual
+use_login_shell = false

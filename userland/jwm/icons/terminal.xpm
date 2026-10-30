@@ -1,0 +1,25 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* terminal.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons): a screen with a prompt */
+static char *terminal_xpm[] = {
+"16 16 4 1",
+".	c None",
+"o	c #202020",
+"b	c #3c3c3c",
+"g	c #80ff80",
+"oooooooooooooooo",
+"obbbbbbbbbbbbbbo",
+"oboooooooooooobo",
+"obogg.........bo",
+"obo.gg........bo",
+"obo..gg.......bo",
+"obo.gg........bo",
+"obogg.........bo",
+"obo....ggggg..bo",
+"oboooooooooooobo",
+"obbbbbbbbbbbbbbo",
+"oooooooooooooooo",
+"......oooo......",
+"....oooooooo....",
+"................",
+"................"};

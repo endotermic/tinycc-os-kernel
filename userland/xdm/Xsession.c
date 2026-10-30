@@ -3,7 +3,8 @@
 /*
  * /etc/X11/xdm/Xsession - the session that xdm runs after a login, as the user, with
  * DISPLAY, HOME, USER, PATH and XAUTHORITY set by xdm: the JWM window manager with the
- * links web browser in graphics mode started under it (as userland/startx.c runs them).
+ * links web browser in graphics mode started under it (as userland/startx.c runs them;
+ * the mlterm terminal from JWM's menu, Ctrl-Alt-T, or links' "run in terminal").
  * When the window manager ends (Log out in its menu) the session ends, xdm resets the
  * server (which closes the clients left) and shows the greeter again.  In an image
  * without /usr/bin/jwm links alone is the session, its window the size of the screen, and
@@ -22,6 +23,9 @@ int main(void)
     int w = 0, h = 0;
     if (getenv("HOME"))
         chdir(getenv("HOME"));
+    /* the terminal emulator (JWM's menu, links' "run in terminal" through LINKS_XTERM) */
+    if (access("/usr/bin/mlterm", X_OK) == 0)
+        setenv("LINKS_XTERM", "mlterm -e", 0);
     if (access("/usr/bin/jwm", X_OK) == 0) {
         fflush(NULL);
         if (fork() == 0) {

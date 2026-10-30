@@ -360,7 +360,8 @@ static void banner(FILE *out)
      * free virtual terminal and switches the screen to it, back when the session ends */
     if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0")) {
         if (is_exec("/usr/bin/jwm"))
-            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it)\n");
+            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it%s)\n",
+                    is_exec("/usr/bin/mlterm") ? "; Terminal in that menu or Ctrl-Alt-T opens mlterm" : "");
         else
             fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)\n");
     }
@@ -508,6 +509,10 @@ int main(void)
 {
     char *s, *p, *primary = NULL;
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+    /* the pseudo terminals of the terminal emulator (mlterm opens /dev/ptmx, the kernel's
+     * CONFIG_UNIX98_PTYS; the slaves appear under /dev/pts) */
+    mkdir("/dev/pts", 0755);
+    mount("devpts", "/dev/pts", "devpts", 0, "mode=620,ptmxmode=666");
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
     runl("/bin/busybox", "--install", "-s", NULL);

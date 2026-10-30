@@ -51,3 +51,7 @@ libXft    sha256:47c157fb4d0308f8b9604b74c29bb902b019eb97031f8fbf5ab62aa9f147a10
 jpeg      sha256:04705c110cb2469caa79fb71fba3d7bf834914706e9641a4589485c1f832565b  9f      https://www.ijg.org/files/jpegsrc.v9f.tar.gz
 dejavu-fonts sha256:fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7 2.37  https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2,https://downloads.sourceforge.net/project/dejavu/dejavu/2.37/dejavu-fonts-ttf-2.37.tar.bz2
 jwm       sha256:b5871ec28317594b3fa22b83ed5524cc911d498c455eaab3ae68def195dd802d  2.4.6   https://github.com/joewing/jwm/releases/download/v2.4.6/jwm-2.4.6.tar.xz
+# The terminal emulator (2026-10-30): mlterm, X11 with the Xft type engine on the font stack
+# above (DejaVu Sans Mono through fontconfig), built static with its scrollbar and type engine
+# linked in; the release tarball is on SourceForge only (GitHub carries the signature alone).
+mlterm    sha256:7d28678aa90dade72cea4e1e5fffb5e4c343487d60ca36c88dc615134613af39  3.9.5   https://downloads.sourceforge.net/project/mlterm/01release/mlterm-3.9.5/mlterm-3.9.5.tar.gz,https://sourceforge.net/projects/mlterm/files/01release/mlterm-3.9.5/mlterm-3.9.5.tar.gz/download

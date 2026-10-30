@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# /etc/mlterm/key - the key bindings of mlterm (~/.mlterm/key adds to or overrides these).
+# mlterm has no tab bar; several terminals ("ptys") can share one window and are switched
+# with keys.  Each function has exactly one key: a line here replaces the default of that
+# function (Control+F2 OPEN_PTY, Control+F3 NEXT_PTY, Control+F4 PREV_PTY, Control+F1
+# OPEN_SCREEN), so a second line for the same function, a mouse button for instance,
+# would silently undo the first.  Defaults that stay: Shift+F1 / Shift+F2 split the window,
+# Shift+F5 close the split, Shift+Prior page up, Shift+Up scroll up, Shift+Insert paste the
+# selection, Control+Shift+c / Control+Shift+v copy / paste the clipboard.
+Control+Shift+t=OPEN_PTY
+Control+Shift+Right=NEXT_PTY
+Control+Shift+Left=PREV_PTY
+Control+Shift+n=OPEN_SCREEN

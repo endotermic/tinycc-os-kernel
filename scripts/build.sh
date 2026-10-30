@@ -39,6 +39,10 @@
 #               libXmu from the steps above), static, musl; the DejaVu fonts, fontconfig's
 #               configuration, fc-list/fc-match, the menu's icons and /etc/system.jwmrc
 #               (userland/jwm/) in the images; startx and xdm's Xsession run it with links -g
+#   mlterm      the terminal emulator of the graphical mode: mlterm, X11 with the Xft type engine on
+#               the jwm step's font stack (DejaVu Sans Mono), its scrollbar and type engine linked in,
+#               static, musl, with mlclient -> /usr/bin/mlterm, /usr/bin/mlclient, /etc/mlterm
+#               (userland/mlterm/) in the images; JWM's menu and links' LINKS_XTERM run it
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
 #               startx), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
@@ -51,7 +55,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm links guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -745,6 +749,60 @@ step_jwm() {
     cp "$SRC/dejavu-fonts/LICENSE" "$STAGE/usr/share/fonts/TTF/LICENSE.DejaVu"
     echo "   jwm: $(file -b src/jwm | cut -d, -f1-2), $(ls -l src/jwm | awk '{print $5}') bytes; fc-list $(ls -l "$STAGE/usr/bin/fc-list" | awk '{print $5}') bytes; fonts: $(ls "$STAGE/usr/share/fonts/TTF" | grep -c ttf) DejaVu faces; /etc/fonts/conf.d: $(ls "$STAGE/etc/fonts/conf.d" | wc -l) files"
 }
+step_mlterm() {
+    need_src mlterm
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
+    [ -f "$XP/lib/libXft.a" ] && [ -f "$XP/lib/libfontconfig.a" ] || die "no libXft.a or libfontconfig.a in $XP: run the jwm step first"
+    x_env
+    ML=$B/mlterm; STAGE=$ML/stage; mkdir -p "$ML"
+    msg "mlterm: $(lock_ref mlterm), static, musl, CC=musl-tcc, Xlib + Xft (DejaVu Sans Mono through fontconfig) -> $STAGE/usr/bin/mlterm"
+    cd "$ML"
+    # The terminal emulator of the graphical mode.  mlterm loads its type engines (xcore,
+    # xft), character tables, scrollbars and input methods as plugins by default; a static
+    # musl program cannot dlopen, so every one it keeps is linked in: --disable-shared makes
+    # configure drop the plugin scrollbars (the built-in "simple" stays) and the kbd input
+    # method, --disable-dl-type/-table/-ctl link the type engines and libmef's tables in.
+    # Type engines xcore (the server's built-in fixed font) and xft (DejaVu Sans Mono through
+    # fontconfig: /etc/mlterm/aafont, userland/mlterm/); no cairo, BiDi (fribidi), Indic,
+    # OpenType layout (harfbuzz), images (mlimgloader wants gdk-pixbuf), ssh (libssh2),
+    # braille, utmp (musl has no utmp) or input method libraries; of the tools mlclient only
+    # (opens a window or a pty in a running mlterm; mlconfig and mlterm-menu are GTK).
+    # Out-of-tree build (its Makefiles set VPATH).  The Xft closure in LIBS, so that the
+    # probes link under tcc's single-pass linker; the program's own link line takes the
+    # libraries from pkg-config (scripts/pkg-config.sh: the static closure in order) and
+    # from configure's X checks.
+    XLIBS="$("$PKG_CONFIG" --libs xft x11) -lm"
+    configured config.status "$MUSL_TCC" "--x-libraries=$XP/lib" \
+        || CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" LIBS="$XLIBS" \
+            "$SRC/mlterm/configure" --host="$ARCH-linux-musl" --prefix=/usr --sysconfdir=/etc \
+            --disable-shared --enable-static --with-gui=xlib --with-x --x-includes="$XP/include" --x-libraries="$XP/lib" \
+            --with-type-engines=xcore,xft --disable-dl-type --disable-dl-table --disable-dl-ctl \
+            --disable-fribidi --disable-ind --disable-otl --disable-image --disable-ssh2 --disable-brlapi \
+            --with-utmp=none --with-tools=mlclient --without-libltdl --disable-kbd --disable-uim \
+            --disable-iiimf --disable-m17nlib --disable-ibus --disable-fcitx --disable-scim \
+            --disable-canna --disable-wnn --disable-skk >"$LOGS/mlterm-configure.log" 2>&1 \
+        || fail "$LOGS/mlterm-configure.log" "mlterm configure failed"
+    # main/Makefile.in links with -L/usr/local/lib -R/usr/local/lib (and compiles with
+    # -I/usr/local/include): a host path, and libtool turns -R into "-rpath DIR", an option
+    # tcc does not have ("invalid option -- '-rpath'"); the guest needs neither (FIX-LOG C15)
+    sed -i 's|-[LR]/usr/local/lib||g; s|-I/usr/local/include||g' main/Makefile
+    grep -q '^Type engines *:.*xft' "$LOGS/mlterm-configure.log" || fail "$LOGS/mlterm-configure.log" "mlterm configured without the Xft type engine"
+    grep -q '^Scrollbars *: simple' "$LOGS/mlterm-configure.log" || fail "$LOGS/mlterm-configure.log" "mlterm configured without the simple scrollbar"
+    grep -q '^External tools *:.*mlclient' "$LOGS/mlterm-configure.log" || fail "$LOGS/mlterm-configure.log" "mlterm configured without mlclient"
+    : >"$LOGS/mlterm.log"
+    rm -f main/mlterm tool/mlclient/mlclient     # relink against the current X libraries
+    run_progress "mlterm" "$(make_total)" "$LOGS/mlterm.log" make -j"$JOBS" || fail "$LOGS/mlterm.log" "mlterm build failed"
+    [ -x main/mlterm ] && [ -x tool/mlclient/mlclient ] || fail "$LOGS/mlterm.log" "no mlterm or mlclient binary"
+    # the staging tree appended to the images (stage_lists): mlterm, mlclient and the system
+    # configuration /etc/mlterm (main: UTF-8, TERM, the Xft engine, the scrollbar on the
+    # right; key: the pty bindings; aafont: DejaVu Sans Mono), userland/mlterm/
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/mlterm"
+    cp main/mlterm "$STAGE/usr/bin/mlterm"
+    cp tool/mlclient/mlclient "$STAGE/usr/bin/mlclient"
+    cp "$ROOT"/userland/mlterm/main "$ROOT"/userland/mlterm/key "$ROOT"/userland/mlterm/aafont "$STAGE/etc/mlterm/"
+    echo "   mlterm $(lock_ref mlterm): $(file -b main/mlterm | cut -d, -f1-2), $(ls -l main/mlterm | awk '{print $5}') bytes; mlclient $(ls -l tool/mlclient/mlclient | awk '{print $5}') bytes; /etc/mlterm: $(ls "$STAGE/etc/mlterm" | tr '\n' ' ')"
+}
 step_links() {
     need_src links
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -891,7 +949,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -1044,7 +1102,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1064,7 +1122,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

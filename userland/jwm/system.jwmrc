@@ -6,13 +6,16 @@
   none.  Fonts are Xft names resolved by fontconfig (/etc/fonts, /usr/share/fonts/TTF: the
   DejaVu faces); the icons are XPM files in /usr/share/jwm (userland/jwm/icons/); PNG, JPEG
   and XBM icons load too.  The menu opens on any mouse button on the desktop, on the tray's
-  Menu button and on Alt-F1; Exit ends the session (back to the greeter under xdm, back to
-  the text console under startx).  Edit and choose Restart to reload.
+  Menu button and on Alt-F1: the mlterm terminal (also Ctrl-Alt-T; its settings are in
+  /etc/mlterm/main), the links browser, Restart, and Exit, which ends the session (back to
+  the greeter under xdm, back to the text console under startx).  Edit and choose Restart
+  to reload.
 -->
 <JWM>
 
     <!-- The root menu: the programs of this system. -->
     <RootMenu onroot="123">
+        <Program icon="terminal" label="Terminal (mlterm)">mlterm</Program>
         <Program icon="web-browser" label="Web browser (links)">links -g</Program>
         <Program icon="web-browser" label="Web browser: the host's http.server (10.0.2.2:8000)">links -g http://10.0.2.2:8000/</Program>
         <Separator/>
@@ -118,6 +121,7 @@
     <Key mask="A" key="F4">close</Key>
     <Key mask="A" key="#">desktop#</Key>
     <Key mask="A" key="F1">root:1</Key>
+    <Key mask="CA" key="t">exec:mlterm</Key>
     <Key mask="A" key="F2">window</Key>
     <Key mask="A" key="F10">maximize</Key>
     <Key mask="A" key="Right">rdesktop</Key>

@@ -13,7 +13,8 @@
  *   no arguments: links opens with no page (its menu is on the Escape key / the top line)
  * Env: DISPLAY (default :0, the server's display number), XSERVER_OPTS (extra options
  *   for Xfbdev, e.g. "vt7" or "-mouse /dev/input/mice"), XLOG (the server's output,
- *   default /tmp/Xfbdev.log)
+ *   default /tmp/Xfbdev.log); LINKS_XTERM is set to "mlterm -e" when the image has
+ *   /usr/bin/mlterm (the terminal links and JWM's menu open), unless already set
  * The server's log is printed when the server fails to start.  Status: that of links,
  * 1 when the server could not be started.
  *
@@ -99,7 +100,7 @@ int main(int argc, char **argv)
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         printf("usage: startx [links arguments...]   (e.g. startx https://linux.org/)\n"
                "starts the X server (Xfbdev) on a free virtual terminal, the JWM window manager\n"
-               "and links -g on it (Log out in JWM's menu ends it);\n"
+               "and links -g on it (Log out in JWM's menu ends it; its Terminal entry and Ctrl-Alt-T open mlterm);\n"
                "env: DISPLAY (:0), XSERVER_OPTS (extra Xfbdev options), XLOG (%s)\n", xlog);
         return 0;
     }
@@ -108,6 +109,11 @@ int main(int argc, char **argv)
     if (!display || !*display)
         display = ":0";
     setenv("DISPLAY", display, 1);
+    /* the terminal emulator when the image has it: links runs its "run in terminal"
+     * programs through $LINKS_XTERM (default "xterm -e"), and JWM's menu starts it;
+     * /etc/mlterm/main holds its settings (the scrollbar on the right) */
+    if (access("/usr/bin/mlterm", X_OK) == 0)
+        setenv("LINKS_XTERM", "mlterm -e", 0);
     if (!exists("/dev/fb0")) {
         fprintf(stderr, "startx: no /dev/fb0: this machine has no framebuffer (QEMU: run.sh --vga opens the display, the VGA device is there anyway)\n");
         return 1;
