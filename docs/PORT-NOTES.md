@@ -710,7 +710,10 @@ final images of both architectures (compressed, 256 MB): Ctrl-Alt-F from JWM ope
 home directory with the session's environment set, the right-click menu takes Down and Escape,
 xmenu exits without a segfault in dmesg, and on i386 the test directory showed the same icons,
 thumbnails and names, Ctrl-L + `su` entered `sub/`. The ISOs were rebuilt (40 MB i386; 142 MB
-x86_64, which carries the self-hosting image) but not booted again. `scripts/selfhost-test.sh
+x86_64, which carries the self-hosting image) but not booted again. Open: xmenu draws no
+highlight on the entry under the pointer or chosen with the keys (clicks, Down/Up and Return
+choose the right entry, so the selection logic works; xmenu composes the highlighted row with
+XRender onto a second canvas, which stays invisible on TinyX; untested on another server). `scripts/selfhost-test.sh
 --arch x86_64 all` passed afterwards (the generation-2 kernel boots); the i386 self-host loop was
 not rerun.
 
