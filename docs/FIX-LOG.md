@@ -56,6 +56,9 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 113 | tinycc 0109 |
 | | | | | 114 | tinycc 0110 |
 | | | | | 115 | tinycc 0111 |
+| | | | | 116 | tinycc 0112 |
+| | | | | 117 | tinycc 0113 |
+| | | | | 118 | tinycc 0114 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -104,7 +107,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/154_cleanup_goto.c` | all | 20, 85, 86 |
 | `tests/tests2/155_x86_inline_asm.c` | i386, x86_64 | 10, 11, 12, 13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 68, 76, 80, 90, 92, 93, 100, 103, 104 |
 | `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
-| `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105, 114 |
+| `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105, 114, 116, 117, 118 |
 | `tests/tests2/158_link_group.c` | all | 53 |
 | `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112, 115 |
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
@@ -1503,6 +1506,21 @@ C21. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0004), xmenu `xmenu.c` (x
     this server. Down now selects the first item, Up the last. Not a tcc matter.
     Verification: Down, Down, Escape in the menu on i386, no segfault in dmesg.
 
+C22. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0005), xmenu `xmenu.c` (initxconn, drawmenu):
+    no highlight on the entry under the pointer or chosen with the keys, and a black menu
+    background whatever the resources said. xmenu draws a background and a foreground layer
+    and merges them with PictOpOver, which needs an alpha channel; it asks for a 32-bit
+    TrueColor visual and falls back to the default one, and TinyX has no 32-bit visual, so the
+    layers were x8r8g8b8 pictures whose cleared pixels are opaque black: the foreground layer
+    covered the background, and the select canvas looked like the normal one. Found by
+    replacing the background composite with a plain fill (no change) and then the final
+    XRenderComposite with XCopyArea (no change): the layers themselves were black. Fix: the
+    layers and the normal/select canvases are depth-32 pictures in PictStandardARGB32 whatever
+    the visual; only the final canvas, the window's background pixmap, has the window's depth,
+    and drawmenu composes the unselected menu into it before setting it. Not a tcc matter.
+    Verification: the menu's grey background, the blue highlight following the pointer and the
+    Down key, a click choosing the entry under the pointer, on both architectures.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,
@@ -1660,6 +1678,64 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     Verification: 161 passes, `make test` ALL TESTS PASSED on the host, xfiles compiles;
     the kernel (both architectures), musl, busybox and the rest rebuilt with the fixed
     compiler as before.
+
+116. 2026-11-03, COMMITTED (patches/tinycc/bugfixes/0112), `tcc.h` (FuncAttr.func_stdcall),
+    `tccgen.c` (parse_attribute, merge_funcattr, is_compatible_func), `i386-gen.c` (gfunc_call,
+    gfunc_prolog).
+    Problem: the i386 self-host loop with the file manager in the image failed in Kbuild's
+    atomic-header check: busybox's `sha1sum` and `sha256sum` segfault in the i386 guest on a CPU
+    with SHA-NI (KVM passes the host's `sha_ni`; `-cpu host` since 2026-10-23, so the earlier
+    i386 loops ran the C fallback or a TCG CPU): "segfault at 80827e4 ip 08082987 error 7 in
+    busybox", the `movups %xmm0,0x4c(%eax)` of `sha1_process_block64_shaNI` with %eax holding a
+    code address. busybox declares the assembly `FAST_FUNC` = `__attribute__((regparm(3),
+    stdcall))` and the .S reads the context from %eax; tcc kept one calling convention per
+    function (`func_call`), so the attribute parsed last won: stdcall, every argument on the
+    stack. C callers and C callees agreed with each other, only the hand-written assembly saw
+    the difference (md5sum, whose hwaccel is x86-64 only, worked). GCC: registers for the first
+    three integer arguments and the callee pops the rest.
+    Fix: a FuncAttr bit `func_stdcall` records "the callee pops its stack arguments" apart from
+    the register convention; stdcall sets it and leaves a regparm(n) in place (either order;
+    regparm(0),stdcall is plain stdcall), gfunc_call skips the caller's `add $n,%esp` and
+    gfunc_prolog emits `ret $n` for the stack part when it is set (not for variadic
+    functions, which stay cdecl as before), merge_funcattr and is_compatible_func carry it.
+    Test: 157 (an asm callee that records eax/edx/ecx and the fourth argument and returns with
+    `ret $4`; the caller's %esp compared before and after; both attribute orders and a C callee
+    through a function pointer). First attempt crashed the compiler: gfunc_prolog's `sym`
+    walks the parameter list and is NULL at the end, the flag is taken before the walk.
+    Verification: 157 (plain and -fPIC, as a static i386 binary on the host), `make test` ALL
+    TESTS PASSED on the host. Not enough on its own: busybox calls the block function through
+    `ctx->process_block`, whose declaration carries FAST_FUNC after the declarator (117).
+
+117. 2026-11-03, COMMITTED (patches/tinycc/bugfixes/0113), `tccgen.c` (type_decl).
+    Problem: with 116 in place the rebuilt i386 busybox still crashed at the same instruction.
+    `libbb.h` declares `void (*process_block)(struct md5_ctx_t*) FAST_FUNC;`: an attribute after
+    the declarator of a pointer to a function, which GCC moves to the function type; tcc left
+    it on the variable (it even warned "assignment from incompatible pointer type" when a
+    FAST_FUNC function was stored), so the call through the pointer used the default
+    convention and the assembly read the context from an %eax that held something else.
+    Fix: type_decl copies the convention bits of the trailing attributes (func_call,
+    func_stdcall, func_cdecl) into the pointed-to function type when the declared type is a
+    pointer to a function. Test: 157 (a structure field like busybox's, called through).
+    Verification: 157, `make test` ALL TESTS PASSED on the host. Still not the busybox crash:
+    the rebuilt sha1sum failed at the same instruction, since FAST_FUNC was empty under tcc (118).
+
+118. 2026-11-03, COMMITTED (patches/tinycc/compatibility/0114), `tccpp.c` (tcc_predefs), `libtcc.c`
+    (-std), `tcc.h` (TCCState.strict_std).
+    Problem: the root cause of the busybox crash of 116: platform.h defines FAST_FUNC as
+    `regparm(3),stdcall` only under `__GNUC_PREREQ(3,0) && defined(i386)`, the plain `i386`
+    that GCC predefines in its GNU modes (also `unix`, `linux`); tcc defined only the reserved
+    spellings, so FAST_FUNC was empty, every C function was cdecl, and the SHA-NI assembly,
+    assembled under `defined(__GNUC__) && defined(__i386__)` (true: the build adds
+    `-D__GNUC__=4`), read the context from %eax. The i386 busybox had been living with this
+    mismatch since the start; only a CPU with SHA-NI runs the assembly.
+    Fix: a TCCState flag `strict_std`, set by `-std=cXX` and not by `-std=gnuXX` or no `-std`
+    (GCC's default is a GNU mode), and tcc_predefs adds `unix` and `linux` (not on PE, Mach-O or
+    the BSDs) and `i386` on the i386 target unless it is set. `__STRICT_ANSI__` is not added.
+    Test: 157 (`defined(i386) && defined(linux) && defined(unix)`).
+    Verification: `i386-tcc -dM -E` shows the three, `-std=c99` none, the x86_64 tcc unix and
+    linux; `make test` ALL TESTS PASSED on the host. The rebuilt i386 busybox (FAST_FUNC in
+    effect everywhere, so 116 and 117 carry it): sha1sum and sha256sum work in the guest on the
+    SHA-NI CPU, and the i386 self-host loop passes (PORT-NOTES).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

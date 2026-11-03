@@ -144,7 +144,7 @@ The boot ends with:
 *** tinycc-os-kernel: Linux 7.3.0+ x86_64, #1 SMP PREEMPT ...
 *** every file of this kernel was compiled, assembled and linked by tinycc (tcc, tld)
 *** BusyBox v1.38.0 (static, musl -- compiled and linked by tinycc as well)
-*** tcc version 0.9.28rc e23dabe+111p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
+*** tcc version 0.9.28rc e23dabe+114p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
 *** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles)
@@ -229,7 +229,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 111 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/tinycc/` | 114 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 19 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
@@ -365,7 +365,7 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | dejavu-fonts | 2.37 (release tarball; DejaVu Sans, Sans Bold and Sans Mono as the image's `/usr/share/fonts/TTF`, Bitstream Vera license, with the license file) | fa9ca4d1... |
 | xfiles | master, 2025-04-06 (the file manager: C99, Xlib + Xft + Xpm + Xrender + Xcursor + Xext, static, musl; 1 tcc fix, 115; 2 patches: Control+A/Control+H and the `_CONTROL_GOTO` key commands, fontconfig patterns destroyed once) | c47a0d98 |
 | libXfixes, libXcursor | 6.0.1, 1.2.3 (release tarballs; the two X libraries xfiles needs beyond the stack above, built by tcc unpatched) | e69eaa32..., 74e72da2... |
-| xmenu | master, 2026-04-14 (the pop-up menu of xfiles' right click; 4 patches: a build without Imlib2, fontconfig patterns destroyed once, keys translated without XKB, Down/Up with nothing selected) | bd012b1e |
+| xmenu | master, 2026-04-14 (the pop-up menu of xfiles' right click; 5 patches: a build without Imlib2, fontconfig patterns destroyed once, keys translated without XKB, Down/Up with nothing selected, the layers composed in ARGB32 on servers without a 32-bit visual) | bd012b1e |
 | dmenu | 5.4 (release tarball; the prompt xfiles embeds: the address bar, names; 1 patch: bitmap fonts as glyph fallbacks) | 8fbace2a... |
 | xprop, xrdb | 1.2.8, 1.2.2 (release tarballs; X.Org's property tool, which the control script changes the window's directory with, and the resource loader the session runs on `/etc/X11/Xresources`; built by tcc unpatched) | a8394338..., db2d774a... |
 | unifont | 18.0.01 (a single PCF file, sha256 in `sources.lock`; GNU Unifont as the fallback font for the scripts DejaVu lacks, OFL-1.1 / GPL-2.0-or-later with the font exception; `userland/xfiles/LICENSE.unifont`) | 3f770242... |

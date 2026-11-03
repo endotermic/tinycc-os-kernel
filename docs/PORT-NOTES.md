@@ -632,7 +632,10 @@ well as a tarball).
   `XkbKeycodeToKeysym`, which libX11 answers with NoSymbol on a server without XKB, so no
   key worked in its menus (xfiles uses `XkbLookupKeySym`, which falls back to the core
   keymap; xmenu does now too); with the keys working, Down or Up before any item was under
-  the pointer dereferenced a NULL `selected` (C21, the fourth xmenu patch).
+  the pointer dereferenced a NULL `selected` (C21, the fourth xmenu patch); and xmenu's
+  layered drawing needs an alpha channel, which the default visual of TinyX (no 32-bit
+  visual) has not, so the menu came out black without a highlight until the layers were
+  made ARGB32 pictures whatever the visual (C22, the fifth).
 * **The control script `xfilesctl`** (`menu`, `drop-ask`, `drop-copy/move/link`, `^KEY`):
   the right-click menu in xmenu (open, open with, copy, cut, paste, rename, delete, new
   folder, terminal here, properties; on the background also new window, select all, dot
@@ -710,12 +713,20 @@ final images of both architectures (compressed, 256 MB): Ctrl-Alt-F from JWM ope
 home directory with the session's environment set, the right-click menu takes Down and Escape,
 xmenu exits without a segfault in dmesg, and on i386 the test directory showed the same icons,
 thumbnails and names, Ctrl-L + `su` entered `sub/`. The ISOs were rebuilt (40 MB i386; 142 MB
-x86_64, which carries the self-hosting image) but not booted again. Open: xmenu draws no
-highlight on the entry under the pointer or chosen with the keys (clicks, Down/Up and Return
-choose the right entry, so the selection logic works; xmenu composes the highlighted row with
-XRender onto a second canvas, which stays invisible on TinyX; untested on another server). `scripts/selfhost-test.sh
---arch x86_64 all` passed afterwards (the generation-2 kernel boots); the i386 self-host loop was
-not rerun.
+x86_64, which carries the self-hosting image). Both ISOs from `install.sh --output iso`
+were then booted headless on their default entry: xdm's greeter with the helper text, ada
+logs in, JWM with links, Ctrl-Alt-T's mlterm fetched a JPEG into the home, Ctrl-Alt-F opened
+xfiles on it with the thumbnail, the right-click menu came up with the entry under the
+pointer highlighted (the fifth xmenu patch), on x86_64 and on i386 alike. `scripts/selfhost-test.sh
+--arch x86_64 all` passed afterwards (the generation-2 kernel boots). The i386 loop first
+failed in Kbuild's atomic-header check: busybox's `sha1sum` segfaults in the i386 guest on a
+CPU with SHA-NI: three tcc problems around busybox's `FAST_FUNC` = `regparm(3),stdcall`
+(FIX-LOG 116-118, fixed the same day: tcc did not predefine GCC's unreserved `i386`, so
+busybox's guard left FAST_FUNC empty on the C side while the assembly expected the
+registers; and once the attribute was in effect, the combination lost its registers and the
+attribute after a function-pointer declarator stayed on the variable; the earlier i386 loops
+never ran the SHA-NI path). With the three fixes both loops pass again: generation-2 kernels
+built inside the i386 and the x86_64 guest (300 s each) boot.
 
 ## Debugging recipes
 

@@ -17,7 +17,7 @@ Categories:
   (Control+A selects all, Control+H toggles the dot files, both reachable through the
   `_CONTROL_GOTO` property) and `xfiles/upstreamable` (fontconfig patterns destroyed once),
   `xmenu/upstreamable` (a build without Imlib2, the same pattern fix, keys without XKB, Down/Up
-  with nothing selected),
+  with nothing selected, ARGB32 layers whatever the visual),
   `dmenu/compatibility` (bitmap fonts as glyph fallbacks)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
