@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 19:31:33 +0200
+Subject: [PATCH] Predefine GCC's unreserved unix, linux and i386 macros
+ outside the strict -std=cXX mode
+
+GCC defines 'unix' and 'linux' on Linux and 'i386' on 32-bit x86 unless
+-std=cXX asks for the strict ISO mode; tcc defined only the reserved
+spellings (__linux__, __i386__).  busybox's platform.h makes FAST_FUNC
+regparm(3),stdcall under "__GNUC_PREREQ(3,0) && defined(i386)", so with tcc
+the C side was cdecl while its SHA-NI assembly, assembled under
+defined(__i386__), expects the context in %eax: sha1sum and sha256sum
+segfaulted in the i386 guest on a CPU with SHA-NI.  A new TCCState flag
+strict_std is set by -std=cXX (not gnuXX); without it tcc_predefs adds the
+three macros (unix and linux not on PE/Mach-O/BSD, i386 for that target).
+Test in 157.
+---
+ libtcc.c                                 |   3 +++
+ tcc.h                                    |   2 ++
+ tccpp.c                                  |  14 ++++++++++++++
+ tests/tests2/157_i386_regparm_pic.c      |   8 ++++++++
+ tests/tests2/157_i386_regparm_pic.expect | Bin 874 -> 902 bytes
+ 5 files changed, 27 insertions(+)
+
+diff --git a/libtcc.c b/libtcc.c
+index 93f1e65..a70adc7 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -2079,6 +2079,9 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+         case TCC_OPTION_std:
+             if (strcmp(optarg, "=c11") == 0 || strcmp(optarg, "=gnu11") == 0)
+                 s->cversion = 201112;
++            /* -std=c99/c11: strict ISO mode, like GCC's (no 'unix', 'linux',
++               'i386'); -std=gnu99/gnu11 and no -std: the GNU mode */
++            s->strict_std = optarg[1] == 'c';
+             break;
+         case TCC_OPTION_shared:
+             x = TCC_OUTPUT_DLL;
+diff --git a/tcc.h b/tcc.h
+index 5171fcd..3139e42 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -759,6 +759,8 @@ struct TCCState {
+     unsigned char option_pthread; /* -pthread option */
+     unsigned char enable_new_dtags; /* -Wl,--enable-new-dtags */
+     unsigned int  cversion; /* supported C ISO version, 199901 (the default), 201112, ... */
++    unsigned char strict_std; /* -std=cXX rather than gnuXX or none: GCC's strict mode, without
++                                 the unreserved 'unix', 'linux', 'i386' macros */
+ 
+     /* C language options */
+     unsigned char char_is_unsigned;
+diff --git a/tccpp.c b/tccpp.c
+index 6502937..c512922 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3672,6 +3672,20 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
+     cstr_printf(cs, "#define __TINYC__ 9%.2s\n", &TCC_VERSION[4]);
+     putdefs(cs, target_machine_defs);
+     putdefs(cs, target_os_defs);
++    /* the unreserved spellings GCC defines outside its strict mode (-std=cXX):
++       'unix' and 'linux' on Linux, 'i386' for the 32-bit x86 target (busybox's
++       platform.h tests "defined(i386)" for FAST_FUNC) */
++    if (!s1->strict_std) {
++#if !defined TCC_TARGET_PE && !defined TCC_TARGET_MACHO
++        putdef(cs, "unix");
++# if !TARGETOS_FreeBSD && !TARGETOS_FreeBSD_kernel && !TARGETOS_NetBSD && !TARGETOS_OpenBSD
++        putdef(cs, "linux");
++# endif
++#endif
++#ifdef TCC_TARGET_I386
++        putdef(cs, "i386");
++#endif
++    }
+     if (s1->pic) {
+         /* like gcc: -fPIC/-fPIE define __PIC__ 2, -fPIE also __PIE__ 2 */
+         cstr_printf(cs, "#define __PIC__ 2\n#define __pic__ 2\n");
+diff --git a/tests/tests2/157_i386_regparm_pic.c b/tests/tests2/157_i386_regparm_pic.c
+index dee58c8..cfda0ee 100644
+--- a/tests/tests2/157_i386_regparm_pic.c
++++ b/tests/tests2/157_i386_regparm_pic.c
+@@ -157,6 +157,14 @@ static void test_regparm_stdcall(void)
+     ops.pb(13, 14, 15, 16);
+     asm volatile("movl %%esp, %0" : "=r"(sp4));
+     printf("trailing attribute: %u %u %u %u sp %d\n", fast_got[0], fast_got[1], fast_got[2], fast_got[3], sp1 == sp4);
++    /* fix 118: GCC's unreserved macros outside -std=cXX ("defined(i386)" is
++       busybox's FAST_FUNC guard; without it the C side was cdecl and the
++       SHA-NI assembly regparm) */
++#if defined(i386) && defined(linux) && defined(unix)
++    printf("gnu macros: 1\n");
++#else
++    printf("gnu macros: 0\n");
++#endif
+ }
+ 
+ int main(void)
+diff --git a/tests/tests2/157_i386_regparm_pic.expect b/tests/tests2/157_i386_regparm_pic.expect
+index 9099db3e3dad5f344fb3d996649b0901b570af58..9e75226acb832537a1b6241c6a968625121f656d 100644
+GIT binary patch
+delta 44
+mcmaFG*2X@eojX0RR3SGpxhTKbYO@8C1mom6jPub1jTixA$qw=W
+
+delta 20
+acmZo;f5kSTeRDXIDC6W+jPrpEeMSIJjt0;G
+
