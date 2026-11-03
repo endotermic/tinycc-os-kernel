@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 16:57:34 +0200
+Subject: [PATCH] tccgen: a scalar's braced initializer may end in a comma
+
+C99 6.7.8 lets every initializer list end in a comma, a scalar's too:
+"long x = { 1, };", "&(long){ 0x7FFFFFFF, }" (xfiles' control/dragndrop.c).
+decl_initializer wanted the closing brace right after the value and said
+"'}' expected (got ',')".  Test in tests2/161_gnu_extensions2.
+---
+ tccgen.c                                |  4 ++++
+ tests/tests2/161_gnu_extensions2.c      | 13 +++++++++++++
+ tests/tests2/161_gnu_extensions2.expect |  1 +
+ 3 files changed, 18 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index dec2bde..a46a7a8 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9190,6 +9190,10 @@ static void decl_initializer(init_params *p, CType *type, unsigned long c, int f
+           skip(';');
+         next();
+         decl_initializer(p, type, c, flags & ~DIF_HAVE_ELEM);
++        /* a scalar's braced initializer may end in a comma like any
++           other initializer list: "long x = { 1, };", "(long){ 1, }" */
++        if (tok == ',')
++            next();
+         skip('}');
+ 
+     } else one_elem: if ((flags & DIF_SIZE_ONLY)) {
+diff --git a/tests/tests2/161_gnu_extensions2.c b/tests/tests2/161_gnu_extensions2.c
+index 5de9909..30b3f4c 100644
+--- a/tests/tests2/161_gnu_extensions2.c
++++ b/tests/tests2/161_gnu_extensions2.c
+@@ -101,8 +101,21 @@ static void test_label_addr(void)
+            ip2() > 0 && ip2() < 64);
+ }
+ 
++/* fix 115: a scalar's braced initializer may end in a comma like any other
++   initializer list (C99 6.7.8: "{ initializer-list , }"; xfiles' dragndrop.c
++   has "&(long){ 0x7FFFFFFF, }"): tcc wanted the '}' right after the value */
++static long scalar_braces_g = { 7, };
++static void test_scalar_braces(void)
++{
++    long a = { 5, };
++    long *p = &(long){ 0x7FFFFFFF, };
++    int b = { 3 };
++    printf("scalar braces: %ld %ld %ld %d\n", scalar_braces_g, a, *p, b);
++}
++
+ int main(void)
+ {
++    test_scalar_braces();
+     test_label_addr();
+     test_enum();
+     test_transparent();
+diff --git a/tests/tests2/161_gnu_extensions2.expect b/tests/tests2/161_gnu_extensions2.expect
+index 2ba5741..751258e 100644
+--- a/tests/tests2/161_gnu_extensions2.expect
++++ b/tests/tests2/161_gnu_extensions2.expect
+@@ -1,3 +1,4 @@
++scalar braces: 7 5 2147483647 3
+ label addr: 1 1
+ enum: 1 0 4 4 4 4 1 0
+ transparent: 11 33 -1 -1 120 1

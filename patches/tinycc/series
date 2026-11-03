@@ -109,3 +109,4 @@ features/0107-libtcc-a-file-with-an-unknown-extension-that-starts-.patch
 bugfixes/0108-tccgen-define-the-symbol-of-a-label-when-its-address.patch
 bugfixes/0109-i386-regparm-0-keeps-the-arguments-on-the-stack-unde.patch
 bugfixes/0110-i386-asm-a-64-bit-register-variable-in-an-asm-operan.patch
+bugfixes/0111-tccgen-a-scalar-s-braced-initializer-may-end-in-a-co.patch
