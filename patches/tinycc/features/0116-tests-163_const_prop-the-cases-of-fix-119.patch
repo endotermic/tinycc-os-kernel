@@ -1,0 +1,464 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 3 Nov 2026 21:30:19 +0200
+Subject: [PATCH] tests: 163_const_prop, the cases of fix 119
+
+Dead references that the constant propagation through locals must drop
+(tcc -run fails on any that stays: a literal, a local, a stub's return
+value through a local, a _Bool masked with 0, the same constant assigned on
+both paths, a forward goto, a loop that does not assign the variable, a
+switch on a known local), and the places where the knowledge must not
+survive, compared with gcc -O2's output: parenthesized assignments, every
+loop form with assignments in the body, the condition and the increment,
+break and continue, if/else, ?:, && and ||, switch with fall-through and
+with the switched variable assigned in a case, backward and computed
+gotos, address-taken variables, asm outputs, narrow types and the sign of
+a known long long, statement expressions, shadowing, ++/--, a #pragma pack
+inside a body compiled from saved tokens.
+---
+ tests/tests2/163_const_prop.c      | 373 +++++++++++++++++++++++++++++
+ tests/tests2/163_const_prop.expect |  55 +++++
+ 2 files changed, 428 insertions(+)
+ create mode 100644 tests/tests2/163_const_prop.c
+ create mode 100644 tests/tests2/163_const_prop.expect
+
+diff --git a/tests/tests2/163_const_prop.c b/tests/tests2/163_const_prop.c
+new file mode 100644
+index 0000000..e3d7484
+--- /dev/null
++++ b/tests/tests2/163_const_prop.c
+@@ -0,0 +1,373 @@
++/* Constant propagation through local scalars (fix 119 of the tinycc-os-kernel
++   project): a local whose last store was a constant is read as that constant,
++   so that conditions on it fold.  The Linux kernel relies on it where an
++   IS_ENABLED() value passes through a local or through a stub's return value
++   before guarding a call that does not exist in the configuration: tcc -run
++   fails on any reference to the dead_*() functions below.  The rest checks
++   that the knowledge is dropped wherever a store or a join of paths can
++   change the value; the output must be gcc's. */
++#include <stdio.h>
++
++extern void dead_literal(void), dead_local(void), dead_stub_ptr(void),
++    dead_stub_int(void), dead_bool(void), dead_branch_same(void),
++    dead_label(void), dead_loop_invariant(void), dead_switch(void),
++    dead_param(void);
++
++static inline void *find_pool(void *d) { return (void *)0; }
++static inline int allowable_orders(int x) { return 0; }
++int enabled; /* 0: a run-time value the compiler cannot know */
++
++static void t_dead(void *d, int c)
++{
++    int o, x = 0, u = 0, s = 0, p;
++    _Bool b = (d != (void *)0);
++    void *pool;
++
++    if (0)
++        dead_literal();
++    if (x)
++        dead_local();
++    pool = find_pool(d);
++    if (pool)
++        dead_stub_ptr();
++    o = allowable_orders(c);
++    if (o > 0)
++        dead_stub_int();
++    b &= 0;
++    if (b)
++        dead_bool();
++    if (c)
++        u = 0;        /* assigned the same constant on both paths */
++    if (u)
++        dead_branch_same();
++    if (c) {
++        x = 0;
++        goto out;     /* a forward goto: the states join at the label */
++    }
++    x = 0;
++out:
++    if (x)
++        dead_label();
++    while (c--)
++        if (x)        /* x is never assigned in the loop */
++            dead_loop_invariant();
++    switch (s) {      /* a known local: only the taken case has code */
++    case 1: dead_switch(); break;
++    case 0: break;
++    }
++    p = 5;
++    p = c;
++    if (p && 0)       /* unknown again; 'x && 0' folds anyway */
++        dead_param();
++}
++
++/* --- where the value must not stay known --- */
++
++static void set(int *p, int v) { *p = v; }
++
++#define swap(a, b) do { int __t = (a); (a) = (b); (b) = __t; } while (0)
++
++static void t_paren(void)
++{
++    int x = 1, y = 2;
++    (x) = 5;
++    ((y)) += 3;
++    printf("paren %d %d\n", x, y);
++    swap(x, y);
++    printf("swap %d %d\n", x, y);
++}
++
++static void t_loop(int n)
++{
++    int x = 0, y = 7, z = 3, i;
++    for (i = 0; i < n; i++) {
++        if (x == 0)
++            printf("L x0 ");
++        x = 1;
++        (z) = i;
++    }
++    printf("loop %d %d %d %d\n", x, y, z, i);
++    x = 0;
++    while (x < n)
++        x++;
++    printf("while %d\n", x);
++    x = 0;
++    do {
++        if (x == 0)
++            printf("D ");
++        x += 2;
++    } while (x < n);
++    printf("do %d\n", x);
++    x = 4;
++    for (i = 0; i < n; i++)
++        y = i, x = y;
++    printf("for2 %d %d\n", x, y);
++    for (i = 0, x = 0; i < n; x = 9, i++)
++        printf("inc %d ", x);
++    printf("after inc %d\n", x);
++    x = 0, i = 0;
++    do {
++        i++;
++        if (i & 1) {
++            x = 1;
++            continue;
++        }
++        x = 2;
++    } while (i < n);
++    printf("docont %d %d\n", x, i);
++    x = 0;
++    for (i = 0; i < 10; i++) {
++        if (i == n) {
++            x = 8;
++            break;
++        }
++        x = 1;
++    }
++    printf("brk %d %d\n", x, i);
++    x = 0;
++    while (1) {
++        x = 3;
++        if (n)
++            break;
++        x = 4;
++        if (!n)
++            break;
++    }
++    printf("while1 %d\n", x);
++    for (int j = 0; j < n; j++) /* declared in the init: assigned by the loop */
++        printf("%d", j);
++    printf(" for3\n");
++}
++
++static void t_cond(int c)
++{
++    int x = 0, y = 0;
++    if (c)
++        x = 1;
++    printf("if %d\n", x);
++    x = c ? (y = 1, 5) : 6;
++    printf("cond %d %d\n", x, y);
++    y = 0;
++    if (c && (y = 3))
++        ;
++    printf("land %d\n", y);
++    y = 0;
++    if (!c || (y = 4))
++        ;
++    printf("lor %d\n", y);
++    x = 0;
++    if (c) {
++        x = 1;
++        return;
++    }
++    printf("ret %d\n", x);
++}
++
++static void t_switch(int c)
++{
++    int x = 0, y = 1;
++    switch (c) {
++    case 0: x = 1; break;
++    case 1: x = 2;
++    case 2: y = x; break;
++    case 3: x = 3; y = 5; break;
++    }
++    printf("sw %d %d\n", x, y);
++    x = 7;
++    switch (c) { default: x = 1; }
++    printf("swdef %d\n", x);
++    x = 7;
++    switch (c) { case 5: x = 1; }
++    printf("swnodef %d\n", x);
++    switch (c) {
++    case 1: c = 9; break;  /* the switch value is loaded after the body */
++    case 9: puts("bad"); break;
++    }
++    printf("swval %d\n", c);
++}
++
++static void t_goto(int c)
++{
++    int x = 0, n = 0;
++again:
++    if (x == 0 && n == 0)
++        printf("G ");
++    x = 1;
++    if (n++ < c)
++        goto again;         /* a backward goto: nothing is known at again */
++    printf("goto %d %d\n", x, n);
++    x = 0;
++    if (c)
++        goto skip;
++    x = 1;
++skip:
++    printf("skip %d\n", x);
++    x = 3;
++    if (c) {
++        x = 2;
++        if (c > 1)
++            goto done;
++        x = 2;
++    }
++    x = 2;
++done:
++    printf("done %d\n", x);
++}
++
++static void t_computed(int c)
++{
++    int x = 0;
++    void *t = c ? &&l1 : &&l2;
++    goto *t;
++l1: x = 1; printf("c1 %d\n", x); return;
++l2: printf("c2 %d\n", x);
++}
++
++static void t_addr(int c)
++{
++    int x = 0, y = 0, z = 0;
++    int *p = &x;
++    *p = c;
++    printf("addr %d\n", x);
++    set(&y, 9);
++    printf("set %d\n", y);
++    if (c) {
++        int *q = &z;
++        *q = 1;
++    }
++    printf("late %d\n", z);
++}
++
++static void t_asm(void)
++{
++#if defined __i386__ || defined __x86_64__
++    int x = 1, y = 2;
++    __asm__("movl $5, %0" : "=r"(x));
++    __asm__("addl $1, %0" : "+r"(y));
++    printf("asm %d %d\n", x, y);
++    x = 3;
++    __asm__("" : : "r"(x));
++    printf("asmin %d\n", x);
++#else
++    printf("asm 5 3\nasmin 3\n");
++#endif
++}
++
++static int glob[4], g;
++
++static void t_types(void)
++{
++    char c = 300; unsigned char uc = 300; short s = 70000; _Bool b = 5;
++    unsigned u = -1; long long ll = 1LL << 40; int *p = glob + 2;
++    int ia; unsigned ua; long long a, bb;
++    c += 1;
++    printf("types %d %d %d %d %u %lld %d\n", c, uc, s, b, u,
++           (long long)(ll >> 40), (int)(p - glob));
++    p = 0;
++    if (!p)
++        printf("nullp ");
++    p = &g;
++    *p = 3;
++    printf("g %d\n", g);
++    ia = -1, ua = -2;
++    a = ia, bb = ua;       /* the sign of the known value follows the type */
++    printf("ll %lld %lld\n", a, bb);
++}
++
++static void t_stmtexpr(int c)
++{
++    int x = 0;
++    int y = ({ int t = 5; x = t; t + 1; });
++    printf("se %d %d\n", x, y);
++    x = c ? ({ x = 2; 3; }) : 4;
++    printf("se2 %d\n", x);
++}
++
++static void t_shadow(int c)
++{
++    int x = 1;
++    {
++        int x = 2;
++        if (c)
++            x = 3;
++        printf("inner %d ", x);
++    }
++    printf("outer %d\n", x);
++}
++
++static void t_incdec(void)
++{
++    int x = 5, y;
++    y = x++ + 1;
++    printf("inc %d %d ", x, y);
++    y = --x;
++    printf("%d %d ", x, y);
++    x = 1;
++    x = x + x;
++    x *= 3;
++    printf("%d\n", x);
++}
++
++static void t_pragma(void)
++{
++    /* a directive inside a body that tcc compiles from saved tokens must
++       take effect where it stands */
++    struct a { char c; int i; };
++#pragma pack(push, 1)
++    struct b { char c; int i; };
++#pragma pack(pop)
++    struct c { char c; int i; };
++    printf("pack %d %d %d\n", (int)sizeof(struct a), (int)sizeof(struct b),
++           (int)sizeof(struct c));
++}
++
++static void t_param(int p, int q)
++{
++    p = 3;
++    if (q)
++        p = 4;
++    printf("param %d %d\n", p, q);
++}
++
++struct st { int a, b; };
++
++static void t_struct(int c)
++{
++    struct st s = { 1, 2 };
++    int x = 0;
++    if (c)
++        s.a = 3;
++    x = s.a;
++    printf("struct %d %d\n", x, s.b);
++}
++
++static void t_deref(int c)
++{
++    int arr[3] = { 1, 2, 3 }, *p = arr;
++    while (p < arr + 3)
++        *p++ = c;
++    printf("deref %d %d %d %d\n", arr[0], arr[1], arr[2], (int)(p - arr));
++}
++
++int main(void)
++{
++    int c = enabled;
++    t_dead(&c, c);
++    t_paren();
++    t_loop(3);
++    t_cond(c), t_cond(!c);
++    t_switch(1), t_switch(2), t_switch(5);
++    t_goto(2);
++    t_computed(0), t_computed(1);
++    t_addr(6);
++    t_asm();
++    t_types();
++    t_stmtexpr(c), t_stmtexpr(!c);
++    t_shadow(2);
++    t_incdec();
++    t_pragma();
++    t_param(1, c);
++    t_struct(1);
++    t_deref(7);
++    return 0;
++}
+diff --git a/tests/tests2/163_const_prop.expect b/tests/tests2/163_const_prop.expect
+new file mode 100644
+index 0000000..0464c0e
+--- /dev/null
++++ b/tests/tests2/163_const_prop.expect
+@@ -0,0 +1,55 @@
++paren 5 5
++swap 5 5
++L x0 loop 1 7 2 3
++while 3
++D do 4
++for2 2 2
++inc 0 inc 9 inc 9 after inc 9
++docont 1 3
++brk 8 3
++while1 3
++012 for3
++if 0
++cond 6 0
++land 0
++lor 0
++ret 0
++if 1
++cond 5 1
++land 3
++lor 4
++sw 2 2
++swdef 1
++swnodef 7
++swval 9
++sw 0 0
++swdef 1
++swnodef 7
++swval 2
++sw 0 1
++swdef 1
++swnodef 1
++swval 5
++G goto 1 3
++skip 0
++done 2
++c2 0
++c1 1
++addr 6
++set 9
++late 1
++asm 5 3
++asmin 3
++types 45 44 4464 1 4294967295 1 2
++nullp g 3
++ll -1 4294967294
++se 5 6
++se2 4
++se 5 6
++se2 3
++inner 3 outer 1
++inc 6 6 5 5 6
++pack 8 5 8
++param 3 0
++struct 3 2
++deref 7 7 7 3

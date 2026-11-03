@@ -1,0 +1,1270 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 3 Nov 2026 21:40:59 +0200
+Subject: [PATCH] tccgen: constant propagation through local scalars
+
+A local variable (integer or pointer, not volatile, address never taken)
+whose last store was a constant is known to hold it: a read of the
+variable is the constant, so that a condition on it folds like a literal
+constant and the dead branch does not reference what it calls.  The Linux
+kernel relies on this in an optimizing compiler: an IS_ENABLED() value
+that passes through a local (dma_direct_alloc()'s set_uncached,
+WARN_ON_ONCE()'s __ret_warn_once) or through the return value of a stub
+(swiotlb_find_pool(), shmem_allowable_huge_orders(), acpi_device_handle()
+without their subsystems) guards a call to a function that does not exist
+in the configuration; tcc kept the call and the link failed, which four
+kernel patches of the tinycc-os-kernel project worked around (a fifth,
+shmem's, stays: another caller passes the constant through a function
+parameter).
+
+Stores are always generated; only reads are folded.  The knowledge (Sym
+kst/kval) follows the parse: a store of a plain constant (not the address
+of a symbol, whose Sym may be gone when the variable is read) makes the
+variable known, any other store or an asm output makes it unknown, and
+the control flow is treated conservatively: where two paths join only
+what both agree on stays known (KSnap snapshots of if/else, ?:, && and
+||, kacc accumulators of the paths that break or continue to a point, and
+of the gotos to a label), the variables a loop may assign are unknown
+throughout the loop (its tokens are scanned at the head), a label that a
+later goto or a computed goto can reach makes everything unknown (the
+gotos of a function are scanned before its body is compiled), and dead
+code records nothing.  __builtin_constant_p() sees the known value too.
+
+For the scan of the gotos every function body is now compiled from saved
+tokens, like the static ones already were.  A #pragma inside such a body
+(pack, comment) took effect when the body was saved, not where it stands:
+pragma_parse() now keeps the directive in the saved tokens
+(TOK_LINEFEED TOK_PRAGMA ... TOK_LINEFEED) and next1() executes it when
+they are compiled (push_macro, pop_macro and once act at preprocessing
+time, as before); a scan of saved tokens skips them.
+
+Fix 119 of the tinycc-os-kernel project.
+---
+ tcc.h    |   9 +
+ tccasm.c |   5 +
+ tccgen.c | 659 +++++++++++++++++++++++++++++++++++++++++++++++++++----
+ tccpp.c  |  49 +++++
+ 4 files changed, 680 insertions(+), 42 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 3139e42..3bb83f8 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -563,6 +563,10 @@ typedef struct Sym {
+         struct Sym *cleanup_sym; /* symbol from __attribute__((cleanup())) */
+         struct Sym *cleanup_label; /* label in 'pending_gotos' chain */
+     };
++    /* constant propagation through local scalars (tccgen.c kval()):
++       kst 1 = the variable is known to hold kval, 0 = unknown */
++    int kst;
++    long long kval;
+ } Sym;
+ 
+ /* section definition */
+@@ -667,6 +671,8 @@ typedef struct TokenString {
+     int save_line_num;
+     /* used to chain token-strings with begin/end_macro() */
+     struct TokenString *prev;
++    int pragma_live; /* a saved body being compiled: its kept #pragma
++                        directives act (tccpp.c next1()), a scan skips them */
+     const int *prev_ptr;
+     char alloc;
+ } TokenString;
+@@ -1372,6 +1378,7 @@ ST_DATA struct BufferedFile *file;
+ ST_DATA int tok;
+ ST_DATA CValue tokc;
+ ST_DATA const int *macro_ptr;
++ST_DATA TokenString *cur_save_str; /* the tokens being saved for a later compilation, if any */
+ ST_DATA int parse_flags;
+ ST_DATA int tok_flags;
+ ST_DATA CString tokcstr; /* current parsed string, if any */
+@@ -1541,6 +1548,8 @@ ST_FUNC void gen_op(int op);
+ ST_FUNC int type_size(CType *type, int *a);
+ ST_FUNC void mk_pointer(CType *type);
+ ST_FUNC void vstore(void);
++ST_FUNC void kval(SValue *sv);
++ST_FUNC void kinval(SValue *sv);
+ ST_FUNC void inc(int post, int c);
+ ST_FUNC CString* parse_mult_str(const char *msg);
+ ST_FUNC CString* parse_asm_str(void);
+diff --git a/tccasm.c b/tccasm.c
+index ca89134..d790af9 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -2602,7 +2602,12 @@ static void parse_asm_operands(ASMOperand *operands, int *nb_operands_ptr,
+             if (is_output) {
+                 if (!(vtop->type.t & VT_ARRAY))
+                     test_lvalue();
++                kinval(vtop); /* the asm changes it */
+             } else {
++                /* a known local is its constant, which satisfies every
++                   constraint but a memory one */
++                if (!strpbrk(op->constraint, "moVQ"))
++                    kval(vtop);
+                 /* we want to avoid LLOCAL case, except when the 'm'
+                    constraint is used. Note that it may come from
+                    register storage, so we need to convert (reg)
+diff --git a/tccgen.c b/tccgen.c
+index febfcf1..fb6edda 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -88,6 +88,32 @@ static CString initstr;
+ #define VT_PTRDIFF_T (VT_LONG | VT_LLONG)
+ #endif
+ 
++/* Constant propagation through local scalars ("kprop").  A local variable
++   (integer or pointer, not volatile, address never taken) whose last store
++   was a constant is known to hold it: kval() replaces a read of such a
++   variable by the constant, so that a condition on it folds like a
++   literal constant.  The Linux kernel relies on this: an IS_ENABLED()
++   value that passes through a local, or through the return value of a
++   stub, guards code that references functions which do not exist in that
++   configuration (an optimizing compiler drops the dead branch).  Stores
++   are always generated; only reads are folded.  The knowledge (Sym kst,
++   kval) follows the parse: a store of a constant makes the variable
++   known, any other store (an asm output too) makes it unknown, and the
++   control flow is treated conservatively: where two paths join, only
++   what both agree on stays known (KSnap snapshots and kacc accumulators
++   of the paths that break/continue to a point), the variables that a
++   loop may assign are unknown throughout the loop (its tokens are scanned
++   at the head, loop_tokens()), and a label makes everything unknown.
++   Dead code records nothing. */
++typedef struct KSnap {
++    int n;
++    struct { Sym *s; long long v; } e[1];
++} KSnap;
++struct kacc { KSnap *k; int have; };
++static struct kacc *cur_kbrk, *cur_kcont; /* of the innermost loop */
++static Sym *kinit_sym; /* the local whose initializer is being stored */
++static void klabs_free(void);
++
+ static struct switch_t {
+     struct case_t {
+         int64_t v1, v2;
+@@ -101,6 +127,8 @@ static struct switch_t {
+     struct scope *scope;
+     struct switch_t *prev;
+     SValue sv;
++    KSnap *khead; /* kprop: the state at the switch */
++    struct kacc kbrk; /* and of the breaks */
+ } *cur_switch; /* current switch */
+ 
+ #define MAX_TEMP_LOCAL_VARIABLE_NUMBER 8
+@@ -164,7 +192,7 @@ static void free_inline_functions(TCCState *s);
+ static void skip_or_save_block(TokenString **str);
+ static void replay_end(TokenString *str);
+ static void fold_side_effect(void);
+-static TokenString *dead_loop_tokens(int kind, int *dead);
++static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills);
+ static TokenString *switch_fold_scan(struct switch_t *sw);
+ static int case_cmp(uint64_t a, uint64_t b);
+ static void inline_fold_check(Sym *sym, TokenString *str);
+@@ -409,6 +437,11 @@ ST_FUNC void tccgen_init(TCCState *s1)
+     init_prec();
+ #endif
+     cstr_new(&initstr);
++    /* kprop: the state a compilation that stopped on an error left */
++    cur_save_str = NULL;
++    kinit_sym = NULL;
++    cur_kbrk = cur_kcont = NULL;
++    klabs_free();
+ }
+ 
+ ST_FUNC int tccgen_compile(TCCState *s1)
+@@ -1111,6 +1144,7 @@ static void gvtst_set(int inv, int t)
+ {
+     int *p;
+ 
++    kval(vtop);
+     if (vtop->r != VT_CMP) {
+         vpushi(0);
+         gen_op(TOK_NE);
+@@ -1915,6 +1949,7 @@ ST_FUNC int gv(int rc)
+ 
+     if ((vtop->r & VT_LVAL) && (vtop->type.t & VT_VOLATILE))
+         fold_side_effect();
++    kval(vtop);
+     /* NOTE: get_reg can modify vstack[] */
+     if (vtop->type.t & VT_BITFIELD) {
+         CType type;
+@@ -3175,6 +3210,7 @@ ST_FUNC void gen_op(int op)
+     else if (TOK_ISCOND(op)) /* == != > ... */
+         op_class = CMP_OP;
+ 
++    kval(vtop), kval(vtop - 1);
+ redo:
+     t1 = vtop[-1].type.t;
+     t2 = vtop[0].type.t;
+@@ -3382,6 +3418,7 @@ static void gen_cast(CType *type)
+     int sbt, dbt, sf, df, c;
+     int dbt_bt, sbt_bt, ds, ss, bits, trunc;
+ 
++    kval(vtop);
+     /* special delayed cast for char/short */
+     if (vtop->r & VT_MUSTCAST)
+         force_charshort_cast();
+@@ -3887,11 +3924,381 @@ static void gen_assign_cast(CType *dt)
+ }
+ 
+ /* store vtop in lvalue pushed on stack */
++/* ------------------------------------------------------------------------- */
++/* constant propagation through local scalars, see KSnap above */
++
++static int kprop_on(void)
++{
++#ifdef CONFIG_TCC_BCHECK
++    return !tcc_state->do_bounds_check;
++#else
++    return 1;
++#endif
++}
++
++/* a local variable whose value can be known: a scalar that nothing but
++   its own stores can change */
++static int ktrackable(Sym *s)
++{
++    int bt;
++    if ((s->r & (VT_VALMASK | VT_LVAL)) != (VT_LOCAL | VT_LVAL)
++        || s->a.addrtaken || s->a.regvar
++        || (s->type.t & (VT_VOLATILE | VT_ARRAY | VT_VLA | VT_BITFIELD)))
++        return 0;
++    bt = s->type.t & VT_BTYPE;
++    return is_integer_btype(bt) || bt == VT_PTR;
++}
++
++/* the variable that a stack value reads or stores as a whole, if any */
++static Sym *klocal(SValue *sv)
++{
++    Sym *s = sv->sym;
++    if ((sv->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_LOCAL | VT_LVAL)
++        || !s || sv->c.i != s->c
++        || ((sv->type.t ^ s->type.t) & (VT_BTYPE | VT_UNSIGNED))
++        || (sv->type.t & (VT_BITFIELD | VT_ARRAY))
++        || !ktrackable(s))
++        return NULL;
++    return s;
++}
++
++/* the value of a store to a variable of type t as the variable holds it */
++static long long knorm(int t, long long v)
++{
++    switch (t & VT_BTYPE) {
++    case VT_BOOL:
++        return v != 0;
++    case VT_BYTE:
++        return (t & VT_UNSIGNED) ? (long long)(unsigned char)v : (signed char)v;
++    case VT_SHORT:
++        return (t & VT_UNSIGNED) ? (long long)(unsigned short)v : (short)v;
++    case VT_INT:
++        return (t & VT_UNSIGNED) ? (long long)(unsigned)v : (int)v;
++    }
++    return v;
++}
++
++/* a read of a variable with a known value is the value (VT_NONCONST: it
++   is not a constant expression of the language) */
++ST_FUNC void kval(SValue *sv)
++{
++    Sym *s;
++    if (!kprop_on() || !(s = klocal(sv)) || s->kst != 1)
++        return;
++    sv->r = VT_CONST | VT_NONCONST;
++    sv->r2 = VT_CONST;
++    sv->c.i = s->kval;
++    sv->sym = NULL;
++}
++
++/* the variable may now hold anything (an asm output) */
++ST_FUNC void kinval(SValue *sv)
++{
++    Sym *s = klocal(sv);
++    if (s)
++        s->kst = 0;
++}
++
++/* a store: vtop[-1] the destination, vtop the value (already kval()ed) */
++static void krecord(void)
++{
++    SValue *src = vtop, *dst = vtop - 1;
++    Sym *s;
++    int bt;
++    if (!kprop_on() || nocode_wanted || !(s = klocal(dst)))
++        return;
++    bt = src->type.t & VT_BTYPE;
++    /* a plain constant: not the address of a symbol, whose Sym (a string
++       literal's, a static local's) may be gone when the variable is read */
++    if ((src->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++        && !is_float(src->type.t) && bt != VT_STRUCT && bt != VT_VOID) {
++        s->kst = 1;
++        s->kval = knorm(s->type.t, src->c.i);
++    } else
++        s->kst = 0;
++}
++
++/* the known variables and their values, NULL when there are none */
++static KSnap *ksnap_take(void)
++{
++    Sym *s;
++    KSnap *k;
++    int n = 0;
++    for (s = local_stack; s; s = s->prev)
++        n += s->kst == 1;
++    if (!n)
++        return NULL;
++    k = tcc_malloc(sizeof *k + (n - 1) * sizeof k->e[0]);
++    k->n = 0;
++    for (s = local_stack; s; s = s->prev)
++        if (s->kst == 1) {
++            k->e[k->n].s = s, k->e[k->n].v = s->kval;
++            k->n++;
++        }
++    return k;
++}
++
++/* the entry of s in k, or -1.  s is compared as a pointer only: an entry
++   may name a variable that has gone out of scope since (it is then of no
++   concern at the point where k is used) */
++static int ksnap_find(KSnap *k, Sym *s)
++{
++    int i;
++    if (k)
++        for (i = 0; i < k->n; i++)
++            if (k->e[i].s == s)
++                return i;
++    return -1;
++}
++
++/* where the current path and the path of k join: only what is known now
++   and was known the same in k stays known */
++static void ksnap_merge(KSnap *k)
++{
++    Sym *s;
++    int i;
++    for (s = local_stack; s; s = s->prev)
++        if (s->kst == 1 && ((i = ksnap_find(k, s)) < 0 || k->e[i].v != s->kval))
++            s->kst = 0;
++}
++
++/* back to the state k, for a path that starts where k was taken */
++static void ksnap_restore(KSnap *k)
++{
++    Sym *s;
++    int i;
++    for (s = local_stack; s; s = s->prev) {
++        if ((i = ksnap_find(k, s)) >= 0 && ktrackable(s))
++            s->kst = 1, s->kval = k->e[i].v;
++        else if (s->kst == 1)
++            s->kst = 0;
++    }
++}
++
++/* the current state leaves (break, continue) to the point of a */
++static void kacc_add(struct kacc *a)
++{
++    if (!kprop_on() || nocode_wanted)
++        return;
++    if (!a->have)
++        a->k = ksnap_take(), a->have = 1;
++    else if (a->k) {
++        /* intersection: keep the entries the current state agrees with;
++           a variable out of scope now is dropped (it is out of scope at
++           the join too) */
++        Sym *s;
++        int i, n = 0;
++        for (i = 0; i < a->k->n; i++) {
++            for (s = local_stack; s; s = s->prev)
++                if (s == a->k->e[i].s)
++                    break;
++            if (s && s->kst == 1 && s->kval == a->k->e[i].v)
++                a->k->e[n++] = a->k->e[i];
++        }
++        a->k->n = n;
++    }
++}
++
++/* the paths of a (if any) and, when alive, the current one meet here */
++static void kacc_join(struct kacc *a, int alive)
++{
++    if (kprop_on() && a->have) {
++        if (alive)
++            ksnap_merge(a->k);
++        else
++            ksnap_restore(a->k);
++    }
++    tcc_free(a->k), a->k = NULL, a->have = 0;
++}
++
++static void kkill_all(void)
++{
++    Sym *s;
++    for (s = local_stack; s; s = s->prev)
++        if (s->kst == 1)
++            s->kst = 0;
++}
++
++/* at a loop's head: the variables the loop may assign (n < 0: any).  The
++   identifiers are resolved here, after a for loop's init declared its
++   variable */
++static void kkill(int *kills, int n)
++{
++    Sym *s;
++    int i;
++    if (n < 0)
++        kkill_all();
++    for (i = 0; i < n; i++)
++        if ((s = sym_find(kills[i])) && s->kst == 1)
++            s->kst = 0;
++    tcc_free(kills);
++}
++
++/* loop_tokens(): the identifier v may be assigned in the loop */
++static void kadd(int **kills, int *n, int v)
++{
++    int i;
++    if (*n < 0)
++        return;
++    for (i = 0; i < *n; i++)
++        if ((*kills)[i] == v)
++            return;
++    if (*n >= 64)
++        *n = -1; /* too many: all of them (kkill) */
++    else {
++        *kills = tcc_realloc(*kills, (*n + 1) * sizeof **kills);
++        (*kills)[(*n)++] = v;
++    }
++}
++
++/* after a loop: the paths out of it are the failing condition (the state
++   kx, unless the condition is constant true) and the breaks */
++static void kloop_exit(int kc, KSnap *kx, struct kacc *kb)
++{
++    if (kprop_on()) {
++        if (kc != 1) {
++            ksnap_restore(kx);
++            kacc_join(kb, 1);
++        } else
++            kacc_join(kb, 0);
++    }
++    tcc_free(kx);
++}
++
++/* a case label: the switch's dispatch (the head's state) and, when the
++   previous case falls through, its end meet here */
++static void kcase(void)
++{
++    if (!kprop_on())
++        return;
++    if (!nocode_wanted)
++        ksnap_merge(cur_switch->khead);
++    else
++        ksnap_restore(cur_switch->khead);
++}
++
++/* after a switch: the breaks, and the head's state when no case may be
++   taken (miss) */
++static void kswitch_exit(struct switch_t *sw, int miss)
++{
++    if (kprop_on()) {
++        if (miss) {
++            ksnap_restore(sw->khead);
++            kacc_join(&sw->kbrk, 1);
++        } else
++            kacc_join(&sw->kbrk, 0);
++    }
++    tcc_free(sw->khead), sw->khead = NULL;
++}
++
++/* the condition on vtop: 0 or 1 when it is constant, -1 otherwise */
++static int kcond(void)
++{
++    kval(vtop);
++    if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++        && !is_float(vtop->type.t))
++        return vtop->c.i != 0;
++    return -1;
++}
++
++/* The labels of the function being compiled, from a scan of its tokens
++   before it is parsed (kscan_labels()).  A label that only earlier gotos
++   reach joins their states (a) with the fall-through; one that a later
++   goto or a computed goto (&&label) reaches is the head of a loop, where
++   everything is unknown. */
++static struct klab { int v, back, defined; struct kacc a; } *klabs;
++static int nb_klabs;
++
++static struct klab *klab_find(int v)
++{
++    int i;
++    for (i = 0; i < nb_klabs; i++)
++        if (klabs[i].v == v)
++            return &klabs[i];
++    return NULL;
++}
++
++static struct klab *klab_add(int v)
++{
++    struct klab *l = klab_find(v);
++    if (!l) {
++        klabs = tcc_realloc(klabs, (nb_klabs + 1) * sizeof *klabs);
++        l = &klabs[nb_klabs++];
++        memset(l, 0, sizeof *l);
++        l->v = v;
++    }
++    return l;
++}
++
++static void klabs_free(void)
++{
++    int i;
++    for (i = 0; i < nb_klabs; i++)
++        tcc_free(klabs[i].a.k);
++    tcc_free(klabs), klabs = NULL, nb_klabs = 0;
++}
++
++/* scan a function body (a token string ending with TOK_EOF; the current
++   token has been given back with unget_tok()) for its labels and gotos:
++   a label is an identifier followed by ':' at the start of a statement
++   (not after 'case' or '?'; more is a statement start than listed, which
++   only makes a label a loop head when it is not one) */
++static void kscan_labels(TokenString *str)
++{
++    int prev = 0, prev2 = 0, i;
++    struct klab *l;
++    klabs_free();
++    begin_macro(str, 0);
++    next();
++    for (; tok != TOK_EOF; prev2 = prev, prev = tok, next()) {
++        if (tok >= TOK_UIDENT) {
++            if (prev == TOK_GOTO) {
++                l = klab_add(tok);
++                if (l->defined)
++                    l->back = 1;
++            } else if (prev == TOK_LAND) /* &&label */
++                klab_add(tok)->back = 1;
++        } else if (tok == ':' && prev >= TOK_UIDENT
++                   && (prev2 == ';' || prev2 == '{' || prev2 == '}'
++                       || prev2 == ':' || prev2 == ')' || prev2 == TOK_ELSE
++                       || prev2 == TOK_DO || prev2 == 0)) {
++            klab_add(prev)->defined = 1;
++        }
++    }
++    end_macro();
++    for (i = 0; i < nb_klabs; i++)
++        if (!klabs[i].defined)
++            klabs[i].back = 1;
++}
++
++/* a goto to the label v: its state reaches the label */
++static void klabel_goto(int v)
++{
++    struct klab *l = klab_find(v);
++    if (l && !l->back)
++        kacc_add(&l->a);
++}
++
++/* the definition of the label v */
++static void klabel_def(int v)
++{
++    struct klab *l = klab_find(v);
++    if (!kprop_on())
++        return;
++    if (l && !l->back)
++        kacc_join(&l->a, !nocode_wanted);
++    else
++        kkill_all(); /* a goto may come from anywhere */
++}
++
++/* ------------------------------------------------------------------------- */
+ ST_FUNC void vstore(void)
+ {
+     int sbt, dbt, ft, r, size, align, bit_size, bit_pos, delayed_cast;
+ 
+     fold_side_effect();
++    kval(vtop);
++    krecord();
+ 
+     ft = vtop[-1].type.t;
+     sbt = vtop->type.t & VT_BTYPE;
+@@ -6301,6 +6708,7 @@ ST_FUNC void unary(void)
+     case TOK_builtin_constant_p:
+ 	parse_builtin_params(1, "e");
+ 	n = 1;
++	kval(vtop);
+ 	if ((vtop->r & (VT_VALMASK | VT_LVAL)) != VT_CONST
+ 	    || ((vtop->r & VT_SYM) && vtop->sym->a.addrtaken)
+ 	    )
+@@ -7074,6 +7482,7 @@ static void expr_infix(int p)
+ static int condition_3way(void)
+ {
+     int c = -1;
++    kval(vtop);
+     if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST &&
+ 	(!(vtop->r & VT_SYM) || !vtop->sym->a.weak)) {
+ 	vdup();
+@@ -7087,6 +7496,8 @@ static int condition_3way(void)
+ static void expr_landor(int op)
+ {
+     int t = 0, cc = 1, f = 0, i = op == TOK_LAND, c;
++    KSnap *k0 = NULL;
++    int have = 0;
+     for(;;) {
+         c = f ? i : condition_3way();
+         if (c < 0)
+@@ -7095,6 +7506,8 @@ static void expr_landor(int op)
+             nocode_wanted++, f = 1;
+         if (tok != op)
+             break;
++        if (c < 0 && !have) /* the rest is conditional */
++            k0 = ksnap_take(), have = 1;
+         if (c < 0)
+             t = gvtst(i, t);
+         else
+@@ -7110,6 +7523,8 @@ static void expr_landor(int op)
+     } else {
+         gvtst_set(i, t);
+     }
++    if (have)
++        ksnap_merge(k0), tcc_free(k0);
+ }
+ 
+ static int is_cond_bool(SValue *sv)
+@@ -7127,11 +7542,15 @@ static void expr_cond(void)
+     int tt, u, r1, r2, rc, t1, t2, islv, c, g;
+     SValue sv;
+     CType type;
++    KSnap *k0 = NULL, *k1 = NULL;
++    int alive1 = 0;
+ 
+     expr_lor();
+     if (tok == '?') {
+         next();
+ 	c = condition_3way();
++        if (c < 0)
++            k0 = ksnap_take();
+         g = (tok == ':' && gnu_ext);
+         tt = 0;
+         if (!g) {
+@@ -7158,6 +7577,12 @@ static void expr_cond(void)
+           mk_pointer(&vtop->type);
+         sv = *vtop; /* save value to handle it later */
+         vtop--; /* no vpop so that FP stack is not flushed */
++        if (c < 0) {
++            alive1 = !nocode_wanted;
++            if (alive1)
++                k1 = ksnap_take();
++            ksnap_restore(k0);
++        }
+ 
+         if (g) {
+             u = tt;
+@@ -7173,6 +7598,14 @@ static void expr_cond(void)
+           nocode_wanted++;
+         skip(':');
+         expr_cond();
++        if (c < 0) {
++            if (!nocode_wanted) {
++                if (alive1)
++                    ksnap_merge(k1);
++            } else if (alive1)
++                ksnap_restore(k1);
++            tcc_free(k0), tcc_free(k1);
++        }
+ 
+         if ((vtop->type.t & VT_BTYPE) == VT_FUNC)
+           mk_pointer(&vtop->type);
+@@ -7437,17 +7870,22 @@ static void fold_side_effect(void)
+         fold_impure = 1;
+ }
+ 
+-/* Loops in unreachable code.  tcc resumes code generation at a loop head
+-   (gind()) because a label in the body may be the target of a goto from
+-   live code (tests2/87_dead_code.c).  A loop without any label can stay
+-   without code instead, which also avoids references to symbols that only
+-   exist when the code is live (the Linux kernel's IS_ENABLED() guards).
++/* The tokens of a loop statement are saved before it is parsed, for two
++   analyses.  The local variables the loop may assign (*kills; *nkills =
++   -1 for all of them when the statement cannot be delimited) are unknown
++   at its head for the constant propagation (KSnap).  And loops in
++   unreachable code (*dead on entry): tcc resumes code generation at a
++   loop head (gind()) because a label in the body may be the target of a
++   goto from live code (tests2/87_dead_code.c).  A loop without any label
++   can stay without code instead, which also avoids references to symbols
++   that only exist when the code is live (the Linux kernel's IS_ENABLED()
++   guards).
+    Called at the token after 'while (' / 'for (' / 'do': saves the rest of
+    the statement when its end can be found (the body a block or a simple
+-   statement), looks for labels in it, and returns the tokens, already
+-   begun as a macro for the parser (the current token is pushed back; end
+-   with replay_end()), or NULL when the statement could not be delimited
+-   (the tokens read so far are given back, nothing to end).  *dead tells
++   statement), scans it, and returns the tokens, already begun as a macro
++   for the parser (the current token is pushed back; end with
++   replay_end()), or NULL when the statement could not be delimited (the
++   tokens read so far are given back, nothing to end).  *dead tells
+    whether the loop may stay dead. */
+ /* append '( ... )' to str; the current token is the one after it */
+ static void save_paren_tokens(TokenString *str)
+@@ -7530,12 +7968,14 @@ static int save_stmt_tokens(TokenString *str, int depth)
+     }
+ }
+ 
+-static TokenString *dead_loop_tokens(int kind, int *dead)
++static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
+ {
+-    TokenString *str = tok_str_alloc();
+-    int t, prev, level;
++    TokenString *str = tok_str_alloc(), *save0 = cur_save_str;
++    int t, prev, level, want_dead = *dead;
+ 
+     *dead = 0;
++    *kills = NULL, *nkills = -1;
++    cur_save_str = str; /* pragma_parse() defers the directives met */
+     if (kind != TOK_DO) {
+         /* the head up to the closing ')' */
+         for (level = 0;; next()) {
+@@ -7574,31 +8014,64 @@ static TokenString *dead_loop_tokens(int kind, int *dead)
+         tok_str_add_tok(str), next();
+     }
+     tok_str_add(str, TOK_EOF);
++    cur_save_str = save0;
+     unget_tok(0);
++    str->pragma_live = 1; /* after the scan below: the real compilation */
+     /* a label is an identifier followed by ':' (also in 'a ? b : c',
+        which merely keeps the loop as it was).  A label that only a goto
+        inside the loop targets and that nothing before referenced keeps
+-       the loop dead (the kernel's scoped_cond_guard() has one). */
++       the loop dead (the kernel's scoped_cond_guard() has one).
++       A variable is assigned by an identifier followed (after closing
++       parentheses) by an assignment operator or ++/--, preceded by ++/--
++       or & (through opening parentheses), or anywhere in an asm statement;
++       a member name (after '.' or '->') is none, and '*p = ...' does not
++       assign p.  More is caught than assigned (a & (b) too), which only
++       loses knowledge. */
+     {
+         int labels[8], gotos[8], nl = 0, ng = 0, i, k;
++        int pend = 0, pend_deref = 0, prevp = 0, in_asm = 0, depth = 0;
++        *nkills = 0;
+         begin_macro(str, 0);
+         next();
+-        for (prev = 0, *dead = 1; tok != TOK_EOF; prev = tok, next()) {
+-            if (tok == TOK_LABEL) {
+-                *dead = 0;
+-                break;
+-            }
+-            if (tok == ':' && prev >= TOK_UIDENT) {
+-                if (nl == 8 || label_find(prev)) {
++        for (prev = 0, *dead = want_dead; tok != TOK_EOF; prev = tok, next()) {
++            t = tok;
++            if (*dead) {
++                if (t == TOK_LABEL)
+                     *dead = 0;
+-                    break;
+-                }
+-                labels[nl++] = prev;
+-            } else if (tok == TOK_GOTO) {
+-                next();
+-                if (tok >= TOK_UIDENT && ng < 8)
+-                    gotos[ng++] = tok;
++                else if (t == ':' && prev >= TOK_UIDENT) {
++                    if (nl == 8 || label_find(prev))
++                        *dead = 0;
++                    else
++                        labels[nl++] = prev;
++                } else if (prev == TOK_GOTO && t >= TOK_UIDENT && ng < 8)
++                    gotos[ng++] = t;
++            }
++            if (pend) {
++                if (t == ')')
++                    continue;
++                if (((t == '=' || TOK_ASSIGN(t)) && !pend_deref)
++                    || t == TOK_INC || t == TOK_DEC)
++                    kadd(kills, nkills, pend);
++                pend = 0;
+             }
++            if (in_asm) {
++                if (t == '(')
++                    depth++;
++                else if (t == ')') {
++                    if (--depth <= 0)
++                        in_asm = 0;
++                } else if (t >= TOK_UIDENT && depth > 0)
++                    kadd(kills, nkills, t);
++            } else if (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3) {
++                in_asm = 1, depth = 0;
++            } else if (t >= TOK_UIDENT && prev != '.' && prev != TOK_ARROW) {
++                if (prevp == TOK_INC || prevp == TOK_DEC || prevp == '&')
++                    kadd(kills, nkills, t);
++                else
++                    pend = t, pend_deref = prev == '*';
++            }
++            if (t != '(')
++                prevp = t;
+         }
+         for (i = 0; *dead && i < nl; i++) {
+             for (k = 0; k < ng && gotos[k] != labels[i]; k++)
+@@ -7614,8 +8087,10 @@ static TokenString *dead_loop_tokens(int kind, int *dead)
+ giveup:
+     /* only part of the statement was read: give it back as a macro that
+        ends by itself (0), the parser goes on with the file after it */
++    cur_save_str = save0;
+     tok_str_add(str, 0);
+     unget_tok(0);
++    str->pragma_live = 1;
+     begin_macro(str, 1);
+     next();
+     return NULL;
+@@ -7691,6 +8166,7 @@ static TokenString *switch_fold_scan(struct switch_t *sw)
+     end_macro();
+     if (ok)
+         sw->fold = 1, sw->match = match;
++    body->pragma_live = 1;
+     begin_macro(body, 0);
+     next();
+     return body;
+@@ -8141,43 +8617,77 @@ again:
+         tcc_tcov_check_line (tcc_state, 0), tcc_tcov_block_begin (tcc_state);
+ 
+     if (t == TOK_IF) {
++        KSnap *k0 = NULL, *k1 = NULL;
++        int kc, alive;
+         new_scope_s(&o);
+         skip('(');
+         gexpr_decl();
++        kc = kcond();
+         a = gvtst(1, 0);
+         skip(')');
++        if (kc < 0)
++            k0 = ksnap_take(); /* the state on the other path */
+         block(0);
++        alive = !nocode_wanted;
+         if (tok == TOK_ELSE) {
+             d = gjmp(0);
+             gsym(a);
+             next();
++            if (kc < 0) {
++                if (alive)
++                    k1 = ksnap_take();
++                ksnap_restore(k0);
++            }
+             block(0);
++            if (kc < 0) {
++                if (!nocode_wanted) {
++                    if (alive)
++                        ksnap_merge(k1);
++                } else if (alive)
++                    ksnap_restore(k1);
++            }
+             gsym(d); /* patch else jmp */
+         } else {
+             gsym(a);
++            if (kc < 0) {
++                if (alive)
++                    ksnap_merge(k0);
++                else
++                    ksnap_restore(k0);
++            }
+         }
++        tcc_free(k0), tcc_free(k1);
+         prev_scope_s(&o);
+ 
+     } else if (t == TOK_WHILE) {
+-        TokenString *str = NULL;
++        TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
++        int *kills, nkills, kc;
++        KSnap *kx = NULL;
++        struct kacc kb = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope_s(&o);
+         d = gind();
+         skip('(');
+-        if (dead)
+-            str = dead_loop_tokens(TOK_WHILE, &dead);
++        str = loop_tokens(TOK_WHILE, &dead, &kills, &nkills);
++        kkill(kills, nkills); /* the head: what the loop assigns is unknown */
+         if (dead)
+             CODE_OFF(); /* unreachable loop without labels: stays dead */
+         gexpr();
++        kc = kcond();
+         a = gvtst(1, 0);
+         skip(')');
++        if (kc != 1)
++            kx = ksnap_take(); /* the state when the condition fails */
+         b = 0;
++        cur_kbrk = &kb, cur_kcont = NULL;
+         lblock(&a, &b);
++        cur_kbrk = kb0, cur_kcont = kc0;
+         if (str)
+             replay_end(str), tok_str_free(str);
+         gjmp_addr(d);
+         gsym_addr(b, d);
+         gsym(a);
++        kloop_exit(kc, kx, &kb);
+         prev_scope_s(&o);
+ 
+     } else if (t == '{') {
+@@ -8244,10 +8754,14 @@ again:
+         /* compute jump */
+         if (!cur_scope->bsym)
+             tcc_error("cannot break");
+-        if (cur_switch && cur_scope->bsym == cur_switch->bsym)
++        if (cur_switch && cur_scope->bsym == cur_switch->bsym) {
+             leave_scope(cur_switch->scope);
+-        else
++            kacc_add(&cur_switch->kbrk);
++        } else {
+             leave_scope(loop_scope);
++            if (cur_kbrk)
++                kacc_add(cur_kbrk);
++        }
+         *cur_scope->bsym = gjmp(*cur_scope->bsym);
+         skip(';');
+ 
+@@ -8256,17 +8770,21 @@ again:
+         if (!cur_scope->csym)
+             tcc_error("cannot continue");
+         leave_scope(loop_scope);
++        if (cur_kcont)
++            kacc_add(cur_kcont);
+         *cur_scope->csym = gjmp(*cur_scope->csym);
+         skip(';');
+ 
+     } else if (t == TOK_FOR) {
+-        TokenString *str = NULL;
++        TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
++        int *kills, nkills, kc = 1;
++        KSnap *kh, *kx;
++        struct kacc kb = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope(&o);
+ 
+         skip('(');
+-        if (dead)
+-            str = dead_loop_tokens(TOK_FOR, &dead);
++        str = loop_tokens(TOK_FOR, &dead, &kills, &nkills);
+         if (tok != ';') {
+             /* c99 for-loop init decl? */
+             if (!decl(VT_JMP)) {
+@@ -8276,49 +8794,65 @@ again:
+             }
+         }
+         skip(';');
++        kkill(kills, nkills); /* the head: what the loop assigns is unknown */
++        kh = ksnap_take();
+         a = b = 0;
+         c = d = gind();
+         if (dead)
+             CODE_OFF(); /* unreachable loop without labels, see TOK_WHILE */
+         if (tok != ';') {
+             gexpr();
++            kc = kcond();
+             a = gvtst(1, 0);
+         }
+         skip(';');
++        kx = ksnap_take(); /* after the condition: the body, and the exit */
+         if (tok != ')') {
+             e = gjmp(0);
+             d = gind();
+             if (dead)
+                 CODE_OFF();
++            ksnap_restore(kh); /* the increment runs after the body */
+             gexpr();
+             vpop();
+             gjmp_addr(c);
+             gsym(e);
++            ksnap_restore(kx);
+         }
+         skip(')');
++        cur_kbrk = &kb, cur_kcont = NULL;
+         lblock(&a, &b);
++        cur_kbrk = kb0, cur_kcont = kc0;
+         if (str)
+             replay_end(str), tok_str_free(str);
+         gjmp_addr(d);
+         gsym_addr(b, d);
+         gsym(a);
++        tcc_free(kh);
++        kloop_exit(kc, kx, &kb);
+         prev_scope(&o, 0);
+ 
+     } else if (t == TOK_DO) {
+-        TokenString *str = NULL;
++        TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
++        int *kills, nkills, kc;
++        struct kacc kb = { 0 }, kn = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope_s(&o);
+         a = b = 0;
+-        if (dead)
+-            str = dead_loop_tokens(TOK_DO, &dead);
++        str = loop_tokens(TOK_DO, &dead, &kills, &nkills);
++        kkill(kills, nkills); /* the head: what the loop assigns is unknown */
+         d = gind();
+         if (dead)
+             CODE_OFF(); /* unreachable loop without labels, see TOK_WHILE */
++        cur_kbrk = &kb, cur_kcont = &kn;
+         lblock(&a, &b);
++        cur_kbrk = kb0, cur_kcont = kc0;
++        kacc_join(&kn, !nocode_wanted); /* the continues meet the body's end */
+         gsym(b);
+         skip(TOK_WHILE);
+         skip('(');
+ 	gexpr();
++        kc = kcond();
+         c = gvtst(0, 0);
+         skip(')');
+         skip(';');
+@@ -8326,6 +8860,7 @@ again:
+             replay_end(str), tok_str_free(str);
+ 	gsym_addr(c, d);
+         gsym(a);
++        kloop_exit(kc, kc != 1 ? ksnap_take() : NULL, &kb);
+         prev_scope_s(&o);
+ 
+     } else if (t == TOK_SWITCH) {
+@@ -8345,13 +8880,18 @@ again:
+         if (!is_integer_btype(vtop->type.t & VT_BTYPE))
+             tcc_error("switch value not an integer");
+         skip(')');
++        kval(vtop);
++        if (klocal(vtop))
++            vtop->sym = NULL; /* loaded after the body: not from a value known then */
+         sw->sv = *vtop--; /* save switch value */
++        sw->khead = ksnap_take();
+         if (tok == '{' && !nocode_wanted
+             && (sw->sv.r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
+             body = switch_fold_scan(sw);
+         a = 0;
+         b = gjmp(0); /* jump to first case */
+         lblock(&a, NULL);
++        kacc_add(&sw->kbrk); /* the implicit break */
+         a = gjmp(a); /* add implicit break */
+         if (body) {
+             replay_end(body);
+@@ -8383,6 +8923,8 @@ again:
+         else
+             gsym(d);
+     skip_switch:
++        kswitch_exit(sw, sw->fold ? !sw->match && sw->def_sym <= 0
++                                  : !sw->def_sym);
+         /* break label */
+         gsym(a);
+         end_switch();
+@@ -8401,6 +8943,7 @@ again:
+             if (case_cmp(cr->v2, cr->v1) < 0)
+                 tcc_warning("empty case range");
+         }
++        kcase();
+         /* case and default are unreachable from a switch under nocode_wanted */
+         if (cur_switch->fold) {
+             /* only the taken case starts code; the others are not
+@@ -8420,6 +8963,7 @@ again:
+             expect("switch");
+         if (cur_switch->def_sym)
+             tcc_error("too many 'default'");
++        kcase();
+         if (cur_switch->fold)
+             cur_switch->def_sym = cur_switch->match ? -1 : gind();
+         else
+@@ -8453,6 +8997,7 @@ again:
+                     s = sym_push2(&s->next, SYM_FIELD, 0, 0);
+                     pending_gotos->next = s;
+                 }
++		klabel_goto(tok);
+ 		s->jnext = gjmp(s->jnext);
+ 	    } else {
+ 		try_call_cleanup_goto(s->cleanupstate);
+@@ -8472,6 +9017,7 @@ again:
+         if (tok == ':' && t >= TOK_UIDENT) {
+             /* label case */
+ 	    next();
++            klabel_def(t);
+             s = label_find(t);
+             if (s) {
+                 if (s->r == LABEL_DEFINED)
+@@ -8537,8 +9083,9 @@ static void skip_or_save_block(TokenString **str)
+ {
+     int braces = tok == '{';
+     int level = 0;
++    TokenString *save0 = cur_save_str;
+     if (str)
+-      *str = tok_str_alloc();
++      *str = tok_str_alloc(), cur_save_str = *str;
+ 
+     while (1) {
+ 	int t = tok;
+@@ -8557,6 +9104,8 @@ static void skip_or_save_block(TokenString **str)
+ 	}
+ 	if (str)
+ 	  tok_str_add_tok(*str);
++	if (t == '}' && level == 1 && braces)
++	  cur_save_str = save0; /* the block's end: the next token is read now */
+ 	next();
+ 	if (t == '{' || t == '(' || t == '[') {
+ 	    level++;
+@@ -8568,6 +9117,7 @@ static void skip_or_save_block(TokenString **str)
+     }
+     if (str)
+ 	tok_str_add(*str, TOK_EOF);
++    cur_save_str = save0;
+ }
+ 
+ #define EXPR_CONST 1
+@@ -9020,6 +9570,8 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
+         vtop--;
+     } else {
+         vset(&dtype, VT_LOCAL|VT_LVAL, c);
++        if (kinit_sym && kinit_sym->c == (int)c)
++            vtop->sym = kinit_sym; /* the variable, for krecord() */
+         vswap();
+         vstore();
+         vpop();
+@@ -9428,7 +9980,7 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
+                below, so that a goto out of the initializer does not run the
+                cleanup of a variable whose lifetime has not begun (gcc) */
+             if (ad->cleanup_func)
+-                cleanup_var = sym;
++                cleanup_var = sym, sym->a.addrtaken = 1; /* the cleanup gets it */
+ 
+             sym->a = ad->a;
+         } else {
+@@ -9558,7 +10110,12 @@ static void decl_initializer_alloc(CType *type, AttributeDef *ad, int r,
+         cur_scope->vla.num++;
+     } else if (has_init) {
+         p.sec = sec;
+-        decl_initializer(&p, type, addr, DIF_FIRST);
++        {
++            Sym *ksave = kinit_sym;
++            kinit_sym = (!sec && sym && ktrackable(sym)) ? sym : NULL;
++            decl_initializer(&p, type, addr, DIF_FIRST);
++            kinit_sym = ksave;
++        }
+         /* patch flexible array member size back to -1, */
+         /* for possible subsequent similar declarations */
+         if (flexible_array)
+@@ -9710,6 +10267,7 @@ static void gen_function(Sym *sym)
+ 
+     sym_pop(&local_stack, NULL, 0);
+     label_pop(&global_label_stack, NULL, 0);
++    klabs_free();
+     sym_pop(&all_cleanups, NULL, 0);
+     local_scope = 0;
+ 
+@@ -9745,6 +10303,8 @@ static void gen_inline_functions(TCCState *s)
+                    generate its code and convert it to a normal function */
+                 fn->sym = NULL;
+                 tccpp_putfile(fn->filename);
++                kscan_labels(fn->func_str);
++                fn->func_str->pragma_live = 1;
+                 begin_macro(fn->func_str, 1);
+                 next();
+                 cur_text_section = text_section;
+@@ -9986,6 +10546,21 @@ static int decl(int l)
+                            already created the section */
+                         ad.section->sh_flags |= text_section->sh_flags;
+                     }
++                    /* the body is saved for kscan_labels() and compiled
++                       from the saved tokens, which end where the file
++                       goes on (a 0 instead of TOK_EOF) */
++                    {
++                        TokenString *str;
++                        int eof;
++                        skip_or_save_block(&str);
++                        eof = str->len - 1; /* end_macro() zeroes len */
++                        unget_tok(0);
++                        kscan_labels(str);
++                        str->str[eof] = 0;
++                        str->pragma_live = 1;
++                        begin_macro(str, 1);
++                        next();
++                    }
+                     /* an empty void function is not called (as with
+                        inline_fold_check; kernel apply_retpolines() stubs) */
+                     if ((sym->type.ref->type.t & VT_BTYPE) == VT_VOID
+diff --git a/tccpp.c b/tccpp.c
+index c512922..38e0195 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -34,6 +34,8 @@ ST_DATA struct BufferedFile *file;
+ ST_DATA int tok;
+ ST_DATA CValue tokc;
+ ST_DATA const int *macro_ptr;
++ST_DATA TokenString *cur_save_str;
++static int pragma_parse1(TCCState *s1);
+ ST_DATA CString tokcstr; /* current parsed string, if any */
+ 
+ /* display benchmark infos */
+@@ -1001,6 +1003,7 @@ ST_INLN void tok_str_new(TokenString *s)
+     s->len = s->need_spc = 0;
+     s->allocated_len = 0;
+     s->last_line_num = -1;
++    s->pragma_live = 0;
+ }
+ 
+ ST_FUNC TokenString *tok_str_alloc(void)
+@@ -1670,6 +1673,12 @@ static CachedInclude *search_cached_include(TCCState *s1, const char *filename,
+ static int pragma_parse(TCCState *s1)
+ {
+     next_nomacro();
++    return pragma_parse1(s1);
++}
++
++/* the directive's first word is in tok */
++static int pragma_parse1(TCCState *s1)
++{
+     if (tok == TOK_push_macro || tok == TOK_pop_macro) {
+         int t = tok, v;
+         Sym *s;
+@@ -1701,6 +1710,20 @@ static int pragma_parse(TCCState *s1)
+     } else if (tok == TOK_once) {
+         search_cached_include(s1, file->true_filename, 1)->once = 1;
+ 
++    } else if (cur_save_str) {
++        /* the directive is in a body that is being saved to be compiled
++           later (skip_or_save_block(), loop_tokens()): it is kept in the
++           saved tokens as TOK_LINEFEED TOK_PRAGMA ... TOK_LINEFEED and
++           takes effect when they are compiled (next1()).  push_macro,
++           pop_macro and once above act now, with the rest of the
++           preprocessing */
++        tok_str_add(cur_save_str, TOK_LINEFEED);
++        tok_str_add(cur_save_str, TOK_PRAGMA);
++        while (tok != TOK_LINEFEED && tok != TOK_EOF)
++            tok_str_add_tok(cur_save_str), next();
++        tok_str_add(cur_save_str, TOK_LINEFEED);
++        return 1;
++
+     } else if (s1->output_type == TCC_OUTPUT_PREPROCESS) {
+         /* tcc -E: keep pragmas below unchanged */
+         unget_tok(' ');
+@@ -3541,6 +3564,32 @@ redo:
+             /* end of macro or unget token string */
+             end_macro();
+             continue;
++        } else if (t == TOK_LINEFEED && macro_ptr[1] == TOK_PRAGMA) {
++            /* a directive kept in a saved body by pragma_parse() */
++            macro_ptr += 2;
++            if (!macro_stack->pragma_live) {
++                /* the saved tokens are only being scanned: not now */
++                do
++                    next1();
++                while (tok != TOK_LINEFEED && tok != TOK_EOF);
++            } else if (cur_save_str) {
++                /* saved again (a loop statement in the body) */
++                tok_str_add(cur_save_str, TOK_LINEFEED);
++                tok_str_add(cur_save_str, TOK_PRAGMA);
++                for (;;) {
++                    next1();
++                    if (tok == TOK_LINEFEED || tok == TOK_EOF)
++                        break;
++                    tok_str_add_tok(cur_save_str);
++                }
++                tok_str_add(cur_save_str, TOK_LINEFEED);
++            } else {
++                next1(); /* the directive's word */
++                pragma_parse1(tcc_state);
++                while (tok != TOK_LINEFEED && tok != TOK_EOF)
++                    next1();
++            }
++            continue;
+         } else if (t == TOK_EOF) {
+             /* do nothing */
+         } else {

@@ -59,6 +59,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 116 | tinycc 0112 |
 | | | | | 117 | tinycc 0113 |
 | | | | | 118 | tinycc 0114 |
+| | | | | 119 | tinycc 0115 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -111,6 +112,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/158_link_group.c` | all | 53 |
 | `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112, 115 |
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
+| `tests/tests2/163_const_prop.c` | all | 119 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -1736,6 +1738,55 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     linux; `make test` ALL TESTS PASSED on the host. The rebuilt i386 busybox (FAST_FUNC in
     effect everywhere, so 116 and 117 carry it): sha1sum and sha256sum work in the guest on the
     SHA-NI CPU, and the i386 self-host loop passes (PORT-NOTES).
+
+119. 2026-11-03, COMMITTED (patches/tinycc/compatibility/0115, test 0116), `tccgen.c` (kval,
+    krecord, KSnap/kacc, loop_tokens, kscan_labels, block, expr_cond, expr_landor, vstore, gv,
+    gen_op, gen_cast, decl), `tccasm.c` (parse_asm_operands), `tccpp.c` (pragma_parse1, next1),
+    `tcc.h` (Sym.kst/kval, TokenString.pragma_live, cur_save_str).
+    Problem: four kernel patches (0007, 0008, 0014, 0018) existed only because tcc kept a
+    call that an optimizing compiler proves dead when the IS_ENABLED() constant reaches the
+    condition through a local variable (dma_direct_alloc()'s `set_uncached`, WARN_ON_ONCE()'s
+    `__ret_warn_once`) or through the return value of a stub (swiotlb_find_pool(),
+    shmem_allowable_huge_orders(), acpi_device_handle() without their subsystems): the callee
+    does not exist in the configuration and the link fails. `if (0)` and a stub called in the
+    condition itself were already folded (37, 42); `int o = stub(); if (o) f();` was not.
+    Fix: constant propagation through local scalars. A local (integer or pointer, not volatile,
+    address never taken) whose last store was a plain constant (no symbol address: its Sym, a string literal's or a static local's, may be gone when the variable is read) is known to hold it (Sym kst/kval,
+    recorded by vstore, initializers included); a read of it (gv, gen_op, gen_cast, the
+    conditions, `__builtin_constant_p`, asm inputs without a memory constraint) is the constant,
+    marked VT_NONCONST so that it is no constant expression of the language. Stores are always
+    generated. The control flow conservatively: at a join only what both paths agree on stays
+    known (snapshots for if/else, ?:, &&, ||; accumulators of the breaks and continues of a
+    loop or switch, and of the gotos to a label); the variables a loop may assign are unknown
+    throughout it (loop_tokens scans the statement's tokens at the head: `x =`, `x op=`,
+    `++`/`--`, `&x`, identifiers in asm, also through parentheses, resolved after a for loop's
+    init declared its variable); a label that a later or a computed goto reaches is a loop head
+    where everything is unknown (kscan_labels scans the function's gotos first: every function
+    body is now compiled from saved tokens, as the static ones were); asm outputs, taking the
+    address, and dead code: unknown / not recorded. The switch value is loaded after the body
+    and is therefore never taken from a value known then (found by test3: tcc miscompiled
+    itself). Found by `make test` too: a #pragma inside a body compiled from saved tokens
+    (pack, comment(option)) took effect at save time, a latent bug of the static-function path
+    (42): pragma_parse keeps the directive in the saved tokens (TOK_LINEFEED TOK_PRAGMA ...
+    TOK_LINEFEED, cur_save_str) and next1 executes it when the body is compiled
+    (TokenString.pragma_live; a scan skips it; push_macro, pop_macro and once act at
+    preprocessing time); the saver's lookahead after the closing brace must not defer the next
+    file-scope pragma; the state is reset per compilation (`tcc -dt` runs many). Not covered: a
+    constant through a function parameter (fpu/signal.c, kernel patch 0006; mm/swap_state.c's
+    `__swap_cache_alloc(..., order, ...)` with `vma_thp_gfp_mask()` under `if (order)`, so 0012
+    stays although shmem.c's caller folds), through a struct member (seqlock's ss_tmp, 0005),
+    `c ? 0 : 0`.
+    Test: 163 (the dead references that must go, and some 40 cases where the knowledge must be
+    dropped, against gcc -O2).
+    Verification: `make test` ALL TESTS PASSED on the host (x86_64; the i386 cross compiler
+    builds the i386 kernel objects); kernel/dma/direct.o and mm/shmem.o (x86_64),
+    kernel/dma/mapping.o, drivers/bluetooth/btintel.o and direct.o (i386), compiled from the
+    vanilla sources, have no reference to arch_dma_set_uncached, dma_alloc_from_pool,
+    vma_thp_gfp_mask, __swiotlb_*, acpi_has_method; patches 0007, 0008, 0014 and 0018 dropped
+    from patches/linux/series (15 kernel patches left); both kernels rebuilt with the new
+    compiler on the reduced series (2093 and 2041 tcc invocations, no gcc) and booted:
+    `scripts/devices-test.sh` passes its 13 checks on x86_64 and on i386 (the initramfs is the
+    one built before, by the previous tcc).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

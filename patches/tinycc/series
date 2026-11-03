@@ -113,3 +113,5 @@ bugfixes/0111-tccgen-a-scalar-s-braced-initializer-may-end-in-a-co.patch
 bugfixes/0112-i386-regparm-n-combined-with-stdcall-keeps-the-regis.patch
 bugfixes/0113-A-calling-convention-attribute-after-the-declarator-.patch
 compatibility/0114-Predefine-GCC-s-unreserved-unix-linux-and-i386-macro.patch
+compatibility/0115-tccgen-constant-propagation-through-local-scalars.patch
+features/0116-tests-163_const_prop-the-cases-of-fix-119.patch

@@ -89,9 +89,14 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   `_static_cpu_has()` as the dynamic test (tcc does not inline, so `"i"` operands from
   function parameters never become immediates); the seqlock canaries as stubs (need the
   optimizer to prove states impossible).
-* upstreamable, semantics-preserving: `ia32_fxstate_possible()` in fpu/signal.c and two
-  `IS_ENABLED()` conditions in dma/direct.c, where gcc propagates a constant through a
-  local variable or an inlined callee and tcc does not.
+* upstreamable, semantics-preserving: `ia32_fxstate_possible()` in fpu/signal.c, where gcc
+  propagates a constant through a function parameter (the callee has one caller and is
+  inlined) and tcc does not; the `vma_thp_gfp_mask()` stub (0012) stays for the same reason
+  (mm/swap_state.c passes the order as a parameter).  Four more of this kind (two
+  `IS_ENABLED()` conditions in dma/direct.c, the swiotlb wrapper and `acpi_has_method()`
+  stubs: a constant through a local variable or a stub's return value; K15 and K19 below)
+  went away on 2026-11-03 with tcc fix 119, constant propagation through locals: 15 kernel
+  patches remain.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; tcc has no VEX/EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -99,9 +104,10 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without).
 
 Pattern for new finds: anything that needs an `"i"` constraint from a function parameter
-(`__always_inline` helpers) needs a macro form under `__TINYC__`; anything that needs a
-constant to flow through a variable can usually be rewritten so the constant is tested
-directly, which is also better code for gcc.
+(`__always_inline` helpers) needs a macro form under `__TINYC__`; a constant that flows
+through a local variable or a stub's return value folds since fix 119; one that flows through
+a function parameter or a struct member still needs the condition rewritten so the constant
+is tested directly, which is also better code for gcc.
 
 ## What the tcc patches do, in one paragraph each kind
 
@@ -117,7 +123,8 @@ directly, which is also better code for gcc.
 * Code generation like an optimizing compiler where freestanding code depends on it:
   REX_GOTPCRELX (no GOT), hidden symbols RIP-relative, unreferenced static functions not
   emitted, constant switches generate only the taken case, dead loops stay dead, trivial
-  stubs folded at call sites, `x & 0` folds, inline `bsr`/`bsf`.
+  stubs folded at call sites, `x & 0` folds, inline `bsr`/`bsf`, constants propagated
+  through local variables (fix 119: `int o = stub(); if (o) f();` drops the call).
 * Linker/driver: `-Wl,--start-group`, `-Wp,-MMD,<file>`, `-S` (asm-offsets text), `-E -MD`,
   `-m16` (execs i386-tcc), `-mregparm=N`, `-fno-builtin`/`-ffreestanding`, `include/limits.h`
   for code that makes tcc claim to be GCC.
@@ -169,6 +176,18 @@ directly, which is also better code for gcc.
    open there. The RCU stall report that the serial transfer provoked was QEMU's UART
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
+9. The vanilla kernel (investigated 2026-11-03, see docs/FIX-LOG.md 119): of the 15 kernel
+   patches left, tcc could absorb 0015 and 0017 with the stub fold extended to `if/else
+   return` bodies and to constant arguments, 0003, 0004, 0012 and half of 0005 with an
+   inliner for `__always_inline` and single-caller static functions called with constants
+   (replay of the saved body with the parameters as known locals), 0013 and 0019 with the strength reduction of `long long`
+   division by a constant on i386, 0010 and 0016 with VEX/EVEX encodings in the assembler,
+   0001 and 0002 with `__int128` on x86_64; 0005's `__scoped_seqlock_bug()`, 0006 (a constant
+   through a function parameter of a function with one caller), 0009 (objtool needs libelf) and 0011 (the 16-bit code size)
+   stay kernel-side.  The real objtool, built with gcc, accepted all 1566 tcc-built x86_64
+   objects of drivers.config (212 warnings in 110 objects: an epilogue after an infinite
+   loop, missing `__noreturn`, `stac()`/`clac()` not inlined, two alternatives' stack layouts
+   in entry.S), and `--orc --stackval` gave no stack warnings on a sample.
 
 ## The device drivers (`kernels/linux/drivers.config`, 2026-10-26)
 
@@ -308,7 +327,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 19 kernel patches are
+  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 15 kernel patches are
   applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same
