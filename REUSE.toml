@@ -54,3 +54,21 @@ path = ["patches/jwm/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Joe Wingbermuehle", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/xfiles/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Lucas de Sena", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/xmenu/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Lucas de Sena", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/dmenu/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Anselm R Garbe and the dmenu authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"

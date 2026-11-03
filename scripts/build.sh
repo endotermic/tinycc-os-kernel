@@ -43,19 +43,25 @@
 #               the jwm step's font stack (DejaVu Sans Mono), its scrollbar and type engine linked in,
 #               static, musl, with mlclient -> /usr/bin/mlterm, /usr/bin/mlclient, /etc/mlterm
 #               (userland/mlterm/) in the images; JWM's menu and links' LINKS_XTERM run it
+#   xfiles      the file manager of the graphical mode: xfiles (icon grid, drag and drop, thumbnails,
+#               XEmbed) with libXfixes and libXcursor, the pop-up menu xmenu (patches/xmenu: no
+#               Imlib2), the prompt dmenu, xprop and xrdb, all static, musl; the C scripts
+#               xfilesctl, xfilesthumb and xdg-open, /etc/X11/Xresources, the Unifont fallback
+#               font, and libpng/libjpeg/zlib with headers under /usr/lib, /usr/include for the
+#               thumbnailer, libX11's locale data (userland/xfiles/) -> /usr/bin/xfiles ... in the images
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
-#               startx), static, musl, with TLS from that LibreSSL (http:// and https://)
+#               startx; GIF, PNG and JPEG images), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
 #   guest-make  GNU make, static, musl, compiled by the host tcc (the guest's make for self-hosting)
-#   initramfs   the libc-free init + the two cpio images -> out/<arch>/
+#   initramfs   the libc-free init + the two cpio images (initramfs-nolibc.cpio, initramfs.cpio.gz) -> out/<arch>/
 #   selfhost    the self-hosting image out/<arch>/initramfs-selfhost.cpio: the busybox image plus
 #               the pruned kernel source, the tcc, tld and make sources, i386-tcc, tld, make, the
 #               Kbuild wrappers, pre-generated Kconfig lexer/parser, and build-kernel /
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm links guest-tcc initramfs
+#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -803,6 +809,88 @@ step_mlterm() {
     cp "$ROOT"/userland/mlterm/main "$ROOT"/userland/mlterm/key "$ROOT"/userland/mlterm/aafont "$STAGE/etc/mlterm/"
     echo "   mlterm $(lock_ref mlterm): $(file -b main/mlterm | cut -d, -f1-2), $(ls -l main/mlterm | awk '{print $5}') bytes; mlclient $(ls -l tool/mlclient/mlclient | awk '{print $5}') bytes; /etc/mlterm: $(ls "$STAGE/etc/mlterm" | tr '\n' ' ')"
 }
+step_xfiles() {
+    need_src libXfixes libXcursor xprop xrdb dmenu xmenu xfiles unifont
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
+    [ -f "$XP/lib/libXpm.a" ] && [ -f "$XP/lib/libXext.a" ] && [ -f "$XP/lib/libXmu.a" ] || die "no libXpm.a, libXext.a or libXmu.a in $XP: run the xdm step first"
+    [ -f "$XP/lib/libXft.a" ] && [ -f "$XP/lib/libXrender.a" ] && [ -f "$XP/lib/libXinerama.a" ] && [ -f "$XP/lib/libjpeg.a" ] || die "no libXft.a, libXrender.a, libXinerama.a or libjpeg.a in $XP: run the jwm step first"
+    x_env
+    # The two X client libraries xfiles needs beyond the stack above: libXfixes (libXcursor
+    # wants it) and libXcursor (the drag-and-drop cursors; no cursor theme is in the image, so
+    # its loader falls back to the server's cursor font).  Then two X.Org utilities the control
+    # script drives: xprop (sets _CONTROL_GOTO on the xfiles window, which is how the script
+    # changes the window's directory) and xrdb (the session loads /etc/X11/Xresources with
+    # it; no C preprocessor is in the image, the session scripts pass -nocpp, so the cpp path
+    # configured here is never run).  All plain C autotools, static, built as the libraries.
+    xlib_build libXfixes
+    xlib_build libXcursor --with-icondir=/usr/share/icons --with-cursorpath='~/.icons:/usr/share/icons:/usr/share/pixmaps'
+    xlib_build xprop
+    xlib_build xrdb --with-cpp=/usr/bin/cpp
+    XF=$B/xfiles; STAGE=$XF/stage; mkdir -p "$XF"
+    # dmenu (the prompt that xfiles embeds through XEmbed: the address bar, new names), xmenu
+    # (the pop-up menu; its icons want Imlib2, a library with its own loader plugins, which
+    # patches/xmenu makes optional: -DWITHOUT_IMLIB2) and xfiles itself, each compiled by hand
+    # from the source lists of their POSIX Makefiles: those Makefiles hard-code the host's
+    # include directories (/usr/include/freetype2, /usr/X11R6/include) before the user's,
+    # which with the host's development headers present would mix two FreeTypes.  Copies of
+    # the trees under build/ (xmenu and xfiles include "control/font.h" from their own tree,
+    # dmenu its config.h, written from config.def.h).  The libraries in the single-pass
+    # order of scripts/pkg-config.sh; -lpthread is in musl's libc.
+    XLIBS_XFILES="$("$PKG_CONFIG" --libs xft xcursor xfixes xpm xext xrender x11) -lXrender -lm -lX11 -lxcb -lXau"   # Xcursor needs XRender after it
+    XLIBS_XMENU="$("$PKG_CONFIG" --libs xft xinerama xrender x11) -lm -lX11 -lxcb -lXau"
+    : >"$LOGS/xfiles.log"
+    msg "dmenu: $(lock_ref dmenu), static, musl, CC=musl-tcc, Xft + Xinerama -> $XF/dmenu/dmenu"
+    rsync -a --delete --exclude .git "$SRC/dmenu/" "$XF/dmenu/"
+    cd "$XF/dmenu"
+    cp config.def.h config.h
+    "$MUSL_TCC" -std=c99 -O2 -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_XOPEN_SOURCE=700 -D_POSIX_C_SOURCE=200809L \
+        -DVERSION="\"$(lock_ref dmenu)\"" -DXINERAMA -I"$XP/include" -I"$XP/include/freetype2" \
+        -o dmenu dmenu.c drw.c util.c -L"$XP/lib" $XLIBS_XMENU >>"$LOGS/xfiles.log" 2>&1 \
+        || fail "$LOGS/xfiles.log" "dmenu build failed"
+    msg "xmenu: $(lock_ref xmenu) $(git -C "$SRC/xmenu" rev-parse --short base), static, musl, CC=musl-tcc, Xft + Xinerama, no Imlib2 icons -> $XF/xmenu/xmenu"
+    rsync -a --delete --exclude .git "$SRC/xmenu/" "$XF/xmenu/"
+    cd "$XF/xmenu"
+    "$MUSL_TCC" -std=c99 -O2 -D_XOPEN_SOURCE=800 -D_BSD_SOURCE -D_GNU_SOURCE -DWITHOUT_IMLIB2 \
+        -I. -I"$XP/include" -I"$XP/include/freetype2" \
+        -o xmenu xmenu.c control/font.c -L"$XP/lib" $XLIBS_XMENU >>"$LOGS/xfiles.log" 2>&1 \
+        || fail "$LOGS/xfiles.log" "xmenu build failed"
+    msg "xfiles: $(lock_ref xfiles) $(git -C "$SRC/xfiles" rev-parse --short base), static, musl, CC=musl-tcc, Xlib + Xft + Xpm + Xrender + Xcursor + Xext -> $STAGE/usr/bin/xfiles"
+    rsync -a --delete --exclude .git "$SRC/xfiles/" "$XF/xfiles/"
+    cd "$XF/xfiles"
+    "$MUSL_TCC" -std=c99 -O2 -D_POSIX_C_SOURCE=200809L -D_BSD_SOURCE -D_GNU_SOURCE -D_DEFAULT_SOURCE \
+        -I. -I"$XP/include" -I"$XP/include/freetype2" \
+        -o xfiles xfiles.c widget.c util.c icons.c control/dragndrop.c control/selection.c control/font.c \
+        -L"$XP/lib" $XLIBS_XFILES >>"$LOGS/xfiles.log" 2>&1 \
+        || fail "$LOGS/xfiles.log" "xfiles build failed"
+    # the staging tree appended to the images (stage_lists): the five programs; the control
+    # script xfilesctl, the thumbnailer xfilesthumb and the opener xdg-open (C scripts tcc runs,
+    # userland/xfiles/); the X resources the session loads (/etc/X11/Xresources: xfiles' font
+    # and colours, its icon patterns, xmenu's and dmenu's look); Unifont as the fallback font
+    # for the scripts DejaVu lacks (fontconfig's 69-unifont.conf names it); and, for the
+    # thumbnailer, which decodes PNG and JPEG with the libraries the image's programs are
+    # linked with, those libraries and their headers under /usr/lib and /usr/include, where
+    # the guest tcc finds them (#pragma comment(lib, ...) in the script)
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/X11" "$STAGE/usr/share/fonts/unifont" "$STAGE/usr/lib" "$STAGE/usr/include" "$STAGE/usr/share/X11/locale"
+    cp "$XF/xfiles/xfiles" "$XF/xmenu/xmenu" "$XF/dmenu/dmenu" "$XP/bin/xprop" "$XP/bin/xrdb" "$STAGE/usr/bin/"
+    # libX11's locale data for the C and UTF-8 locales (the index files, the C and the
+    # en_US.UTF-8 tables with its Compose file): without them XSupportsLocale() is false
+    # and XOpenIM() fails, on which dmenu exits ("XOpenIM failed: could not open input
+    # device"; xfiles and xmenu only warn "could not set locale"); libX11 looks in the
+    # directory it was configured with (the build tree, --prefix=$XP), so the session sets
+    # XLOCALEDIR=/usr/share/X11/locale (startx.c, Xsession.c)
+    for f in locale.alias locale.dir compose.dir C en_US.UTF-8; do cp -a "$XP/share/X11/locale/$f" "$STAGE/usr/share/X11/locale/"; done
+    for c in xfilesctl xfilesthumb xdg-open; do cp "$ROOT/userland/xfiles/$c.c" "$STAGE/usr/bin/$c"; chmod 755 "$STAGE/usr/bin/$c"; done
+    cp "$ROOT/userland/xfiles/Xresources" "$STAGE/etc/X11/Xresources"
+    cp "$SRC/unifont/unifont-$(lock_ref unifont).pcf.gz" "$STAGE/usr/share/fonts/unifont/unifont.pcf.gz"
+    cp "$ROOT/userland/xfiles/LICENSE.unifont" "$STAGE/usr/share/fonts/unifont/LICENSE.unifont"
+    cp "$XP/lib/libpng16.a" "$XP/lib/libjpeg.a" "$XP/lib/libz.a" "$STAGE/usr/lib/"
+    ln -sf libpng16.a "$STAGE/usr/lib/libpng.a"
+    cp "$XP/include/png.h" "$XP/include/pngconf.h" "$XP/include/pnglibconf.h" "$XP/include/zlib.h" "$XP/include/zconf.h" \
+        "$XP/include/jpeglib.h" "$XP/include/jconfig.h" "$XP/include/jmorecfg.h" "$XP/include/jerror.h" "$STAGE/usr/include/"
+    for f in xfiles xmenu dmenu xprop xrdb; do printf '   %-8s %s, %s bytes\n' "$f" "$(file -b "$STAGE/usr/bin/$f" | cut -d, -f1-2)" "$(ls -l "$STAGE/usr/bin/$f" | awk '{print $5}')"; done
+    echo "   scripts: xfilesctl xfilesthumb xdg-open (userland/xfiles/); /etc/X11/Xresources; fonts: unifont.pcf.gz $(ls -l "$STAGE/usr/share/fonts/unifont/unifont.pcf.gz" | awk '{print $5}') bytes; /usr/lib: $(ls "$STAGE/usr/lib" | tr '\n' ' '); X locale data: $(ls "$STAGE/usr/share/X11/locale" | tr '\n' ' ')"
+}
 step_links() {
     need_src links
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -817,27 +905,30 @@ step_links() {
     # the static link needs libX11's own dependencies named: LIBS), TLS from the tcc-built
     # LibreSSL (--with-ssl=DIR: -IDIR/include, -LDIR/lib -lssl -lcrypto; --disable-ssl-pkgconfig
     # keeps the host's openssl.pc out; the png and freetype pkg-config lookups are off the same
-    # way), no framebuffer or svgalib driver, no freetype (links draws with its own fonts), no
-    # gpm, no libevent: a static binary that needs musl alone.  Every other library is switched
+    # way), JPEG images from the jwm step's libjpeg in $XP (--with-libjpeg, 2026-11-03: the
+    # file manager opens images in links; GIF and PNG were in from the start), no framebuffer
+    # or svgalib driver, no freetype (links draws with its own fonts), no gpm, no libevent: a
+    # static binary that needs musl alone.  Every other library is switched
     # off explicitly, so that configure cannot pick up a host library through tcc's default
     # search paths.  An out-of-tree (VPATH) build keeps src/links clean.  configure takes CC and
     # CFLAGS from the environment only: a CC=... argument is read as a host type.  links
     # compiles with tcc unpatched.
     # (configure keeps a config.cache; it goes before a re-run, so that nothing of an
     # earlier configuration survives into this one)
-    configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" "--x-libraries=$XP/lib" \
+    configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" "--x-libraries=$XP/lib" "--with-libjpeg" \
         || { rm -f config.cache; false; } \
         || CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" LIBS="-lxcb -lXau" \
             "$LINKSSRC/configure" --with-ssl="$LSSL" --disable-ssl-pkgconfig \
             --enable-graphics --with-x --x-includes="$XP/include" --x-libraries="$XP/lib" \
             --disable-png-pkgconfig --disable-freetype-pkgconfig --without-fb --without-svgalib \
             --without-directfb --with-zlib --without-brotli --without-zstd --without-bzip2 --without-lzma \
-            --without-lzip --without-openmp --without-libevent --without-gpm --without-freetype --without-libjpeg \
+            --without-lzip --without-openmp --without-libevent --without-gpm --without-freetype --with-libjpeg \
             --without-libtiff --without-librsvg --without-libwebp --without-libavif \
             >"$LOGS/links-configure.log" 2>&1 \
         || fail "$LOGS/links-configure.log" "links configure failed"
     grep -q '^SSL support:.*OPENSSL' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without SSL"
     grep -q '^Graphics drivers:.*\bX\b' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without the X graphics driver"
+    grep -q '^Image formats:.*JPEG' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without JPEG (libjpeg from the jwm step)"
     : >"$LOGS/links.log"
     rm -f links                  # relink against the current LibreSSL and X libraries
     run_progress "links" "$(make_total)" "$LOGS/links.log" make -j"$JOBS" || fail "$LOGS/links.log" "links build failed"
@@ -949,7 +1040,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -1038,9 +1129,15 @@ step_initramfs() {
           "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
           stage_lists
         } > "$B/initramfs.gen.list"
-        "$TOOLS/gen_init_cpio" "$B/initramfs.gen.list" > "$O/initramfs.cpio"
+        # gzip-compressed (CONFIG_RD_GZIP): the kernel reserves the image as loaded until it
+        # has unpacked it, so an uncompressed image costs its size twice at boot; the 60 MB
+        # of the graphical system (the file manager's programs each carry the Xft stack) did
+        # not fit a 128 MB machine that way (run.sh gives 256 MB now).  -n: no name or time
+        # stamp in the header, so that the same tree gives the same file
+        "$TOOLS/gen_init_cpio" "$B/initramfs.gen.list" | gzip -6 -n > "$O/initramfs.cpio.gz"
+        rm -f "$O/initramfs.cpio"
     fi
-    ls -l "$O"/*.cpio | awk '{print "   " $5 "\t" $9}'
+    ls -l "$O"/*.cpio "$O"/*.cpio.gz 2>/dev/null | awk '{print "   " $5 "\t" $9}'
 }
 
 step_iso() {
@@ -1102,7 +1199,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1122,7 +1219,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

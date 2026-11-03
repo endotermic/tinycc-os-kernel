@@ -1,0 +1,25 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* file-manager.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons): a folder */
+static char *file_manager_xpm[] = {
+"16 16 4 1",
+".	c None",
+"o	c #202020",
+"y	c #e0b040",
+"l	c #f8e090",
+"................",
+"................",
+".oooooo.........",
+".oyyyyyoooooooo.",
+".oyyyyyyyyyyyyo.",
+".oyyyyyyyyyyyyo.",
+".ollllllllllllo.",
+".olyyyyyyyyyyyo.",
+".olyyyyyyyyyyyo.",
+".olyyyyyyyyyyyo.",
+".olyyyyyyyyyyyo.",
+".olyyyyyyyyyyyo.",
+".olyyyyyyyyyyyo.",
+".oooooooooooooo.",
+"................",
+"................"};

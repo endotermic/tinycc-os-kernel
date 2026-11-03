@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 16:55:48 +0200
+Subject: [PATCH] Build without Imlib2: -DWITHOUT_IMLIB2 skips the IMG: icons
+
+Imlib2 is the only library xmenu needs beyond Xlib, Xft and Xinerama, and it
+loads its image formats as plugins (dlopen), which a static program cannot do.
+With WITHOUT_IMLIB2 defined the icon file names of "IMG:file" fields are still
+read and the space for them kept, but nothing is drawn there; the Makefile's
+IMLIB2 variable (default -lImlib2) names the library for the link.
+---
+ Makefile |  5 ++++-
+ xmenu.c  | 15 ++++++++++++++-
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index b2e7ada..c11a9a1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,7 @@
+ PROG = xmenu
++# IMLIB2 = -lImlib2 draws the "IMG:file" icons; without Imlib2 build with
++# CPPFLAGS=-DWITHOUT_IMLIB2 IMLIB2= (the icon fields are read and skipped)
++IMLIB2 = -lImlib2
+ OBJS = ${PROG:=.o} control/font.o
+ SRCS = ${OBJS:.o=.c}
+ MAN = ${PROG:=.1}
+@@ -14,7 +17,7 @@ all: ${PROG}
+ 
+ ${PROG}: ${OBJS}
+ 	${CC} -o $@ ${OBJS} \
+-	-lfontconfig -lXft -lX11 -lXinerama -lXrender -lImlib2 ${LDLIBS} \
++	-lfontconfig -lXft -lX11 -lXinerama -lXrender ${IMLIB2} ${LDLIBS} \
+ 	-L/usr{,/local,/X11R6}/lib ${LDFLAGS}
+ 
+ .PHONY: debug
+diff --git a/xmenu.c b/xmenu.c
+index 66a3d3a..1c879c4 100644
+--- a/xmenu.c
++++ b/xmenu.c
+@@ -26,7 +26,9 @@
+ #include <X11/cursorfont.h>
+ #include <X11/Xft/Xft.h>
+ #include <X11/extensions/Xinerama.h>
++#ifndef WITHOUT_IMLIB2
+ #include <Imlib2.h>
++#endif
+ 
+ #include "control/font.h"
+ 
+@@ -222,7 +224,9 @@ typedef struct Widget {
+ 	unsigned int itemh, separatorh;
+ 	int shadowwid, borderwid, iconsize, gap;
+ 	int maxitems;
++#ifndef WITHOUT_IMLIB2
+ 	bool initimlib;
++#endif
+ 	bool tearoff;
+ 	enum {
+ 		ALIGN_LEFT,
+@@ -1485,6 +1489,7 @@ firstitempos(Widget *widget, Menu *menu)
+ 	return y;
+ }
+ 
++#ifndef WITHOUT_IMLIB2
+ static void
+ initimlib(Widget *widget)
+ {
+@@ -1498,7 +1503,9 @@ initimlib(Widget *widget)
+ 	imlib_context_set_visual(widget->visual);
+ 	imlib_context_set_colormap(widget->colormap);
+ }
++#endif
+ 
++#ifndef WITHOUT_IMLIB2
+ static bool
+ isabsolute(const char *s)
+ {
+@@ -1598,6 +1605,7 @@ loadicon(Widget *widget, const char *file, int size, int *width_ret, int *height
+ 	);
+ 	return icon;
+ }
++#endif /* WITHOUT_IMLIB2 */
+ 
+ static bool
+ openssubmenu(Item *item)
+@@ -1614,9 +1622,12 @@ drawmenu(Widget *widget, Menu *menu)
+ {
+ 	Item *item;
+ 	size_t i, j;
++#ifndef WITHOUT_IMLIB2
+ 	Imlib_Image image;
++	int iconw, iconh;
++#endif
+ 	XRectangle rect;
+-	int textx, textw, iconw, iconh, y;
++	int textx, textw, y;
+ 	struct Canvas canvas[CANVAS_FINAL][LAYER_LAST];
+ 
+ 	for (i = 0; i < CANVAS_LAST; i++) {
+@@ -1713,6 +1724,7 @@ drawmenu(Widget *widget, Menu *menu)
+ 			goto next;
+ 		}
+ 		rect.height = widget->itemh;
++#ifndef WITHOUT_IMLIB2
+ 		image = loadicon(
+ 			widget,
+ 			item->file,
+@@ -1740,6 +1752,7 @@ drawmenu(Widget *widget, Menu *menu)
+ 			);
+ 			imlib_free_image();
+ 		}
++#endif /* WITHOUT_IMLIB2 */
+ 		if (openssubmenu(item)) {
+ 			drawtriangle(
+ 				widget,

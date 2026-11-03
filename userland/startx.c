@@ -13,8 +13,10 @@
  *   no arguments: links opens with no page (its menu is on the Escape key / the top line)
  * Env: DISPLAY (default :0, the server's display number), XSERVER_OPTS (extra options
  *   for Xfbdev, e.g. "vt7" or "-mouse /dev/input/mice"), XLOG (the server's output,
- *   default /tmp/Xfbdev.log); LINKS_XTERM is set to "mlterm -e" when the image has
- *   /usr/bin/mlterm (the terminal links and JWM's menu open), unless already set
+ *   default /tmp/Xfbdev.log); LINKS_XTERM is set to "mlterm -e" and TERMINAL to mlterm
+ *   when the image has /usr/bin/mlterm (the terminal links, JWM's menu and the file manager
+ *   open), EDITOR to vi and XDG_CACHE_HOME to $HOME/.cache (xfiles' thumbnails), unless
+ *   already set; /etc/X11/Xresources and ~/.Xresources are loaded with xrdb (see session_env)
  * The server's log is printed when the server fails to start.  Status: that of links,
  * 1 when the server could not be started.
  *
@@ -48,6 +50,55 @@ static void print_log(void)
     while ((c = getc(f)) != EOF)
         putc(c, stderr);
     fclose(f);
+}
+
+/* the session's environment and resources, once the server runs: the X resources of
+ * /etc/X11/Xresources (userland/xfiles/Xresources: xfiles' font, colours and icon patterns,
+ * xmenu's look) and the user's ~/.Xresources go into the server's RESOURCE_MANAGER property
+ * with xrdb (-nocpp: the image has no C preprocessor); XDG_CACHE_HOME is where xfiles keeps
+ * its thumbnails ($HOME/.cache; without it xfiles makes none), EDITOR what xdg-open opens
+ * text with, TERMINAL the terminal it and xfilesctl run programs in */
+static void session_env(void)
+{
+    const char *home = getenv("HOME");
+    char path[512];
+    if (access("/usr/bin/mlterm", X_OK) == 0) {
+        setenv("LINKS_XTERM", "mlterm -e", 0);
+        setenv("TERMINAL", "mlterm", 0);
+    }
+    setenv("EDITOR", "vi", 0);
+    /* the character set of the session: musl's C locale is ASCII, its C.UTF-8 the one with
+     * UTF-8 (xfiles' setlocale/XSupportsLocale, mlterm's encoding, busybox's ls) */
+    setenv("LANG", "C.UTF-8", 0);
+    /* libX11's locale data (XSupportsLocale, the input method dmenu needs) is staged under
+     * /usr/share/X11/locale; the library was built to look in its build tree */
+    setenv("XLOCALEDIR", "/usr/share/X11/locale", 0);
+    if (home && *home && !getenv("XDG_CACHE_HOME")) {
+        snprintf(path, sizeof path, "%s/.cache", home);
+        setenv("XDG_CACHE_HOME", path, 1);
+    }
+    if (access("/usr/bin/xrdb", X_OK) == 0) {
+        const char *files[2] = { "/etc/X11/Xresources", NULL };
+        int i;
+        if (home && *home) {
+            snprintf(path, sizeof path, "%s/.Xresources", home);
+            files[1] = path;
+        }
+        for (i = 0; i < 2; i++) {
+            pid_t pid;
+            int st;
+            if (!files[i] || access(files[i], R_OK) != 0)
+                continue;
+            fflush(NULL);
+            pid = fork();
+            if (pid == 0) {
+                execlp("xrdb", "xrdb", "-nocpp", "-merge", files[i], (char *)NULL);
+                _exit(127);
+            }
+            if (pid > 0)
+                waitpid(pid, &st, 0);
+        }
+    }
 }
 
 static pid_t start_server(const char *display)
@@ -109,11 +160,6 @@ int main(int argc, char **argv)
     if (!display || !*display)
         display = ":0";
     setenv("DISPLAY", display, 1);
-    /* the terminal emulator when the image has it: links runs its "run in terminal"
-     * programs through $LINKS_XTERM (default "xterm -e"), and JWM's menu starts it;
-     * /etc/mlterm/main holds its settings (the scrollbar on the right) */
-    if (access("/usr/bin/mlterm", X_OK) == 0)
-        setenv("LINKS_XTERM", "mlterm -e", 0);
     if (!exists("/dev/fb0")) {
         fprintf(stderr, "startx: no /dev/fb0: this machine has no framebuffer (QEMU: run.sh --vga opens the display, the VGA device is there anyway)\n");
         return 1;
@@ -163,6 +209,16 @@ int main(int argc, char **argv)
      * (Log out in its menu) ends the session.  Without it links runs alone, its window the
      * size of the screen (-mode WxH from the framebuffer: "1024,768" in sysfs; links'
      * default size leaves a margin for a window manager's decorations). */
+    /* the terminal emulator when the image has it: links runs its "run in terminal"
+     * programs through $LINKS_XTERM (default "xterm -e"), and JWM's menu starts it;
+     * /etc/mlterm/main holds its settings (the scrollbar on the right); the X resources
+     * and the rest of the session's environment (session_env above) */
+    session_env();
+    /* the session runs in the home directory (the programs JWM's menu starts, the file
+     * manager first of all, open there; /init starts startx from /root, which is not the
+     * console user's) */
+    if (getenv("HOME") && chdir(getenv("HOME")) != 0)
+        chdir("/");
     have_wm = access("/usr/bin/jwm", X_OK) == 0;
     printf("startx: X server ready on %s (log: %s), running %slinks -g on it\n", display, xlog,
            have_wm ? "jwm and " : "");

@@ -360,8 +360,9 @@ static void banner(FILE *out)
      * free virtual terminal and switches the screen to it, back when the session ends */
     if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0")) {
         if (is_exec("/usr/bin/jwm"))
-            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it%s)\n",
-                    is_exec("/usr/bin/mlterm") ? "; Terminal in that menu or Ctrl-Alt-T opens mlterm" : "");
+            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it%s%s)\n",
+                    is_exec("/usr/bin/mlterm") ? "; Terminal in that menu or Ctrl-Alt-T opens mlterm" : "",
+                    is_exec("/usr/bin/xfiles") ? "; File manager there or Ctrl-Alt-F opens xfiles" : "");
         else
             fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, links -g on it; q in links ends it)\n");
     }

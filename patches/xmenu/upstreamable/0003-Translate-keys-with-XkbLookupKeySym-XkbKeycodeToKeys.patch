@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 17:50:12 +0200
+Subject: [PATCH] Translate keys with XkbLookupKeySym: XkbKeycodeToKeysym gives
+ NoSymbol without XKB
+
+On an X server without the XKB extension (kdrive's Xfbdev, TinyX) libX11's
+XkbKeycodeToKeysym returns NoSymbol for every key, so Escape, the arrows and
+Return did nothing; XkbLookupKeySym falls back to the core keymap there and
+gives the same unshifted keysym where XKB exists.
+---
+ xmenu.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/xmenu.c b/xmenu.c
+index 1c879c4..9b3d189 100644
+--- a/xmenu.c
++++ b/xmenu.c
+@@ -2697,7 +2697,13 @@ xkeypress(Widget *widget, XEvent *xev)
+ 	if ((menu = widget->menus) == NULL)
+ 		return;
+ 	xevent = (XKeyEvent *)xev;
+-	ksym = XkbKeycodeToKeysym(widget->display, xevent->keycode, 0, 0);
++	/*
++	 * XkbLookupKeySym rather than XkbKeycodeToKeysym: the latter
++	 * returns NoSymbol on a server without the XKB extension
++	 * (kdrive's Xfbdev), the former falls back to the core keymap.
++	 */
++	if (!XkbLookupKeySym(widget->display, xevent->keycode, 0, &(unsigned int){0}, &ksym))
++		ksym = NoSymbol;
+ 	if (ksym == XK_Tab && FLAG(xevent->state, ShiftMask))
+ 		ksym = XK_ISO_Left_Tab;
+ 	switch (ksym) {

@@ -18,7 +18,7 @@ ARCH=${ARCH:-x86_64}
 case $ARCH in x86_64|i386) ;; *) die "--arch $ARCH: x86_64 or i386";; esac
 need_reset; need_qemu "$ARCH"; need_tool python3 socat; need_done
 O=$OUT/$ARCH; D=$BUILD/$ARCH/devtest; mkdir -p "$D/www"
-[ -f "$O/bzImage" ] && [ -f "$O/initramfs.cpio" ] || die "no $O/bzImage + initramfs.cpio: ./install.sh --arch $ARCH first"
+[ -f "$O/bzImage" ] && [ -f "$O/initramfs.cpio.gz" ] || die "no $O/bzImage + initramfs.cpio.gz: ./install.sh --arch $ARCH first"
 RES=${RES-1024x768}; HTTP_PORT=${HTTP_PORT:-18080}
 echo "tinycc-os-kernel devices-test" > "$D/www/index.txt"
 # the web server the guest fetches from (10.0.2.2:PORT reaches the host's 127.0.0.1:PORT)

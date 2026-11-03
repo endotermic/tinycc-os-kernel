@@ -1,0 +1,113 @@
+! SPDX-License-Identifier: BSD-2-Clause
+!
+! /etc/X11/Xresources - the X resources of the graphical session.  startx (userland/startx.c)
+! and xdm's Xsession (userland/xdm/Xsession.c) load this file into the server's
+! RESOURCE_MANAGER property with "xrdb -nocpp -merge" before the window manager starts, then
+! ~/.Xresources when the user has one (the same command adds or overrides entries; there is
+! no C preprocessor in the image, so no #include or #ifdef here).  Fonts are fontconfig
+! names: DejaVu Sans and DejaVu Sans Mono are in /usr/share/fonts/TTF, and glyphs they lack
+! (Cyrillic and Greek are in DejaVu; CJK, Armenian, Georgian, ... are not) come from GNU
+! Unifont (/usr/share/fonts/unifont), which fontconfig's 69-unifont.conf offers as the last
+! fallback and which xfiles and xmenu look up per glyph.
+
+! xfiles, the file manager: font and colours of the icon grid, the status bar and the
+! selection, and which built-in icon a file gets (the patterns are shell globs on the name,
+! "pattern/" matches directories; the icon names are those compiled into xfiles:
+! file-app, file-archive, file-audio, file-code, file-config, file-core, file-gear,
+! file-image, file-info, file-object, file-text, file-video, file, folder-apps,
+! folder-book, folder-code, folder-db, folder-download, folder-game, folder-gear,
+! folder-home, folder-image, folder-link, folder-mail, folder-meme, folder-mount,
+! folder-music, folder-trash, folder-up, folder-video, folder).  The first matching
+! pattern wins; xfiles' own patterns (xfiles' icons.c) apply after these.
+XFiles.faceName:                DejaVu Sans
+XFiles.faceSize:                11
+XFiles.background:              #1e1e1e
+XFiles.foreground:              #e0e0e0
+XFiles.activeBackground:        #2a6fb0
+XFiles.activeForeground:        #ffffff
+XFiles.geometry:                760x520
+XFiles.fileIcons:                       \n\
+	~/=folder-home                  \n\
+	~/.cache/=folder-gear           \n\
+	~/.local/share/Trash/files/=folder-trash \n\
+	*.c=file-code                   \n\
+	*.h=file-code                   \n\
+	*.S=file-code                   \n\
+	*.s=file-code                   \n\
+	*.sh=file-code                  \n\
+	*.py=file-code                  \n\
+	*.pl=file-code                  \n\
+	*.awk=file-code                 \n\
+	*.mk=file-config                \n\
+	Makefile=file-config            \n\
+	Kconfig=file-config             \n\
+	*.config=file-config            \n\
+	*.conf=file-config              \n\
+	*.cfg=file-config               \n\
+	*.ini=file-config               \n\
+	*.jwmrc=file-config             \n\
+	*.Xresources=file-config        \n\
+	*.txt=file-text                 \n\
+	*.md=file-text                  \n\
+	*.html=file-text                \n\
+	*.htm=file-text                 \n\
+	*.xml=file-text                 \n\
+	*.log=file-text                 \n\
+	README*=file-info               \n\
+	LICENSE*=file-info              \n\
+	COPYING*=file-info              \n\
+	*.1=file-info                   \n\
+	*.png=file-image                \n\
+	*.jpg=file-image                \n\
+	*.jpeg=file-image               \n\
+	*.gif=file-image                \n\
+	*.xpm=file-image                \n\
+	*.xbm=file-image                \n\
+	*.ppm=file-image                \n\
+	*.pgm=file-image                \n\
+	*.pbm=file-image                \n\
+	*.pnm=file-image                \n\
+	*.bmp=file-image                \n\
+	*.tar=file-archive              \n\
+	*.tar.gz=file-archive           \n\
+	*.tgz=file-archive              \n\
+	*.tar.xz=file-archive           \n\
+	*.tar.bz2=file-archive          \n\
+	*.zip=file-archive              \n\
+	*.gz=file-archive               \n\
+	*.xz=file-archive               \n\
+	*.bz2=file-archive              \n\
+	*.cpio=file-archive             \n\
+	*.iso=file-archive              \n\
+	*.wav=file-audio                \n\
+	*.mp3=file-audio                \n\
+	*.ogg=file-audio                \n\
+	*.flac=file-audio               \n\
+	*.mp4=file-video                \n\
+	*.mkv=file-video                \n\
+	*.webm=file-video               \n\
+	*.o=file-object                 \n\
+	*.a=file-object                 \n\
+	*.so=file-object                \n\
+	*.ko=file-object                \n\
+	core=file-core                  \n\
+	*.core=file-core                \n\
+	bzImage=file-gear               \n\
+	vmlinux=file-gear               \n\
+	*.img=file-gear
+
+! xmenu, the pop-up menu of xfiles' right click (xfilesctl): the same font and colours as
+! JWM's menus (/etc/system.jwmrc).
+XMenu.faceName:                 DejaVu Sans
+XMenu.faceSize:                 11
+XMenu.background:               #2b2b2b
+XMenu.foreground:               #e0e0e0
+XMenu.activeBackground:         #2a6fb0
+XMenu.activeForeground:         #ffffff
+XMenu.borderColor:              #1a1a1a
+XMenu.borderWidth:              1
+XMenu.separatorColor:           #555555
+XMenu.shadowThickness:          0
+
+! dmenu, the prompt xfiles embeds (Ctrl-L, renaming, new folders), has no resources:
+! xfilesctl passes its font and colours on its command line (-fn, -nb, -nf, -sb, -sf).

@@ -52,7 +52,9 @@
 #             drives the first two
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
-# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (128M; 1G with --selfhost), KERNEL (a bzImage to boot instead of
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (256M: the busybox image unpacks to 60 MB of
+# ramfs and the graphical session needs the rest, 128M panicked out of memory at boot since the
+# file manager, 2026-11-03; 1G with --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
 # host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
@@ -99,7 +101,7 @@ needs() { # needs ARCH FORM: the files, one per line
     case $2 in
         iso) echo "$OUT/$1/tcc-linux-$1.iso";;
         *) echo "${KERNEL:-$OUT/$1/bzImage}"
-           case $2 in nolibc) echo "$OUT/$1/initramfs-nolibc.cpio";; selfhost) echo "$OUT/$1/initramfs-selfhost.cpio";; *) echo "$OUT/$1/initramfs.cpio";; esac;;
+           case $2 in nolibc) echo "$OUT/$1/initramfs-nolibc.cpio";; selfhost) echo "$OUT/$1/initramfs-selfhost.cpio";; *) echo "$OUT/$1/initramfs.cpio.gz";; esac;;
     esac
 }
 missing() { for f in $(needs "$1" "$2"); do [ -f "$f" ] || echo "$f"; done; }
@@ -157,7 +159,7 @@ case $ARCH in x86_64|i386) ;; *) die "--arch $ARCH: x86_64 or i386";; esac
 m=$(missing "$ARCH" "$form")
 [ -z "$m" ] || die "not in place for '$(describe "$ARCH" "$form")': $(echo "$m" | tr '\n' ' ')-- build it with $(howto "$ARCH" "$form"); ./run.sh --list shows what is there"
 O=$OUT/$ARCH
-case $form in nolibc) initrd=$O/initramfs-nolibc.cpio;; selfhost) initrd=$O/initramfs-selfhost.cpio;; *) initrd=$O/initramfs.cpio;; esac
+case $form in nolibc) initrd=$O/initramfs-nolibc.cpio;; selfhost) initrd=$O/initramfs-selfhost.cpio;; *) initrd=$O/initramfs.cpio.gz;; esac
 case $ARCH in x86_64) QEMU=qemu-system-x86_64;; i386) QEMU=qemu-system-i386;; *) die "ARCH=$ARCH: no QEMU setup";; esac
 need_reset; need_qemu "$ARCH"; need_done
 if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
@@ -178,7 +180,7 @@ if [ -n "$efi" ]; then
             set -- -drive if=pflash,format=raw,readonly=on,file="$fw" -drive if=pflash,format=raw,file="$tmpvars" "$@";;
         *)  set -- -bios "$fw" "$@";;
     esac
-    MEM=${MEM:-128M}
+    MEM=${MEM:-256M}
 fi
 # screen resolution of QEMU's VGA: the preferred mode of the VGA's EDID (bochs-drm sets it,
 # with or without --vga: the device is there headless too) and, for the ISO, the GRUB
@@ -251,4 +253,4 @@ if [ "$vga" = 1 ]; then
 else
     set -- -nographic -serial mon:stdio "$@"    # explicit, so that --selfhost's -serial file: is the second port
 fi
-$TIMEOUT $QEMU -m "${MEM:-128M}" -no-reboot "$@"
+$TIMEOUT $QEMU -m "${MEM:-256M}" -no-reboot "$@"

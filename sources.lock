@@ -55,3 +55,20 @@ jwm       sha256:b5871ec28317594b3fa22b83ed5524cc911d498c455eaab3ae68def195dd802
 # above (DejaVu Sans Mono through fontconfig), built static with its scrollbar and type engine
 # linked in; the release tarball is on SourceForge only (GitHub carries the signature alone).
 mlterm    sha256:7d28678aa90dade72cea4e1e5fffb5e4c343487d60ca36c88dc615134613af39  3.9.5   https://downloads.sourceforge.net/project/mlterm/01release/mlterm-3.9.5/mlterm-3.9.5.tar.gz,https://sourceforge.net/projects/mlterm/files/01release/mlterm-3.9.5/mlterm-3.9.5.tar.gz/download
+# The file manager (2026-11-03): xfiles (Xlib + Xft + Xpm + Xrender + Xcursor + Xext, C99, POSIX
+# make), its two remaining X client libraries, and the helpers its control script drives:
+# xmenu (the pop-up menu; its Imlib2 icons made optional by patches/xmenu), dmenu (the prompt
+# embedded through XEmbed), xprop (sets the _CONTROL_GOTO property that changes the window's
+# directory) and xrdb (loads /etc/X11/Xresources into the server at session start).
+libXfixes sha256:e69eaa321173c748ba6e2f15c7cf8da87f911d3ea1b6af4b547974aef6366bec 6.0.1  https://xorg.freedesktop.org/archive/individual/lib/libXfixes-6.0.1.tar.gz
+libXcursor sha256:74e72da27e61cc2cfd2e267c14f500ea47775850048ee0b00362a55c9b60ee9b 1.2.3 https://xorg.freedesktop.org/archive/individual/lib/libXcursor-1.2.3.tar.gz
+xfiles    c47a0d984caee93311cb081bd51a5a4a027c9f68  master  https://github.com/phillbush/xfiles.git
+xmenu     bd012b1eee506ab3a21467be93acfec42b1785da  master  https://github.com/phillbush/xmenu.git
+dmenu     sha256:8fbace2a0847aa80fe861066b118252dcc7b4ca0a0a8f3a93af02da8fb6cd453  5.4     https://dl.suckless.org/tools/dmenu-5.4.tar.gz
+xprop     sha256:a8394338c99775160d733d54d73cdcdc5c9c80a0dc8cffd5be1b7c977254b745  1.2.8   https://xorg.freedesktop.org/archive/individual/app/xprop-1.2.8.tar.gz
+xrdb      sha256:db2d774a35ae2f7e7ac61cc2de0dcae27fc2aa14399c35721f8300e63ea73549  1.2.2   https://xorg.freedesktop.org/archive/individual/app/xrdb-1.2.2.tar.gz
+# GNU Unifont (2026-11-03), the glyphs DejaVu lacks (CJK, and the rest of the BMP), as a
+# compressed PCF bitmap font that FreeType reads and fontconfig offers as the last fallback
+# (its 69-unifont.conf is in the default set): file names in any script in the file manager.
+# A single file, not a tarball (fetch.sh copies it as src/unifont/unifont-18.0.01.pcf.gz).
+unifont   sha256:3f7702429c948f05b979800b65c7e1383614d924591627aeae5d38d20101c69f  18.0.01 https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.pcf.gz

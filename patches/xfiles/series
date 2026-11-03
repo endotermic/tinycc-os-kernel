@@ -1,0 +1,3 @@
+# patches/xfiles: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+features/0001-Select-all-with-Control-A-toggle-hidden-entries-with.patch
+upstreamable/0002-control-font-do-not-destroy-the-patterns-the-XftFont.patch

@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 17:28:01 +0200
+Subject: [PATCH] drw: fall back to bitmap fonts too for glyphs the first font
+ lacks
+
+The fallback pattern asked fontconfig for a scalable font only; where the
+only font covering a script is a bitmap one (GNU Unifont as the last
+fallback for CJK), every such glyph was drawn as a box.
+---
+ drw.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/drw.c b/drw.c
+index c41e6af..5d055be 100644
+--- a/drw.c
++++ b/drw.c
+@@ -352,7 +352,9 @@ drw_text(Drw *drw, int x, int y, unsigned int w, unsigned int h, unsigned int lp
+ 
+ 			fcpattern = FcPatternDuplicate(drw->fonts->pattern);
+ 			FcPatternAddCharSet(fcpattern, FC_CHARSET, fccharset);
+-			FcPatternAddBool(fcpattern, FC_SCALABLE, FcTrue);
++			/* any font that has the glyph, bitmap fonts included (a system
++			 * whose only wide-coverage font is a bitmap one, like Unifont,
++			 * would otherwise show boxes for every glyph the first font lacks) */
+ 
+ 			FcConfigSubstitute(NULL, fcpattern, FcMatchPattern);
+ 			FcDefaultSubstitute(fcpattern);

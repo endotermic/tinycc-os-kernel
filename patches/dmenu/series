@@ -1,0 +1,2 @@
+# patches/dmenu: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+compatibility/0001-drw-fall-back-to-bitmap-fonts-too-for-glyphs-the-fir.patch

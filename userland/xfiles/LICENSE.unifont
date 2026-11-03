@@ -1,0 +1,10 @@
+GNU Unifont (/usr/share/fonts/unifont/unifont.pcf.gz) is not part of this repository; the
+build copies it from the release file pinned in sources.lock (unifoundry.com).  Unifont is
+dual-licensed: under the SIL Open Font License version 1.1, and under the GNU General Public
+License version 2 or later with the GNU font embedding exception ("As a special exception,
+if you create a document which uses this font, and embed this font or unaltered portions of
+this font into the document, this font does not by itself cause the resulting document to
+be covered by the GNU General Public License.").  Copyright (C) 1998-2026 Roman Czyborra,
+Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Nils Moskopp,
+Rebecca Bettencourt, et al.  See https://unifoundry.com/unifont/ and the full texts in
+LICENSES/OFL-1.1.txt and LICENSES/GPL-2.0-only.txt (the GPL text is the same) of the repository.

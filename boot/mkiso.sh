@@ -23,7 +23,7 @@ need_reset; need_iso_tools; need_done
 R=$BUILD/$ARCH/iso-root
 rm -rf "$R" && mkdir -p "$R/boot/grub"
 cp "$O/bzImage" "$R/boot/bzImage"
-cp "$O/initramfs.cpio" "$R/boot/initramfs.cpio"
+cp "$O/initramfs.cpio.gz" "$R/boot/initramfs.cpio.gz"
 cp "$O/initramfs-nolibc.cpio" "$R/boot/initramfs-nolibc.cpio"
 # the self-hosting image (scripts/build.sh selfhost) when it exists: its own menu entries
 selfhost=
@@ -59,19 +59,19 @@ fi
 # the shell stays on the serial console.  tcc.startx is the same screen without a login.
 menuentry "tinycc-os-kernel: graphical login (xdm on the TinyX X server, links as the session), all compiled by tinycc" {
     linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs tcc.xdm
-    initrd /boot/initramfs.cpio
+    initrd /boot/initramfs.cpio.gz
 }
 menuentry "graphical mode without a login: the X server and the links browser as the console user" {
     linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs tcc.startx
-    initrd /boot/initramfs.cpio
+    initrd /boot/initramfs.cpio.gz
 }
 menuentry "text console: Linux, busybox and tcc (screen + serial; startx opens the graphical mode)" {
     linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs
-    initrd /boot/initramfs.cpio
+    initrd /boot/initramfs.cpio.gz
 }
 menuentry "the same, serial console first (QEMU -nographic, headless machines)" {
     linux /boot/bzImage console=tty0 console=ttyS0 rootfstype=ramfs
-    initrd /boot/initramfs.cpio
+    initrd /boot/initramfs.cpio.gz
 }
 menuentry "smoke test: libc-free init, prints a banner and reboots" {
     linux /boot/bzImage console=tty0 console=ttyS0 rootfstype=ramfs

@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 17:02:35 +0200
+Subject: [PATCH] Select all with Control+A, toggle hidden entries with
+ Control+H; both through _CONTROL_GOTO too
+
+Control+A selects every entry but the parent directory (widget_selectall);
+Control+H toggles the hidden entries like Control+period does.  A value of
+_CONTROL_GOTO that starts with '^' is such a key command rather than a path
+("^a", "^h", "^period"), so that xfilesctl, which cannot reach into the
+window, can offer the two actions in its menu (xprop -set _CONTROL_GOTO '^a').
+---
+ widget.c | 25 +++++++++++++++++++++++++
+ widget.h |  2 ++
+ xfiles.c | 25 ++++++++++++++++++++++++-
+ 3 files changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/widget.c b/widget.c
+index 40507ff..445a31e 100644
+--- a/widget.c
++++ b/widget.c
+@@ -1678,6 +1678,19 @@ unselectitems(Widget *widget)
+ 	}
+ }
+ 
++/* select every entry but the parent directory (Control+A; _CONTROL_GOTO "^a") */
++static void
++selectallitems(Widget *widget)
++{
++	int i;
++
++	for (i = 1; i < widget->nitems; i++)
++		selectitem(widget, i, True, 0);
++	ownprimary(widget, CurrentTime);
++	drawitems(widget);
++	widget->redraw = True;
++}
++
+ static int
+ mouse1click(Widget *widget, XButtonPressedEvent *ev)
+ {
+@@ -2419,6 +2432,11 @@ draw:
+ 				goto hjkl;
+ 			break;
+ 		}
++		if (ksym == XK_a || ksym == XK_A) {
++			/* Control+A: select all, handled here */
++			selectallitems(widget);
++			break;
++		}
+ 		/* FALLTHROUGH */
+ 	case XK_F1: case XK_F2: case XK_F3: case XK_F4: case XK_F5: case XK_F6:
+ 	case XK_F7: case XK_F8: case XK_F9: case XK_F10: case XK_F11: case XK_F12:
+@@ -3543,6 +3561,13 @@ widget_map(Widget *widget)
+ 	XMapWindow(widget->display, widget->window);
+ }
+ 
++void
++widget_selectall(Widget *widget)
++{
++	selectallitems(widget);
++	endevent(widget);
++}
++
+ char *
+ widget_geticons(Widget *widget)
+ {
+diff --git a/widget.h b/widget.h
+index 46d836f..530814f 100644
+--- a/widget.h
++++ b/widget.h
+@@ -57,6 +57,8 @@ int widget_fd(Widget *widget);
+ 
+ void widget_map(Widget *widget);
+ 
++void widget_selectall(Widget *widget);
++
+ WidgetEvent widget_poll(Widget *widget, int *selitems, int *nselitems, Scroll *scrl, char **sel);
+ 
+ void widget_thumb(Widget *widget, char *path, int index);
+diff --git a/xfiles.c b/xfiles.c
+index 34d8871..9ffe1ca 100644
+--- a/xfiles.c
++++ b/xfiles.c
+@@ -1169,7 +1169,8 @@ main(int argc, char *argv[])
+ 			}
+ 			break;
+ 		case WIDGET_KEYPRESS:
+-			if (strcmp(text, "^period") == 0) {
++			if (strcmp(text, "^period") == 0 ||
++			    strcmp(text, "^h") == 0 || strcmp(text, "^H") == 0) {
+ 				hide = !hide;
+ 				force_refresh = true;
+ 			} else {
+@@ -1183,6 +1184,28 @@ main(int argc, char *argv[])
+ 			}
+ 			break;
+ 		case WIDGET_GOTO:
++			if (text[0] == '^') {
++				/*
++				 * Not a path: a key command, written into
++				 * _CONTROL_GOTO by xfilesctl (xprop -set), for
++				 * the actions xfiles performs itself: "^a"
++				 * selects all, "^h" or "^period" toggles the
++				 * hidden entries; anything else is ignored.
++				 */
++				if (strcmp(text, "^a") == 0 || strcmp(text, "^A") == 0) {
++					widget_selectall(fm.widget);
++					break;
++				}
++				if (strcmp(text, "^period") != 0 &&
++				    strcmp(text, "^h") != 0 && strcmp(text, "^H") != 0)
++					break;
++				hide = !hide;
++				if (changedir(&fm, fm.cwd->path, true) == RETURN_FAILURE) {
++					exitval = EXIT_FAILURE;
++					goto done;
++				}
++				break;
++			}
+ 			if (changedir(&fm, text, true) == RETURN_FAILURE) {
+ 				exitval = EXIT_FAILURE;
+ 				goto done;
