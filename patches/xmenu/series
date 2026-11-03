@@ -2,3 +2,4 @@
 upstreamable/0001-Build-without-Imlib2-DWITHOUT_IMLIB2-skips-the-IMG-i.patch
 upstreamable/0002-control-font-do-not-destroy-the-patterns-the-XftFont.patch
 upstreamable/0003-Translate-keys-with-XkbLookupKeySym-XkbKeycodeToKeys.patch
+upstreamable/0004-xkeypress-Down-and-Up-with-nothing-selected-pick-the.patch

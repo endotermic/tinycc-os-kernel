@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 17:54:52 +0200
+Subject: [PATCH] xkeypress: Down and Up with nothing selected pick the first
+ and the last item
+
+With the pointer beside the items nothing is selected when the menu opens,
+and Down or Up dereferenced menu->selected (NULL).
+---
+ xmenu.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/xmenu.c b/xmenu.c
+index 9b3d189..2efffe3 100644
+--- a/xmenu.c
++++ b/xmenu.c
+@@ -2718,6 +2718,11 @@ xkeypress(Widget *widget, XEvent *xev)
+ 	switch (ksym) {
+ 	case XK_Down:
+ 	case XK_Tab:
++		/* nothing selected yet (the pointer is not over an item): the first */
++		if (menu->selected == NULL) {
++			selfirst(widget, menu);
++			break;
++		}
+ 		first = menu->first;
+ 		last = menu->last;
+ 		start = menu->selected->next;
+@@ -2730,6 +2735,8 @@ xkeypress(Widget *widget, XEvent *xev)
+ 		break;
+ 	case XK_ISO_Left_Tab:
+ 	case XK_Up:
++		if (menu->selected == NULL)
++			goto last;	/* nothing selected yet: the last */
+ 		first = menu->first;
+ 		last = menu->last;
+ 		start = menu->selected->prev;
+@@ -2738,6 +2745,7 @@ xkeypress(Widget *widget, XEvent *xev)
+ 			break;
+ 		/* fallthrough */
+ 	case XK_End:
++last:
+ 		first = menu->items;
+ 		start = menu->items;
+ 		last = menu->lastsave;
