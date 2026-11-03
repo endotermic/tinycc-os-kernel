@@ -176,7 +176,7 @@ is tested directly, which is also better code for gcc.
    open there. The RCU stall report that the serial transfer provoked was QEMU's UART
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
-9. The vanilla kernel (investigated 2026-11-03, see docs/FIX-LOG.md 119): of the 15 kernel
+9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119): of the 15 kernel
    patches left, tcc could absorb 0015 and 0017 with the stub fold extended to `if/else
    return` bodies and to constant arguments, 0003, 0004, 0012 and half of 0005 with an
    inliner for `__always_inline` and single-caller static functions called with constants
@@ -746,6 +746,100 @@ registers; and once the attribute was in effect, the combination lost its regist
 attribute after a function-pointer declarator stayed on the variable; the earlier i386 loops
 never ran the SHA-NI path). With the three fixes both loops pass again: generation-2 kernels
 built inside the i386 and the x86_64 guest (300 s each) boot.
+
+## The vanilla kernel: what the remaining patches need from tcc (2026-11-03)
+
+The question was whether tcc could be patched so that an unpatched kernel tree builds. The
+answer, from the 19 patches of that day: 15 exist because tcc lacks five compiler features,
+all implementable; four would stay whatever tcc does. Fix 119 (constant propagation through
+locals, the first feature) removed four of them the same day; this section keeps the findings
+behind the other items so that the work can start from the repository alone.
+
+What the project tcc folded before fix 119, probed with small files and `nm -u` (a reference
+to `dead()` means the call stayed): `if (0) dead();` and `if (stub_returning_const()) dead();`
+(patch 0037) were dropped; `int o = stub(); if (o) dead();`, `bool b = p != 0; b &= 0; if (b)`,
+a `WARN_ON_ONCE()` result in a local, a stub whose body is `if (c) return a; else return b;`
+and a constant argument to an `__always_inline` body (`field_multiplier(0xff00)` calling the
+`__bad_mask()` canary) were all kept. The first three are what fix 119 handles; the last two
+remain.
+
+Per remaining patch, the tcc feature that would remove it, with what was measured:
+
+* 0015 (pmdp/pudp_test_and_clear_young) and 0017 (`__bad_mask()`): extend the stub fold of
+  patch 0037 (`inline_fold_check()`) from `return const;` bodies to `if (const) ... else
+  return const;` bodies, and evaluate a pure `__always_inline` body with constant arguments
+  at the call (the probe machinery `fold_probe_expr()` already parses a body without code
+  with the parameters in scope). Small.
+* 0003 (`rip_rel_ptr()`), 0004 (`__static_cpu_has()`), the `__scoped_seqlock_invalid_target()`
+  half of 0005, and 0012 (`vma_thp_gfp_mask()`, whose remaining caller `__swap_cache_alloc()`
+  gets the order as a parameter): an inliner. tcc keeps the token string of every function
+  body since fix 119, so a call to an `__always_inline` function (or a static function with
+  one caller) with constant arguments can replay the body at the call site: the parameters
+  become locals initialised with the arguments (known constants, fix 119 then folds the
+  `"i"` operands and the switch on the target), `return` becomes a store to a result temporary
+  and a jump to an end label, the label stack is swapped so the body's labels are its own,
+  bodies with `static` locals are not inlined, nesting is bounded. Inlining only when an
+  argument is constant keeps the code size in check (tcc does not shrink what it inlines).
+  This would also remove objtool's UACCESS warnings (`stac()`/`clac()` as functions).
+  Medium, the riskiest of the five.
+* 0013 and 0019 (the 64-bit division helpers on i386): the kernel never divides a 64-bit
+  value by a non-constant without `do_div()`, so GCC never emits `__udivdi3` and friends;
+  tcc emits them for divisions by constants. `gen_opl()` already turns an unsigned division
+  or modulo by a power of two into a shift or a mask (that is why only ~40 of the i386
+  objects still call the helpers: mm, fs, lib, net/mac80211, cfg80211, sound/usb, ptp).
+  Missing: signed powers of two, and the multiply-by-reciprocal sequence for other constants
+  (`/ 100`, `/ 10`, `/ HZ`), a 64x64->128 high multiply from four 32-bit ones. Medium.
+* 0010 and 0016 (the AVX assembly of lib/crypto): the assembler has no VEX or EVEX
+  encodings. The files need about 25 VEX mnemonics (vmovdqa/vmovdqu, vpaddd/vpaddq,
+  vpxor/vpor/vpand, vpshufb/vpshufd, vpslld/vpsrld/vpsrlq/vpsllq/vpslldq/vpsrldq, vpalignr,
+  vpunpck*, vperm2i128, vinsertf128/vextracti128, vpclmulqdq, vzeroupper, the ymm registers,
+  and the BMI2 `rorx`/`andn` general-register forms) and, for blake2s-core.S only, four
+  EVEX ones with xmm/ymm operands (vprord, vpternlogd, vpermi2d, vpmovzxbd). The opcode
+  table in `x86_64-asm.h` is `DEF_ASM_OPn(name, opcode, group, flags, operand types...)`
+  with the 0F/0F38/0F3A maps as flags; VEX needs the 2/3-byte prefix with map, pp, W, L
+  and the vvvv register, EVEX the 4-byte prefix with masks and compressed displacements.
+  Medium.
+* 0001 and 0002 (`cmpxchg128`, `freelist_full_t`): no `__int128`. The type slot exists
+  (`VT_QLONG`, used for the x86-64 ABI classification) but there is no two-register code
+  generation on x86_64 (the i386 target has it for `long long`: `lexpand()`, `gen_opl()`,
+  `lbuild()`, 11 `PTR_SIZE == 4` sites in tccgen.c to generalise). The kernel's own use is
+  small: loads and stores, `+ - *`, shifts, bitwise operations, comparisons, conversions and
+  the two-register ABI; no division (`__divti3` can stay a libtcc1 routine). Defining
+  `__SIZEOF_INT128__` also turns on `CC_HAS_INT128` and with it `ARCH_SUPPORTS_INT128`:
+  math64.h's 128-bit multiplies and the curve25519/poly1305 64-bit backends get compiled and
+  have to be right. Large.
+
+Kernel-side for good: 0005's `__scoped_seqlock_bug()` (the state lives in a struct across
+loop iterations: no single-pass analysis sees it; the kernel already has the stub form for
+GCC 8, KASAN and UBSAN), 0006 (a constant through the parameter of a function with one
+caller: interprocedural), 0009 (objtool is built on the host with libelf; the self-hosting
+guest has none: a build recipe matter, not tcc's), 0011 (the real-mode setup compiled by
+`-m16` tcc is 39 488 bytes with the video mode code against the boot protocol's 32 KB, 27 328
+without; closing the gap needs an optimizer, and the option is a reasonable kernel knob).
+
+objtool, which Kbuild runs on every object of this configuration (CONFIG_OBJTOOL=y through
+HAVE_STATIC_CALL_INLINE; the project replaces it by `objtool-stub`), was built from the pinned
+tree with the host gcc and run on all 1566 tcc-built x86_64 objects of drivers.config with the
+configuration's flags, `--hacks=jump_label --hacks=noinstr --static-call --uaccess`: every
+object was accepted (exit 0), with 212 warnings in 110 objects: "unreachable instruction" (the
+epilogue tcc emits after an infinite loop and after `ud2`), "missing __noreturn" (deduced
+from the same), "return with UACCESS enabled" and "redundant UACCESS disable" (`stac()`/`clac()`
+compiled as functions instead of inlined), and two "stack layout conflict in alternatives" in
+entry.o and entry_64.o (tcc's assembly of the ALTERNATIVE macros). Warnings do not fail the
+build: `OBJTOOL_WERROR` has no default in this tree. `--orc --stackval` (the x86_64 default
+`UNWINDER_ORC`, which the project's configs avoid with `UNWINDER_GUESS`) gave no stack
+warnings on five sample objects (sched/core, page_alloc, namei, traps, string). So a vanilla
+build on a host with libelf would run the real objtool and pass, and the warnings are the
+next things to fix in tcc after the features above.
+
+What fix 119 itself cost to get right, for the next feature of this kind (all found by tcc's
+own suite, which compiles tcc with itself): the switch value is loaded after the body and
+must not be taken from a value known then; a `for` loop's variable declared in the init must
+be resolved at the head, after the declaration; a known pointer must not carry a symbol
+address (a string literal's or a static local's Sym is freed with its block); `cond ?
+(unsigned)v : (int)v` is unsigned; a compilation that stops on an error leaves state that the
+next one (`tcc -dt`) must reset; and a body compiled from saved tokens needs its `#pragma`
+directives deferred to where they stand.
 
 ## Debugging recipes
 
