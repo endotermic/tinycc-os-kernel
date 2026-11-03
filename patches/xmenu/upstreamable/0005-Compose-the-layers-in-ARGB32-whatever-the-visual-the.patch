@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 18:51:20 +0200
+Subject: [PATCH] Compose the layers in ARGB32 whatever the visual: the
+ highlight and the background on servers without a 32-bit visual
+
+The background and foreground layers are merged with PictOpOver, which needs
+an alpha channel.  Without a 32-bit TrueColor visual (kdrive's Xfbdev) the
+layers were x8r8g8b8 pictures whose cleared pixels are opaque black, so the
+foreground layer covered the background and the selected row looked like
+the others: a black menu with no highlight.  The layers and the normal and
+select canvases are depth-32 ARGB32 pictures now; only the final canvas, the
+window's background pixmap, has the window's depth, and drawmenu composes the
+unselected menu into it before setting it.
+---
+ xmenu.c | 39 ++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 34 insertions(+), 5 deletions(-)
+
+diff --git a/xmenu.c b/xmenu.c
+index 2efffe3..2ba2387 100644
+--- a/xmenu.c
++++ b/xmenu.c
+@@ -217,6 +217,7 @@ typedef struct Widget {
+ 	XRectangle monitor;
+ 	XRenderPictFormat *xformat;
+ 	XRenderPictFormat *alphaformat;
++	XRenderPictFormat *argbformat;  /* the layers are drawn in ARGB whatever the visual */
+ 	ctrlfnt *fontset;
+ 	Cursor cursor;
+ 	Menu *menus;
+@@ -955,6 +956,20 @@ initvisual(Widget *widget)
+ 	);
+ 	if (widget->alphaformat == NULL)
+ 		goto error;
++	/*
++	 * The menu is composed in layers (background, foreground) with
++	 * PictOpOver, which needs an alpha channel: on a server without a
++	 * 32-bit TrueColor visual the layers would be x8r8g8b8 pictures whose
++	 * cleared pixels are opaque black and cover the background.  So the
++	 * layers live in depth-32 pixmaps with the ARGB32 format and only the
++	 * final canvas, the window's background pixmap, has the window's depth.
++	 */
++	widget->argbformat = XRenderFindStandardFormat(
++		widget->display,
++		PictStandardARGB32
++	);
++	if (widget->argbformat == NULL)
++		widget->argbformat = widget->xformat;
+ 	widget->window = createwindow(widget, NULL, 0, True);
+ 	if (widget->window == None) {
+ 		warnx("could not create window");
+@@ -1639,17 +1654,18 @@ drawmenu(Widget *widget, Menu *menu)
+ 		}
+ 		if (menu->canvas[i].pixmap != None)
+ 			XFreePixmap(widget->display, menu->canvas[i].pixmap);
++		/* the final canvas has the window's depth, the others ARGB (see initxconn) */
+ 		menu->canvas[i].pixmap = XCreatePixmap(
+ 			widget->display,
+ 			menu->window,
+ 			menu->geometry.width,
+ 			menu->geometry.height,
+-			widget->depth
++			i == CANVAS_FINAL ? widget->depth : widget->argbformat->depth
+ 		);
+ 		menu->canvas[i].picture = XRenderCreatePicture(
+ 			widget->display,
+ 			menu->canvas[i].pixmap,
+-			widget->xformat,
++			i == CANVAS_FINAL ? widget->xformat : widget->argbformat,
+ 			0,
+ 			NULL
+ 		);
+@@ -1669,12 +1685,12 @@ drawmenu(Widget *widget, Menu *menu)
+ 			menu->window,
+ 			menu->geometry.width,
+ 			menu->geometry.height,
+-			widget->depth
++			widget->argbformat->depth
+ 		);
+ 		canvas[i][j].picture = XRenderCreatePicture(
+ 			widget->display,
+ 			canvas[i][j].pixmap,
+-			widget->xformat,
++			widget->argbformat,
+ 			0,
+ 			NULL
+ 		);
+@@ -1932,10 +1948,23 @@ next:
+ 			menu->geometry.height
+ 		);
+ 	}
++	/* the unselected menu into the final canvas (the window's depth) */
++	XRenderComposite(
++		widget->display,
++		PictOpSrc,
++		menu->canvas[CANVAS_NORMAL].picture,
++		None,
++		menu->canvas[CANVAS_FINAL].picture,
++		0, 0,
++		0, 0,
++		0, 0,
++		menu->geometry.width,
++		menu->geometry.height
++	);
+ 	XSetWindowBackgroundPixmap(
+ 		widget->display,
+ 		menu->window,
+-		menu->canvas[LAYER_BG].pixmap
++		menu->canvas[CANVAS_FINAL].pixmap
+ 	);
+ 	XSetWindowBorderPixmap(widget->display, menu->window, widget->border.pix);
+ 	XClearWindow(widget->display, menu->window);
