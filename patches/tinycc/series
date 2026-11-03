@@ -111,3 +111,4 @@ bugfixes/0109-i386-regparm-0-keeps-the-arguments-on-the-stack-unde.patch
 bugfixes/0110-i386-asm-a-64-bit-register-variable-in-an-asm-operan.patch
 bugfixes/0111-tccgen-a-scalar-s-braced-initializer-may-end-in-a-co.patch
 bugfixes/0112-i386-regparm-n-combined-with-stdcall-keeps-the-regis.patch
+bugfixes/0113-A-calling-convention-attribute-after-the-declarator-.patch

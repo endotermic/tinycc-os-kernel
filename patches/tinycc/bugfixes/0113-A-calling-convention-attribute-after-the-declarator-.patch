@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@visma.com>
+Date: Tue, 3 Nov 2026 19:23:28 +0200
+Subject: [PATCH] A calling convention attribute after the declarator of a
+ pointer to a function applies to the function type
+
+"void (*process_block)(ctx *) __attribute__((regparm(3),stdcall));" (busybox's
+hash context): GCC moves such an attribute to the function type, tcc left it
+on the variable, so the assignment of a FAST_FUNC function warned about an
+incompatible pointer type and calls through the pointer used the default
+convention, which busybox's SHA-NI assembly does not read.  type_decl copies
+the convention bits (func_call, func_stdcall, func_cdecl) of the trailing
+attributes into the pointed-to function type.  Test in 157.
+---
+ tccgen.c                                 |  15 +++++++++++++++
+ tests/tests2/157_i386_regparm_pic.c      |  10 +++++++++-
+ tests/tests2/157_i386_regparm_pic.expect | Bin 800 -> 874 bytes
+ 3 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index b50a21b..febfcf1 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -5612,6 +5612,21 @@ static CType *type_decl(CType *type, AttributeDef *ad, int *v, int td)
+               td & ~(TYPE_DIRECT|TYPE_ABSTRACT));
+     check_restrict_type(type);
+     parse_attribute(ad);
++    /* a calling convention named after the declarator of a pointer to a
++       function belongs to the function type, as with GCC:
++       "void (*process_block)(ctx*) __attribute__((regparm(3),stdcall))"
++       (busybox); it was left on the variable, and calls through the
++       pointer used the default convention */
++    if ((type->t & VT_BTYPE) == VT_PTR
++        && (ad->f.func_call || ad->f.func_stdcall || ad->f.func_cdecl)) {
++        CType *pt = pointed_type(type);
++        if ((pt->t & VT_BTYPE) == VT_FUNC) {
++            if (ad->f.func_call)
++                pt->ref->f.func_call = ad->f.func_call;
++            pt->ref->f.func_stdcall |= ad->f.func_stdcall;
++            pt->ref->f.func_cdecl |= ad->f.func_cdecl;
++        }
++    }
+     type->t |= storage;
+     return ret;
+ }
+diff --git a/tests/tests2/157_i386_regparm_pic.c b/tests/tests2/157_i386_regparm_pic.c
+index 35e1bf0..dee58c8 100644
+--- a/tests/tests2/157_i386_regparm_pic.c
++++ b/tests/tests2/157_i386_regparm_pic.c
+@@ -136,9 +136,14 @@ static void __attribute__((regparm(3),stdcall)) fast_c(unsigned a, unsigned b, u
+ {
+     fast_got[0] = a; fast_got[1] = b; fast_got[2] = c; fast_got[3] = d;
+ }
++/* fix 117: the attribute after the declarator of a pointer to a function
++   belongs to the function type (busybox's process_block field), tcc left it
++   on the variable and called through the pointer with the default convention */
++struct fast_ops { int pad; void (*pb)(unsigned, unsigned, unsigned, unsigned) __attribute__((regparm(3),stdcall)); };
+ static void test_regparm_stdcall(void)
+ {
+-    unsigned sp1, sp2, sp3;
++    unsigned sp1, sp2, sp3, sp4;
++    struct fast_ops ops = { 0, fast_asm };
+     void (__attribute__((regparm(3),stdcall)) *fp)(unsigned, unsigned, unsigned, unsigned) = fast_c;
+     asm volatile("movl %%esp, %0" : "=r"(sp1));
+     fast_asm(1, 2, 3, 4);
+@@ -149,6 +154,9 @@ static void test_regparm_stdcall(void)
+     fp(9, 10, 11, 12);
+     asm volatile("movl %%esp, %0" : "=r"(sp3));
+     printf("regparm stdcall c: %u %u %u %u sp %d\n", fast_got[0], fast_got[1], fast_got[2], fast_got[3], sp1 == sp3);
++    ops.pb(13, 14, 15, 16);
++    asm volatile("movl %%esp, %0" : "=r"(sp4));
++    printf("trailing attribute: %u %u %u %u sp %d\n", fast_got[0], fast_got[1], fast_got[2], fast_got[3], sp1 == sp4);
+ }
+ 
+ int main(void)
+diff --git a/tests/tests2/157_i386_regparm_pic.expect b/tests/tests2/157_i386_regparm_pic.expect
+index c8fc3155b7f49b236b1345cfca8714a31f4a40a5..9099db3e3dad5f344fb3d996649b0901b570af58 100644
+GIT binary patch
+delta 82
+zcmZ3$_KIynl6*-~VrEWeUb;eJNl8&=QfW!5m4czMf}x3mp{atQ*~XZujD*!lGfrk>
+GmI45VP8o#&
+
+delta 18
+ZcmaFGwt#Iy(#H0F#*OWwjFSVHr2t6q2A==`
+
