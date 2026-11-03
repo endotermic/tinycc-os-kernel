@@ -93,7 +93,13 @@ tray with pager, task list and clock, two desktops) with links in graphics mode 
 as the session of whoever logs in; JWM's menu (any mouse button on the desktop, the tray's
 Menu button, Alt-F1) opens a terminal (mlterm 3.9.5, `userland/mlterm/`, 2026-10-30:
 UTF-8, Xft text in DejaVu Sans Mono, the scrollbar on the right, several ptys per window on
-Control+F2-F4; also on Ctrl-Alt-T, and the terminal links runs programs in), starts links,
+Control+F2-F4; also on Ctrl-Alt-T, and the terminal links runs programs in), opens the file
+manager (xfiles, `userland/xfiles/`, 2026-11-03: an icon grid with per-type icons and
+thumbnails of PNG, JPEG, PNM and text files, drag and drop between its windows and into
+other programs, a right-click menu in xmenu, prompts in dmenu embedded in the window on
+Ctrl-L, F2 and Ctrl-N, copy/cut/paste, delete, rename, properties, Latin, Cyrillic and CJK
+names through DejaVu and Unifont; also on Ctrl-Alt-F; its control script, thumbnailer and
+the `xdg-open` opener are C scripts run by tcc), starts links,
 restarts JWM or logs out, and the greeter returns. The
 second entry is the graphical mode without a login
 (`tcc.startx`: the TinyX X server on the framebuffer with JWM and the links browser in
@@ -101,7 +107,10 @@ graphics mode; the third entry is the text console, where `startx [URL]` opens t
 from the screen's shell, a tty2-tty4 login or the serial console); `./run.sh --startx`
 does the same for the direct boot. The root filesystem is a ramfs (`rootfstype=ramfs` on
 every kernel command line): the tmpfs the kernel would use is capped at half of the early
-memory, 33 MB on a 128 MB machine, which the image has outgrown. The screen is a KMS display at the native resolution
+memory, which the image has outgrown. The image is a gzip-compressed cpio
+(`out/<arch>/initramfs.cpio.gz`, 22 MB; it unpacks to 60 MB of ramfs, so `run.sh` gives the
+guest 256 MB: at 128 MB the kernel ran out of memory while unpacking, since the file
+manager's programs joined, 2026-11-03). The screen is a KMS display at the native resolution
 (`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
 sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
@@ -135,10 +144,10 @@ The boot ends with:
 *** tinycc-os-kernel: Linux 7.3.0+ x86_64, #1 SMP PREEMPT ...
 *** every file of this kernel was compiled, assembled and linked by tinycc (tcc, tld)
 *** BusyBox v1.38.0 (static, musl -- compiled and linked by tinycc as well)
-*** tcc version 0.9.28rc e23dabe+110p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
+*** tcc version 0.9.28rc e23dabe+111p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm)
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
@@ -206,20 +215,21 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 
 | Path | What |
 |------|------|
-| `sources.lock` | the 39 upstream components with URL, ref and exact commit or tarball hash |
+| `sources.lock` | the 47 upstream components with URL, ref and exact commit or tarball hash (or a single file's) |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, xfiles with xmenu, dmenu, xprop and xrdb, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
 | `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |
 | `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
 | `userland/startx.c`, `userland/etc/` | the graphical mode's launcher (a C script: the X server, then JWM and `links -g`) and the guest's `passwd`/`group` |
 | `userland/jwm/`, `userland/fontconfig/` | JWM's system configuration (`/etc/system.jwmrc`) and the menu's XPM icons; `gperf.sh`, the stand-in for gperf that fontconfig's build needs |
 | `userland/mlterm/` | the terminal emulator's system configuration (`/etc/mlterm/main`, `key`, `aafont`: UTF-8, TERM, the Xft engine with DejaVu Sans Mono, the scrollbar on the right, the pty keys) |
+| `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 110 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/tinycc/` | 111 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 19 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
@@ -353,6 +363,12 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | expat, freetype, fontconfig | 2.9.0, 2.15.0, 2.16.0 (release tarballs; the Xft font stack, static, musl, built by tcc unpatched; fontconfig's object-name hash generated by `userland/fontconfig/gperf.sh` in place of gperf, which the host lacks; its configuration is the image's `/etc/fonts`) | 16afbb9c..., 91866274..., 6a33dc55... |
 | jpeg | 9f (IJG's libjpeg, release tarball; static, musl, built by tcc unpatched: JWM's JPEG icons and wallpapers) | 04705c11... |
 | dejavu-fonts | 2.37 (release tarball; DejaVu Sans, Sans Bold and Sans Mono as the image's `/usr/share/fonts/TTF`, Bitstream Vera license, with the license file) | fa9ca4d1... |
+| xfiles | master, 2025-04-06 (the file manager: C99, Xlib + Xft + Xpm + Xrender + Xcursor + Xext, static, musl; 1 tcc fix, 115; 2 patches: Control+A/Control+H and the `_CONTROL_GOTO` key commands, fontconfig patterns destroyed once) | c47a0d98 |
+| libXfixes, libXcursor | 6.0.1, 1.2.3 (release tarballs; the two X libraries xfiles needs beyond the stack above, built by tcc unpatched) | e69eaa32..., 74e72da2... |
+| xmenu | master, 2026-04-14 (the pop-up menu of xfiles' right click; 4 patches: a build without Imlib2, fontconfig patterns destroyed once, keys translated without XKB, Down/Up with nothing selected) | bd012b1e |
+| dmenu | 5.4 (release tarball; the prompt xfiles embeds: the address bar, names; 1 patch: bitmap fonts as glyph fallbacks) | 8fbace2a... |
+| xprop, xrdb | 1.2.8, 1.2.2 (release tarballs; X.Org's property tool, which the control script changes the window's directory with, and the resource loader the session runs on `/etc/X11/Xresources`; built by tcc unpatched) | a8394338..., db2d774a... |
+| unifont | 18.0.01 (a single PCF file, sha256 in `sources.lock`; GNU Unifont as the fallback font for the scripts DejaVu lacks, OFL-1.1 / GPL-2.0-or-later with the font exception; `userland/xfiles/LICENSE.unifont`) | 3f770242... |
 
 ## License
 

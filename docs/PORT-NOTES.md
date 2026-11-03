@@ -596,6 +596,124 @@ in `/home/ada` with `LINKS_XTERM` set by Xsession, the pty keys switch). Both IS
 (60.5 MB x86_64, 53.5 MB i386; the images grew by mlterm's 5.6 / 4.8 MB). The ISOs' default
 entries were not booted again (the kernel and initramfs are the ones tested directly).
 
+## The file manager: xfiles (2026-11-03)
+
+xfiles (phillbush, `master` c47a0d9 of 2025-04-06; MIT, icons CC0) is the guest's graphical
+file manager, built by `scripts/build.sh xfiles` (between mlterm and links; in `all` and
+install.sh). It was chosen over xfm, ROX-Filer, emelFM2, PCManFM, SpaceFM and Xfe: C99 against
+Xlib and Xft only, a POSIX Makefile, UTF-8 names, XDND drag and drop, thumbnails and XEmbed.
+xfiles itself only draws the icon grid; every action goes through two helper programs it
+runs, `xfilesctl` and `xfilesthumb`, which this repository provides as C scripts (`tcc -run`,
+the rule for every script of the system) in `userland/xfiles/`, with a third, `xdg-open`, as
+the opener. Eight more components are pinned in `sources.lock`: libXfixes 6.0.1 and libXcursor
+1.2.3 (the last two X libraries xfiles needs), xmenu (phillbush, `master` bd012b1: the pop-up
+menu), dmenu 5.4 (the prompt, embedded into the window through XEmbed), xprop 1.2.8 and xrdb
+1.2.2 (X.Org), and GNU Unifont 18.0.01 as a PCF file (`fetch.sh` now takes a single file as
+well as a tarball).
+
+* **Building.** libXfixes, libXcursor, xprop and xrdb go through `xlib_build` as the other X
+  pieces; dmenu, xmenu and xfiles are compiled by hand from the source lists of their
+  Makefiles, which hard-code `/usr/include/freetype2` and `/usr/X11R6/include` ahead of the
+  user's flags (with the host's development headers present that would mix two FreeTypes).
+  All static against `build/<arch>/x/usr`; the Xcursor library needs `-lXrender` after it in
+  tcc's single-pass link. Everything compiles with tcc after one compiler fix: **fix 115**,
+  a scalar's braced initializer ending in a comma (`&(long){ 0x7FFFFFFF, }` in xfiles'
+  `control/dragndrop.c`; C99 allows the trailing comma, tcc wanted the brace). Two small
+  patches to the programs: `patches/xmenu` makes Imlib2 optional (`-DWITHOUT_IMLIB2`: the
+  `IMG:` icon fields are read and skipped; Imlib2 loads its image formats as plugins, which a
+  static program cannot), `patches/dmenu` lets its glyph fallback use bitmap fonts (it asked
+  fontconfig for scalable ones only, so CJK came out as boxes). `patches/xfiles` is a
+  feature: Control+A selects all, Control+H toggles the dot files (upstream has
+  Control+period), and both can be requested through the `_CONTROL_GOTO` property, which is
+  how the menu offers them (`xprop -set _CONTROL_GOTO '^a'`). Two real bugs turned up on
+  i386 and are patched in both programs (FIX-LOG C19, C20): their shared `control/font.c`
+  destroyed every fontconfig pattern twice (XftFontClose already does), which crashed xmenu
+  at exit on i386 once musl had unmapped the freed block, and xmenu translated keys with
+  `XkbKeycodeToKeysym`, which libX11 answers with NoSymbol on a server without XKB, so no
+  key worked in its menus (xfiles uses `XkbLookupKeySym`, which falls back to the core
+  keymap; xmenu does now too); with the keys working, Down or Up before any item was under
+  the pointer dereferenced a NULL `selected` (C21, the fourth xmenu patch).
+* **The control script `xfilesctl`** (`menu`, `drop-ask`, `drop-copy/move/link`, `^KEY`):
+  the right-click menu in xmenu (open, open with, copy, cut, paste, rename, delete, new
+  folder, terminal here, properties; on the background also new window, select all, dot
+  files, go to, up, home, reload), confirmations as a small xmenu with a non-selectable
+  header, prompts in dmenu with `-w $WINDOWID` (the address bar on Ctrl-L lists the
+  directories here; rename and new folder), a paste buffer in
+  `$XDG_CACHE_HOME/xfiles/clipboard` (Ctrl-C/Ctrl-X/Ctrl-V; no selection owner process is
+  needed), copies with `cp -a`, moves, symlinks, `rm -rf` after a confirmation, names that
+  exist in the target get `_1`, `_2`, ... before the extension, and the directory change
+  through `xprop -id $WINDOWID -set _CONTROL_GOTO`. Programs that stay (terminals, viewers)
+  are started detached, since xfiles waits for the script.
+* **The opener `xdg-open`** (xfiles' default OPENER name; no MIME database or .desktop files):
+  by extension and first bytes, directories to a new xfiles, PNG/JPEG/GIF and HTML to
+  `links -g` (an image on a generated HTML page in `/tmp`, removed when the browser ends:
+  a bare image file makes links ask whether to save or display it, and "display" shows the
+  bytes), executables (ELF or `#!`) and archive listings in mlterm with `xdg-open --run`,
+  which waits for Enter before the window closes, text in mlterm with `$EDITOR` (vi), the
+  rest in `hexdump -C`; `--with COMMAND` for the menu's "Open with". links is now built
+  `--with-libjpeg` (the jwm step's libjpeg; it had GIF, PNG and XBM only), so the browser
+  shows JPEG pages too.
+* **The thumbnailer `xfilesthumb`** decodes PNG with libpng's simplified API, JPEG with
+  libjpeg at 1/2-1/8 scale, PNM (P1-P6) with its own reader, and renders text files as a page
+  with their first lines in a built-in 3x5 pixel font; a box filter scales down, a whole
+  factor scales up, the rest is the window's background (`XFILES_THUMB_BG`). It is a `tcc
+  -run` script that links `libpng16.a`, `libjpeg.a` and `libz.a` with `#pragma comment(lib,
+  ...)`: the step stages those archives and their headers under `/usr/lib` and
+  `/usr/include`, where the guest tcc looks, so the guest can build against them too.
+  xfiles keeps the thumbnails in `$XDG_CACHE_HOME/thumbnails` and makes none when the
+  variable is unset: the session sets it (below).
+* **Resources and fonts.** `/etc/X11/Xresources` (`userland/xfiles/Xresources`) carries
+  xfiles' font (DejaVu Sans 11), colours, geometry and the icon patterns (shell globs on the
+  name, `pattern/` for directories, mapped onto the 31 icons compiled into xfiles) and
+  xmenu's look; dmenu has no resources and gets its font and colours on xfilesctl's command
+  line. `userland/startx.c` and `userland/xdm/Xsession.c` load the file, then
+  `~/.Xresources`, with `xrdb -nocpp -merge` (no C preprocessor in the image) before the
+  window manager, and set `XDG_CACHE_HOME=$HOME/.cache`, `EDITOR=vi`, `TERMINAL=mlterm`,
+  `LANG=C.UTF-8` and `XLOCALEDIR=/usr/share/X11/locale` (C18 below) besides `LINKS_XTERM`;
+  startx also moves to the home directory (its /init start was in /root, which the console
+  user cannot read). Glyphs DejaVu lacks come from Unifont through fontconfig's per-glyph
+  fallback (its `69-unifont.conf` is in the default set), which xfiles' and xmenu's shared
+  font module and the patched dmenu perform: CJK, Armenian, Georgian and the rest of the
+  BMP render; 1.4 MB as `unifont.pcf.gz`, which FreeType reads through its gzip stream.
+* **libX11's locale data (FIX-LOG C18).** `XSupportsLocale()` was false in the guest and
+  `XOpenIM()` failed, on which dmenu exits: libX11 looks for `locale.dir` and friends in
+  the directory it was configured with, the build tree. The step stages `locale.alias`,
+  `locale.dir`, `compose.dir`, `C/` and `en_US.UTF-8/` (0.6 MB) under
+  `/usr/share/X11/locale`, the session sets `XLOCALEDIR`.
+* **Memory (FIX-LOG C17).** The five static X programs (15.8 MB together: each carries the
+  Xft stack), Unifont and the thumbnailer's libraries took the busybox image from 39 to
+  60 MB, and a 128 MB machine died at boot ("System is deadlocked on memory"): the kernel
+  keeps the loaded image reserved while it unpacks it. The image is now a gzip-compressed
+  cpio (`CONFIG_RD_GZIP=y`, `out/<arch>/initramfs.cpio.gz`, 22 MB on x86_64, 21 MB on
+  i386; the libc-free and self-hosting images stay plain) and `run.sh` gives 256 MB by
+  default (150 MB free after boot).
+* **JWM and the rest.** "File manager (xfiles)" with a folder icon in JWM's menu, `Ctrl-Alt-F`
+  runs `exec:xfiles` (`userland/jwm/system.jwmrc`, `icons/file-manager.xpm`); the banner
+  and xdm's helper text name it. The accounts need nothing special: xfiles opens the
+  session's home.
+
+Verified on x86_64 (headless QEMU, QMP screendumps, the keys and the PS/2 mouse through
+`input-send-event`, commands over the serial console): a test directory with Latin, Cyrillic
+and CJK names and PNG, JPEG, PGM, PPM, PBM, text, C, tar.gz and binary files shows the
+per-type icons, the thumbnails of every image and text file and all the names (Unifont for
+the CJK ones); the right-click menu with the key hints; Open on a JPEG and a PNG (links on
+the generated page, the file name as the title); Ctrl-L with dmenu embedded at the top of the
+window, `su` + Enter entered `sub/`; BackSpace up; Ctrl-N made `newdir`; a double click
+entered it; Ctrl-C on hello.txt and Ctrl-V in the same directory made `hello_1.txt`; Ctrl-A
+highlighted all 20 entries and Delete asked "Delete 20 items?" (cancelled); F2 renamed a
+file through the prompt; Ctrl-I showed the properties; photo.jpg dragged from one xfiles
+window into a second one on `sub/` opened the copy/move/link menu and "Copy here" copied
+it; the `sub` folder dragged into mlterm put `/home/ada/test/sub` on the command line;
+hello.txt opened in vi inside mlterm, hello.c (a `#!/usr/bin/tcc -run` script) ran in mlterm and
+waited for Enter, Ctrl-H showed a dot file and Ctrl-T opened mlterm in the directory. On the
+final images of both architectures (compressed, 256 MB): Ctrl-Alt-F from JWM opens xfiles on the
+home directory with the session's environment set, the right-click menu takes Down and Escape,
+xmenu exits without a segfault in dmesg, and on i386 the test directory showed the same icons,
+thumbnails and names, Ctrl-L + `su` entered `sub/`. The ISOs were rebuilt (40 MB i386; 142 MB
+x86_64, which carries the self-hosting image) but not booted again. `scripts/selfhost-test.sh
+--arch x86_64 all` passed afterwards (the generation-2 kernel boots); the i386 self-host loop was
+not rerun.
+
 ## Debugging recipes
 
 ```bash

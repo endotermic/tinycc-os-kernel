@@ -55,6 +55,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 112 | tinycc 0108 |
 | | | | | 113 | tinycc 0109 |
 | | | | | 114 | tinycc 0110 |
+| | | | | 115 | tinycc 0111 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -105,7 +106,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
 | `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105, 114 |
 | `tests/tests2/158_link_group.c` | all | 53 |
-| `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112 |
+| `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112, 115 |
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
@@ -1452,6 +1453,56 @@ K1. 2026-10-20, APPLIED (uncommitted), `arch/x86/include/asm/cmpxchg_64.h`: wrap
     because <linux/types.h> only defines u128 under that macro and tcc has no __int128.
     Kconfig already reports CC_HAS_INT128=n for tcc, so nothing else uses 128-bit arithmetic.
 
+C17. 2026-11-03, configuration, `kernels/linux/minimal.config`, `scripts/build.sh` (initramfs),
+    `run.sh`, `boot/mkiso.sh`, `scripts/devices-test.sh`: the busybox image is a gzip-compressed
+    cpio (`CONFIG_RD_GZIP=y`, `out/<arch>/initramfs.cpio.gz`; the libc-free and the
+    self-hosting images stay plain) and QEMU gets 256 MB by default (`MEM`). The file manager's
+    five static X programs (each with the whole Xft stack inside: 15.8 MB), Unifont and the
+    thumbnailer's libraries took the image from 39 to 60 MB; the kernel keeps the loaded image
+    reserved while it unpacks it into the ramfs, so an uncompressed image costs its size twice
+    at boot: `Memory: 38392K/130544K available`, then "Out of memory and no killable
+    processes ... System is deadlocked on memory" before `/init`. Compressed, the image is 22 MB
+    (x86_64) / 21 MB (i386) and the ISOs shrink accordingly; the 60 MB of ramfs plus the X
+    server, JWM, links and xfiles still want more than 128 MB leaves (`free` after boot at 256
+    MB: 150 MB free). Not a tcc matter; the kernel's inflate compiled with tcc unchanged.
+    Verification: both images boot into the graphical mode at 256 MB; `free` in the guest.
+
+C18. 2026-11-03, build recipe (not a patch), `scripts/build.sh` step `xfiles`, `userland/startx.c`,
+    `userland/xdm/Xsession.c`: libX11's locale data (`locale.alias`, `locale.dir`, `compose.dir`,
+    the `C` and `en_US.UTF-8` tables) is staged under `/usr/share/X11/locale` and the session
+    sets `XLOCALEDIR` to it and `LANG=C.UTF-8`. libX11 looks for the data in the directory it
+    was configured with, the build tree (`--prefix=build/<arch>/x/usr`), so in the guest
+    `XSupportsLocale()` was false for every program ("could not set locale" from xfiles and
+    xmenu, "warning: no locale support" from dmenu) and `XOpenIM()` failed, on which dmenu
+    exits ("XOpenIM failed: could not open input device"): Ctrl-L in xfiles opened nothing.
+    Verification: dmenu embedded in xfiles with the variable set, the warnings gone.
+
+C19. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0002, patches/xfiles/upstreamable/0002),
+    xmenu's and xfiles' shared `control/font.c` (ctrlfnt_free, the error paths of ctrlfnt_open
+    and opennewfont): XftFontOpenPattern keeps the pattern in the XftFont and XftFontClose
+    destroys it (libXft xftfreetype.c), and the module destroyed each pattern a second time: a
+    use after free that read freed memory on x86_64 unnoticed and crashed at exit on i386
+    ("segfault at b7f6b41c ip 0822a1de ... in xmenu", the instruction `mov (%eax),%eax` of
+    fontconfig's FcRefIsConst: musl had returned the block to the kernel with munmap). Found
+    with the kernel's segfault line and the `Code:` bytes located in the binary (a `-g` build of
+    the same sources mapped the pattern to FcRefIsConst). Not a tcc matter.
+    Verification: xmenu exits cleanly on i386 after the menu (no segfault in dmesg).
+
+C20. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0003), xmenu `xmenu.c` (xkeypress): the
+    keys did nothing in xmenu on either architecture (Escape, the arrows, Return): it
+    translated keycodes with XkbKeycodeToKeysym, which libX11 answers with NoSymbol when the
+    server has no XKB extension (TinyX's kdrive; `_XkbUnavailable` in XKBBind.c), while
+    XkbLookupKeySym, which xfiles uses, falls back to the core keymap. The patch uses the
+    latter with no modifiers, the same unshifted keysym where XKB exists. Not a tcc matter.
+    Verification: Escape closes the menu, Down/Return choose an item, on both architectures.
+
+C21. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0004), xmenu `xmenu.c` (xkeypress): Down or
+    Up with nothing selected (the menu opens beside the pointer, so no item is under it)
+    dereferenced `menu->selected`, NULL ("segfault at 18 ip 0813c349" on i386: `mov 0x18(%eax)`
+    with %eax 0, the `next` field); with C20 the keys reach the handler for the first time on
+    this server. Down now selects the first item, Up the last. Not a tcc matter.
+    Verification: Down, Down, Escape in the menu on i386, no segfault in dmesg.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,
@@ -1597,6 +1648,18 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     i386 guest's shell survives `tcc -run hello.c`, a program's SIGUSR1 handler returns (the
     SIGALRM one too, once C4 gave the kernel alarm()), devices-test still passes on both
     architectures.
+
+115. 2026-11-03, COMMITTED (patches/tinycc/bugfixes/0111), `tccgen.c` (decl_initializer).
+    Problem: a scalar's braced initializer may end in a comma like any other initializer
+    list (C99 6.7.8: `{ initializer-list , }`), and xfiles' `control/dragndrop.c` passes
+    `&(long){ 0x7FFFFFFF, }` to XChangeProperty; tcc wanted the closing brace right after
+    the value: "'}' expected (got ',')". GCC accepts `long x = { 1, };` and the compound
+    literal alike. Fix: after the value of a braced scalar initializer an optional comma is
+    skipped before the brace. Test: 161_gnu_extensions2.c (a global, a local and a compound
+    literal with the trailing comma, and a plain braced scalar).
+    Verification: 161 passes, `make test` ALL TESTS PASSED on the host, xfiles compiles;
+    the kernel (both architectures), musl, busybox and the rest rebuilt with the fixed
+    compiler as before.
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

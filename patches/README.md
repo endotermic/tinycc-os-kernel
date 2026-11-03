@@ -16,7 +16,8 @@ Categories:
 * `jwm/upstreamable` (Xft text without Pango, `__builtin_expect` under tcc), `xfiles/features`
   (Control+A selects all, Control+H toggles the dot files, both reachable through the
   `_CONTROL_GOTO` property) and `xfiles/upstreamable` (fontconfig patterns destroyed once),
-  `xmenu/upstreamable` (a build without Imlib2, the same pattern fix, keys without XKB),
+  `xmenu/upstreamable` (a build without Imlib2, the same pattern fix, keys without XKB, Down/Up
+  with nothing selected),
   `dmenu/compatibility` (bitmap fonts as glyph fallbacks)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
