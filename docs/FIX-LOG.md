@@ -1407,6 +1407,11 @@ K16. 2026-10-23, COMMITTED (upstreamable), `arch/x86/include/asm/pgtable.h`:
     pudp_test_and_clear_young() only with THP; otherwise the generic stub applies. On 32-bit
     x86 (two-level page tables, no THP) the arch declared a function it never defined, and
     clear_refs_pte_range()'s dead THP branch referenced it.
+    DROPPED 2026-11-04 without a tcc change: with fixes 119 to 121 the branch is dead for tcc
+    too (the `pmd_trans_huge_lock()` stub folds to NULL, the local `ptl` carries it to the
+    test); the four i386 objects naming the functions, compiled from the vanilla header, have
+    no undefined reference; both kernels rebuilt on the 8-patch series (1932 and 2059 tcc
+    invocations) and pass devices-test, 13 checks each. 8 kernel patches remain.
 C1. 2026-10-23, configuration (not a patch), `kernels/linux/i386.config`: `CONFIG_COMPAT_32BIT_TIME=y`.
     Problem: the first i386 self-hosting run stopped at Kbuild's first `touch` ("Function not
     implemented", `.checked-atomic-long.h`). tinyconfig leaves the 32-bit time_t system calls

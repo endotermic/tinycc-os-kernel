@@ -100,7 +100,9 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   mm/swap_state.c passes the order, a local that a stub set and a loop reassigns with another
   stub, to a static function that tests it) on 2026-11-04 with fix 120, and the 64-bit
   division helpers of i386 (K14 and K20 below, 0013 and 0019) the same day with fix 121,
-  the strength reduction of `long long` division by a constant: 9 kernel patches remain.
+  the strength reduction of `long long` division by a constant; and 0015 (K16 below, the
+  pmdp/pudp_test_and_clear_young() declarations) went the same day without a tcc change,
+  fixes 119 to 121 together having made its dead branch disappear: 8 kernel patches remain.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; tcc has no VEX/EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -182,15 +184,17 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   to 121): of the 9 kernel patches left, tcc could absorb 0015 with the stub fold extended
-   to `if/else return` bodies, 0010 and 0016 with VEX/EVEX encodings in the assembler,
+   to 121): of the 8 kernel patches left, tcc could absorb 0010 and 0016 with VEX/EVEX
+   encodings in the assembler and
    0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
    and 0011 (the 16-bit code size) stay kernel-side.  Fix 121, the i386 strength reduction of
    `long long` division by a constant (with a division-free `__builtin_mul_overflow`, the
    inlining of one-return static functions given a constant, and the dropping of effect-free
    statements), took 0013 and 0019 on 2026-11-04; fix 120, the inliner, took 0003, 0004,
-   0012 and 0017 the same day (fix 119 had taken 0007, 0008, 0014, 0018).  The real objtool,
+   0012 and 0017 the same day (fix 119 had taken 0007, 0008, 0014, 0018), and 0015 was dropped
+   the same day with no further tcc change, fixes 119 to 121 together folding its dead
+   branch.  The real objtool,
    built with gcc, accepted all 1566 tcc-built x86_64 objects of drivers.config before fix 120
    (212 warnings in 110 objects: an epilogue after an infinite loop, missing `__noreturn`,
    `stac()`/`clac()` not inlined -- they are now --, two alternatives' stack layouts in
@@ -294,7 +298,8 @@ What the 32-bit kernel needed from the toolchain (fixes 74-93, K14-K16, docs/FIX
 * Kernel patches K15 (swiotlb wrappers under `IS_ENABLED(CONFIG_SWIOTLB)`) and K16 (x86's
   `pmdp_test_and_clear_young()` declared only where it is defined) remove undefined
   references from dead branches that gcc's constant propagation eliminates; both are
-  semantics-preserving and upstreamable.
+  semantics-preserving and upstreamable. Both are gone since: K15 with tcc fix 119
+  (2026-11-03), K16 on 2026-11-04 once fixes 119 to 121 folded the branch (no tcc change).
 * musl and busybox on i386: the x87 `"t"`/`"u"` constraints of musl's math (90, any floating
   type on i386), `"%eax"` clobbers (76), an `"m"` input operand when every register is taken
   (busybox's comba multiply: three register outputs, two clobbers, two pointer-based memory
@@ -779,7 +784,8 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
   patch 0037 (`inline_fold_check()`) from `return const;` bodies to `if (const) ... else
   return const;` bodies, and evaluate a pure `__always_inline` body with constant arguments
   at the call (the probe machinery `fold_probe_expr()` already parses a body without code
-  with the parameters in scope). Small.
+  with the parameters in scope). Small. -- Done without that extension: fix 120 took 0017,
+  and 0015 was dropped on 2026-11-04 with no tcc change at all (see the end of this section).
 * 0003 (`rip_rel_ptr()`), 0004 (`__static_cpu_has()`), the `__scoped_seqlock_invalid_target()`
   half of 0005, and 0012 (`vma_thp_gfp_mask()`, whose remaining caller `__swap_cache_alloc()`
   gets the order as a parameter): an inliner. tcc keeps the token string of every function
@@ -922,6 +928,21 @@ address (a string literal's or a static local's Sym is freed with its block); `c
 (unsigned)v : (int)v` is unsigned; a compilation that stops on an error leaves state that the
 next one (`tcc -dt`) must reset; and a body compiled from saved tokens needs its `#pragma`
 directives deferred to where they stand.
+
+Patch 0015 followed on 2026-11-04 with no tcc change (8 kernel patches remain: 0001, 0002,
+0005, 0006, 0009, 0010, 0011, 0016). The `pmdp_test_and_clear_young()` call sits in the THP
+branch of `clear_refs_pte_range()` (fs/proc/task_mmu.c), `if (ptl) { ... goto out; ...
+out: spin_unlock(ptl); return 0; }` with `ptl = pmd_trans_huge_lock(pmd, vma)`; without THP
+that function is a `return NULL;` stub, which patch 0037 folds, fix 119 carries the NULL
+through the local `ptl` to the test (the later `&ptl` does not matter before it is taken),
+and the branch is dead with its label and gotos. Checked before dropping the patch by
+recompiling, with the vanilla `asm/pgtable.h` put first on the include path and the
+fix-121 `i386-tcc`, every i386 object whose source names the functions: fs/proc/task_mmu.o,
+mm/pgtable-generic.o, mm/vmscan.o and arch/x86/mm/pgtable.o have no undefined
+pmdp/pudp_test_and_clear_young. Both kernels were then rebuilt on the 8-patch series (1932
+and 2059 tcc invocations, no gcc; the i386 link has no undefined symbol) and booted:
+`scripts/devices-test.sh` passes its 13 checks on i386 and on x86_64. The `if/else return` extension of the stub fold that the
+list above proposed for 0015 is therefore not needed for the kernel.
 
 ## Debugging recipes
 

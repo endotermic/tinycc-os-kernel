@@ -230,7 +230,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
 | `patches/tinycc/` | 120 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 9 kernel patches in `workarounds/` and `upstreamable/` |
+| `patches/linux/` | 8 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
