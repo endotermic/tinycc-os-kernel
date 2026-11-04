@@ -169,7 +169,11 @@ for gcc.
    none), `.strtab` not tail-merged, `readelf` only `-r`; see `../tools/tld/README.md`.
 4. tcc polish: `__builtin_popcount*` still calls libtcc1; `_Pragma("pack")` only warns; the
    inline-stub fold is disabled with `-g`; `do { } while` in dead code only when
-   delimitable.
+   delimitable.  A constant index into a string literal (`""[0]`, `"abc"[1]`) folds since fix
+   124 (2026-11-04: lib/kunit/executor.c, so a `CONFIG_KUNIT=y` kernel builds); what is left
+   there: an index past the literal in a direct static initializer (`static int c =
+   "abc"[5];`) is copied from the section by init_putv's compound-literal path (as before the
+   fix), where gcc says "not constant".
 5. Coverage: `minimal.config` and, since 2026-10-26, `drivers.config` (PCI, networking,
    Wi-Fi, Bluetooth, sound, USB, mouse, DRM: block, SCSI, USB, DRM, ALSA, mac80211, the
    Bluetooth stack and the crypto library, see the section below) on QEMU; a larger config
@@ -187,7 +191,7 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   to 123): of the 6 kernel patches left, tcc could absorb
+   to 124): of the 6 kernel patches left, tcc could absorb
    0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
    and 0011 (the 16-bit code size) stay kernel-side.  Fix 121, the i386 strength reduction of
@@ -965,12 +969,14 @@ files assembled with the kernel's command line by tcc and by gas and compared in
 instruction after a link with a fixed layout: identical, except 8 forward jumps that gas
 relaxes to rel8 (open item 2). Both kernels were rebuilt from the vanilla lib/crypto (2057
 and 2094 tcc invocations, no gcc) and pass `scripts/devices-test.sh`; a scratch x86_64 kernel with the lib/crypto KUnit tests (RUNTIME_TESTING_MENU on;
-lib/kunit/executor.c compiled by gcc for it, see below), booted with `-cpu host`,
+lib/kunit/executor.c compiled by gcc for it until fix 124 the same day, see below), booted with `-cpu host`,
 `host,-sha-ni` and `host,-sha-ni,-avx2,-bmi2` so that the AVX-512, AVX2 and AVX implementations
 are the ones under test, passes every suite (sha1, sha224/256, blake2s, polyval, ghash;
-FIX-LOG 122). Found on the way, a follow-up: tcc does not fold `""[0]` in a static
-initializer (`PARAM_FROM_CONFIG()` in lib/kunit/executor.c, "initializer element is not
-constant"), which a KUnit build of the project's own kernel would need.
+FIX-LOG 122). Found on the way and fixed the same day as fix 124: tcc did not fold `""[0]`
+in a static initializer (`PARAM_FROM_CONFIG()` in lib/kunit/executor.c, "initializer element
+is not constant"), which a KUnit build of the project's own kernel needs; with the fix, tcc
+compiles executor.c too (no gcc in that scratch kernel) and the three boots pass the same
+suites (FIX-LOG 124).
 
 ## Debugging recipes
 

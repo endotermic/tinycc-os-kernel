@@ -1,0 +1,131 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 15:54:10 +0200
+Subject: [PATCH] tccgen: a constant index into a string literal is the byte
+ ("abc"[1], ""[0])
+
+gcc folds the read of a string literal's byte at a constant index, so a
+static initializer may use it: the Linux kernel's lib/kunit/executor.c
+sets its filter parameters with PARAM_FROM_CONFIG(CONFIG_...), which is
+(config[0] ? config : NULL) on a Kconfig string, and tcc rejected the
+file ("initializer element is not constant"), the one file of a
+CONFIG_KUNIT=y kernel it could not compile.
+
+* kstrlit(), called first by kval(): a stack value that is an lvalue at
+  a constant offset from an anonymous symbol in a read-only PROGBITS
+  section, of an integer type of 1, 2, 4 or 8 bytes, inside the symbol
+  and with no relocation in the object, becomes the constant read from
+  the section's bytes (sign-extended by its type).  kval() is called
+  wherever a value is asked for (gv, gen_op, gen_cast, the conditions of
+  ?:, && and ||, the switch value, __builtin_constant_p), so the fold
+  reaches them all; the lvalue itself stays, so &"abc"[1] is still an
+  address and "abc"[i] still reads the string.  An index outside the
+  literal ("abc"[5]) is not folded, as gcc does not fold it.
+* expr_const1() calls kval(): case "abc"[1]:, enum { A = ""[0] } and the
+  other integer constant expressions (gcc rejects those; tcc folds them
+  alike).
+* A string literal in an evaluated constant expression (CONST_WANTED,
+  not under sizeof) has its bytes emitted, where NODATA_WANTED kept them
+  out before, since a constant index may pick one of them.
+---
+ tccgen.c | 67 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 67 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 5b94d4e..99897cd 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -4170,11 +4170,70 @@ static long long knorm(int t, long long v)
+     return v;
+ }
+ 
++/* "abc"[1], ""[0]: a byte of a string literal (an anonymous object in a
++   read-only section) at a constant index is that byte, a constant, as gcc
++   folds it (the kernel's lib/kunit/executor.c initializes statics with
++   (config[0] ? config : NULL) on Kconfig strings).  Only the value is
++   replaced, when it is asked for: the lvalue stays, so that &"abc"[1] is
++   still an address.  Returns 1 when sv was replaced. */
++static int kstrlit(SValue *sv)
++{
++    Sym *s = sv->sym;
++    ElfSym *esym;
++    Section *sec;
++    int t = sv->type.t, size, align;
++    unsigned long off;
++    uint64_t v;
++
++    if ((sv->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_CONST | VT_SYM | VT_LVAL)
++        || !s || s->v < SYM_FIRST_ANOM
++        || !is_integer_btype(t & VT_BTYPE)
++        || (t & (VT_BITFIELD | VT_ARRAY | VT_VOLATILE))
++        || !(esym = elfsym(s))
++        || esym->st_shndx == SHN_UNDEF
++        || esym->st_shndx >= tcc_state->nb_sections)
++        return 0;
++    sec = tcc_state->sections[esym->st_shndx];
++    if (sec->sh_type != SHT_PROGBITS || (sec->sh_flags & SHF_WRITE) || !sec->data)
++        return 0;
++    size = type_size(&sv->type, &align);
++    if ((int64_t)sv->c.i < 0 || sv->c.i + size > esym->st_size)
++        return 0; /* "abc"[5]: not a constant, as gcc says (and -b checks it) */
++    off = esym->st_value + sv->c.i;
++    if (off + size > sec->data_offset)
++        return 0;
++    if (sec->reloc) {
++        /* not a value a relocation completes (an address stored as an
++           integer in a compound literal) */
++        ElfW_Rel *rel = (ElfW_Rel *)sec->reloc->data;
++        ElfW_Rel *end = (ElfW_Rel *)(sec->reloc->data + sec->reloc->data_offset);
++        for (; rel < end; rel++)
++            if (rel->r_offset >= esym->st_value
++                && rel->r_offset < esym->st_value + esym->st_size)
++                return 0;
++    }
++    switch (size) {
++    case 1: v = sec->data[off]; break;
++    case 2: v = read16le(sec->data + off); break;
++    case 4: v = read32le(sec->data + off); break;
++    case 8: v = read64le(sec->data + off); break;
++    default: return 0;
++    }
++    sv->r = VT_CONST;
++    sv->r2 = VT_CONST;
++    sv->sym = NULL;
++    sv->c.i = knorm(t, v);
++    sv->type.t &= ~VT_CONSTANT;
++    return 1;
++}
++
+ /* a read of a variable with a known value is the value (VT_NONCONST: it
+    is not a constant expression of the language) */
+ ST_FUNC void kval(SValue *sv)
+ {
+     Sym *s;
++    if (kstrlit(sv))
++        return;
+     if (!kprop_on() || !(s = klocal(sv)) || s->kst != 1)
+         return;
+     sv->r = VT_CONST | VT_NONCONST;
+@@ -6706,7 +6765,14 @@ ST_FUNC void unary(void)
+         type.t |= VT_ARRAY;
+         memset(&ad, 0, sizeof(AttributeDef));
+         ad.section = rodata_section;
++        /* in a constant expression that is evaluated (case "abc"[1]:, an
++           enumerator; not under sizeof) the bytes are wanted: a constant
++           index picks one of them (kstrlit()) */
++        n = nocode_wanted;
++        if (CONST_WANTED && !NOEVAL_WANTED)
++            nocode_wanted &= ~(CONST_WANTED_MASK | CODE_OFF_BIT);
+         decl_initializer_alloc(&type, &ad, VT_CONST, 2, 0, 0);
++        nocode_wanted = n;
+         break;
+     case TOK_SOTYPE:
+     case '(':
+@@ -8033,6 +8099,7 @@ static void expr_const1(void)
+     nocode_wanted += CONST_WANTED_BIT;
+     expr_cond();
+     nocode_wanted -= CONST_WANTED_BIT;
++    kval(vtop); /* case "abc"[1]:, enum { A = ""[0] }: the byte (kstrlit()) */
+ }
+ 
+ /* parse an integer constant and return its value. */

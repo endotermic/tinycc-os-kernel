@@ -64,11 +64,12 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 121 | tinycc 0119 |
 | | | | | 122 | tinycc 0121 |
 | | | | | 123 | tinycc 0122 |
+| | | | | 124 | tinycc 0124 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
-last in tests/asmtest.S and the m16-asm snippet lists).
+last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -120,6 +121,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/163_const_prop.c` | all | 119 |
 | `tests/tests2/164_inline_call.c` | all | 120 |
 | `tests/tests2/165_div_const.c` | all (the strength reduction itself on i386) | 121 |
+| `tests/tests2/166_str_index.c` | all | 124 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2091,7 +2093,7 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     lib/crypto KUnit tests (sha1, sha256, blake2s, polyval, ghash; built in build/vex-scratch/kt
     from the same .config plus RUNTIME_TESTING_MENU, behind which lib/crypto/tests hides;
     lib/kunit/executor.c was compiled by gcc for that scratch kernel alone, since tcc rejects
-    its `""[0] ? "" : NULL` static initializer as not constant -- a separate gap, a follow-up)
+    its `""[0] ? "" : NULL` static initializer as not constant -- a separate gap, fix 124 the same day)
     booted three times under KVM with the host's CPU features masked on QEMU's side: `-cpu
     host` (SHA-NI for SHA-1/SHA-256, AVX-512 for BLAKE2s, PCLMUL+AVX for POLYVAL), `host,-sha-ni`
     (sha256_transform_rorx and sha1_transform_avx2, the AVX2/BMI2 files) and
@@ -2116,6 +2118,44 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     Test: asmtest.S has `movl %eax, %ebx ## a comment of the "##" kind`; `make test` (the pp
     tests included) passes.
     Verification: sha256-avx2-asm.S assembles and matches GNU as (see 122).
+
+124. 2026-11-04, COMMITTED (patches/tinycc/compatibility/0124, test in features/0125), `tccgen.c`
+    (kstrlit, kval, expr_const1, unary `case TOK_STR`).
+    Problem: lib/kunit/executor.c sets its filter parameters with
+    `PARAM_FROM_CONFIG(CONFIG_KUNIT_DEFAULT_FILTER_GLOB)` = `(config[0] ? config : NULL)` on a
+    Kconfig string (`""` or e.g. `"sha*"`): "initializer element is not constant". gcc folds
+    the read of a string literal's byte at a constant index; in tcc `""[0]` stayed an lvalue
+    (VT_CONST | VT_SYM | VT_LVAL on the literal's anonymous rodata symbol, offset 0), so the
+    condition of the `?:` was not constant. The one file of a `CONFIG_KUNIT=y` kernel tcc could
+    not compile, found on 2026-11-04 while building the scratch KUnit kernel of fix 122 (gcc
+    compiled it there). A direct `static char c = "abc"[1];` had worked by accident: init_putv
+    copies an anonymous lvalue's bytes from its section (the compound-literal path).
+    Fix: kstrlit(), called first by kval() (fix 119's known-value hook, which every place that
+    asks for a value calls: gv, gen_op, gen_cast, the conditions of `?:`/`&&`/`||`, the switch
+    value, `__builtin_constant_p`): an lvalue at a constant offset from an anonymous symbol in a
+    read-only PROGBITS section, of an integer type of 1, 2, 4 or 8 bytes, inside the symbol's
+    size and with no relocation in the object (an address stored in a const compound literal),
+    becomes the constant read from the section's bytes, normalized by its type (knorm()). Only
+    the value is replaced: the lvalue stays, so `&"abc"[1]` is an address and `"abc"[i]` a load,
+    and `sizeof` is untouched. expr_const1() calls kval() too, so `case "abc"[1]:`, an
+    enumerator, an array size and `_Static_assert` fold as well (gcc rejects those four and a
+    wide `L"abc"[1]`; tcc folds them alike), and a string literal in an evaluated constant
+    expression (CONST_WANTED and not under sizeof) has its bytes emitted, which NODATA_WANTED
+    had kept out, since a constant index may pick one of them (the constant switch's case scan
+    of fix 119 included). An index past the literal (`"abc"[5]`) is not folded, as gcc does not
+    fold it; as a direct static initializer it still takes init_putv's copy path as before
+    (PORT-NOTES open item 4).
+    Test: tests/tests2/166_str_index.c: the kernel's construct, `""[0]` and `"abc"[2]` through
+    every operator and a cast in static initializers and in `?:`, `&`, sizeof, a run-time index,
+    case labels (also in a switch on a constant and in dead code), an enumerator, an array size,
+    `_Static_assert`, a wide string (the forms gcc rejects under `__TINYC__`, with gcc's value for
+    the expected output). Fails on e23dabe+123p with the kernel's message; `make test` ALL TESTS
+    PASSED (host, also under `-b`); the output equals gcc's at -O0 and -O2.
+    Verification: the scratch KUnit kernel of fix 122 (build/vex-scratch/kunit-kernel.sh) with
+    its gcc-built executor.o removed: tcc compiles lib/kunit/executor.c, 0 gcc invocations, and
+    the three boots of kunit-boot.sh (`-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2`)
+    pass every lib/crypto suite (blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed, the benchmarks skipped, in each boot; the scratch kernel was rebuilt in full by the +125p tcc, 2115 tcc and 0 gcc invocations. The saved kunit-kernel.sh lacked `CONFIG_RUNTIME_TESTING_MENU=y`, behind which the lib/crypto tests hide, so its first run here built a kernel without them that printed the KTAP header and no suite; the script sets it now). Both kernels rebuilt with the new tcc (2057 i386 and 2094 x86_64 tcc invocations, 0 gcc; bzImage 6 852 608 and 7 431 680 bytes, both unchanged),
+    `scripts/devices-test.sh` passes its 13 checks on both. The test also passes as a static i386 binary built by build/i386/musl-tcc.
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

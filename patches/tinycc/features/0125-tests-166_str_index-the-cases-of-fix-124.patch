@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 15:54:10 +0200
+Subject: [PATCH] tests: 166_str_index, the cases of fix 124
+
+---
+ tests/tests2/166_str_index.c      | 119 ++++++++++++++++++++++++++++++
+ tests/tests2/166_str_index.expect |   5 ++
+ 2 files changed, 124 insertions(+)
+ create mode 100644 tests/tests2/166_str_index.c
+ create mode 100644 tests/tests2/166_str_index.expect
+
+diff --git a/tests/tests2/166_str_index.c b/tests/tests2/166_str_index.c
+new file mode 100644
+index 0000000..4272dc5
+--- /dev/null
++++ b/tests/tests2/166_str_index.c
+@@ -0,0 +1,119 @@
++/* A constant index into a string literal is the byte (fix 124 of the
++   tinycc-os-kernel project): "abc"[1] and ""[0] fold to a constant wherever
++   their value is asked for, as gcc folds them, so that a static initializer
++   may use them.  The Linux kernel's lib/kunit/executor.c initializes
++   statics with PARAM_FROM_CONFIG(CONFIG_...) = (config[0] ? config : NULL)
++   on Kconfig strings, which tcc rejected ("initializer element is not
++   constant").  The lvalue itself stays: &"abc"[1] is still an address, a
++   run-time index still reads the string, and sizeof is untouched.  The
++   output must be gcc's; the constructs under __TINYC__ are the ones gcc
++   accepts only in initializers (not as a case label, an enumerator, an
++   array size or in _Static_assert, nor for a wide string): tcc folds them
++   everywhere and the expected value stands in for gcc. */
++#include <stdio.h>
++#include <stddef.h>
++
++/* the kernel's construct */
++#define CONFIG_KUNIT_DEFAULT_FILTER_GLOB "sha*"
++#define CONFIG_KUNIT_DEFAULT_FILTER ""
++#define PARAM_FROM_CONFIG(config) ((config)[0] ? (config) : NULL)
++static char *filter_glob_param = PARAM_FROM_CONFIG(CONFIG_KUNIT_DEFAULT_FILTER_GLOB);
++static char *filter_param = PARAM_FROM_CONFIG(CONFIG_KUNIT_DEFAULT_FILTER);
++
++/* in static initializers, through the operators */
++static char empty = ""[0];
++static char c2 = "abc"[2];
++static int sum = "abc"[1] + 1;
++static int neg = -"abc"[1];
++static int not = !"abc"[1];
++static int cast = (int)"abc"[1];
++static int rev = 1["abc"];
++static int nul = "abc"[3];
++static int uc = (unsigned char)"\377"[0];
++static int minus1 = "\377"[0] == (char)-1;
++static int cond = ("x"[0] && "y"[0]) || ""[0];
++static int sel = ""[0] ? 1 : "a"[0] ? 2 : 3;
++
++/* the lvalue stays */
++static char *addr = &"abc"[1];
++static char *addr0 = &""[0];
++
++/* sizeof is untouched */
++static int sz1 = sizeof("abc"[1]);
++static int sz2 = sizeof("abc");
++static int sz3 = sizeof(""[0]);
++
++#ifdef __TINYC__
++#define B "abc"[1]
++#define C "abc"[2]
++#define FOUR "\4"[0]
++#define EIGHT "\10"[0]
++#define W L"abc"[1]
++#else
++#define B 'b'
++#define C 'c'
++#define FOUR 4
++#define EIGHT 8
++#define W 'b'
++#endif
++
++enum { EB = B, ESZ = sizeof("hello") };
++char buf[C - 'a' + 2];
++_Static_assert(B == 'b', "a byte of a string literal");
++_Static_assert(ESZ == 6, "sizeof a string literal");
++static int wide = W;
++
++static int which(int i)
++{
++    switch (i) {
++    case B: return 1;
++    case C: return 2;
++    }
++    return 0;
++}
++
++/* a switch on a constant value (its cases are scanned first, then parsed) */
++static int size_switch(void)
++{
++    long long x;
++    switch (sizeof x) {
++    case FOUR: return 4;
++    case EIGHT: return 8;
++    }
++    return 0;
++}
++
++/* a case label in dead code */
++static int dead(int i)
++{
++    return -1;
++    switch (i) {
++    case B: return 1;
++    }
++    return 0;
++}
++
++int rt = 1; /* a run-time value the compiler cannot know */
++
++static int runtime(void)
++{
++    return "abc"[rt];
++}
++
++static int folded(void)
++{
++    return "abc"[1];
++}
++
++int main(void)
++{
++    printf("glob %s, filter %s\n", filter_glob_param,
++           filter_param ? filter_param : "(null)");
++    printf("%d %d %d %d %d %d %d %d %d %d %d %d\n", empty, c2, sum, neg, not,
++           cast, rev, nul, uc, minus1, cond, sel);
++    printf("%s %s %d %d %d\n", addr, addr0, sz1, sz2, sz3);
++    printf("%d %d %d %d %d %d %d %d\n", EB, (int)sizeof buf, wide,
++           which('a'), which('b'), which('c'), size_switch(), dead('b'));
++    printf("%d %d %s %d\n", runtime(), folded(), &"abc"[rt], "abc"[rt] == 'b');
++    return 0;
++}
+diff --git a/tests/tests2/166_str_index.expect b/tests/tests2/166_str_index.expect
+new file mode 100644
+index 0000000..9544153
+--- /dev/null
++++ b/tests/tests2/166_str_index.expect
+@@ -0,0 +1,5 @@
++glob sha*, filter (null)
++0 99 99 -98 0 98 98 0 255 1 1 2
++bc  1 4 1
++98 4 98 0 1 2 8 -1
++98 98 bc 1
