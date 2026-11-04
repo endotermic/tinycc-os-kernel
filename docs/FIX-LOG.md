@@ -62,10 +62,13 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 119 | tinycc 0115 |
 | | | | | 120 | tinycc 0117 |
 | | | | | 121 | tinycc 0119 |
+| | | | | 122 | tinycc 0121 |
+| | | | | 123 | tinycc 0122 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
-an addition).
+an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
+last in tests/asmtest.S and the m16-asm snippet lists).
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -1448,6 +1451,8 @@ K11. 2026-10-22, COMMITTED (upstreamable), `arch/x86/Kconfig.assembler`, `lib/cr
     probes (removed in v5.8) are back and gate sha256-avx-asm.S, sha256-avx2-asm.S and the
     AVX-512 BLAKE2s function; tcc's assembler has no VEX/EVEX encodings, the glue falls back
     to the SSSE3 and generic code. With binutils nothing changes.
+    DROPPED 2026-11-04 with tcc fix 122 (the VEX and EVEX encodings): the vanilla files
+    assemble, instruction for instruction as with GNU as; 6 kernel patches remain.
 K12. 2026-10-22, COMMITTED (upstreamable), `arch/x86/Kconfig`, `arch/x86/boot/Makefile`,
     `arch/x86/boot/video.c`: `X86_BOOT_VIDEO_MODES` (default y, hidden unless EXPERT) builds the
     BIOS video mode setting (vga=, the menu, the VGA/VESA/BIOS drivers, EDID); without it
@@ -1985,6 +1990,133 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     tccgen_init) and the body on the macro stack (hence (5)); gcc's `x / -1` is `-x` while
     tcc's idiv traps on LLONG_MIN / -1 (undefined; the test avoids it).
 
+122. 2026-11-04, COMMITTED (patches/tinycc/features/0121, tests 0123), `i386-asm.c` (asm_vex_prefix,
+    disp8_fits and asm_modrm, parse_operand, asm_opcode: the OPC_VEX family of table flags, the
+    VEX operand roles and the prefix path; OPT_YMM/OPT_VEC, MAX_OPERANDS 4), `x86_64-asm.h` (the
+    AVX, AVX2, BMI1/2 and AVX-512VL entries, DEF_ASM_OP4), `i386-tok.h` (ymm0-15, DEF_ASM_OP4).
+    Problem: two kernel patches existed because the assembler had no VEX or EVEX encodings. The
+    six AVX files of lib/crypto/x86 (sha256-avx-asm.S, sha256-avx2-asm.S, the AVX half of
+    sha1-ssse3-and-avx.S, sha1-avx2-asm.S, polyval-pclmul-avx.S and the AVX-512 function of
+    blake2s-core.S; 3128 lines) use 27 mnemonics tcc lacked, by frequency rorx 55, vpxor 46,
+    vpaddd 38, vmovdqa 35, vpsrld 16, vpshufb 15, vmovdqu 15, vpslld 10, vpshufd 10, vpclmulqdq
+    10, vpsrlq 8, vprord 8, vpalignr 8, vpor 6, vperm2i128 4, vpsrldq 3, vpslldq 3, vzeroupper 2,
+    vpternlogd 2, vpmovzxbd 2, vpermi2d 2, vextracti128 2, andn 2, vpaddq, vmovq, vmovd and
+    vinsertf128 (plus vmovups behind a macro), with xmm, ymm and general registers, immediates,
+    `disp(%reg)`, `(%reg,%reg)`, `disp(%reg,%reg,scale)` and RIP-relative memory operands, and up
+    to four operands per instruction where the table had three. Patch 0010 had brought the
+    `CONFIG_AS_AVX2`/`AS_AVX512` probes back and left out the two SHA-256 files and the BLAKE2s
+    AVX-512 function, 0016 did the same for SHA-1 and POLYVAL with a `CONFIG_AS_AVX`. Measured
+    before deciding on EVEX: the vanilla `arch/x86/Kconfig.assembler` of this kernel (7.3) has
+    one probe, AS_WRUSS, so a vanilla build assembles the six files and the AVX-512 function
+    unconditionally on x86_64: EVEX could not be left out (vprord, vpternlogd and vpermi2d are
+    EVEX-only; vpmovzxbd with a ymm destination is VEX, AVX2). The i386 kernel builds none of
+    the six, the lib's `CRYPTO_LIB_{SHA1,SHA256,BLAKE2S,GF128HASH}_ARCH` options default to y
+    on X86_64 only (the x86 code of lib/crypto is 64-bit), so 32-bit code needs the encoder for
+    completeness alone (ymm0-7, no R/X/B/W register extension).
+    Fix: (1) a register class for %ymm0-15 (OP_YMM; the tokens follow xmm15 outside the
+    8-per-class block, parse_operand() gives them OP_YMM with reg 0-15, ymm8-15 in 64-bit code
+    only) and the composite template type OPT_VEC = xmm or ymm, so that one entry serves both
+    widths and VEX.L follows the operand given; OPT_COMPOSITE_FIRST no longer takes a value of
+    its own (the template field has 5 bits and OPT_VEC is the 32nd type). (2) Four operands:
+    MAX_OPERANDS 4, DEF_ASM_OP4 in the three expansions of x86_64-asm.h, the decoded op_type
+    array sized with it. (3) Table flags OPC_VEX and OPC_EVEX: the entry's 0x66/0xf3/0xf2 high
+    byte becomes the pp field, OPC_0F/OPC_0F38/OPC_0F3A the map, a 64-bit register operand or
+    OPC_48 (64-bit mode only: vmovq with %rax, vpinsrq, the BMI forms on %rNN) or OPC_VEXW
+    (vpsllvq, vpermq, vpternlogq, ...) the W bit, a ymm operand or OPC_VEXL (vzeroall) the L
+    bit; OPC_NDD marks the shift-by-immediate forms (vpsrld $7, src, dst: ModRM.reg is the
+    group, VEX.vvvv the destination) and blsr/blsmsk/blsi. (4) The operand roles in AT&T order,
+    settled after the match: ModRM.r/m is the template's memory-capable operand (in the
+    register form of a load or store too, as the legacy entries have it: vmovdqa %ymm1, %ymm2
+    is 6F /r, vextracti128 $1, %ymm1, %xmm2 puts %xmm2 in r/m), else the first register
+    operand; ModRM.reg is the last register operand, the destination, unless OPC_NDD; VEX.vvvv
+    the register operand left -- the middle one of vpaddd src2, src1, dst, the first one of
+    shlx %ecx, src, dst and bzhi, 1111 when there is none. The extension bits R (reg), B (r/m
+    or base) and X (index) come from registers 8-15 and are stripped from the fields; asm_rex()
+    is not called, gen_size_prefixes() gets no operand size (the 0x67 of a 32-bit address
+    register and a segment prefix still come first), and the legacy special cases (imul, int3,
+    push/pop of a segment register, the arith and x87 groups, which look at the opcode byte) are
+    skipped: the entry's low opcode byte alone follows the prefix. (5) asm_vex_prefix(): the
+    2-byte form C5 [R vvvv L pp] when the map is 0F and X, B and W are 0, else C4 [R X B mmmmm]
+    [W vvvv L pp]; for OPC_EVEX the 4-byte 62 [R X B R' 0 0 mm] [W vvvv 1 pp] [z L'L b V' aaa]
+    with R' = V' = 1 (registers below 16), no masking, broadcast or rounding, L'L = 00 or 01;
+    the fields are stored inverted as the manual has them, so 32-bit code with registers 0-7
+    gets the bytes GNU as emits (C4/C5 are LES/LDS there unless the next byte's two top bits
+    are 11, which the inverted R and X of registers 0-7 give). (6) EVEX memory operands scale
+    their 8-bit displacement by the operand width (disp8*N, N = 16 or 32 for the full-vector
+    tuple of the four instructions): asm_modrm() takes the short form when the displacement is
+    a multiple of N whose quotient fits a byte, through disp8_fits() and the file-scope
+    evex_disp8_n that asm_opcode() sets around the call. (7) The table: vzeroupper/vzeroall;
+    vmovdqa/u, vmovaps/ups, vmovapd/upd, vmovntdq, vmovntdqa, vmovd, vmovq (F3 7E, D6 and the
+    W1 general-register forms), vmovhlps/lhps; vpbroadcastb/w/d/q, vbroadcastss/sd/i128/f128,
+    vpmovzx*/vpmovsx*; the packed integer arithmetic, logic, compares, unpacks, packs and
+    multiplies of the SSE2 table and the SSSE3/SSE4.1 ones as vp*, vpsrlvd/q, vpsravd,
+    vpsllvd/q; the floating-point logic, arithmetic and unpacks; vptest, vpabs*, vpermd/ps; the
+    shifts by xmm/m128 and by imm8, vpslldq/vpsrldq; vpshufd/hw/lw, vpermq/pd, vshufps/pd,
+    vpalignr, vpblendw/d, vperm2i128/f128, vinserti128/f128, vextracti128/f128; vpclmulqdq and
+    vaesenc/enclast/dec/declast in their 128-bit forms only (the 256-bit ones are the VPCLMULQDQ
+    and VAES extensions, which a Kconfig `as-instr` probe must keep failing); vpinsrb/w/d/q,
+    vpextrb/w/d/q; BMI1/2 andn, blsr, blsmsk, blsi, bzhi, sarx, shlx, shrx, pdep, pext, mulx,
+    rorx (32- and 64-bit register forms, no suffixed spellings); EVEX vprord/l, vprorq/l,
+    vpternlogd/q, vpermi2d/q, vpermt2d/q. Not covered: opmask registers, zmm, broadcast and
+    rounding operands, masking, the EVEX spellings of VEX instructions (vmovdqa32, ...); an
+    `as-instr` probe of `vpmovm2b %k1,%zmm5` (upstream's old CONFIG_AS_AVX512 test) is still
+    rejected, honestly.
+    Test: tests/asmtest.S: about 390 lines of forms (every entry, register and memory operands,
+    the xmm8-15/ymm8-15, r8-r15, RIP-relative and EVEX disp8*N cases), assembled by GNU as and
+    tcc and compared by `make -C tests asmtest` (a target that is not in `make test`'s list
+    upstream, "minor differences with gcc": its diff is the 6 symbol-naming lines it had
+    before); the same forms were byte-compared with GNU as from separate files in i386-tcc's
+    32-bit code and tcc's 64-bit code (281 + 112 forms: identical, except the RIP-relative
+    references to a same-section label, which tcc keeps as relocations with the right addends,
+    the documented difference); tests/m16-asm-32.txt (25 snippets) and -64.txt (18) for
+    `tests/m16-check.sh asm`: 168, 168, 199, 199 and 126 snippets identical with GNU as in
+    .code16gcc, .code16, 32-bit, .code32 and .code64 (the last in i386-tcc: ymm8-15 and the W
+    forms in a 32-bit object's 64-bit section).
+    Verification: the six files assembled with the kernel's own command line (tcc-kcc replaying
+    the saved .cmd, the vanilla sources) and with gcc/gas, each object linked alone with a
+    fixed section layout and disassembled: sha256-avx-asm (871 instructions), sha1-ssse3-and-avx
+    (2080) and sha1-avx2-asm (1746) are instruction for instruction what GNU as makes
+    (mnemonics, registers, immediates, displacements, the RIP-relative targets), .text sizes
+    equal; sha256-avx2-asm (1124), blake2s-core (190) and polyval-pclmul-avx (304) differ only
+    in the targets of 4, 1 and 3 forward jumps that GNU as relaxes to rel8 and tcc keeps rel32
+    (.text 4359/4363, 949/952, 1584/1592 bytes: PORT-NOTES open item 2, not an encoding matter).
+    Kernel patches 0010 and 0016 removed from patches/linux/series (6 left) and both kernels
+    rebuilt from the vanilla lib/crypto with the new compiler (2057 and 2094 tcc
+    invocations, no gcc; bzImage 6 852 608 bytes on i386, 7 431 680 on x86_64); the x86_64
+    vmlinux has sha256_transform_avx, sha256_transform_rorx, sha1_transform_avx,
+    sha1_transform_avx2, polyval_mul_pclmul_avx, polyval_blocks_pclmul_avx and
+    blake2s_compress_avx512 (`nm`); `scripts/devices-test.sh` passes its 13 checks on i386 and on x86_64 (the x86_64 guest runs under KVM with
+    the host's CPU, AVX-512 included, so the random driver's BLAKE2s took the AVX-512 function
+    during that boot). A runtime check of the AVX paths: an x86_64 test kernel with CONFIG_KUNIT and the
+    lib/crypto KUnit tests (sha1, sha256, blake2s, polyval, ghash; built in build/vex-scratch/kt
+    from the same .config plus RUNTIME_TESTING_MENU, behind which lib/crypto/tests hides;
+    lib/kunit/executor.c was compiled by gcc for that scratch kernel alone, since tcc rejects
+    its `""[0] ? "" : NULL` static initializer as not constant -- a separate gap, a follow-up)
+    booted three times under KVM with the host's CPU features masked on QEMU's side: `-cpu
+    host` (SHA-NI for SHA-1/SHA-256, AVX-512 for BLAKE2s, PCLMUL+AVX for POLYVAL), `host,-sha-ni`
+    (sha256_transform_rorx and sha1_transform_avx2, the AVX2/BMI2 files) and
+    `host,-sha-ni,-avx2,-bmi2` (sha256_transform_avx and sha1_transform_avx, BLAKE2s on SSSE3):
+    every suite passed in every boot (blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10,
+    sha256 13 tests: vectors, all lengths up to 4096, incremental updates, buffer overruns,
+    overlaps, alignment, interrupt context; 0 failures), so the tcc-assembled AVX, AVX2 and
+    AVX-512 code computes the right digests. `make test` ALL
+    TESTS PASSED on the host.
+
+123. 2026-11-04, COMMITTED (patches/tinycc/bugfixes/0122, test in 0123), `tccpp.c` (next_nomacro1,
+    `case '#'`).
+    Problem: sha256-avx2-asm.S, assembled for the first time, stopped with "end of line
+    expected" at `leaq K256+0*32(%rip), INP ## reuse INP as scratch reg`. In a .S file a `#`
+    away from the start of a line is a GNU as comment, but `##` was lexed as the token-pasting
+    operator and the comment became operands. The kernel's other `##` comments sit at the start
+    of their lines (a preprocessing line, which the asm mode drops), which is why no earlier
+    file met it.
+    Fix: in an assembler file (PARSE_FLAG_ASM_FILE) every `#` outside a preprocessing line
+    starts a comment, `##` included; a `#define` body is read with the flag cleared (fix 56), so
+    its `##` still pastes.
+    Test: asmtest.S has `movl %eax, %ebx ## a comment of the "##" kind`; `make test` (the pp
+    tests included) passes.
+    Verification: sha256-avx2-asm.S assembles and matches GNU as (see 122).
+
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the
     regulatory database (whose firmware file is not in the image anyway) selects
@@ -2119,6 +2251,7 @@ K17. 2026-10-26, COMMITTED (upstreamable), `arch/x86/Kconfig.assembler` (CONFIG_
     tcc's assembler does not have: `vmovdqu`, `vpclmulqdq`, `vzeroupper`, ...) are built only
     when the AS_AVX / AS_AVX2 probes pass, as K11 (patch 0010) does for SHA-256 and BLAKE2s;
     the glue dispatches to SSSE3, SHA-NI and PCLMULQDQ code, or the generic POLYVAL.
+    DROPPED 2026-11-04 with tcc fix 122, as K11.
 K18. 2026-10-26, COMMITTED (workaround), `include/linux/bitfield.h`: under `__TINYC__` the
     `__bad_mask()` canary is an empty static inline (as seqlock.h's canaries, K5). tcc does not
     inline `field_multiplier()`, so the call stayed in every FIELD_PREP/FIELD_GET and

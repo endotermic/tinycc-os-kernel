@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 15:19:53 +0200
+Subject: [PATCH] tccpp: "##" outside a macro body is a comment in an assembler
+ file
+
+In a .S file a '#' that is not at the start of a line begins a GNU as
+comment; "##" was lexed as the token-pasting operator instead and the
+rest of the line became operands: "leaq K256+0*32(%rip), INP ## reuse
+INP as scratch reg" in the kernel's sha256-avx2-asm.S failed with "end
+of line expected".  The body of a #define is read with
+PARSE_FLAG_ASM_FILE cleared, so its "##" still pastes.
+---
+ tccpp.c | 20 +++++++++++---------
+ 1 file changed, 11 insertions(+), 9 deletions(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index cc5e615..a0a064d 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -2708,19 +2708,21 @@ maybe_newline:
+             p = file->buf_ptr;
+             goto maybe_newline;
+         } else {
++#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
++            if (parse_flags & PARSE_FLAG_ASM_FILE) {
++                /* '#' starts a comment in GNU as syntax, also as "##"
++                   ("leaq K256(%rip), INP ## reuse INP" in the kernel's
++                   sha256-avx2-asm.S); the token-pasting "##" of a macro
++                   body is read with the flag cleared */
++                p = parse_line_comment(p - 1);
++                goto redo_no_start;
++            }
++#endif
+             if (c == '#') {
+                 p++;
+                 tok = TOK_TWOSHARPS;
+             } else {
+-#if !defined(TCC_TARGET_ARM) && !defined(TCC_TARGET_ARM64)
+-                if (parse_flags & PARSE_FLAG_ASM_FILE) {
+-                    p = parse_line_comment(p - 1);
+-                    goto redo_no_start;
+-                } else
+-#endif
+-                {
+-                    tok = '#';
+-                }
++                tok = '#';
+             }
+         }
+         break;

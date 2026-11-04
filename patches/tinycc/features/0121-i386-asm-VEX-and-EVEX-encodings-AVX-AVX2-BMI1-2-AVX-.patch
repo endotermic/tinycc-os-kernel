@@ -1,0 +1,707 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 15:19:53 +0200
+Subject: [PATCH] i386-asm: VEX and EVEX encodings (AVX, AVX2, BMI1/2,
+ AVX-512VL subset)
+
+The Linux kernel's lib/crypto/x86 SHA-1, SHA-256, BLAKE2s and POLYVAL
+files (sha1-ssse3-and-avx.S, sha1-avx2-asm.S, sha256-avx-asm.S,
+sha256-avx2-asm.S, polyval-pclmul-avx.S, blake2s-core.S) are VEX-encoded
+AVX and AVX2 code with BMI2's rorx and andn, and the BLAKE2s AVX-512
+function uses vprord, vpternlogd and vpermi2d with xmm/ymm operands
+(EVEX, AVX-512VL).
+
+* %ymm0-15 as a register class (OP_YMM; OPT_VEC in a template takes an
+  xmm or a ymm register and VEX.L follows the operand), four operands
+  per instruction (MAX_OPERANDS 4, DEF_ASM_OP4).
+* Table flags OPC_VEX / OPC_EVEX: the entry's 0x66/0xf3/0xf2 high byte
+  is the pp field, OPC_0F/OPC_0F38/OPC_0F3A the map, a 64-bit register
+  operand or OPC_48/OPC_VEXW the W bit.  asm_vex_prefix() writes the
+  2-byte C5 form when it suffices, else C4, or the 4-byte EVEX prefix
+  (no masking, broadcast or rounding; disp8*N for its memory operands).
+  No REX and no operand-size prefix for these entries.
+* Operand roles in AT&T order: ModRM.r/m is the template's
+  memory-capable operand, ModRM.reg the last register operand (the
+  destination), VEX.vvvv the register operand left (the first source);
+  OPC_NDD for the shift-by-immediate forms, where the destination is
+  vvvv and ModRM.reg the group.
+* 32-bit code uses the same encoder with registers 0-7; ymm8-15 and the
+  64-bit forms of the general-register instructions need 64-bit code.
+
+Entries: vzeroupper/vzeroall; the moves (vmovdqa/u, vmovaps/ups,
+vmovapd/upd, vmovntdq/a, vmovd/q, vmovhlps/lhps); broadcasts and the
+sign/zero extensions; the packed integer arithmetic, logic, compares,
+unpacks, packs, multiplies and the SSSE3/SSE4.1 additions as vp*; the
+floating-point logic, arithmetic and unpacks; vptest, vpabs*, vpermd/ps;
+the shifts by xmm/m128 and by imm8; vpshufd/hw/lw, vpermq/pd,
+vshufps/pd, vpalignr, vpblendw/d, vperm2i128/f128, vinserti128/f128,
+vextracti128/f128; vpclmulqdq and vaes* in their 128-bit forms;
+vpinsr*/vpextr*; BMI1/2: andn, blsr, blsmsk, blsi, bzhi, sarx, shlx,
+shrx, pdep, pext, mulx, rorx; EVEX: vprord/l, vprorq/l, vpternlogd/q,
+vpermi2d/q, vpermt2d/q.  Encodings byte-compared with GNU as in 32- and
+64-bit mode (about 400 forms).
+---
+ i386-asm.c   | 204 ++++++++++++++++++++++++++++++++++--------
+ i386-tok.h   |  19 ++++
+ x86_64-asm.h | 246 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 431 insertions(+), 38 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 808a244..b54c3d0 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -22,11 +22,11 @@
+ #define USING_GLOBALS
+ #include "tcc.h"
+ 
+-#define MAX_OPERANDS 3
++#define MAX_OPERANDS 4
+ 
+ #define TOK_ASM_first TOK_ASM_clc
+ #define TOK_ASM_last TOK_ASM_emms
+-#define TOK_ASM_alllast TOK_ASM_subps
++#define TOK_ASM_alllast TOK_ASM_endbr32 /* the last entry of x86_64-asm.h */
+ 
+ #define OPC_B          0x01  /* only used with OPC_WL */
+ #define OPC_WL         0x02  /* accepts w, l or no suffix */
+@@ -55,6 +55,12 @@
+ /* code-mode restrictions (checked against TCCState.seg_size at match time) */
+ #define OPC_NO64    0x10000 /* not encodable in 64-bit mode */
+ #define OPC_ONLY64  0x20000 /* needs 64-bit mode (also implied by OPC_48) */
++/* AVX: VEX- and EVEX-encoded entries (asm_vex_prefix) */
++#define OPC_VEX     0x40000 /* VEX prefix (2- or 3-byte form) instead of 0x66/0xf3/0xf2, REX, 0x0f */
++#define OPC_EVEX    0x80000 /* 4-byte EVEX prefix (AVX-512VL, no masking/broadcast) */
++#define OPC_NDD    0x100000 /* VEX.vvvv is the destination, ModRM.reg the group (shift by imm8) */
++#define OPC_VEXL   0x200000 /* VEX.L = 1 without a ymm operand (vzeroall) */
++#define OPC_VEXW   0x400000 /* VEX.W = 1 in every mode (OPC_48 means W too, 64-bit mode only) */
+ 
+ #define OPC_GROUP_SHIFT 13
+ 
+@@ -103,15 +109,17 @@ enum {
+     OPT_DX,     /* %dx register */
+     OPT_ADDR,   /* OP_EA with only offset */
+     OPT_INDIR,  /* *(expr) */
+-    /* composite types */
++    OPT_YMM,    /* %ymm0-15 (AVX; the 256-bit form of an xmm register) */
++    /* composite types (the 5-bit template field holds values up to 31) */
+     OPT_COMPOSITE_FIRST,
+-    OPT_IM,     /* IM8 | IM16 | IM32 */
++    OPT_IM = OPT_COMPOSITE_FIRST, /* IM8 | IM16 | IM32 */
+     OPT_REG,    /* REG8 | REG16 | REG32 | REG64 */
+     OPT_REGW,   /* REG16 | REG32 | REG64 */
+     OPT_IMW,    /* IM16 | IM32 */
+     OPT_MMXSSE, /* MMX | SSE */
+     OPT_DISP,   /* Like OPT_ADDR, but emitted as displacement (for jumps) */
+     OPT_DISP8,  /* Like OPT_ADDR, but only 8bit (short jumps) */
++    OPT_VEC,    /* SSE | YMM: an xmm or ymm register (VEX.L from the operand) */
+     /* can be ored with any OPT_xxx */
+     OPT_EA = 0x80
+ };
+@@ -121,6 +129,7 @@ enum {
+ #define OP_REG32  (1 << OPT_REG32)
+ #define OP_MMX    (1 << OPT_MMX)
+ #define OP_SSE    (1 << OPT_SSE)
++#define OP_YMM    (1 << OPT_YMM)
+ #define OP_CR     (1 << OPT_CR)
+ #define OP_TR     (1 << OPT_TR)
+ #define OP_DB     (1 << OPT_DB)
+@@ -239,6 +248,7 @@ static const ASMInstr asm_instrs[] = {
+ #define DEF_ASM_OP1(name, opcode, group, instr_type, op0) { TOK_ASM_ ## name, O(opcode), T(opcode, instr_type, group), 1, { op0 }},
+ #define DEF_ASM_OP2(name, opcode, group, instr_type, op0, op1) { TOK_ASM_ ## name, O(opcode), T(opcode, instr_type, group), 2, { op0, op1 }},
+ #define DEF_ASM_OP3(name, opcode, group, instr_type, op0, op1, op2) { TOK_ASM_ ## name, O(opcode), T(opcode, instr_type, group), 3, { op0, op1, op2 }},
++#define DEF_ASM_OP4(name, opcode, group, instr_type, op0, op1, op2, op3) { TOK_ASM_ ## name, O(opcode), T(opcode, instr_type, group), 4, { op0, op1, op2, op3 }},
+ # include "x86_64-asm.h"
+     /* last operation */
+     { 0, },
+@@ -251,6 +261,7 @@ static const uint16_t op0_codes[] = {
+ #define DEF_ASM_OP1(name, opcode, group, instr_type, op0)
+ #define DEF_ASM_OP2(name, opcode, group, instr_type, op0, op1)
+ #define DEF_ASM_OP3(name, opcode, group, instr_type, op0, op1, op2)
++#define DEF_ASM_OP4(name, opcode, group, instr_type, op0, op1, op2, op3)
+ # include "x86_64-asm.h"
+ };
+ 
+@@ -476,6 +487,11 @@ static void parse_operand(TCCState *s1, Operand *op)
+             op->type = OP_SSE;
+             op->reg = 8 + tok - TOK_ASM_xmm8;
+             check_reg64(tok);
++        } else if (tok >= TOK_ASM_ymm0 && tok <= TOK_ASM_ymm15) {
++            op->type = OP_YMM;
++            op->reg = tok - TOK_ASM_ymm0;
++            if (op->reg >= 8)
++                check_reg64(tok);
+         } else if ((op->reg = asm_parse_numeric_reg(tok, &op->type)) >= 0) {
+             check_reg64(tok);
+         } else {
+@@ -704,12 +720,30 @@ static void gen_disp32(ExprValue *pe)
+     }
+ }
+ 
++/* EVEX scales an 8-bit displacement by the memory operand's size N
++   (disp8*N; set around asm_modrm by asm_opcode, 0 for every other
++   encoding): the short form applies when the displacement is a multiple
++   of N whose quotient fits a byte */
++static int evex_disp8_n;
++
++static int disp8_fits(uint64_t v, int *d8)
++{
++    int64_t d = v;
++    if (evex_disp8_n) {
++        if (d % evex_disp8_n)
++            return 0;
++        d /= evex_disp8_n;
++    }
++    *d8 = d;
++    return d == (int8_t)d;
++}
++
+ /* generate the modrm operand */
+ static inline int asm_modrm(int reg, Operand *op)
+ {
+-    int mod, reg1, reg2, sib_reg1;
++    int mod, reg1, reg2, sib_reg1, d8 = 0;
+ 
+-    if (op->type & (OP_REG | OP_MMX | OP_SSE)) {
++    if (op->type & (OP_REG | OP_MMX | OP_SSE | OP_YMM)) {
+         g(0xc0 + (reg << 3) + op->reg);
+     } else if (op->reg == -1 && op->reg2 == -1) {
+         /* displacement only: 64-bit code needs the SIB form (modrm 05 is
+@@ -739,7 +773,7 @@ static inline int asm_modrm(int reg, Operand *op)
+             mod = 0x00;
+         } else if (op->e.v == 0 && !op->e.sym && op->reg != 5) {
+             mod = 0x00;
+-        } else if (op->e.v == (int8_t)op->e.v && !op->e.sym) {
++        } else if (!op->e.sym && disp8_fits(op->e.v, &d8)) {
+             mod = 0x40;
+         } else {
+             mod = 0x80;
+@@ -758,7 +792,7 @@ static inline int asm_modrm(int reg, Operand *op)
+         }
+         /* add offset */
+         if (mod == 0x40) {
+-            g(op->e.v);
++            g(d8);
+         } else if (mod == 0x80 || op->reg == -1) {
+ 	    gen_expr32(&op->e);
+         }
+@@ -766,6 +800,34 @@ static inline int asm_modrm(int reg, Operand *op)
+     return 0;
+ }
+ 
++/* The VEX or EVEX prefix of an AVX instruction (OPC_VEX / OPC_EVEX
++   entries): map 1/2/3 = 0F/0F38/0F3A, pp 0-3 = none/66/F3/F2, W, L (1 for
++   ymm), the REX-like register extension bits R, X, B (the register fields
++   come stripped of them) and vvvv, the extra source register (-1 when the
++   field is unused).  The fields are stored inverted, as the manual has it. */
++static void asm_vex_prefix(int evex, int map, int pp, int w, int l,
++                           int r, int x, int b, int vvvv)
++{
++    int vv = vvvv < 0 ? 0xf : (~vvvv) & 0xf;
++    if (evex) {
++        /* 62 | R X B R' 0 0 m m | W vvvv 1 pp | z L'L b V' aaa: no masking,
++           no broadcast or rounding, registers below 16 (R' = V' = 1) */
++        g(0x62);
++        g(((r ^ 1) << 7) | ((x ^ 1) << 6) | ((b ^ 1) << 5) | 0x10 | map);
++        g((w << 7) | (vv << 3) | 0x04 | pp);
++        g((l << 5) | 0x08);
++    } else if (map == 1 && !x && !b && !w) {
++        /* C5 | R vvvv L pp */
++        g(0xc5);
++        g(((r ^ 1) << 7) | (vv << 3) | (l << 2) | pp);
++    } else {
++        /* C4 | R X B mmmmm | W vvvv L pp */
++        g(0xc4);
++        g(((r ^ 1) << 7) | ((x ^ 1) << 6) | ((b ^ 1) << 5) | map);
++        g((w << 7) | (vv << 3) | (l << 2) | pp);
++    }
++}
++
+ #define REX_W 0x48
+ #define REX_R 0x44
+ #define REX_X 0x42
+@@ -952,13 +1014,15 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+     Operand ops[MAX_OPERANDS], *pop;
+     int trunc_type[MAX_OPERANDS];   /* immediates truncated to the operand size */
+     uint64_t trunc_val[MAX_OPERANDS];
+-    int op_type[3]; /* decoded op type */
++    int op_type[MAX_OPERANDS]; /* decoded op type */
+     int alltypes;   /* OR of all operand types */
+     int autosize;
+     int p66, opsize, addr32, disp16;
+     int rex64;
++    int vex, vex_pp, vvvv_index; /* VEX/EVEX entries: OPC_VEX | OPC_EVEX, the pp field, the vvvv operand */
+ 
+     maybe_print_stats();
++    evex_disp8_n = 0;
+ #ifndef TCC_TARGET_X86_64
+     asm_insn_start = ind;
+ #endif
+@@ -1145,6 +1209,9 @@ again:
+ 	    case OPT_MMXSSE:
+ 		v = OP_MMX | OP_SSE;
+ 		break;
++            case OPT_VEC:
++                v = OP_SSE | OP_YMM;
++                break;
+ 	    case OPT_DISP:
+ 	    case OPT_DISP8:
+ 		v = OP_ADDR;
+@@ -1271,6 +1338,11 @@ again:
+     if ((alltypes & (OP_CR | OP_DB | OP_TR)) || (pa->opcode == 0x8e && !(pa->instr_type & OPC_0F))
+         || (pa->opcode == 0x8c && !(pa->instr_type & OPC_0F) && (alltypes & OP_EA)))
+         opsize = -1;    /* mov %sreg, mem: a 16-bit store, no prefix (GNU as) */
++    /* a VEX/EVEX entry: no operand-size or mandatory prefix, no REX; its
++       0x66/0xf3/0xf2 is the pp field, its 64-bit form the W bit */
++    vex = pa->instr_type & (OPC_VEX | OPC_EVEX);
++    if (vex)
++        opsize = -1;
+ 
+     rex64 = 0;
+     if (!CODE64)
+@@ -1318,6 +1390,11 @@ again:
+             addr32 = 1;
+     v = pa->opcode;
+     p = v >> 8;  /* possibly prefix byte(s) */
++    vex_pp = 0;
++    if (vex) {
++        vex_pp = p == 0x66 ? 1 : p == 0xf3 ? 2 : p == 0xf2 ? 3 : 0;
++        v &= 0xff, p = 0;
++    }
+     /* a 0x66 in the table: the mandatory prefix of an SSE instruction, or
+        a 16-bit operation (handled as an operand size) */
+     p66 = 0;
+@@ -1356,35 +1433,37 @@ again:
+         case 0xdc: case 0xdd: case 0xde: case 0xdf: break;
+         default: tcc_error("bad prefix 0x%2x in opcode table", p); break;
+     }
+-    if (pa->instr_type & OPC_0F)
+-        v = ((v & ~0xff) << 8) | 0x0f00 | (v & 0xff);
+-    else if (pa->instr_type & (OPC_0F38 | OPC_0F3A))
+-        /* here, so that the special cases below do not see e.g. pshufb's 0x00 */
+-        v |= pa->instr_type & OPC_0F38 ? 0x0f3800 : 0x0f3a00;
+-    if ((v == 0x69 || v == 0x6b) && nb_ops == 2) {
+-        /* kludge for imul $im, %reg */
+-        nb_ops = 3;
+-        ops[2] = ops[1];
+-        op_type[2] = op_type[1];
+-    } else if (v == 0xcd && ops[0].e.v == 3 && !ops[0].e.sym) {
+-        v--; /* int $3 case */
+-        nb_ops = 0;
+-    } else if ((v == 0x06 || v == 0x07)) {
+-        if (ops[0].reg >= 4) {
+-            /* push/pop %fs or %gs */
+-            v = 0x0fa0 + (v - 0x06) + ((ops[0].reg - 4) << 3);
+-        } else {
+-            if (CODE64)
+-                tcc_error("push/pop of %%es, %%cs, %%ss or %%ds in 64-bit code");
+-            v += ops[0].reg << 3;
++    if (!vex) {
++        if (pa->instr_type & OPC_0F)
++            v = ((v & ~0xff) << 8) | 0x0f00 | (v & 0xff);
++        else if (pa->instr_type & (OPC_0F38 | OPC_0F3A))
++            /* here, so that the special cases below do not see e.g. pshufb's 0x00 */
++            v |= pa->instr_type & OPC_0F38 ? 0x0f3800 : 0x0f3a00;
++        if ((v == 0x69 || v == 0x6b) && nb_ops == 2) {
++            /* kludge for imul $im, %reg */
++            nb_ops = 3;
++            ops[2] = ops[1];
++            op_type[2] = op_type[1];
++        } else if (v == 0xcd && ops[0].e.v == 3 && !ops[0].e.sym) {
++            v--; /* int $3 case */
++            nb_ops = 0;
++        } else if ((v == 0x06 || v == 0x07)) {
++            if (ops[0].reg >= 4) {
++                /* push/pop %fs or %gs */
++                v = 0x0fa0 + (v - 0x06) + ((ops[0].reg - 4) << 3);
++            } else {
++                if (CODE64)
++                    tcc_error("push/pop of %%es, %%cs, %%ss or %%ds in 64-bit code");
++                v += ops[0].reg << 3;
++            }
++            nb_ops = 0;
++        } else if (v <= 0x05) {
++            /* arith case */
++            v += ((opcode - TOK_ASM_addb) / NBWLX) << 3;
++        } else if ((pa->instr_type & (OPCT_MASK | OPC_MODRM)) == OPC_FARITH) {
++            /* fpu arith case */
++            v += ((opcode - pa->sym) / 6) << 3;
+         }
+-        nb_ops = 0;
+-    } else if (v <= 0x05) {
+-        /* arith case */
+-        v += ((opcode - TOK_ASM_addb) / NBWLX) << 3;
+-    } else if ((pa->instr_type & (OPCT_MASK | OPC_MODRM)) == OPC_FARITH) {
+-        /* fpu arith case */
+-        v += ((opcode - pa->sym) / 6) << 3;
+     }
+ 
+     /* search which operand will be used for modrm */
+@@ -1432,8 +1511,56 @@ again:
+             }
+         }
+     }
+-    if (CODE64)
++    /* a VEX/EVEX entry, in AT&T order (sources first): ModRM.r/m is the
++       template's memory-capable operand (a register in the register form of
++       a load or store too), else the first register operand; ModRM.reg is
++       the last register operand, the destination, unless the reg field is an
++       opcode extension (OPC_NDD: the destination goes to VEX.vvvv); VEX.vvvv
++       is the register operand left, the first source of a three-operand
++       instruction (the count of shlx, the first source of andn) */
++    vvvv_index = -1;
++    if (vex && (pa->instr_type & OPC_MODRM)) {
++        modrm_index = modreg_index = -1;
++        for(i = 0; i < nb_ops; i++)
++            if (op_type[i] & OP_EA) {
++                modrm_index = i;
++                break;
++            }
++        for(i = 0; modrm_index < 0 && i < nb_ops; i++)
++            if (op_type[i] & (OP_REG | OP_SSE | OP_YMM))
++                modrm_index = i;
++        for(i = nb_ops - 1; i >= 0; i--) {
++            if (i == modrm_index || !(op_type[i] & (OP_REG | OP_SSE | OP_YMM)))
++                continue;
++            if (modreg_index < 0 && !(pa->instr_type & OPC_NDD))
++                modreg_index = i;
++            else if (vvvv_index < 0)
++                vvvv_index = i;
++            else
++                tcc_error("too many register operands");
++        }
++    }
++    if (CODE64 && !vex)
+         asm_rex (rex64, ops, nb_ops, op_type, modreg_index, modrm_index);
++    if (vex) {
++        int r = 0, x = 0, b = 0, w, l, map, vv = -1;
++        if (modreg_index >= 0 && ops[modreg_index].reg >= 8)
++            r = 1, ops[modreg_index].reg -= 8;
++        if (modrm_index >= 0) {
++            if (ops[modrm_index].reg >= 8)
++                b = 1, ops[modrm_index].reg -= 8;
++            if ((ops[modrm_index].type & OP_EA) && ops[modrm_index].reg2 >= 8)
++                x = 1, ops[modrm_index].reg2 -= 8;
++        }
++        if (vvvv_index >= 0)
++            vv = ops[vvvv_index].reg;
++        w = (pa->instr_type & (OPC_48 | OPC_VEXW)) || (alltypes & OP_REG64);
++        l = (pa->instr_type & OPC_VEXL) || (alltypes & OP_YMM);
++        map = pa->instr_type & OPC_0F38 ? 2 : pa->instr_type & OPC_0F3A ? 3 : 1;
++        asm_vex_prefix(vex & OPC_EVEX, map, vex_pp, w != 0, l != 0, r, x, b, vv);
++        if (vex & OPC_EVEX)
++            evex_disp8_n = 16 << (l != 0); /* full-vector memory operands (tuple type Full) */
++    }
+ 
+     if (pa->instr_type & OPC_REG) {
+         /* mov $im, %reg case */
+@@ -1515,6 +1642,7 @@ again:
+ 	if (modreg_index >= 0)
+ 	    reg = ops[modreg_index].reg;
+         pc = asm_modrm(reg, &ops[modrm_index]);
++        evex_disp8_n = 0;
+     }
+ 
+     /* emit constants */
+diff --git a/i386-tok.h b/i386-tok.h
+index 7331c74..93cd8aa 100644
+--- a/i386-tok.h
++++ b/i386-tok.h
+@@ -179,6 +179,23 @@
+  DEF_ASM(xmm13)
+  DEF_ASM(xmm14)
+  DEF_ASM(xmm15)
++ /* ymm0-15 (AVX): parsed by their own range in parse_operand() */
++ DEF_ASM(ymm0)
++ DEF_ASM(ymm1)
++ DEF_ASM(ymm2)
++ DEF_ASM(ymm3)
++ DEF_ASM(ymm4)
++ DEF_ASM(ymm5)
++ DEF_ASM(ymm6)
++ DEF_ASM(ymm7)
++ DEF_ASM(ymm8)
++ DEF_ASM(ymm9)
++ DEF_ASM(ymm10)
++ DEF_ASM(ymm11)
++ DEF_ASM(ymm12)
++ DEF_ASM(ymm13)
++ DEF_ASM(ymm14)
++ DEF_ASM(ymm15)
+ 
+  /* generic two operands */
+  DEF_BWLX(mov)
+@@ -312,6 +329,7 @@
+ #define DEF_ASM_OP1(name, opcode, group, instr_type, op0)
+ #define DEF_ASM_OP2(name, opcode, group, instr_type, op0, op1)
+ #define DEF_ASM_OP3(name, opcode, group, instr_type, op0, op1, op2)
++#define DEF_ASM_OP4(name, opcode, group, instr_type, op0, op1, op2, op3)
+ # include "x86_64-asm.h"
+ 
+ #define ALT(x)
+@@ -320,4 +338,5 @@
+ #define DEF_ASM_OP1(name, opcode, group, instr_type, op0) DEF_ASM(name)
+ #define DEF_ASM_OP2(name, opcode, group, instr_type, op0, op1) DEF_ASM(name)
+ #define DEF_ASM_OP3(name, opcode, group, instr_type, op0, op1, op2) DEF_ASM(name)
++#define DEF_ASM_OP4(name, opcode, group, instr_type, op0, op1, op2, op3) DEF_ASM(name)
+ # include "x86_64-asm.h"
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 25323bf..1f09b27 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -708,6 +708,251 @@ ALT(DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG32))
+     DEF_ASM_OP3(pclmulqdq, 0x6644, 0, OPC_MODRM | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE)
+     DEF_ASM_OP2(movntdqa, 0x662a, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_SSE)
+ 
++    /* AVX, AVX2, BMI1/2 and the AVX-512VL subset of the kernel's lib/crypto
++       (VEX and EVEX encodings, fix 122).  AT&T order, sources first and the
++       destination last: the template's memory-capable operand is ModRM.r/m,
++       the destination ModRM.reg (VEX.vvvv with OPC_NDD, where the reg field
++       is the group), the register operand left VEX.vvvv.  A 0x66/0xf3/0xf2
++       high opcode byte is the pp field, OPC_0F38/OPC_0F3A the map; VEX.L
++       comes from a ymm operand (OPT_VEC: xmm or ymm) or OPC_VEXL, VEX.W from
++       a 64-bit register operand, OPC_48 (64-bit mode only) or OPC_VEXW. */
++    DEF_ASM_OP0L(vzeroupper, 0x0f77, 0, OPC_VEX)
++    DEF_ASM_OP0L(vzeroall, 0x0f77, 0, OPC_VEX | OPC_VEXL)
++    /* moves */
++    DEF_ASM_OP2(vmovdqa, 0x660f6f, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovdqa, 0x660f7f, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovdqu, 0xf30f6f, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovdqu, 0xf30f7f, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovaps, 0x0f28, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovaps, 0x0f29, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovups, 0x0f10, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovups, 0x0f11, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovapd, 0x660f28, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovapd, 0x660f29, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovupd, 0x660f10, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_VEC, OPT_VEC)
++ALT(DEF_ASM_OP2(vmovupd, 0x660f11, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA))
++    DEF_ASM_OP2(vmovntdq, 0x660fe7, 0, OPC_MODRM | OPC_VEX, OPT_VEC, OPT_EA)
++    DEF_ASM_OP2(vmovntdqa, 0x662a, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA, OPT_VEC)
++    DEF_ASM_OP2(vmovd, 0x660f6e, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_REG32, OPT_SSE)
++ALT(DEF_ASM_OP2(vmovd, 0x660f7e, 0, OPC_MODRM | OPC_VEX, OPT_SSE, OPT_EA | OPT_REG32))
++    DEF_ASM_OP2(vmovq, 0xf30f7e, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_SSE, OPT_SSE)
++ALT(DEF_ASM_OP2(vmovq, 0x660fd6, 0, OPC_MODRM | OPC_VEX, OPT_SSE, OPT_EA))
++ALT(DEF_ASM_OP2(vmovq, 0x660f6e, 0, OPC_MODRM | OPC_VEX | OPC_48, OPT_EA | OPT_REG64, OPT_SSE))
++ALT(DEF_ASM_OP2(vmovq, 0x660f7e, 0, OPC_MODRM | OPC_VEX | OPC_48, OPT_SSE, OPT_EA | OPT_REG64))
++    DEF_ASM_OP3(vmovhlps, 0x0f12, 0, OPC_MODRM | OPC_VEX, OPT_SSE, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(vmovlhps, 0x0f16, 0, OPC_MODRM | OPC_VEX, OPT_SSE, OPT_SSE, OPT_SSE)
++    /* broadcasts and zero/sign extensions (xmm or m8..m128 source) */
++    DEF_ASM_OP2(vpbroadcastb, 0x6678, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpbroadcastw, 0x6679, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpbroadcastd, 0x6658, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpbroadcastq, 0x6659, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vbroadcastss, 0x6618, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vbroadcastsd, 0x6619, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_YMM)
++    DEF_ASM_OP2(vbroadcasti128, 0x665a, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA, OPT_YMM)
++    DEF_ASM_OP2(vbroadcastf128, 0x661a, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA, OPT_YMM)
++    DEF_ASM_OP2(vpmovzxbw, 0x6630, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovzxbd, 0x6631, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovzxbq, 0x6632, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovzxwd, 0x6633, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovzxwq, 0x6634, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovzxdq, 0x6635, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxbw, 0x6620, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxbd, 0x6621, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxbq, 0x6622, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxwd, 0x6623, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxwq, 0x6624, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    DEF_ASM_OP2(vpmovsxdq, 0x6625, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_VEC)
++    /* packed integer arithmetic and logic (VEX.NDS: src2, src1, dst) */
++#define DEF_VEX3(name, opcode, flags) \
++    DEF_ASM_OP3(name, opcode, 0, OPC_MODRM | OPC_VEX | flags, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_VEX3(vpaddb, 0x660ffc, 0)
++    DEF_VEX3(vpaddw, 0x660ffd, 0)
++    DEF_VEX3(vpaddd, 0x660ffe, 0)
++    DEF_VEX3(vpaddq, 0x660fd4, 0)
++    DEF_VEX3(vpaddsb, 0x660fec, 0)
++    DEF_VEX3(vpaddsw, 0x660fed, 0)
++    DEF_VEX3(vpaddusb, 0x660fdc, 0)
++    DEF_VEX3(vpaddusw, 0x660fdd, 0)
++    DEF_VEX3(vpsubb, 0x660ff8, 0)
++    DEF_VEX3(vpsubw, 0x660ff9, 0)
++    DEF_VEX3(vpsubd, 0x660ffa, 0)
++    DEF_VEX3(vpsubq, 0x660ffb, 0)
++    DEF_VEX3(vpsubsb, 0x660fe8, 0)
++    DEF_VEX3(vpsubsw, 0x660fe9, 0)
++    DEF_VEX3(vpsubusb, 0x660fd8, 0)
++    DEF_VEX3(vpsubusw, 0x660fd9, 0)
++    DEF_VEX3(vpand, 0x660fdb, 0)
++    DEF_VEX3(vpandn, 0x660fdf, 0)
++    DEF_VEX3(vpor, 0x660feb, 0)
++    DEF_VEX3(vpxor, 0x660fef, 0)
++    DEF_VEX3(vpcmpeqb, 0x660f74, 0)
++    DEF_VEX3(vpcmpeqw, 0x660f75, 0)
++    DEF_VEX3(vpcmpeqd, 0x660f76, 0)
++    DEF_VEX3(vpcmpgtb, 0x660f64, 0)
++    DEF_VEX3(vpcmpgtw, 0x660f65, 0)
++    DEF_VEX3(vpcmpgtd, 0x660f66, 0)
++    DEF_VEX3(vpunpcklbw, 0x660f60, 0)
++    DEF_VEX3(vpunpcklwd, 0x660f61, 0)
++    DEF_VEX3(vpunpckldq, 0x660f62, 0)
++    DEF_VEX3(vpunpcklqdq, 0x660f6c, 0)
++    DEF_VEX3(vpunpckhbw, 0x660f68, 0)
++    DEF_VEX3(vpunpckhwd, 0x660f69, 0)
++    DEF_VEX3(vpunpckhdq, 0x660f6a, 0)
++    DEF_VEX3(vpunpckhqdq, 0x660f6d, 0)
++    DEF_VEX3(vpacksswb, 0x660f63, 0)
++    DEF_VEX3(vpackssdw, 0x660f6b, 0)
++    DEF_VEX3(vpackuswb, 0x660f67, 0)
++    DEF_VEX3(vpmullw, 0x660fd5, 0)
++    DEF_VEX3(vpmulhw, 0x660fe5, 0)
++    DEF_VEX3(vpmulhuw, 0x660fe4, 0)
++    DEF_VEX3(vpmuludq, 0x660ff4, 0)
++    DEF_VEX3(vpmaddwd, 0x660ff5, 0)
++    DEF_VEX3(vpavgb, 0x660fe0, 0)
++    DEF_VEX3(vpavgw, 0x660fe3, 0)
++    DEF_VEX3(vpmaxub, 0x660fde, 0)
++    DEF_VEX3(vpminub, 0x660fda, 0)
++    DEF_VEX3(vpmaxsw, 0x660fee, 0)
++    DEF_VEX3(vpminsw, 0x660fea, 0)
++    DEF_VEX3(vpsadbw, 0x660ff6, 0)
++    DEF_VEX3(vpshufb, 0x6600, OPC_0F38)
++    DEF_VEX3(vphaddw, 0x6601, OPC_0F38)
++    DEF_VEX3(vphaddd, 0x6602, OPC_0F38)
++    DEF_VEX3(vpmaddubsw, 0x6604, OPC_0F38)
++    DEF_VEX3(vpsignb, 0x6608, OPC_0F38)
++    DEF_VEX3(vpsignw, 0x6609, OPC_0F38)
++    DEF_VEX3(vpsignd, 0x660a, OPC_0F38)
++    DEF_VEX3(vpmuldq, 0x6628, OPC_0F38)
++    DEF_VEX3(vpcmpeqq, 0x6629, OPC_0F38)
++    DEF_VEX3(vpackusdw, 0x662b, OPC_0F38)
++    DEF_VEX3(vpcmpgtq, 0x6637, OPC_0F38)
++    DEF_VEX3(vpminsb, 0x6638, OPC_0F38)
++    DEF_VEX3(vpminsd, 0x6639, OPC_0F38)
++    DEF_VEX3(vpminuw, 0x663a, OPC_0F38)
++    DEF_VEX3(vpminud, 0x663b, OPC_0F38)
++    DEF_VEX3(vpmaxsb, 0x663c, OPC_0F38)
++    DEF_VEX3(vpmaxsd, 0x663d, OPC_0F38)
++    DEF_VEX3(vpmaxuw, 0x663e, OPC_0F38)
++    DEF_VEX3(vpmaxud, 0x663f, OPC_0F38)
++    DEF_VEX3(vpmulld, 0x6640, OPC_0F38)
++    DEF_VEX3(vpsrlvd, 0x6645, OPC_0F38)
++    DEF_VEX3(vpsravd, 0x6646, OPC_0F38)
++    DEF_VEX3(vpsllvd, 0x6647, OPC_0F38)
++    DEF_VEX3(vpsrlvq, 0x6645, OPC_0F38 | OPC_VEXW)
++    DEF_VEX3(vpsllvq, 0x6647, OPC_0F38 | OPC_VEXW)
++    /* the 128-bit forms only: the 256-bit ones are the VAES extension */
++    DEF_ASM_OP3(vaesenc, 0x66dc, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(vaesenclast, 0x66dd, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(vaesdec, 0x66de, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(vaesdeclast, 0x66df, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_SSE, OPT_SSE, OPT_SSE)
++    /* floating point */
++    DEF_VEX3(vandps, 0x0f54, 0)
++    DEF_VEX3(vandpd, 0x660f54, 0)
++    DEF_VEX3(vandnps, 0x0f55, 0)
++    DEF_VEX3(vandnpd, 0x660f55, 0)
++    DEF_VEX3(vorps, 0x0f56, 0)
++    DEF_VEX3(vorpd, 0x660f56, 0)
++    DEF_VEX3(vxorps, 0x0f57, 0)
++    DEF_VEX3(vxorpd, 0x660f57, 0)
++    DEF_VEX3(vaddps, 0x0f58, 0)
++    DEF_VEX3(vaddpd, 0x660f58, 0)
++    DEF_VEX3(vmulps, 0x0f59, 0)
++    DEF_VEX3(vmulpd, 0x660f59, 0)
++    DEF_VEX3(vsubps, 0x0f5c, 0)
++    DEF_VEX3(vsubpd, 0x660f5c, 0)
++    DEF_VEX3(vdivps, 0x0f5e, 0)
++    DEF_VEX3(vdivpd, 0x660f5e, 0)
++    DEF_VEX3(vunpcklps, 0x0f14, 0)
++    DEF_VEX3(vunpcklpd, 0x660f14, 0)
++    DEF_VEX3(vunpckhps, 0x0f15, 0)
++    DEF_VEX3(vunpckhpd, 0x660f15, 0)
++#undef DEF_VEX3
++    DEF_ASM_OP2(vptest, 0x6617, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP2(vpabsb, 0x661c, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP2(vpabsw, 0x661d, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP2(vpabsd, 0x661e, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermd, 0x6636, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_YMM, OPT_YMM, OPT_YMM)
++    DEF_ASM_OP3(vpermps, 0x6616, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_YMM, OPT_YMM, OPT_YMM)
++    /* shifts: by the count in an xmm register or memory, or by an immediate
++       (VEX.NDD: ModRM.reg is the group, VEX.vvvv the destination) */
++#define DEF_VEXSHIFT(name, opcode, immop, group) \
++    DEF_ASM_OP3(name, opcode, 0, OPC_MODRM | OPC_VEX, OPT_EA | OPT_SSE, OPT_VEC, OPT_VEC) \
++ALT(DEF_ASM_OP3(name, immop, group, OPC_MODRM | OPC_VEX | OPC_NDD, OPT_IM8, OPT_VEC, OPT_VEC))
++    DEF_VEXSHIFT(vpsllw, 0x660ff1, 0x660f71, 6)
++    DEF_VEXSHIFT(vpslld, 0x660ff2, 0x660f72, 6)
++    DEF_VEXSHIFT(vpsllq, 0x660ff3, 0x660f73, 6)
++    DEF_VEXSHIFT(vpsrlw, 0x660fd1, 0x660f71, 2)
++    DEF_VEXSHIFT(vpsrld, 0x660fd2, 0x660f72, 2)
++    DEF_VEXSHIFT(vpsrlq, 0x660fd3, 0x660f73, 2)
++    DEF_VEXSHIFT(vpsraw, 0x660fe1, 0x660f71, 4)
++    DEF_VEXSHIFT(vpsrad, 0x660fe2, 0x660f72, 4)
++#undef DEF_VEXSHIFT
++    DEF_ASM_OP3(vpslldq, 0x660f73, 7, OPC_MODRM | OPC_VEX | OPC_NDD, OPT_IM8, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpsrldq, 0x660f73, 3, OPC_MODRM | OPC_VEX | OPC_NDD, OPT_IM8, OPT_VEC, OPT_VEC)
++    /* shuffles, permutes, inserts and extracts with an immediate */
++    DEF_ASM_OP3(vpshufd, 0x660f70, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpshufhw, 0xf30f70, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpshuflw, 0xf20f70, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermq, 0x6600, 0, OPC_MODRM | OPC_VEX | OPC_0F3A | OPC_VEXW, OPT_IM8, OPT_EA | OPT_YMM, OPT_YMM)
++    DEF_ASM_OP3(vpermpd, 0x6601, 0, OPC_MODRM | OPC_VEX | OPC_0F3A | OPC_VEXW, OPT_IM8, OPT_EA | OPT_YMM, OPT_YMM)
++    DEF_ASM_OP4(vshufps, 0x0fc6, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vshufpd, 0x660fc6, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vpalignr, 0x660f, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vpblendw, 0x660e, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vpblendd, 0x6602, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vperm2i128, 0x6646, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_YMM, OPT_YMM, OPT_YMM)
++    DEF_ASM_OP4(vperm2f128, 0x6606, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_YMM, OPT_YMM, OPT_YMM)
++    DEF_ASM_OP4(vinserti128, 0x6638, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_YMM, OPT_YMM)
++    DEF_ASM_OP4(vinsertf128, 0x6618, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_YMM, OPT_YMM)
++    DEF_ASM_OP3(vextracti128, 0x6639, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_YMM, OPT_EA | OPT_SSE)
++    DEF_ASM_OP3(vextractf128, 0x6619, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_YMM, OPT_EA | OPT_SSE)
++    /* the 128-bit form only: the 256-bit one is the VPCLMULQDQ extension */
++    DEF_ASM_OP4(vpclmulqdq, 0x6644, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_SSE, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP4(vpinsrb, 0x6620, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_REG32, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP4(vpinsrw, 0x660fc4, 0, OPC_MODRM | OPC_VEX, OPT_IM8, OPT_EA | OPT_REG32, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP4(vpinsrd, 0x6622, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_REG32, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP4(vpinsrq, 0x6622, 0, OPC_MODRM | OPC_VEX | OPC_0F3A | OPC_48, OPT_IM8, OPT_EA | OPT_REG64, OPT_SSE, OPT_SSE)
++    DEF_ASM_OP3(vpextrb, 0x6614, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_SSE, OPT_EA | OPT_REG32)
++    DEF_ASM_OP3(vpextrw, 0x6615, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_SSE, OPT_EA | OPT_REG32)
++    DEF_ASM_OP3(vpextrd, 0x6616, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_SSE, OPT_EA | OPT_REG32)
++    DEF_ASM_OP3(vpextrq, 0x6616, 0, OPC_MODRM | OPC_VEX | OPC_0F3A | OPC_48, OPT_IM8, OPT_SSE, OPT_EA | OPT_REG64)
++    /* BMI1/BMI2: VEX-encoded general-register instructions */
++    DEF_ASM_OP3(andn, 0xf2, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_REG32, OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(andn, 0xf2, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_EA | OPT_REG64, OPT_REG64, OPT_REG64))
++    DEF_ASM_OP2(blsr, 0xf3, 1, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP2(blsr, 0xf3, 1, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD | OPC_48, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP2(blsmsk, 0xf3, 2, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP2(blsmsk, 0xf3, 2, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD | OPC_48, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP2(blsi, 0xf3, 3, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP2(blsi, 0xf3, 3, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_NDD | OPC_48, OPT_EA | OPT_REG64, OPT_REG64))
++    /* bzhi/sarx/shlx/shrx: the index or count register first, then r/m, dst */
++    DEF_ASM_OP3(bzhi, 0xf5, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_REG32, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(bzhi, 0xf5, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_REG64, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(sarx, 0xf3f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_REG32, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(sarx, 0xf3f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_REG64, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(shlx, 0x66f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_REG32, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(shlx, 0x66f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_REG64, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(shrx, 0xf2f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_REG32, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(shrx, 0xf2f7, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_REG64, OPT_EA | OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(pdep, 0xf2f5, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_REG32, OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(pdep, 0xf2f5, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_EA | OPT_REG64, OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(pext, 0xf3f5, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_REG32, OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(pext, 0xf3f5, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_EA | OPT_REG64, OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(mulx, 0xf2f6, 0, OPC_MODRM | OPC_VEX | OPC_0F38, OPT_EA | OPT_REG32, OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(mulx, 0xf2f6, 0, OPC_MODRM | OPC_VEX | OPC_0F38 | OPC_48, OPT_EA | OPT_REG64, OPT_REG64, OPT_REG64))
++    DEF_ASM_OP3(rorx, 0xf2f0, 0, OPC_MODRM | OPC_VEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_REG32, OPT_REG32)
++ALT(DEF_ASM_OP3(rorx, 0xf2f0, 0, OPC_MODRM | OPC_VEX | OPC_0F3A | OPC_48, OPT_IM8, OPT_EA | OPT_REG64, OPT_REG64))
++    /* AVX-512VL (EVEX, xmm/ymm operands, no masking): what blake2s-core.S needs */
++    DEF_ASM_OP3(vprord, 0x660f72, 0, OPC_MODRM | OPC_EVEX | OPC_NDD, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vprold, 0x660f72, 1, OPC_MODRM | OPC_EVEX | OPC_NDD, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vprorq, 0x660f72, 0, OPC_MODRM | OPC_EVEX | OPC_NDD | OPC_VEXW, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vprolq, 0x660f72, 1, OPC_MODRM | OPC_EVEX | OPC_NDD | OPC_VEXW, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vpternlogd, 0x6625, 0, OPC_MODRM | OPC_EVEX | OPC_0F3A, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP4(vpternlogq, 0x6625, 0, OPC_MODRM | OPC_EVEX | OPC_0F3A | OPC_VEXW, OPT_IM8, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermi2d, 0x6676, 0, OPC_MODRM | OPC_EVEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermi2q, 0x6676, 0, OPC_MODRM | OPC_EVEX | OPC_0F38 | OPC_VEXW, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermt2d, 0x667e, 0, OPC_MODRM | OPC_EVEX | OPC_0F38, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++    DEF_ASM_OP3(vpermt2q, 0x667e, 0, OPC_MODRM | OPC_EVEX | OPC_0F38 | OPC_VEXW, OPT_EA | OPT_VEC, OPT_VEC, OPT_VEC)
++
+     /* Control-Flow Enforcement */
+     DEF_ASM_OP0L(endbr64, 0xf30f1e, 7, OPC_MODRM)
+     DEF_ASM_OP0L(endbr32, 0xf30f1e, 7, OPC_MODRM)
+@@ -717,3 +962,4 @@ ALT(DEF_ASM_OP2(invpcid, 0x6682, 0, OPC_MODRM | OPC_0F38, OPT_EA, OPT_REG32))
+ #undef DEF_ASM_OP1
+ #undef DEF_ASM_OP2
+ #undef DEF_ASM_OP3
++#undef DEF_ASM_OP4

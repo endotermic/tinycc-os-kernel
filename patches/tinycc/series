@@ -119,3 +119,6 @@ compatibility/0117-tccgen-inline-the-calls-of-always_inline-functions-a.patch
 features/0118-tests-164_inline_call-the-cases-of-fix-120.patch
 compatibility/0119-i386-long-long-division-by-a-constant-without-the-li.patch
 features/0120-tests-165_div_const-the-cases-of-fix-121.patch
+features/0121-i386-asm-VEX-and-EVEX-encodings-AVX-AVX2-BMI1-2-AVX-.patch
+bugfixes/0122-tccpp-outside-a-macro-body-is-a-comment-in-an-assemb.patch
+features/0123-tests-the-VEX-EVEX-forms-in-asmtest.S-and-the-m16-as.patch

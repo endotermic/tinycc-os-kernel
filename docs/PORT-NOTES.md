@@ -102,10 +102,12 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   division helpers of i386 (K14 and K20 below, 0013 and 0019) the same day with fix 121,
   the strength reduction of `long long` division by a constant; and 0015 (K16 below, the
   pmdp/pudp_test_and_clear_young() declarations) went the same day without a tcc change,
-  fixes 119 to 121 together having made its dead branch disappear: 8 kernel patches remain.
+  fixes 119 to 121 together having made its dead branch disappear; and 0010 and 0016 (K11, K17:
+  the AVX assembly of lib/crypto) went the same day with fix 122, the VEX/EVEX encoder, and 123,
+  a `##` comment: 6 kernel patches remain.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
-  AVX-512 BLAKE2s function (0010; tcc has no VEX/EVEX); `X86_BOOT_VIDEO_MODES` makes the
+  AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` makes the
   BIOS video mode setting of the real-mode setup optional (0011; tcc's 16-bit code is twice
   gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without).
 
@@ -155,8 +157,9 @@ for gcc.
    UACCESS) are no longer reported; modpost mismatches from non-inlined `__init`-only
    helpers; empty `.init.*` sections created by declarations with a section attribute
    (tccgen should create the section only for definitions).
-2. Assembler: no VEX/EVEX encodings (AVX, AVX2, AVX-512: kernel patch 0010 gates the code
-   that needs them); jumps to forward labels are not relaxed to rel8 and same-section
+2. Assembler: VEX/EVEX since fix 122 (2026-11-04) for the AVX, AVX2, BMI1/2 and AVX-512VL
+   forms of lib/crypto and their siblings; no opmask registers, zmm, broadcast, rounding or
+   masking (an `as-instr` probe of them fails honestly); jumps to forward labels are not relaxed to rel8 and same-section
    references to labels keep their relocations where GNU as resolves them (semantically
    equal, a few bytes bigger: the kernel .S objects differ from GNU as's in exactly that);
    `.altmacro` is accepted but its `%expr`/`<...>` forms are not implemented; `-m16` code is
@@ -184,8 +187,7 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   to 121): of the 8 kernel patches left, tcc could absorb 0010 and 0016 with VEX/EVEX
-   encodings in the assembler and
+   to 123): of the 6 kernel patches left, tcc could absorb
    0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
    and 0011 (the 16-bit code size) stay kernel-side.  Fix 121, the i386 strength reduction of
@@ -194,7 +196,7 @@ for gcc.
    statements), took 0013 and 0019 on 2026-11-04; fix 120, the inliner, took 0003, 0004,
    0012 and 0017 the same day (fix 119 had taken 0007, 0008, 0014, 0018), and 0015 was dropped
    the same day with no further tcc change, fixes 119 to 121 together folding its dead
-   branch.  The real objtool,
+   branch; fix 122, the VEX/EVEX encoder, took 0010 and 0016 the same day (6 left).  The real objtool,
    built with gcc, accepted all 1566 tcc-built x86_64 objects of drivers.config before fix 120
    (212 warnings in 110 objects: an epilogue after an infinite loop, missing `__noreturn`,
    `stac()`/`clac()` not inlined -- they are now --, two alternatives' stack layouts in
@@ -816,7 +818,10 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
   table in `x86_64-asm.h` is `DEF_ASM_OPn(name, opcode, group, flags, operand types...)`
   with the 0F/0F38/0F3A maps as flags; VEX needs the 2/3-byte prefix with map, pp, W, L
   and the vvvv register, EVEX the 4-byte prefix with masks and compressed displacements.
-  Medium.
+  Medium.  Done 2026-11-04, fix 122 (and 123, a `##` comment the second SHA-256 file has; see
+  the last paragraph of this section): the count above was right, with vmovups behind a macro
+  as the 28th; EVEX was needed, since the vanilla Kconfig.assembler of 7.3 has no AS_AVX512
+  probe and builds the AVX-512 function unconditionally.
 * 0001 and 0002 (`cmpxchg128`, `freelist_full_t`): no `__int128`. The type slot exists
   (`VT_QLONG`, used for the x86-64 ABI classification) but there is no two-register code
   generation on x86_64 (the i386 target has it for `long long`: `lexpand()`, `gen_opl()`,
@@ -943,6 +948,29 @@ pmdp/pudp_test_and_clear_young. Both kernels were then rebuilt on the 8-patch se
 and 2059 tcc invocations, no gcc; the i386 link has no undefined symbol) and booted:
 `scripts/devices-test.sh` passes its 13 checks on i386 and on x86_64. The `if/else return` extension of the stub fold that the
 list above proposed for 0015 is therefore not needed for the kernel.
+
+Patches 0010 and 0016 followed the same day with fix 122 (docs/FIX-LOG.md), the VEX and EVEX
+encodings in `i386-asm.c` (6 kernel patches remain: 0001, 0002, 0005, 0006, 0009, 0011).
+Measured first: the six AVX files (3128 lines) use 27 mnemonics tcc lacked, 23 of them VEX
+(the ymm registers, four-operand forms, BMI2's rorx/andn, vzeroupper) and three EVEX-only
+(vprord, vpternlogd, vpermi2d with xmm/ymm operands in blake2s-core.S; vpmovzxbd with a ymm
+destination is AVX2); the vanilla `arch/x86/Kconfig.assembler` of 7.3 has a single probe
+(AS_WRUSS), so a vanilla build assembles all of it unconditionally on x86_64 and EVEX could
+not be left as a gap; the i386 kernel builds none of the six files (the lib's `*_ARCH`
+options are X86_64-only), so 32-bit VEX is covered for completeness by the test lists.
+The encoder is 166 added lines in i386-asm.c, 246 table lines, 19 tokens; the 2-byte and
+3-byte VEX forms and the 4-byte EVEX prefix (no masking, broadcast or rounding; disp8*N);
+the table has the kernel's mnemonics with their siblings (about 225 entries). Proof: the six
+files assembled with the kernel's command line by tcc and by gas and compared instruction for
+instruction after a link with a fixed layout: identical, except 8 forward jumps that gas
+relaxes to rel8 (open item 2). Both kernels were rebuilt from the vanilla lib/crypto (2057
+and 2094 tcc invocations, no gcc) and pass `scripts/devices-test.sh`; a scratch x86_64 kernel with the lib/crypto KUnit tests (RUNTIME_TESTING_MENU on;
+lib/kunit/executor.c compiled by gcc for it, see below), booted with `-cpu host`,
+`host,-sha-ni` and `host,-sha-ni,-avx2,-bmi2` so that the AVX-512, AVX2 and AVX implementations
+are the ones under test, passes every suite (sha1, sha224/256, blake2s, polyval, ghash;
+FIX-LOG 122). Found on the way, a follow-up: tcc does not fold `""[0]` in a static
+initializer (`PARAM_FROM_CONFIG()` in lib/kunit/executor.c, "initializer element is not
+constant"), which a KUnit build of the project's own kernel would need.
 
 ## Debugging recipes
 

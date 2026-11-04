@@ -1,0 +1,483 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 15:19:53 +0200
+Subject: [PATCH] tests: the VEX/EVEX forms in asmtest.S and the m16-asm lists
+
+asmtest.S: about 390 lines of AVX, AVX2, BMI1/2 and AVX-512VL forms
+(register and memory operands, xmm8-15/ymm8-15, r8-r15, rip-relative,
+EVEX disp8*N), compared with GNU as by `make test`, and a "##" comment
+after an instruction.  tests/m16-asm-32.txt and -64.txt: 25 + 18
+snippets for `m16-check.sh asm`, byte-compared in 32-bit i386-tcc,
+.code32 in tcc and .code64 in i386-tcc.
+---
+ tests/asmtest.S      | 389 +++++++++++++++++++++++++++++++++++++++++++
+ tests/m16-asm-32.txt |  25 +++
+ tests/m16-asm-64.txt |  18 ++
+ 3 files changed, 432 insertions(+)
+
+diff --git a/tests/asmtest.S b/tests/asmtest.S
+index 6e4ffc5..cc75246 100644
+--- a/tests/asmtest.S
++++ b/tests/asmtest.S
+@@ -26,6 +26,7 @@
+ 
+ # 28 "asmtest.S"        # a line directive (and a line comment)
+         movl %eax, %ebx # some more asm comment
++        movl %eax, %ebx ## a comment of the "##" kind (fix 123)
+ /* some label tests */
+ L1:
+         movl %eax, %ebx
+@@ -1310,6 +1311,394 @@ TEST_MMX_SSE_I8(psrlq)
+     movl $var2@GOTOFF, %eax
+     .long var2@GOTOFF
+ #endif
++/* fix 122: AVX, AVX2, BMI and the AVX-512VL subset (VEX/EVEX encodings); the memory
++   operands through macros, since the base registers differ between the targets */
++#ifdef __x86_64__
++#define AX %rax
++#define BX %rbx
++#define CX %rcx
++#define DX %rdx
++#define SI %rsi
++#define DI %rdi
++#else
++#define AX %eax
++#define BX %ebx
++#define CX %ecx
++#define DX %edx
++#define SI %esi
++#define DI %edi
++#endif
++    vzeroupper
++    vzeroall
++    vmovdqa %xmm1, %xmm2
++    vmovdqa %ymm1, %ymm2
++    vmovdqa (AX), %xmm3
++    vmovdqa 16(AX), %ymm3
++    vmovdqa %xmm4, 32(BX,CX,4)
++    vmovdqa %ymm4, (BX,CX,8)
++    vmovdqu (CX), %xmm5
++    vmovdqu %ymm5, 0x100(DX)
++    vmovdqu %xmm6, %xmm7
++    vmovaps %xmm1, %xmm2
++    vmovaps (AX), %ymm2
++    vmovaps %ymm2, (AX)
++    vmovups 8(AX), %xmm2
++    vmovups %ymm2, 8(AX)
++    vmovapd %xmm1, %xmm2
++    vmovupd %ymm1, %ymm2
++    vmovntdq %ymm1, (AX)
++    vmovntdqa (AX), %ymm1
++    vmovd %eax, %xmm1
++    vmovd %xmm1, %eax
++    vmovd (AX), %xmm1
++    vmovd %xmm1, 4(AX)
++    vmovq %xmm1, %xmm2
++    vmovq (AX), %xmm1
++    vmovq %xmm1, 32(DI)
++    vmovhlps %xmm1, %xmm2, %xmm3
++    vmovlhps %xmm1, %xmm2, %xmm3
++    vpbroadcastb %xmm1, %ymm2
++    vpbroadcastw (AX), %xmm2
++    vpbroadcastd %xmm1, %ymm2
++    vpbroadcastq 8(AX), %ymm2
++    vbroadcastss (AX), %ymm2
++    vbroadcastss %xmm1, %xmm2
++    vbroadcastsd %xmm1, %ymm2
++    vbroadcasti128 (AX), %ymm2
++    vbroadcastf128 16(AX), %ymm2
++    vpmovzxbw %xmm1, %ymm2
++    vpmovzxbd (AX), %ymm2
++    vpmovzxbd 8(AX), %ymm2
++    vpmovzxbd %xmm1, %xmm2
++    vpmovzxbq %xmm1, %xmm2
++    vpmovzxwd (AX), %xmm2
++    vpmovzxwq %xmm1, %ymm2
++    vpmovzxdq %xmm1, %ymm2
++    vpmovsxbw %xmm1, %ymm2
++    vpmovsxbd (AX), %ymm2
++    vpmovsxbq %xmm1, %xmm2
++    vpmovsxwd (AX), %xmm2
++    vpmovsxwq %xmm1, %ymm2
++    vpmovsxdq %xmm1, %ymm2
++    vpaddb %xmm1, %xmm2, %xmm3
++    vpaddw %ymm1, %ymm2, %ymm3
++    vpaddd %xmm1, %xmm2, %xmm3
++    vpaddd %ymm1, %ymm2, %ymm3
++    vpaddd (AX), %ymm2, %ymm3
++    vpaddd 16(AX), %xmm2, %xmm3
++    vpaddd 0x30(AX,BX,1), %ymm2, %ymm3
++    vpaddd (AX,BX), %ymm2, %ymm3
++    vpaddq %xmm1, %xmm2, %xmm3
++    vpaddsb %xmm1, %xmm2, %xmm3
++    vpaddsw %xmm1, %xmm2, %xmm3
++    vpaddusb %xmm1, %xmm2, %xmm3
++    vpaddusw %xmm1, %xmm2, %xmm3
++    vpsubb %xmm1, %xmm2, %xmm3
++    vpsubw %xmm1, %xmm2, %xmm3
++    vpsubd %ymm1, %ymm2, %ymm3
++    vpsubq %xmm1, %xmm2, %xmm3
++    vpsubsb %xmm1, %xmm2, %xmm3
++    vpsubsw %xmm1, %xmm2, %xmm3
++    vpsubusb %xmm1, %xmm2, %xmm3
++    vpsubusw %xmm1, %xmm2, %xmm3
++    vpand %xmm1, %xmm2, %xmm3
++    vpandn %ymm1, %ymm2, %ymm3
++    vpor %xmm1, %xmm2, %xmm3
++    vpor (AX), %ymm2, %ymm3
++    vpxor %xmm1, %xmm2, %xmm3
++    vpxor %ymm1, %ymm2, %ymm3
++    vpxor 32(SI), %ymm2, %ymm3
++    vpcmpeqb %xmm1, %xmm2, %xmm3
++    vpcmpeqw %xmm1, %xmm2, %xmm3
++    vpcmpeqd %ymm1, %ymm2, %ymm3
++    vpcmpgtb %xmm1, %xmm2, %xmm3
++    vpcmpgtw %xmm1, %xmm2, %xmm3
++    vpcmpgtd %xmm1, %xmm2, %xmm3
++    vpunpcklbw %xmm1, %xmm2, %xmm3
++    vpunpcklwd %xmm1, %xmm2, %xmm3
++    vpunpckldq %ymm1, %ymm2, %ymm3
++    vpunpcklqdq %xmm1, %xmm2, %xmm3
++    vpunpckhbw %xmm1, %xmm2, %xmm3
++    vpunpckhwd %xmm1, %xmm2, %xmm3
++    vpunpckhdq %xmm1, %xmm2, %xmm3
++    vpunpckhqdq %ymm1, %ymm2, %ymm3
++    vpacksswb %xmm1, %xmm2, %xmm3
++    vpackssdw %xmm1, %xmm2, %xmm3
++    vpackuswb %xmm1, %xmm2, %xmm3
++    vpmullw %xmm1, %xmm2, %xmm3
++    vpmulhw %xmm1, %xmm2, %xmm3
++    vpmulhuw %xmm1, %xmm2, %xmm3
++    vpmuludq %ymm1, %ymm2, %ymm3
++    vpmaddwd %xmm1, %xmm2, %xmm3
++    vpavgb %xmm1, %xmm2, %xmm3
++    vpavgw %xmm1, %xmm2, %xmm3
++    vpmaxub %xmm1, %xmm2, %xmm3
++    vpminub %xmm1, %xmm2, %xmm3
++    vpmaxsw %xmm1, %xmm2, %xmm3
++    vpminsw %xmm1, %xmm2, %xmm3
++    vpsadbw %xmm1, %xmm2, %xmm3
++    vpshufb %xmm1, %xmm2, %xmm3
++    vpshufb %ymm1, %ymm2, %ymm3
++    vpshufb (AX), %ymm2, %ymm3
++    vphaddw %xmm1, %xmm2, %xmm3
++    vphaddd %ymm1, %ymm2, %ymm3
++    vpmaddubsw %xmm1, %xmm2, %xmm3
++    vpsignb %xmm1, %xmm2, %xmm3
++    vpsignw %xmm1, %xmm2, %xmm3
++    vpsignd %xmm1, %xmm2, %xmm3
++    vpmuldq %xmm1, %xmm2, %xmm3
++    vpcmpeqq %xmm1, %xmm2, %xmm3
++    vpackusdw %xmm1, %xmm2, %xmm3
++    vpcmpgtq %ymm1, %ymm2, %ymm3
++    vpminsb %xmm1, %xmm2, %xmm3
++    vpminsd %xmm1, %xmm2, %xmm3
++    vpminuw %xmm1, %xmm2, %xmm3
++    vpminud %xmm1, %xmm2, %xmm3
++    vpmaxsb %xmm1, %xmm2, %xmm3
++    vpmaxsd %xmm1, %xmm2, %xmm3
++    vpmaxuw %xmm1, %xmm2, %xmm3
++    vpmaxud %ymm1, %ymm2, %ymm3
++    vpmulld %xmm1, %xmm2, %xmm3
++    vpsrlvd %xmm1, %xmm2, %xmm3
++    vpsravd %ymm1, %ymm2, %ymm3
++    vpsllvd (AX), %ymm2, %ymm3
++    vpsrlvq %xmm1, %xmm2, %xmm3
++    vpsllvq %ymm1, %ymm2, %ymm3
++    vaesenc %xmm1, %xmm2, %xmm3
++    vaesenclast (AX), %xmm2, %xmm3
++    vaesdec %xmm1, %xmm2, %xmm3
++    vaesdeclast %xmm1, %xmm2, %xmm3
++    vandps %xmm1, %xmm2, %xmm3
++    vandpd %ymm1, %ymm2, %ymm3
++    vandnps %xmm1, %xmm2, %xmm3
++    vandnpd %xmm1, %xmm2, %xmm3
++    vorps %xmm1, %xmm2, %xmm3
++    vorpd %xmm1, %xmm2, %xmm3
++    vxorps %xmm1, %xmm2, %xmm3
++    vxorps %ymm1, %ymm2, %ymm3
++    vxorpd (AX), %xmm2, %xmm3
++    vaddps %xmm1, %xmm2, %xmm3
++    vaddpd %xmm1, %xmm2, %xmm3
++    vmulps %xmm1, %xmm2, %xmm3
++    vmulpd %xmm1, %xmm2, %xmm3
++    vsubps %xmm1, %xmm2, %xmm3
++    vsubpd %ymm1, %ymm2, %ymm3
++    vdivps %xmm1, %xmm2, %xmm3
++    vdivpd %xmm1, %xmm2, %xmm3
++    vunpcklps %xmm1, %xmm2, %xmm3
++    vunpcklpd %xmm1, %xmm2, %xmm3
++    vunpckhps %xmm1, %xmm2, %xmm3
++    vunpckhpd %xmm1, %xmm2, %xmm3
++    vptest %xmm1, %xmm2
++    vptest (AX), %ymm2
++    vpabsb %xmm1, %xmm2
++    vpabsw %ymm1, %ymm2
++    vpabsd (AX), %xmm2
++    vpermd %ymm1, %ymm2, %ymm3
++    vpermd (AX), %ymm2, %ymm3
++    vpermps %ymm1, %ymm2, %ymm3
++    vpsllw %xmm1, %xmm2, %xmm3
++    vpsllw $3, %xmm2, %xmm3
++    vpslld %xmm1, %ymm2, %ymm3
++    vpslld $7, %ymm2, %ymm3
++    vpslld $7, %xmm2, %xmm3
++    vpslld (AX), %xmm2, %xmm3
++    vpsllq $1, %xmm2, %xmm3
++    vpsllq %xmm1, %xmm2, %xmm3
++    vpsrlw $3, %xmm2, %xmm3
++    vpsrlw %xmm1, %xmm2, %xmm3
++    vpsrld $25, %ymm2, %ymm3
++    vpsrld $25, %xmm2, %xmm3
++    vpsrld %xmm1, %xmm2, %xmm3
++    vpsrlq $17, %xmm2, %xmm3
++    vpsrlq %xmm1, %ymm2, %ymm3
++    vpsraw $3, %xmm2, %xmm3
++    vpsraw %xmm1, %xmm2, %xmm3
++    vpsrad $31, %ymm2, %ymm3
++    vpsrad %xmm1, %xmm2, %xmm3
++    vpslldq $4, %xmm2, %xmm3
++    vpslldq $12, %ymm2, %ymm3
++    vpsrldq $4, %xmm2, %xmm3
++    vpsrldq $12, %ymm2, %ymm3
++    vpshufd $0x1b, %xmm1, %xmm2
++    vpshufd $0xb1, %ymm1, %ymm2
++    vpshufd $0x4e, (AX), %ymm2
++    vpshufhw $0x1b, %xmm1, %xmm2
++    vpshuflw $0x1b, %ymm1, %ymm2
++    vpermq $0x4e, %ymm1, %ymm2
++    vpermq $0x4e, (AX), %ymm2
++    vpermpd $0x4e, %ymm1, %ymm2
++    vshufps $0x88, %xmm1, %xmm2, %xmm3
++    vshufps $0x88, (AX), %ymm2, %ymm3
++    vshufpd $1, %xmm1, %xmm2, %xmm3
++    vpalignr $4, %xmm1, %xmm2, %xmm3
++    vpalignr $8, %ymm1, %ymm2, %ymm3
++    vpalignr $12, (AX), %ymm2, %ymm3
++    vpblendw $0xf0, %xmm1, %xmm2, %xmm3
++    vpblendd $0x33, %ymm1, %ymm2, %ymm3
++    vpblendd $0x33, (AX), %ymm2, %ymm3
++    vperm2i128 $0x20, %ymm1, %ymm2, %ymm3
++    vperm2i128 $0x31, (AX), %ymm2, %ymm3
++    vperm2f128 $0x20, %ymm1, %ymm2, %ymm3
++    vinserti128 $1, %xmm1, %ymm2, %ymm3
++    vinserti128 $0, (AX), %ymm2, %ymm3
++    vinsertf128 $1, %xmm1, %ymm2, %ymm3
++    vinsertf128 $1, 32(AX), %ymm2, %ymm3
++    vextracti128 $1, %ymm1, %xmm2
++    vextracti128 $0, %ymm1, (AX)
++    vextractf128 $1, %ymm1, %xmm2
++    vextractf128 $1, %ymm1, 16(AX)
++    vpclmulqdq $0x00, %xmm1, %xmm2, %xmm3
++    vpclmulqdq $0x11, (AX), %xmm2, %xmm3
++    vpclmulqdq $0x10, 48(AX), %xmm0, %xmm3
++    vpinsrb $3, %eax, %xmm2, %xmm3
++    vpinsrw $3, %eax, %xmm2, %xmm3
++    vpinsrw $3, (AX), %xmm2, %xmm3
++    vpinsrd $3, %eax, %xmm2, %xmm3
++    vpinsrd $1, 4(AX), %xmm2, %xmm3
++    vpextrb $3, %xmm1, %eax
++    vpextrw $3, %xmm1, (AX)
++    vpextrd $3, %xmm1, %eax
++    vpextrd $2, %xmm1, 8(AX)
++    andn %eax, %ebx, %ecx
++    andn (AX), %ebx, %ecx
++    blsr %eax, %ebx
++    blsr (AX), %ebx
++    blsmsk %eax, %ebx
++    blsi %eax, %ebx
++    bzhi %eax, %ebx, %ecx
++    bzhi %eax, (BX), %ecx
++    sarx %eax, %ebx, %ecx
++    shlx %eax, %ebx, %ecx
++    shrx %eax, (BX), %ecx
++    pdep %eax, %ebx, %ecx
++    pext (AX), %ebx, %ecx
++    mulx %eax, %ebx, %ecx
++    rorx $25, %eax, %ebx
++    rorx $11, (AX), %ebx
++    rorx $6, 8(AX,BX,4), %edx
++    vprord $16, %xmm3, %xmm3
++    vprord $12, %ymm1, %ymm1
++    vprold $7, %xmm1, %xmm2
++    vprorq $3, %xmm1, %xmm2
++    vprolq $3, %ymm1, %ymm2
++    vprord $1, (AX), %xmm2
++    vprord $1, 32(AX), %ymm2
++    vprord $1, 16(AX), %ymm2
++    vprord $1, 16(AX), %xmm2
++    vprord $1, -16(AX), %xmm2
++    vprord $1, 0x800(AX), %xmm2
++    vprord $1, 0x810(AX), %xmm2
++    vpternlogd $0x96, %xmm1, %xmm2, %xmm0
++    vpternlogd $0x96, %ymm1, %ymm2, %ymm0
++    vpternlogd $0x96, (AX), %ymm2, %ymm0
++    vpternlogd $0x96, 64(AX,CX,4), %xmm2, %xmm0
++    vpternlogq $0xe8, %xmm1, %xmm2, %xmm0
++    vpermi2d %ymm7, %ymm6, %ymm0
++    vpermi2d %xmm7, %xmm6, %xmm0
++    vpermi2d 32(AX), %ymm6, %ymm0
++    vpermi2q %ymm7, %ymm6, %ymm0
++    vpermt2d %ymm7, %ymm6, %ymm0
++    vpermt2q (AX), %xmm6, %xmm0
++#ifdef __x86_64__
++    vmovdqa %xmm9, %xmm10
++    vmovdqa %ymm8, %ymm15
++    vmovdqa (%r8), %ymm3
++    vmovdqa %ymm12, 32(%r9,%r10,4)
++    vmovdqa %xmm4, (%rax,%r11,8)
++    vmovdqa var2(%rip), %ymm13
++    vmovdqu %ymm14, var2(%rip)
++    vmovdqu (%rsp,%r12), %xmm8
++    vmovd %r9d, %xmm5
++    vmovd %xmm9, %r9d
++    vmovq %rax, %xmm1
++    vmovq %r10, %xmm11
++    vmovq %xmm1, %rax
++    vmovq %xmm11, %r10
++    vmovq %xmm9, %xmm10
++    vmovq %xmm4, 32(%rdi)
++    vmovq (%r8), %xmm9
++    vpaddd %ymm9, %ymm10, %ymm11
++    vpaddd %ymm1, %ymm10, %ymm3
++    vpaddd %ymm9, %ymm2, %ymm3
++    vpaddd %ymm1, %ymm2, %ymm11
++    vpaddd (%rdi,%r9), %ymm2, %ymm3
++    vpaddd (%r8,%rcx), %ymm2, %ymm3
++    vpaddd var2(%rip), %xmm2, %xmm3
++    vpaddd var2+16(%rip), %xmm2, %xmm10
++    vpxor %xmm8, %xmm9, %xmm10
++    vpxor 32(%r14), %ymm9, %ymm10
++    vpshufb var2(%rip), %ymm9, %ymm9
++    vpshufd $0x1b, %ymm9, %ymm10
++    vpsrld $7, %ymm9, %ymm10
++    vpslld $25, %xmm8, %xmm1
++    vpsrlq $17, %ymm1, %ymm9
++    vpsrldq $4, %ymm9, %ymm8
++    vpslldq $12, %xmm8, %xmm9
++    vpalignr $4, %ymm9, %ymm10, %ymm11
++    vpalignr $12, var2(%rip), %ymm10, %ymm11
++    vperm2i128 $0x20, %ymm9, %ymm10, %ymm11
++    vinsertf128 $1, 16(%r8), %ymm10, %ymm10
++    vinserti128 $1, %xmm9, %ymm10, %ymm11
++    vextracti128 $1, %ymm8, %xmm8
++    vextracti128 $1, %ymm9, 16(%r8)
++    vpclmulqdq $0x11, %xmm8, %xmm9, %xmm10
++    vpclmulqdq $0x01, 48(%r8), %xmm0, %xmm2
++    vpclmulqdq $0x00, var2(%rip), %xmm0, %xmm2
++    vpmovzxbd (%rax), %ymm8
++    vpmovzxbd 8(%rax), %ymm9
++    vpmovzxbd %xmm9, %ymm10
++    vpbroadcastd %xmm9, %ymm10
++    vpbroadcastq var2(%rip), %ymm10
++    vpinsrq $1, %rax, %xmm2, %xmm3
++    vpinsrq $1, %r9, %xmm10, %xmm11
++    vpextrq $1, %xmm10, %r9
++    vpextrq $0, %xmm1, 8(%rax)
++    vpermq $0x4e, %ymm9, %ymm10
++    vpsllvq %ymm9, %ymm10, %ymm11
++    andn %eax, %ebx, %ecx
++    andn %r9d, %r10d, %r11d
++    andn %rax, %rbx, %rcx
++    andn %r9, %r10, %r11
++    andn (%r8), %r10, %r11
++    andn %edx, %eax, %r9d
++    blsr %r9, %r10
++    bzhi %r9, %r10, %r11
++    sarx %rcx, %rax, %rdx
++    shlx %r9d, (%r8), %r11d
++    shrx %rcx, 8(%rax,%r9,4), %rdx
++    pdep %r9, %r10, %r11
++    pext %eax, %r10d, %r11d
++    mulx %r9, %r10, %r11
++    rorx $25, %eax, %ebx
++    rorx $25, %r9d, %r10d
++    rorx $14, %rax, %rbx
++    rorx $14, %r9, %r10
++    rorx $14, (%r9), %r10
++    rorx $34, 8(%rax,%r9,4), %rdx
++    rorx $25, %r8d, %eax
++    rorx $25, %eax, %r8d
++    vprord $16, %xmm11, %xmm11
++    vprord $12, %ymm9, %ymm9
++    vprord $12, %ymm1, %ymm9
++    vprord $12, %ymm9, %ymm1
++    vprord $1, 32(%r8), %ymm10
++    vprord $1, 16(%r8,%r9,2), %ymm10
++    vprord $1, var2(%rip), %ymm10
++    vprolq $3, %ymm1, %ymm12
++    vpternlogd $0x96, %xmm10, %xmm2, %xmm0
++    vpternlogd $0x96, %xmm11, %xmm3, %xmm1
++    vpternlogd $0x96, %ymm11, %ymm12, %ymm13
++    vpternlogd $0x96, 64(%r8,%r9,4), %xmm2, %xmm0
++    vpternlogd $0x96, var2(%rip), %ymm2, %ymm0
++    vpermi2d %ymm7, %ymm6, %ymm8
++    vpermi2d %ymm7, %ymm6, %ymm9
++    vpermi2d %ymm15, %ymm14, %ymm13
++    vpermi2d 64(%r8), %ymm9, %ymm10
++    vpermi2d -32(%rax), %ymm9, %ymm10
++    vpermt2q (%r9,%r10), %xmm6, %xmm0
++    vzeroupper
++#endif
+ /* fix 81: .previous */
+     .data
+     .long 1
+diff --git a/tests/m16-asm-32.txt b/tests/m16-asm-32.txt
+index 384699c..7e91a7c 100644
+--- a/tests/m16-asm-32.txt
++++ b/tests/m16-asm-32.txt
+@@ -172,3 +172,28 @@ repne scasb
+ .word foo
+ .byte foo
+ .long foo
++vzeroupper
++vmovdqa %xmm1, %xmm2
++vmovdqu 16(%eax), %ymm3
++vmovdqa %ymm4, 32(%ebx,%ecx,4)
++vmovd %eax, %xmm1
++vmovq %xmm1, 32(%edi)
++vpaddd %ymm1, %ymm2, %ymm3
++vpxor (%eax), %xmm2, %xmm3
++vpshufb %ymm1, %ymm2, %ymm3
++vpsrld $7, %ymm2, %ymm3
++vpslldq $4, %xmm2, %xmm3
++vpshufd $0x1b, %xmm1, %xmm2
++vpalignr $4, %ymm1, %ymm2, %ymm3
++vperm2i128 $0x20, %ymm1, %ymm2, %ymm3
++vinsertf128 $1, 32(%eax), %ymm2, %ymm3
++vextracti128 $1, %ymm1, %xmm2
++vpclmulqdq $0x11, (%eax), %xmm2, %xmm3
++vpmovzxbd 8(%eax), %ymm2
++andn %eax, %ebx, %ecx
++rorx $25, %eax, %ebx
++rorx $11, 8(%eax,%ebx,4), %edx
++vprord $16, %xmm3, %xmm3
++vprord $1, 32(%eax), %ymm2
++vpternlogd $0x96, %xmm1, %xmm2, %xmm0
++vpermi2d %ymm7, %ymm6, %ymm0
+diff --git a/tests/m16-asm-64.txt b/tests/m16-asm-64.txt
+index 80dc48e..8a629ee 100644
+--- a/tests/m16-asm-64.txt
++++ b/tests/m16-asm-64.txt
+@@ -106,3 +106,21 @@ xorl %eax, %eax
+ movl $0, %eax
+ rdtsc
+ cpuid
++vmovdqa %ymm8, %ymm15
++vmovdqa %ymm12, 32(%r9,%r10,4)
++vmovq %r10, %xmm11
++vmovq %xmm11, %r10
++vpaddd %ymm9, %ymm10, %ymm11
++vpaddd (%rdi,%r9), %ymm2, %ymm3
++vpsrld $7, %ymm9, %ymm10
++vpalignr $4, %ymm9, %ymm10, %ymm11
++vextracti128 $1, %ymm8, %xmm8
++vpclmulqdq $0x11, %xmm8, %xmm9, %xmm10
++vpmovzxbd (%rax), %ymm8
++andn %r9, %r10, %r11
++rorx $14, %r9, %r10
++rorx $25, %eax, %r8d
++vprord $12, %ymm9, %ymm1
++vpternlogd $0x96, %xmm10, %xmm2, %xmm0
++vpermi2d %ymm15, %ymm14, %ymm13
++vzeroupper

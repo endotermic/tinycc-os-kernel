@@ -4,6 +4,4 @@ workarounds/0002-mm-slab-define-freelist_full_t-without-__int128.patch
 workarounds/0005-seqlock-select-the-stub-canaries-for-tinycc.patch
 upstreamable/0006-x86-fpu-spell-out-where-32-bit-signal-frames-are-pos.patch
 upstreamable/0009-kbuild-let-OBJTOOL-name-an-objtool-that-is-not-built.patch
-upstreamable/0010-crypto-x86-build-the-AVX2-and-AVX-512-SHA-256-and-BL.patch
 upstreamable/0011-x86-boot-make-the-video-mode-setting-code-optional.patch
-upstreamable/0016-crypto-x86-build-the-AVX-SHA-1-and-POLYVAL-code-only.patch
