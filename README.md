@@ -172,7 +172,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 116 patches, the linker suite, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 118 patches, the linker suite, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -229,8 +229,8 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 116 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 15 kernel patches in `workarounds/` and `upstreamable/` |
+| `patches/tinycc/` | 118 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/linux/` | 11 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
@@ -283,16 +283,18 @@ directories only sort them by kind:
   `__builtin_mul_overflow` without a division); and nine patches that add regression tests
   for the fixes to tcc's own suite (`tests/tests2/152`-`160`, `tests/pp/24.S`,
   `tests/asmtest.S`), so that `make test` guards them (see `docs/FIX-LOG.md`, "Tests").
-* **linux/workarounds** (5): guarded by `__TINYC__` or `__SIZEOF_INT128__`; the kernel
-  needs a compiler that inlines or that has `__int128` for these spots.
-* **linux/upstreamable** (10): semantics-preserving rewrites that stop depending on
-  constant propagation through a local variable, a `!THP` stub for `vma_thp_gfp_mask()`,
-  and three toolchain-capability options: `OBJTOOL=` for an external objtool, the
-  `CONFIG_AS_AVX2`/`AS_AVX512` probes, and the `X86_BOOT_VIDEO_MODES` option for the
-  real-mode setup; from the i386 port the 64-bit division helpers for 32-bit targets whose
-  compiler calls them (`GENERIC_LIB_DIVDI3`, with `CC_IS_TCC`), the swiotlb wrappers made
-  dead code without `CONFIG_SWIOTLB`, and x86's `pmdp/pudp_test_and_clear_young()`
-  declared only where they are defined; candidates for mainline.
+* **linux/workarounds** (3): guarded by `__TINYC__` or `__SIZEOF_INT128__`; the kernel
+  needs a compiler that has `__int128`, or that proves a seqlock state impossible, for
+  these spots (the ones that needed inlining went with tcc fix 120).
+* **linux/upstreamable** (8): a semantics-preserving rewrite that stops depending on
+  constant propagation through the parameter of a function with one caller
+  (`ia32_fxstate_possible()`), three toolchain-capability options: `OBJTOOL=` for an
+  external objtool, the `CONFIG_AS_AVX2`/`AS_AVX512` probes, and the `X86_BOOT_VIDEO_MODES`
+  option for the real-mode setup; from the i386 port the 64-bit division helpers for 32-bit
+  targets whose compiler calls them (`GENERIC_LIB_DIVDI3`, with `CC_IS_TCC`), the AVX SHA-1
+  and POLYVAL files gated like SHA-256's, and x86's `pmdp/pudp_test_and_clear_young()`
+  declared only where they are defined; candidates for mainline.  Eight more of both kinds
+  went away with tcc fixes 119 (constant propagation through locals) and 120 (the inliner).
 
 Every tcc patch compiles on its own (the series was built commit by commit) and the tip
 passes `make test`, on the glibc host and inside both musl guests, including the project's

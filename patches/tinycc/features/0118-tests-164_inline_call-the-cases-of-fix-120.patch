@@ -1,0 +1,374 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 12:10:54 +0200
+Subject: [PATCH] tests: 164_inline_call, the cases of fix 120
+
+The kernel's patterns as dead references that must go (tcc -run fails on
+any that stays): the canary behind field_multiplier()'s mask check, the
+"i" operand of rip_rel_ptr() and the asm goto of __static_cpu_has(), the
+switch on a parameter, a static function given a constant it tests, the
+loop that reassigns the same constant through a stub, a known function
+pointer tested and called, the result of an inlined call as a known
+value; and the semantics of an inlined body compared with gcc -O2's
+output: recursion, labels and gotos, returns from inside loops, nested
+inlining, struct returns small and in memory, a struct by value, a
+parameter assigned or its address taken, arguments evaluated once, a body
+in dead code, __func__, early return, break and continue, a caller local
+and a caller label of the body's names, cleanup with a statement
+expression, float and long long returns, a static local and a variadic
+function as calls, a comparison argument, an infinite loop with a break,
+computed goto, __builtin_constant_p of a parameter, calls in a loop
+header, a condition, a switch, sizeof, an unused result, a statement
+expression's local before and after the call.
+---
+ tests/tests2/164_inline_call.c      | 303 ++++++++++++++++++++++++++++
+ tests/tests2/164_inline_call.expect |  30 +++
+ 2 files changed, 333 insertions(+)
+ create mode 100644 tests/tests2/164_inline_call.c
+ create mode 100644 tests/tests2/164_inline_call.expect
+
+diff --git a/tests/tests2/164_inline_call.c b/tests/tests2/164_inline_call.c
+new file mode 100644
+index 0000000..4443160
+--- /dev/null
++++ b/tests/tests2/164_inline_call.c
+@@ -0,0 +1,303 @@
++/* Calls of always_inline functions, and of static functions given a constant
++   argument, are compiled in place of a call (fix 120 of the tinycc-os-kernel
++   project): the parameters are locals initialised with the arguments, so a
++   constant argument folds in the body as any known local does (fix 119).
++   The Linux kernel needs that for an "i" asm operand taken from a parameter
++   (rip_rel_ptr(), __static_cpu_has()) and for canary calls under a condition
++   on a parameter (__bad_mask() in field_multiplier(), __swap_cache_alloc()'s
++   vma_thp_gfp_mask(), __scoped_seqlock_next()'s switch): tcc -run fails on
++   any reference to the dead_*() functions below.  The rest checks that an
++   inlined body behaves as the called one; the output must be gcc's. */
++#include <stdio.h>
++#include <string.h>
++
++#define AI static inline __attribute__((always_inline))
++extern void dead_mask(void), dead_switch(void), dead_order(void),
++    dead_order_loop(void), dead_nested(void), dead_pointer(void),
++    dead_bool(void), dead_result(void);
++
++int rt; /* 0: a run-time value the compiler cannot know */
++static int counter, cleaned;
++
++/* ---- the kernel's patterns ---- */
++
++/* bitfield.h field_multiplier(): the mask check is a canary */
++AI unsigned long long field_multiplier(unsigned long long field)
++{
++    if ((field | (field - 1)) & ((field | (field - 1)) + 1))
++        dead_mask();
++    return field & -field;
++}
++#define FIELD_PREP(mask, val) (((unsigned long long)(val) * field_multiplier(mask)) & (mask))
++
++/* asm.h rip_rel_ptr(): the "i" operand is the caller's constant; the output
++   is the same variable as the input (read before the asm changes it) */
++static int g_var;
++AI void *rip_rel_ptr(void *p)
++{
++#ifdef __x86_64__
++    asm("leaq %c1(%%rip), %0" : "=r"(p) : "i"(p));
++#endif
++    return p;
++}
++
++/* cpufeature.h __static_cpu_has(): asm goto with "i" operands and labels */
++static unsigned char caps[4] = { 0x12, 0, 0, 0 };
++AI int static_has(unsigned short bit)
++{
++#if defined __x86_64__ || defined __i386__
++    asm goto("testb %0, %1\n\tjnz %l[t_yes]\n\tjmp %l[t_no]"
++             : : "i"(1 << (bit & 7)), "m"(*(const char *)&caps[bit >> 3])
++             : "cc" : t_yes, t_no);
++#else
++    if (caps[bit >> 3] & (1 << (bit & 7)))
++        goto t_yes;
++    goto t_no;
++#endif
++t_yes:
++    return 1;
++t_no:
++    return 0;
++}
++
++/* seqlock.h __scoped_seqlock_next(): a switch on the parameter */
++enum ss_state { ss_done, ss_lock, ss_lock_irq };
++AI int seq_next(int state, enum ss_state target)
++{
++    if (state == 0)
++        return 1;
++    switch (target) {
++    case ss_lock:
++        return 2;
++    case ss_lock_irq:
++        return 3;
++    default:
++        dead_switch();
++    }
++    return 0;
++}
++
++/* a static function (not inline) given a constant: mm/swap_state.c */
++static void *cache_alloc(int order, int gfp)
++{
++    if (order)
++        dead_order();
++    return (void *)(long)(gfp + order);
++}
++/* a loop that assigns the same constant (next_order() without THP): the
++   variable stays known in the loop; the function is not static, as the
++   kernel's: a merely static function is not inlined into another */
++static inline int highest_order(unsigned long orders) { return 0; }
++static inline int next_order(unsigned long *orders, int prev) { return 0; }
++long alloc_folio(unsigned long orders)
++{
++    int order;
++    void *ret;
++    order = highest_order(orders);
++    do {
++        ret = cache_alloc(order, 8);
++        if (!order)
++            break;
++        order = next_order(&orders, order);
++    } while (orders);
++    return (long)ret;
++}
++
++/* nested: the inner body sees the outer's constant parameter */
++AI int inner(int x) { if (x == 7) dead_nested(); return x * 2; }
++AI int outer(int x) { return inner(x) + inner(x + 1); }
++
++/* a function pointer parameter known to be a function: called and passed */
++static int addone(int x) { return x + 1; }
++static int apply(int (*fp)(int), int v) { return fp(v); }
++static int via(int (*fp)(int))
++{
++    if (!fp)
++        dead_pointer();
++    return fp(2) + apply(fp, 3);
++}
++
++/* a bool and the result of an inlined call as a known value */
++AI int is_zero(int x) { return x == 0; }
++AI int truth(int x) { return x ? 1 : 1; }
++
++/* an immediate after a rip-relative operand: the relocation's addend
++   counts it (__static_cpu_has()'s fallback testb read the wrong byte) */
++unsigned char cap_bytes[8] = { 0, 0, 0, 0, 0, 0, 0x81, 0 };
++static int rip_imm(void)
++{
++    int r = 0;
++#ifdef __x86_64__
++    asm volatile("testb $1, cap_bytes+6(%%rip)\n\tsetnz %%al\n\tmovzbl %%al, %0\n\t"
++                 "movb $3, cap_bytes+5(%%rip)\n\tmovw $0x201, cap_bytes+2(%%rip)"
++                 : "=r"(r) : : "cc", "memory");
++#else
++    r = cap_bytes[6] & 1, cap_bytes[5] = 3, cap_bytes[2] = 1, cap_bytes[3] = 2;
++#endif
++    return r * 1000 + cap_bytes[5] * 100 + cap_bytes[3] * 10 + cap_bytes[2];
++}
++
++static void t_kernel(void)
++{
++    int *p = rip_rel_ptr(&g_var);
++    *p = 7;
++    printf("mask %llu %llu %llu\n", field_multiplier(0xff00), FIELD_PREP(0x0f00, 5),
++           FIELD_PREP(0xffff000000000000ULL, 0x1234));
++    printf("rip %d\n", g_var);
++    printf("cpu %d %d %d %d\n", static_has(1), static_has(2), static_has(4), rip_imm());
++    printf("seq %d %d %d\n", seq_next(rt, ss_lock), seq_next(rt, ss_lock_irq), seq_next(0, ss_done));
++    printf("order %ld %ld\n", (long)cache_alloc(0, 5), alloc_folio(5));
++    printf("nested %d\n", outer(3));
++    printf("ptr %d\n", via(addone));
++    if (is_zero(0) != 1)
++        dead_bool();
++    if (!is_zero(0))
++        dead_result();
++    printf("bool %d %d\n", is_zero(rt), truth(rt));
++}
++
++/* ---- the semantics of an inlined body ---- */
++
++AI int fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); } /* recursion: a call */
++
++AI int find(const int *a, int n, int v) /* labels, gotos, returns in a loop */
++{
++    int i;
++    for (i = 0; i < n; i++) {
++        if (a[i] == v)
++            goto found;
++        if (a[i] < 0)
++            return -2;
++    }
++    return -1;
++found:
++    return i;
++}
++
++struct pt { int x, y; };
++struct big { long a, b, c, d; };
++AI struct pt mkpt(int x, int y) { struct pt p = { x, y }; return p; }
++AI struct big mkbig(long a) { struct big b; b.a = a; b.b = a + 1; b.c = a + 2; b.d = a + 3; return b; }
++AI int sum_pt(struct pt p) { p.x += 100; return p.x + p.y; } /* a struct by value */
++
++AI int twice(int n) { n *= 2; return n; }            /* a parameter assigned */
++AI int viaptr(int n) { int *q = &n; *q += 5; return n; } /* its address taken */
++AI int cond_assign(int n) { if (n == 3) n = 4; return n; }
++
++static int bump(void) { return ++counter; }
++AI int addp(int a, int b) { return a + 10 * b; }       /* arguments evaluated once */
++
++AI int deadbody(int x) { lab: x++; return x; }        /* a label, in dead code */
++AI const char *who(void) { return __func__; }
++AI void early(int x, int *out) { if (x) return; *out = 42; }
++
++AI int loops(int n)
++{
++    int s = 0, i;
++    for (i = 0; i < n; i++) {
++        if (i == 2)
++            continue;
++        if (i == 5)
++            break;
++        s += i;
++    }
++    while (1) {
++        s++;
++        if (s > 100)
++            break;
++    }
++    return s;
++}
++
++static int shadowed = 100;
++AI int readg(void) { return shadowed; }   /* the caller's local of that name is not seen */
++AI int goto_out(int x) { if (x) goto out; x = 5; out: return x + 1; } /* the caller has 'out' too */
++
++static void cl(int *p) { cleaned += *p; }
++AI int withcl(int v) { int x __attribute__((cleanup(cl))) = v; return ({ x + 1; }); }
++
++AI double half(double d) { return d / 2; }
++AI long long triple(long long a) { return a * 3; }
++AI float quarter(float f) { return f / 4; }
++
++static int stat_counter(void) { static int n; return ++n; }  /* a static local: a call */
++AI int varargs(int n, ...) { return n; }                       /* variadic: a call */
++AI int cmparg(int b) { return b * 3; }
++AI int noret_loop(int n) { for (;;) { if (n++ > 3) break; } return n; }
++static void *label_addr(int i) { void *t[2]; t[0] = &&l0; t[1] = &&l1; goto *t[i]; l0: return (void *)0; l1: return (void *)1; }
++AI int bcp(int x) { return __builtin_constant_p(x); }
++AI int sw_in(int x) { switch (x) { case 1: return 10; default: return 20; } }
++AI int uses_param_as_global(int rt) { return rt + 1; } /* the parameter hides the global */
++/* a statement expression's local stays on the stack, unlinked, after it
++   (tcc): hiding the caller's locals around the body must not bring it back */
++#define PTR(p) ({ unsigned long __ptr; __asm__("" : "=r"(__ptr) : "0"(p)); (typeof(p))__ptr; })
++AI int rd(int *p) { return *PTR(p); }
++
++static void t_semantics(void)
++{
++    int a[] = { 3, 5, 7 };
++    int o = 1, r = 0, i, s = 0;
++    int shadowed = 5;
++    struct pt p = mkpt(1, 2);
++    struct big b = mkbig(10);
++    printf("fact %d %d\n", fact(5), fact(1));
++    printf("find %d %d %d\n", find(a, 3, 7), find(a, 3, 8), find(a, 3, 3));
++    printf("struct %d %d %ld %ld %d %d\n", p.x, p.y, b.a, b.d, sum_pt(p), p.x);
++    printf("param %d %d %d %d\n", twice(21), viaptr(1), cond_assign(3), cond_assign(5));
++    counter = 0;
++    r = addp(bump(), 0);
++    printf("once %d %d\n", r, counter);
++    r = addp(0, bump());
++    printf("once %d %d\n", r, counter);
++    if (r == 12345)
++        r = deadbody(r);
++    if (0)
++        r = deadbody(r);
++    printf("func %s\n", who());
++    early(1, &o);
++    early(0, &o);
++    printf("early %d\n", o);
++    printf("loops %d\n", loops(10));
++    printf("shadow %d %d\n", readg(), shadowed);
++    if (rt)
++        goto out;
++    printf("goto %d %d\n", goto_out(0), goto_out(7));
++out:
++    r = withcl(7);
++    printf("cleanup %d %d\n", r, cleaned);
++    printf("float %g %lld %g\n", half(5), triple(1LL << 40), quarter(10));
++    s = stat_counter();
++    printf("static %d %d %d\n", s, stat_counter(), varargs(3, 4, 5));
++    printf("cmp %d %d\n", cmparg(a[0] < a[1]), cmparg(a[1] < a[0]));
++    printf("loop %d %p %p\n", noret_loop(0), label_addr(0), label_addr(1));
++    printf("bcp %d %d\n", bcp(5), bcp(rt));
++    for (i = sw_in(1); i < sw_in(2); i += sw_in(rt))
++        s += i;
++    printf("header %d\n", s);
++    s = rt ? sw_in(1) : sw_in(2);
++    printf("cond %d %d %d\n", s, sw_in(rt) == 20, (int)sizeof(sw_in(1)));
++    switch (sw_in(1)) {
++    case 10:
++        s = outer(sw_in(1));
++        break;
++    default:
++        s = -1;
++    }
++    printf("switch %d %d\n", s, uses_param_as_global(rt));
++    sw_in(1);
++    while (sw_in(s) == 10)
++        s = 0;
++    printf("stmt %d\n", s);
++    {
++        int *pa = PTR(&a[0]), *pb = PTR(&a[1]);
++        r = rd(&a[2]);
++        printf("zombie %d %d %d %d\n", *pa, *pb, r, *PTR(&a[0]));
++    }
++}
++
++int main(void)
++{
++    t_kernel();
++    t_semantics();
++    return 0;
++}
+diff --git a/tests/tests2/164_inline_call.expect b/tests/tests2/164_inline_call.expect
+new file mode 100644
+index 0000000..b12b86e
+--- /dev/null
++++ b/tests/tests2/164_inline_call.expect
+@@ -0,0 +1,30 @@
++mask 256 1280 1311673391471656960
++rip 7
++cpu 1 0 1 1321
++seq 1 1 1
++order 5 8
++nested 14
++ptr 7
++bool 1 1
++fact 120 1
++find 2 -1 0
++struct 1 2 10 13 103 1
++param 42 6 4 5
++once 1 1
++once 20 2
++func who
++early 42
++loops 101
++shadow 100 5
++goto 6 8
++cleanup 8 7
++float 2.5 3298534883328 2.5
++static 1 2 3
++cmp 3 0
++loop 5 (nil) 0x1
++bcp 1 0
++header 11
++cond 20 1 4
++switch 42 1
++stmt 42
++zombie 3 5 7 3

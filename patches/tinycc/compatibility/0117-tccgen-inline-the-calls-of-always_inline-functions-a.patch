@@ -1,0 +1,1219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 12:10:54 +0200
+Subject: [PATCH] tccgen: inline the calls of always_inline functions and of
+ static functions given a tested constant
+
+The call of an __always_inline function, or of a merely static function
+given a constant argument that its body tests, is compiled in place of a
+call (inline_call()): the arguments, evaluated and converted as for the
+call, initialise locals named as the parameters in a scope of their own,
+so that a constant argument is a known local and folds in the body as any
+known local does (the constant propagation through locals); the body is
+parsed from the token string that is kept for every static or inline
+function (an __always_inline function that is neither is kept now too),
+with a label stack of its own, the kprop label scan and the pragma
+replay; a return stores to a result variable, itself a kprop local, and
+jumps to the end of the body; the caller's locals and labels are unlinked
+from the identifier table around the body and relinked after it (only
+those that are linked: a statement expression's locals stay on
+local_stack unlinked); funcname, the return type and the switch, loop and
+kprop state of the caller are saved around it; the body's stack space is
+given back (the frame takes the low-water mark).  Not inlined: in dead
+code, under -g or -b, variadic or old-style functions, bodies with a
+static local, recursion, a nesting deeper than 24, and a merely static
+function from within another one's inlined body, or longer than 1024
+tokens, or whose constant parameter appears in no condition (the
+parentheses of if, while, switch, for, or next to !, ?, &&, ||, ==, !=):
+inlining every static function given a constant grew mm/page_alloc.o's
+text 2.6 times.
+
+The Linux kernel relies on inlining in an optimizing compiler where an
+"i" asm operand is taken from a parameter of an __always_inline function
+(rip_rel_ptr()'s "leaq %c1(%%rip), %0" : "=r"(p) : "i"(p), the asm goto
+of __static_cpu_has() with "i"(bit), "i"(1 << (bit & 7)) and the address
+of a capability byte) and where a canary is called under a condition on a
+parameter (__bad_mask() behind field_multiplier()'s mask check in every
+FIELD_PREP() user, vma_thp_gfp_mask() behind "if (order)" in
+__swap_cache_alloc(), __scoped_seqlock_invalid_target() behind the switch
+on the target of __scoped_seqlock_next()); the tinycc-os-kernel project
+worked around them with four kernel patches, which this removes (fix 120).
+
+What the kernel's bodies needed with it: a known local may hold the
+address of a symbol of file scope (Sym.ksym; not a string literal's or a
+static local's, whose Sym dies with its block), so that rip_rel_ptr(&x)
+has its "i" operand and a test of a known function pointer folds (the
+address of a symbol that is not weak compared with 0, gen_opic and
+kcond); an asm's outputs are invalidated after its inputs were read
+("=r"(p) : "i"(p)); asm goto targets are gotos for the label scan; a loop
+that assigns a variable only the constant it holds at the head, a literal
+or a call of a function that folds to it (order = next_order(&orders,
+order) without THP), keeps it known (struct kkill cond; the function must
+be a call at every mention in the loop); the constraints "I", "N", "M"
+take only 0-31, 0-255, 0-3 and "e" a 32-bit signed value ("Ir"(65) of a
+bt, "er"(1 << 40) of arch_atomic64_or() are registers), and an
+instruction without a suffix, an immediate and a memory operand ("bt $0,
+(%rax)", an "Ir" operand that became a constant) takes the mode's word
+with GNU as's warning instead of "cannot infer opcode suffix" (test 155's
+test_bit() gets the kernel's explicit size); __builtin_constant_p() of a
+non-constant makes the stub-fold probe impure (return
+__builtin_constant_p(x); folded to 0 for every call); a cleanup call's
+save_lvalues() stops at the inlined call's vstack base (it turned the
+enclosing assignment's destination into a temporary).
+---
+ i386-asm.c                        |  44 +-
+ tcc.h                             |  11 +-
+ tccasm.c                          |  11 +-
+ tccgen.c                          | 652 +++++++++++++++++++++++++++---
+ tests/tests2/155_x86_inline_asm.c |   9 +-
+ 5 files changed, 664 insertions(+), 63 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index c331b56..808a244 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1244,7 +1244,14 @@ again:
+ 	    else if ((opcode == TOK_ASM_push || opcode == TOK_ASM_pop) &&
+ 		     (ops[0].type & OP_EA))
+ 	        s = CODE64 ? 3 : default_size(1);
+-            else
++            else if (alltypes & OP_EA) {
++                /* an immediate and a memory operand ("bt $0, (%rax)", an
++                   "Ir" operand that became a constant): GNU as warns and
++                   takes the mode's word, as does .code16gcc */
++                tcc_warning("no instruction mnemonic suffix given and no register operands; using default for '%s'",
++                            get_tok_str(opcode, NULL));
++                s = default_size(1);
++            } else
+                 tcc_error("cannot infer opcode suffix");
+         }
+     }
+@@ -1573,8 +1580,24 @@ again:
+     }
+ 
+     /* after immediate operands, adjust pc-relative address */
+-    if (pc)
++    if (pc) {
++#ifdef TCC_TARGET_X86_64
++        if (ops[modrm_index].e.sym) {
++            /* a symbol: the displacement is a RELA relocation, whose addend
++               must carry the adjustment ("testb $1, sym(%rip)" is sym - 5,
++               as GNU as has it); the bytes in place stay 0, as tcc's own
++               linker adds the addend to them */
++            Section *sr = cur_text_section->reloc;
++            ElfW_Rel *rel = (ElfW_Rel *)(sr->data + sr->data_offset);
++            while (rel-- > (ElfW_Rel *)sr->data)
++                if (rel->r_offset == pc - 4) {
++                    rel->r_addend += pc - ind;
++                    break;
++                }
++        } else
++#endif
+         add32le(cur_text_section->data + pc - 4, pc - ind);
++    }
+ }
+ 
+ /* return the constraint priority (we allocate first the lowest
+@@ -1992,11 +2015,20 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+         case 'i':
+             if (!((op->vt->r & (VT_VALMASK | VT_LVAL)) == VT_CONST))
+                 goto try_next;
++            /* 'e': a 32-bit signed immediate ("er"(i) of atomic64_or():
++               a constant beyond it takes the register) */
++            if (c == 'e' && !(op->vt->r & VT_SYM)
++                && op->vt->c.i != (int32_t)op->vt->c.i)
++                goto try_next;
+             break;
+         case 'I':
+         case 'N':
+         case 'M':
+-            if (!((op->vt->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST))
++            /* the ranges of GCC's x86 constraints: a constant outside
++               them takes the next alternative ("Ir"(65) is a register:
++               "bt $65" would test bit 1) */
++            if (!((op->vt->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
++                || (uint64_t)op->vt->c.i > (c == 'I' ? 31 : c == 'N' ? 255 : 3))
+                 goto try_next;
+             break;
+         case 'X': /* any operand: like 'g' */
+@@ -2166,7 +2198,11 @@ ST_FUNC void subst_asm_operand(CString *add_str,
+         cstr_printf(add_str, "%lld", val);
+     no_offset:;
+ #ifdef TCC_TARGET_X86_64
+-        if (r & VT_LVAL)
++        /* %a of a symbol, "the address": gcc prints it rip-relative
++           (__static_cpu_has()'s "testb %[bitnum], %a[cap_byte]" runs in
++           the startup code before the kernel is mapped where it was
++           linked; an absolute address there faults) */
++        if ((r & VT_LVAL) || (modifier == 'a' && (r & VT_SYM)))
+             cstr_cat(add_str, "(%rip)", -1);
+ #endif
+     } else if ((r & VT_VALMASK) == VT_LOCAL) {
+diff --git a/tcc.h b/tcc.h
+index 3bb83f8..9414952 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -567,6 +567,8 @@ typedef struct Sym {
+        kst 1 = the variable is known to hold kval, 0 = unknown */
+     int kst;
+     long long kval;
++    struct Sym *ksym; /* kval is the address of this symbol plus kval (NULL: a number) */
++    struct InlineFunc *inl; /* a function whose body is saved (tccgen.c inline_call()) */
+ } Sym;
+ 
+ /* section definition */
+@@ -693,9 +695,15 @@ typedef struct AttributeDef {
+ /* inline functions */
+ typedef struct InlineFunc {
+     TokenString *func_str;
+-    Sym *sym;
++    Sym *sym; /* the function while its code is still to be generated, then NULL */
++    Sym *fsym; /* the function */
++    Sym *ftype; /* its type at the definition (the parameter names) */
+     struct Section *sec; /* attribute((section)) of the definition */
++    int len; /* of func_str (whose len a replay zeroes) */
+     char is_static; /* a static non-inline function, only emitted if used */
++    char busy; /* being compiled or inlined: no inlining into itself */
++    signed char inlinable; /* 0 not looked at, 1 yes, -1 no (inline_call()) */
++    unsigned cond; /* bit i: the body tests parameter i (kscan_labels()) */
+     char filename[1];
+ } InlineFunc;
+ 
+@@ -1549,6 +1557,7 @@ ST_FUNC int type_size(CType *type, int *a);
+ ST_FUNC void mk_pointer(CType *type);
+ ST_FUNC void vstore(void);
+ ST_FUNC void kval(SValue *sv);
++ST_FUNC void klabel_goto(int v);
+ ST_FUNC void kinval(SValue *sv);
+ ST_FUNC void inc(int post, int c);
+ ST_FUNC CString* parse_mult_str(const char *msg);
+diff --git a/tccasm.c b/tccasm.c
+index d790af9..17e6068 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -2602,7 +2602,8 @@ static void parse_asm_operands(ASMOperand *operands, int *nb_operands_ptr,
+             if (is_output) {
+                 if (!(vtop->type.t & VT_ARRAY))
+                     test_lvalue();
+-                kinval(vtop); /* the asm changes it */
++                /* kinval() after the inputs: they read the values before
++                   the asm (asm_instr()) */
+             } else {
+                 /* a known local is its constant, which satisfies every
+                    constraint but a memory one */
+@@ -2734,6 +2735,7 @@ ST_FUNC void asm_instr(void)
+                             if (csym->r == LABEL_DECLARED)
+                               csym->r = LABEL_FORWARD;
+                         }
++                        klabel_goto(tok); /* kprop: this state reaches it */
+                         next();
+                         asmname = asm_get_prefix_name(tcc_state, "LG.",
+                                                       ++asmgoto_n);
+@@ -2755,7 +2757,12 @@ ST_FUNC void asm_instr(void)
+        token after the assembler parsing */
+     if (tok != ';')
+         expect("';'");
+-    
++
++    /* kprop: the asm changes its outputs (the inputs, parsed above,
++       were the values before it: "=r"(p) : "i"(p)) */
++    for (i = 0; i < nb_outputs; i++)
++        kinval(operands[i].vt);
++
+     /* save all values in the memory */
+     save_regs(0);
+ 
+diff --git a/tccgen.c b/tccgen.c
+index fb6edda..c4ef576 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -107,12 +107,45 @@ static CString initstr;
+    Dead code records nothing. */
+ typedef struct KSnap {
+     int n;
+-    struct { Sym *s; long long v; } e[1];
++    struct { Sym *s; long long v; Sym *sym; } e[1];
+ } KSnap;
+ struct kacc { KSnap *k; int have; };
+ static struct kacc *cur_kbrk, *cur_kcont; /* of the innermost loop */
+ static Sym *kinit_sym; /* the local whose initializer is being stored */
+ static void klabs_free(void);
++static int kscan_static; /* kscan_labels(): the body declares something static */
++static Sym *kscan_params; /* kscan_labels(): the parameters to look for ... */
++static unsigned kscan_cond; /* ... in conditions: bit i = parameter i is tested */
++
++/* The call being inlined (inline_call()): the body of an always_inline
++   function, or of a static function given a constant argument, is
++   compiled at the call in place of a call, its parameters being locals
++   initialised with the arguments, so that a constant argument folds in
++   the body as the constant propagation above folds any local: an "i"
++   asm operand taken from a parameter, a canary call under a condition
++   on it.  A 'return' stores to the result variable and jumps to the
++   end of the body. */
++static struct inl_ctx {
++    struct inl_ctx *prev;
++    InlineFunc *fn;
++    int rsym; /* the jumps of the returns to the end of the body */
++    int end_live; /* the body ends with a return at its top level */
++    int top; /* local_scope of the parameter scope */
++    int ret_c; /* the result variable (its Sym for kprop), unless void */
++    Sym *ret_sym;
++    CType ret_type;
++    struct kacc kret; /* kprop: the states at the returns */
++    Sym *hide_top; /* local_stack when the caller's locals were hidden:
++                      a nested inlined call hides only what is above */
++    SValue *vbase; /* vtop at the start of the body: the enclosing
++                      expression's values are below (save_lvalues()) */
++} *cur_inl;
++static int inl_depth, inl_static;
++static int inl_loc_min; /* the lowest loc of the function: inline_call()
++                           gives the stack space of a body back */
++#define INL_MAX_DEPTH 24 /* nested inlined calls */
++#define INL_STATIC_LEN 1024 /* tokens: a merely static function inlined */
++static int inline_call(Sym *fs, int nb_args);
+ 
+ static struct switch_t {
+     struct case_t {
+@@ -147,6 +180,8 @@ static struct scope {
+     int *bsym, *csym;
+     Sym *lstk, *llstk;
+ } *cur_scope, *loop_scope, *root_scope;
++static void new_scope(struct scope *o);
++static void prev_scope(struct scope *o, int is_expr);
+ 
+ typedef struct {
+     Section *sec;
+@@ -192,7 +227,11 @@ static void free_inline_functions(TCCState *s);
+ static void skip_or_save_block(TokenString **str);
+ static void replay_end(TokenString *str);
+ static void fold_side_effect(void);
+-static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills);
++/* loop_tokens(): a local the loop may assign; with cond, only by the
++   constant val (a literal, or a call of a function that folds to it, from
++   the function fv), which leaves it known when it holds val at the head */
++struct kkill { int v, cond, fv; long long val; };
++static TokenString *loop_tokens(int kind, int *dead, struct kkill **kills, int *nkills);
+ static TokenString *switch_fold_scan(struct switch_t *sw);
+ static int case_cmp(uint64_t a, uint64_t b);
+ static void inline_fold_check(Sym *sym, TokenString *str);
+@@ -442,6 +481,8 @@ ST_FUNC void tccgen_init(TCCState *s1)
+     kinit_sym = NULL;
+     cur_kbrk = cur_kcont = NULL;
+     klabs_free();
++    cur_inl = NULL;
++    inl_depth = inl_static = 0;
+ }
+ 
+ ST_FUNC int tccgen_compile(TCCState *s1)
+@@ -2497,6 +2538,23 @@ static void gen_opic(int op)
+     int shm = (t1 == VT_LLONG) ? 63 : 31;
+     int r;
+ 
++    /* the address of a symbol that exists (not weak) is not null: the
++       test of a known function pointer parameter folds (inline_call()) */
++    if ((op == TOK_EQ || op == TOK_NE) && (c1 || c2)) {
++        SValue *vs = c1 ? v2 : v1;
++        if ((c1 ? l1 : l2) == 0
++            && (vs->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == (VT_CONST | VT_SYM)
++            && vs->sym && !vs->sym->a.weak) {
++            vtop--;
++            vtop->r = VT_CONST | VT_NONCONST;
++            vtop->r2 = VT_CONST;
++            vtop->sym = NULL;
++            vtop->c.i = op == TOK_NE;
++            vtop->type.t = VT_INT;
++            return;
++        }
++    }
++
+     if (c1 && c2) {
+         switch(op) {
+         case '+': l1 += l2; break;
+@@ -3988,7 +4046,18 @@ ST_FUNC void kval(SValue *sv)
+     sv->r = VT_CONST | VT_NONCONST;
+     sv->r2 = VT_CONST;
+     sv->c.i = s->kval;
+-    sv->sym = NULL;
++    sv->sym = s->ksym;
++    if (s->ksym)
++        sv->r |= VT_SYM;
++}
++
++/* the address of a symbol that outlives any variable holding it: a
++   named symbol of file scope (on global_stack; a static local or a
++   string literal is popped with its block, a label with its function,
++   which no variable survives either) */
++static int kdurable(Sym *s)
++{
++    return s && s->v < SYM_FIRST_ANOM && s->sym_scope == 0;
+ }
+ 
+ /* the variable may now hold anything (an asm output) */
+@@ -4008,12 +4077,15 @@ static void krecord(void)
+     if (!kprop_on() || nocode_wanted || !(s = klocal(dst)))
+         return;
+     bt = src->type.t & VT_BTYPE;
+-    /* a plain constant: not the address of a symbol, whose Sym (a string
+-       literal's, a static local's) may be gone when the variable is read */
+-    if ((src->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
++    /* a constant, or the address of a symbol that is still there when
++       the variable is read (not a string literal's or a static local's,
++       whose Sym is popped with its block) */
++    if ((src->r & (VT_VALMASK | VT_LVAL)) == VT_CONST
++        && (!(src->r & VT_SYM) || kdurable(src->sym))
+         && !is_float(src->type.t) && bt != VT_STRUCT && bt != VT_VOID) {
+         s->kst = 1;
+         s->kval = knorm(s->type.t, src->c.i);
++        s->ksym = (src->r & VT_SYM) ? src->sym : NULL;
+     } else
+         s->kst = 0;
+ }
+@@ -4032,7 +4104,7 @@ static KSnap *ksnap_take(void)
+     k->n = 0;
+     for (s = local_stack; s; s = s->prev)
+         if (s->kst == 1) {
+-            k->e[k->n].s = s, k->e[k->n].v = s->kval;
++            k->e[k->n].s = s, k->e[k->n].v = s->kval, k->e[k->n].sym = s->ksym;
+             k->n++;
+         }
+     return k;
+@@ -4058,7 +4130,8 @@ static void ksnap_merge(KSnap *k)
+     Sym *s;
+     int i;
+     for (s = local_stack; s; s = s->prev)
+-        if (s->kst == 1 && ((i = ksnap_find(k, s)) < 0 || k->e[i].v != s->kval))
++        if (s->kst == 1 && ((i = ksnap_find(k, s)) < 0 || k->e[i].v != s->kval
++                            || k->e[i].sym != s->ksym))
+             s->kst = 0;
+ }
+ 
+@@ -4069,7 +4142,7 @@ static void ksnap_restore(KSnap *k)
+     int i;
+     for (s = local_stack; s; s = s->prev) {
+         if ((i = ksnap_find(k, s)) >= 0 && ktrackable(s))
+-            s->kst = 1, s->kval = k->e[i].v;
++            s->kst = 1, s->kval = k->e[i].v, s->ksym = k->e[i].sym;
+         else if (s->kst == 1)
+             s->kst = 0;
+     }
+@@ -4092,7 +4165,8 @@ static void kacc_add(struct kacc *a)
+             for (s = local_stack; s; s = s->prev)
+                 if (s == a->k->e[i].s)
+                     break;
+-            if (s && s->kst == 1 && s->kval == a->k->e[i].v)
++            if (s && s->kst == 1 && s->kval == a->k->e[i].v
++                && s->ksym == a->k->e[i].sym)
+                 a->k->e[n++] = a->k->e[i];
+         }
+         a->k->n = n;
+@@ -4122,35 +4196,51 @@ static void kkill_all(void)
+ /* at a loop's head: the variables the loop may assign (n < 0: any).  The
+    identifiers are resolved here, after a for loop's init declared its
+    variable */
+-static void kkill(int *kills, int n)
++static void kkill(struct kkill *kills, int n)
+ {
+     Sym *s;
+     int i;
+     if (n < 0)
+         kkill_all();
+     for (i = 0; i < n; i++)
+-        if ((s = sym_find(kills[i])) && s->kst == 1)
++        if ((s = sym_find(kills[i].v)) && s->kst == 1
++            && !(kills[i].cond && !s->ksym
++                 && s->kval == knorm(s->type.t, kills[i].val)))
+             s->kst = 0;
+     tcc_free(kills);
+ }
+ 
+-/* loop_tokens(): the identifier v may be assigned in the loop */
+-static void kadd(int **kills, int *n, int v)
++/* loop_tokens(): the identifier v may be assigned in the loop (cond: by
++   the constant val only, see struct kkill; an unconditional entry, or a
++   second value, wins) */
++static void kadd2(struct kkill **kills, int *n, int v, int cond, int fv, long long val)
+ {
++    struct kkill *k;
+     int i;
+     if (*n < 0)
+         return;
+-    for (i = 0; i < *n; i++)
+-        if ((*kills)[i] == v)
++    for (i = 0; i < *n; i++) {
++        k = &(*kills)[i];
++        if (k->v == v) {
++            if (k->cond && (!cond || k->val != val || k->fv != fv))
++                k->cond = 0;
+             return;
++        }
++    }
+     if (*n >= 64)
+         *n = -1; /* too many: all of them (kkill) */
+     else {
+         *kills = tcc_realloc(*kills, (*n + 1) * sizeof **kills);
+-        (*kills)[(*n)++] = v;
++        k = &(*kills)[(*n)++];
++        k->v = v, k->cond = cond, k->fv = fv, k->val = val;
+     }
+ }
+ 
++static void kadd(struct kkill **kills, int *n, int v)
++{
++    kadd2(kills, n, v, 0, 0, 0);
++}
++
+ /* after a loop: the paths out of it are the failing condition (the state
+    kx, unless the condition is constant true) and the breaks */
+ static void kloop_exit(int kc, KSnap *kx, struct kacc *kb)
+@@ -4198,6 +4288,9 @@ static int kcond(void)
+     if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+         && !is_float(vtop->type.t))
+         return vtop->c.i != 0;
++    if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == (VT_CONST | VT_SYM)
++        && vtop->sym && !vtop->sym->a.weak)
++        return 1; /* the address of a symbol that exists (gen_opic) */
+     return -1;
+ }
+ 
+@@ -4245,19 +4338,81 @@ static void klabs_free(void)
+    only makes a label a loop head when it is not one) */
+ static void kscan_labels(TokenString *str)
+ {
+-    int prev = 0, prev2 = 0, i;
++    int prev = 0, prev2 = 0, i, asm_goto = 0, level = 0, colons = 0;
++    int cond = 0, clevel = 0, plevel = 0;
+     struct klab *l;
++    Sym *sa;
+     klabs_free();
++    kscan_static = 0;
++    kscan_cond = 0;
+     begin_macro(str, 0);
+     next();
+     for (; tok != TOK_EOF; prev2 = prev, prev = tok, next()) {
+-        if (tok >= TOK_UIDENT) {
+-            if (prev == TOK_GOTO) {
++        if (tok == TOK_STATIC)
++            kscan_static = 1;
++        if (kscan_params) {
++            /* a parameter in a condition: the parentheses of if, while,
++               switch, for, or next to !, ?, &&, ||, ==, != */
++            if (tok == '(')
++                plevel++;
++            else if (tok == ')')
++                plevel--;
++            if (cond && plevel < clevel)
++                cond = 0;
++            if (tok == '(' && (prev == TOK_IF || prev == TOK_WHILE
++                               || prev == TOK_SWITCH || prev == TOK_FOR))
++                cond = 1, clevel = plevel;
++            if (tok >= TOK_UIDENT && prev != '.' && prev != TOK_ARROW
++                && (cond || prev == '!' || prev == TOK_LAND || prev == TOK_LOR
++                    || prev == TOK_EQ || prev == TOK_NE
++                    || (prev == '(' && prev2 == '!'))) {
++                for (i = 0, sa = kscan_params; sa; sa = sa->next, i++)
++                    if ((sa->v & ~SYM_FIELD) == tok && i < 32)
++                        kscan_cond |= 1u << i;
++            } else if (prev >= TOK_UIDENT && prev2 != '.' && prev2 != TOK_ARROW
++                       && (tok == '?' || tok == TOK_LAND || tok == TOK_LOR
++                           || tok == TOK_EQ || tok == TOK_NE)) {
++                for (i = 0, sa = kscan_params; sa; sa = sa->next, i++)
++                    if ((sa->v & ~SYM_FIELD) == prev && i < 32)
++                        kscan_cond |= 1u << i;
++            }
++        }
++        if (asm_goto) {
++            /* asm goto (... : ... : ... : ... : label, label): the labels
++               after the fourth ':' are goto targets */
++            if (tok == '(')
++                level++;
++            else if (tok == ')' && --level == 0)
++                asm_goto = colons = 0;
++            else if (tok == ':' && level == 1)
++                colons++;
++            else if (tok >= TOK_UIDENT && colons == 4 && level == 1) {
+                 l = klab_add(tok);
+                 if (l->defined)
+                     l->back = 1;
++            }
++            continue;
++        }
++        if (tok >= TOK_UIDENT) {
++            if (prev == TOK_GOTO) {
++                if (prev2 == TOK_ASM1 || prev2 == TOK_ASM2 || prev2 == TOK_ASM3
++                    || prev2 == TOK_VOLATILE1 || prev2 == TOK_VOLATILE2
++                    || prev2 == TOK_VOLATILE3 || prev2 == TOK_INLINE1
++                    || prev2 == TOK_INLINE2 || prev2 == TOK_INLINE3) {
++                    /* not a label: 'asm goto' followed by its '(' */
++                } else {
++                    l = klab_add(tok);
++                    if (l->defined)
++                        l->back = 1;
++                }
+             } else if (prev == TOK_LAND) /* &&label */
+                 klab_add(tok)->back = 1;
++        } else if (tok == '(' && prev == TOK_GOTO
++                   && (prev2 == TOK_ASM1 || prev2 == TOK_ASM2 || prev2 == TOK_ASM3
++                       || prev2 == TOK_VOLATILE1 || prev2 == TOK_VOLATILE2
++                       || prev2 == TOK_VOLATILE3 || prev2 == TOK_INLINE1
++                       || prev2 == TOK_INLINE2 || prev2 == TOK_INLINE3)) {
++            asm_goto = level = 1, colons = 0;
+         } else if (tok == ':' && prev >= TOK_UIDENT
+                    && (prev2 == ';' || prev2 == '{' || prev2 == '}'
+                        || prev2 == ':' || prev2 == ')' || prev2 == TOK_ELSE
+@@ -4271,8 +4426,8 @@ static void kscan_labels(TokenString *str)
+             klabs[i].back = 1;
+ }
+ 
+-/* a goto to the label v: its state reaches the label */
+-static void klabel_goto(int v)
++/* a goto (or an asm goto) to the label v: its state reaches the label */
++ST_FUNC void klabel_goto(int v)
+ {
+     struct klab *l = klab_find(v);
+     if (l && !l->back)
+@@ -6715,6 +6870,9 @@ ST_FUNC void unary(void)
+ 	    n = 0;
+ 	vtop--;
+ 	vpushi(n);
++        if (!n)
++            fold_side_effect(); /* a constant argument may make it 1 once
++                                   the call is inlined (inline_call()) */
+         break;
+     case TOK_builtin_unreachable:
+ 	parse_builtin_params(0, ""); /* just skip '()' */
+@@ -7236,6 +7394,8 @@ special_math_val:
+                     vtop->c.i = (int)s->f.func_fval - 2048;
+             }
+             if (fold) {
++            } else if (inline_call(s, nb_args)) {
++                fold = 1;
+             } else {
+                 fold_side_effect();
+                 gfunc_call(nb_args);
+@@ -7870,6 +8030,264 @@ static void fold_side_effect(void)
+         fold_impure = 1;
+ }
+ 
++/* Inline the call of a function whose body is saved (InlineFunc, see
++   the struct inl_ctx above): vtop[-nb_args] is the function, above it
++   the arguments, evaluated and converted to the parameter types (and,
++   for a structure returned in memory, the hidden address first).  Done
++   for an always_inline function, and for a static one when an argument
++   is a constant (the body is given a bound then); not in dead code, nor
++   under -g or -b, nor for a variadic or old-style function, a body with
++   a static local, a recursion, or beyond a nesting bound.  The
++   parameters become locals of a scope of their own, initialised from
++   the arguments; the caller's locals and labels are hidden from the
++   body (unlinked from the identifier table and relinked after it), its
++   labels have a label stack of their own (asm goto targets included);
++   funcname (__func__), the return type and the kprop state of the
++   enclosing function are saved around it.  The body's stack space is
++   given back after it (loc), the result variable's is not.  Returns 1
++   with the result on vtop in place of the function and its arguments,
++   0 for a call to be made. */
++static int inline_call(Sym *fs, int nb_args)
++{
++    SValue *fv = vtop - nb_args;
++    InlineFunc *fn;
++    Sym *fsym, *sa, *s, **locals = NULL, **pargs = NULL, *lab, *base, **pp;
++    Sym *saved_glabels, *saved_llabels;
++    struct { int v; Sym *head; } *lsave = NULL;
++    int nlsave = 0, nlocals = 0, np, i, cst, size, align, alive;
++    int saved_loc, saved_ntlv, saved_func_var, saved_func_old;
++    const char *saved_funcname;
++    CType saved_func_vt;
++    struct scope o, *saved_root, *saved_loop;
++    struct switch_t *saved_switch;
++    struct kacc *saved_kbrk, *saved_kcont;
++    Sym *saved_kinit;
++    struct klab *saved_klabs;
++    int saved_nb_klabs;
++    struct inl_ctx ctx;
++    TokenString ts;
++
++    if (nocode_wanted || debug_modes || !kprop_on() || local_scope == 0
++        || (fv->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_CONST | VT_SYM)
++        || !(fsym = fv->sym) || !(fn = fsym->inl) || fn->busy
++        || fn->inlinable < 0 || fn->ftype != fs || inl_depth >= INL_MAX_DEPTH
++        || fs->f.func_type != FUNC_NEW || fsym->a.weak)
++        return 0;
++    for (np = 0, sa = fs->next; sa; sa = sa->next) {
++        if ((sa->type.t & VT_BTYPE) == VT_PTR && (sa->type.ref->type.t & VT_VLA))
++            return 0; /* func_vla_arg() */
++        np++;
++    }
++    if (np > nb_args)
++        return 0;
++    cst = 0;
++    if (!fs->f.func_alwinl) {
++        /* a merely static function: given a constant argument that the
++           body tests (fn->cond, from the first scan below), not from
++           within such an inlined body, and not a big one */
++        if (!(fsym->type.t & VT_STATIC) || fn->len > INL_STATIC_LEN
++            || inl_static)
++            return 0;
++        for (i = 0; i < np; i++) {
++            kval(&vtop[-i]);
++            if ((vtop[-i].r & (VT_VALMASK | VT_LVAL)) == VT_CONST
++                && np - 1 - i < 32)
++                cst |= 1u << (np - 1 - i);
++        }
++        if (!cst || (fn->inlinable && !(cst & fn->cond)))
++            return 0;
++    }
++
++    /* the body's labels, and whether it may be inlined at all */
++    unget_tok(0);
++    saved_klabs = klabs, saved_nb_klabs = nb_klabs;
++    klabs = NULL, nb_klabs = 0;
++    kscan_params = fn->inlinable ? NULL : fs->next;
++    kscan_labels(fn->func_str);
++    if (!fn->inlinable)
++        fn->cond = kscan_cond;
++    kscan_params = NULL;
++    if (kscan_static || (!fs->f.func_alwinl && !(cst & fn->cond))) {
++        if (kscan_static)
++            fn->inlinable = -1;
++        else
++            fn->inlinable = 1;
++        klabs_free();
++        klabs = saved_klabs, nb_klabs = saved_nb_klabs;
++        next();
++        return 0;
++    }
++    fn->inlinable = 1;
++
++    if (np) {
++        pargs = tcc_malloc(np * sizeof *pargs);
++        for (i = 0, sa = fs->next; sa; sa = sa->next)
++            pargs[i++] = sa;
++    }
++
++    /* the caller's locals and labels are not visible in the body (in
++       a nested inlined call, those of the enclosing body: the rest is
++       hidden already).  Only the symbols that are in their identifier
++       chain: a statement expression's locals stay on local_stack after
++       it, unlinked (prev_scope()), and must not come back. */
++    memset(&ctx, 0, sizeof ctx);
++    base = cur_inl ? cur_inl->hide_top : NULL;
++    for (s = local_stack; s != base; s = s->prev)
++        nlocals++;
++    locals = tcc_malloc((nlocals + 1) * sizeof *locals);
++    nlocals = 0;
++    for (s = local_stack; s != base; s = s->prev) {
++        if ((s->v & ~SYM_STRUCT) >= SYM_FIRST_ANOM)
++            continue;
++        pp = (s->v & SYM_STRUCT)
++             ? &table_ident[(s->v & ~SYM_STRUCT) - TOK_IDENT]->sym_struct
++             : &table_ident[s->v - TOK_IDENT]->sym_identifier;
++        while (*pp && *pp != s)
++            pp = &(*pp)->prev_tok;
++        if (*pp) {
++            *pp = s->prev_tok;
++            locals[nlocals++] = s; /* the newest first */
++        }
++    }
++    ctx.hide_top = local_stack;
++    for (lab = global_label_stack; lab; lab = lab->prev)
++        nlsave++;
++    for (lab = local_label_stack; lab; lab = lab->prev)
++        nlsave++;
++    lsave = tcc_malloc((nlsave + 1) * sizeof *lsave);
++    nlsave = 0;
++    for (i = 0; i < 2; i++) {
++        for (lab = i ? local_label_stack : global_label_stack; lab; lab = lab->prev) {
++            TokenSym *tsym = table_ident[lab->v - TOK_IDENT];
++            if (tsym->sym_label) {
++                lsave[nlsave].v = lab->v;
++                lsave[nlsave++].head = tsym->sym_label;
++                tsym->sym_label = NULL;
++            }
++        }
++    }
++    saved_glabels = global_label_stack, global_label_stack = NULL;
++    saved_llabels = local_label_stack, local_label_stack = NULL;
++
++    /* no value stays in a register across the body, as across a call */
++    save_regs(0);
++
++    /* the result variable */
++    ctx.ret_type = fs->type;
++    if ((fs->type.t & VT_BTYPE) != VT_VOID) {
++        size = type_size(&fs->type, &align);
++        loc = (loc - size) & -align;
++        ctx.ret_c = loc;
++        ctx.ret_sym = sym_push2(&local_stack, SYM_FIELD, fs->type.t, loc);
++        ctx.ret_sym->type.ref = fs->type.ref;
++        ctx.ret_sym->r = VT_LOCAL | VT_LVAL;
++    }
++    saved_loc = loc, saved_ntlv = nb_temp_local_vars;
++
++    /* the parameters: locals initialised with the arguments, the last
++       of which is on vtop */
++    new_scope(&o);
++    o.bsym = o.csym = NULL;
++    ctx.top = local_scope;
++    for (i = np; i-- > 0;) {
++        CType t = pargs[i]->type;
++        int v = pargs[i]->v & ~SYM_FIELD;
++        if (!v) {
++            vpop();
++            continue;
++        }
++        size = type_size(&t, &align);
++        loc = (loc - size) & -align;
++        s = sym_push(v, &t, VT_LOCAL | VT_LVAL, loc);
++        t.t &= ~VT_CONSTANT;
++        vset(&t, VT_LOCAL | VT_LVAL, loc);
++        vtop->sym = s;
++        vswap();
++        vstore();
++        vpop();
++    }
++    /* the function, and the hidden address of a structure result */
++    for (i = nb_args - np; i >= 0; i--)
++        vpop();
++    ctx.vbase = vtop;
++
++    /* the body */
++    ctx.prev = cur_inl, ctx.fn = fn;
++    cur_inl = &ctx;
++    inl_depth++;
++    inl_static += !fs->f.func_alwinl;
++    fn->busy = 1;
++    saved_funcname = funcname, funcname = get_tok_str(fsym->v, NULL);
++    saved_func_vt = func_vt, func_vt = fs->type;
++    saved_func_var = func_var, func_var = 0;
++    saved_func_old = func_old, func_old = 0;
++    saved_root = root_scope, root_scope = &o;
++    saved_loop = loop_scope, loop_scope = NULL;
++    saved_switch = cur_switch, cur_switch = NULL;
++    saved_kbrk = cur_kbrk, saved_kcont = cur_kcont, cur_kbrk = cur_kcont = NULL;
++    saved_kinit = kinit_sym, kinit_sym = NULL;
++
++    memset(&ts, 0, sizeof ts);
++    ts.str = fn->func_str->str;
++    ts.pragma_live = 1;
++    begin_macro(&ts, 0);
++    next();
++    block(0);
++    if (tok != TOK_EOF)
++        tcc_error("internal error: the inlined body of '%s'", funcname);
++    replay_end(&ts);
++
++    /* the end of the body: the returns arrive here */
++    alive = !nocode_wanted || ctx.end_live;
++    gsym(ctx.rsym);
++    if (ctx.end_live)
++        CODE_ON();
++    kacc_join(&ctx.kret, alive);
++
++    prev_scope(&o, 0);
++    label_pop(&global_label_stack, NULL, 0);
++    global_label_stack = saved_glabels;
++    local_label_stack = saved_llabels;
++    for (i = 0; i < nlsave; i++)
++        table_ident[lsave[i].v - TOK_IDENT]->sym_label = lsave[i].head;
++    for (i = nlocals; i-- > 0;) { /* the oldest first */
++        TokenSym *tsym;
++        s = locals[i];
++        tsym = table_ident[(s->v & ~SYM_STRUCT) - TOK_IDENT];
++        pp = (s->v & SYM_STRUCT) ? &tsym->sym_struct : &tsym->sym_identifier;
++        s->prev_tok = *pp, *pp = s;
++    }
++    if (loc < inl_loc_min)
++        inl_loc_min = loc;
++    loc = saved_loc, nb_temp_local_vars = saved_ntlv;
++    funcname = saved_funcname;
++    func_vt = saved_func_vt, func_var = saved_func_var, func_old = saved_func_old;
++    root_scope = saved_root, loop_scope = saved_loop, cur_switch = saved_switch;
++    cur_kbrk = saved_kbrk, cur_kcont = saved_kcont, kinit_sym = saved_kinit;
++    klabs_free();
++    klabs = saved_klabs, nb_klabs = saved_nb_klabs;
++    cur_inl = ctx.prev;
++    inl_depth--;
++    inl_static -= !fs->f.func_alwinl;
++    fn->busy = 0;
++    tcc_free(locals), tcc_free(lsave), tcc_free(pargs);
++
++    /* the result */
++    if (ctx.ret_sym) {
++        vset(&ctx.ret_type, VT_LOCAL | VT_LVAL, ctx.ret_c);
++        vtop->sym = ctx.ret_sym;
++        if ((ctx.ret_type.t & VT_BTYPE) != VT_STRUCT) {
++            kval(vtop);
++            if (vtop->r & VT_LVAL)
++                gv(is_float(ctx.ret_type.t) ? RC_FLOAT : RC_INT);
++        }
++    } else {
++        vpushi(0);
++        vtop->type.t = VT_VOID;
++    }
++    return 1;
++}
++
+ /* The tokens of a loop statement are saved before it is parsed, for two
+    analyses.  The local variables the loop may assign (*kills; *nkills =
+    -1 for all of them when the statement cannot be delimited) are unknown
+@@ -7968,7 +8386,7 @@ static int save_stmt_tokens(TokenString *str, int depth)
+     }
+ }
+ 
+-static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
++static TokenString *loop_tokens(int kind, int *dead, struct kkill **kills, int *nkills)
+ {
+     TokenString *str = tok_str_alloc(), *save0 = cur_save_str;
+     int t, prev, level, want_dead = *dead;
+@@ -8026,15 +8444,66 @@ static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
+        or & (through opening parentheses), or anywhere in an asm statement;
+        a member name (after '.' or '->') is none, and '*p = ...' does not
+        assign p.  More is caught than assigned (a & (b) too), which only
+-       loses knowledge. */
++       loses knowledge.
++       An assignment 'v = <integer literal>' or 'v = f(...)' where f folds
++       to a constant (inline_fold_check; the kernel's next_order() without
++       THP) makes v unknown only when v is not known to hold that constant
++       at the head already (struct kkill cond): the loop then keeps it.
++       f must be the function at every mention in the loop (none as a
++       value, a declaration or through a pointer). */
+     {
+         int labels[8], gotos[8], nl = 0, ng = 0, i, k;
+         int pend = 0, pend_deref = 0, prevp = 0, in_asm = 0, depth = 0;
++        int rv = 0, rst = 0, rdepth = 0, rfv = 0;
++        long long rval = 0;
++        Sym *fsym;
+         *nkills = 0;
+         begin_macro(str, 0);
+         next();
+         for (prev = 0, *dead = want_dead; tok != TOK_EOF; prev = tok, next()) {
+             t = tok;
++            if (rst) {
++                /* the right-hand side of 'rv =' */
++                switch (rst) {
++                case 1: /* a literal or a function name */
++                    if (t == TOK_CINT || t == TOK_CUINT || t == TOK_CLLONG
++                        || t == TOK_CULLONG || t == TOK_CCHAR || t == TOK_LCHAR) {
++                        rval = tokc.i, rfv = 0, rst = 2;
++                        break;
++                    }
++                    if (t >= TOK_UIDENT && (fsym = sym_find(t))
++                        && (fsym->type.t & VT_BTYPE) == VT_FUNC
++                        && fsym->type.ref->f.func_fold == 2
++                        && fsym->type.ref->c == t) {
++                        rval = (int)fsym->type.ref->f.func_fval - 2048;
++                        rfv = t, rst = 3;
++                        break;
++                    }
++                    goto rfail;
++                case 2: /* the end of the assignment */
++                    if (t == ';' || t == ')' || t == ',')
++                        kadd2(kills, nkills, rv, 1, rfv, rval);
++                    else
++                        kadd(kills, nkills, rv);
++                    rst = 0;
++                    break;
++                case 3: /* the call's '(' */
++                    if (t != '(')
++                        goto rfail;
++                    rdepth = 1, rst = 4;
++                    break;
++                case 4: /* ... to the matching ')' */
++                    if (t == '(')
++                        rdepth++;
++                    else if (t == ')' && --rdepth == 0)
++                        rst = 2;
++                    break;
++                rfail:
++                default:
++                    kadd(kills, nkills, rv);
++                    rst = 0;
++                }
++            }
+             if (*dead) {
+                 if (t == TOK_LABEL)
+                     *dead = 0;
+@@ -8049,8 +8518,10 @@ static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
+             if (pend) {
+                 if (t == ')')
+                     continue;
+-                if (((t == '=' || TOK_ASSIGN(t)) && !pend_deref)
+-                    || t == TOK_INC || t == TOK_DEC)
++                if (t == '=' && !pend_deref && !rst)
++                    rv = pend, rst = 1; /* decided by its right-hand side */
++                else if ((TOK_ASSIGN(t) && !pend_deref)
++                    || t == '=' || t == TOK_INC || t == TOK_DEC)
+                     kadd(kills, nkills, pend);
+                 pend = 0;
+             }
+@@ -8073,6 +8544,8 @@ static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
+             if (t != '(')
+                 prevp = t;
+         }
++        if (rst)
++            kadd(kills, nkills, rv);
+         for (i = 0; *dead && i < nl; i++) {
+             for (k = 0; k < ng && gotos[k] != labels[i]; k++)
+                 ;
+@@ -8080,6 +8553,26 @@ static TokenString *loop_tokens(int kind, int *dead, int **kills, int *nkills)
+                 *dead = 0;
+         }
+         end_macro();
++        for (i = 0; i < *nkills; i++)
++            if ((*kills)[i].cond && (*kills)[i].fv)
++                break;
++        if (i < *nkills) {
++            /* a conditional entry rests on a function: every mention of
++               it in the loop must be a call of it (the scan leaves the
++               token TOK_EOF, as above) */
++            begin_macro(str, 0);
++            next();
++            for (prev = prevp = 0; tok != TOK_EOF; prev = t, next()) {
++                t = tok;
++                if (prev >= TOK_UIDENT && (t != '(' || prevp == '&' || prevp == '*'))
++                    for (i = 0; i < *nkills; i++)
++                        if ((*kills)[i].fv == prev)
++                            (*kills)[i].cond = 0;
++                if (prev != '(')
++                    prevp = prev;
++            }
++            end_macro();
++        }
+     }
+     begin_macro(str, 0);
+     next();
+@@ -8396,11 +8889,13 @@ static void end_switch(void)
+ /* ------------------------------------------------------------------------- */
+ /* __attribute__((cleanup(fn))) */
+ 
+-/* protect symbol lvalues from further modification  */
++/* protect symbol lvalues from further modification (in an inlined body,
++   those of the body: the enclosing expression's below cur_inl->vbase, an
++   assignment's destination for one, must stay what they are) */
+ static void save_lvalues(void)
+ {
+-    SValue *sv = vtop;
+-    while (sv >= vstack) {
++    SValue *sv = vtop, *stop = cur_inl ? cur_inl->vbase : vstack - 1;
++    while (sv > stop) {
+         if (sv->sym && (sv->r & VT_LVAL)) {
+             int align, size = type_size(&sv->type, &align);
+             int r2, l = get_temp_local_var(size, align, &r2);
+@@ -8662,7 +9157,8 @@ again:
+     } else if (t == TOK_WHILE) {
+         TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
+-        int *kills, nkills, kc;
++        struct kkill *kills;
++        int nkills, kc;
+         KSnap *kx = NULL;
+         struct kacc kb = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope_s(&o);
+@@ -8740,12 +9236,31 @@ again:
+             b = 0;
+         }
+         leave_scope(root_scope);
+-        if (b)
+-            gfunc_return(&func_vt);
+-        skip(';');
+-        /* jump unless last stmt in top-level block */
+-        if (tok != '}' || local_scope != 1)
+-            rsym = gjmp(rsym);
++        if (cur_inl) {
++            /* an inlined body: the value goes to the result variable,
++               the control to the end of the body (inline_call()) */
++            if (b) {
++                vset(&cur_inl->ret_type, VT_LOCAL | VT_LVAL, cur_inl->ret_c);
++                vtop->sym = cur_inl->ret_sym;
++                vswap();
++                vstore();
++                vpop();
++            }
++            skip(';');
++            if (!nocode_wanted && tok == '}' && local_scope == cur_inl->top + 1) {
++                cur_inl->end_live = 1; /* falls through to the end */
++            } else {
++                kacc_add(&cur_inl->kret);
++                cur_inl->rsym = gjmp(cur_inl->rsym);
++            }
++        } else {
++            if (b)
++                gfunc_return(&func_vt);
++            skip(';');
++            /* jump unless last stmt in top-level block */
++            if (tok != '}' || local_scope != 1)
++                rsym = gjmp(rsym);
++        }
+         if (debug_modes)
+ 	    tcc_tcov_block_end (tcc_state, -1);
+         CODE_OFF();
+@@ -8778,7 +9293,8 @@ again:
+     } else if (t == TOK_FOR) {
+         TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
+-        int *kills, nkills, kc = 1;
++        struct kkill *kills;
++        int nkills, kc = 1;
+         KSnap *kh, *kx;
+         struct kacc kb = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope(&o);
+@@ -8835,7 +9351,8 @@ again:
+     } else if (t == TOK_DO) {
+         TokenString *str;
+         int dead = nocode_wanted == CODE_OFF_BIT;
+-        int *kills, nkills, kc;
++        struct kkill *kills;
++        int nkills, kc;
+         struct kacc kb = { 0 }, kn = { 0 }, *kb0 = cur_kbrk, *kc0 = cur_kcont;
+         new_scope_s(&o);
+         a = b = 0;
+@@ -10249,6 +10766,7 @@ static void gen_function(Sym *sym)
+     nb_temp_local_vars = 0;
+ 
+     gfunc_prolog(sym);
++    inl_loc_min = loc;
+     tcc_debug_prolog_epilog(tcc_state, 0);
+     func_vla_arg(sym);
+     block(0);
+@@ -10256,6 +10774,8 @@ static void gen_function(Sym *sym)
+     nocode_wanted = 0;
+     tcc_debug_end_scope(NULL, !func_var);
+     tcc_debug_prolog_epilog(tcc_state, 1);
++    if (loc > inl_loc_min)
++        loc = inl_loc_min; /* the frame holds the inlined bodies too */
+     gfunc_epilog();
+ 
+     /* end of function */
+@@ -10305,7 +10825,8 @@ static void gen_inline_functions(TCCState *s)
+                 tccpp_putfile(fn->filename);
+                 kscan_labels(fn->func_str);
+                 fn->func_str->pragma_live = 1;
+-                begin_macro(fn->func_str, 1);
++                fn->busy = 1; /* no inlining into itself */
++                begin_macro(fn->func_str, 0); /* kept: inline_call() */
+                 next();
+                 cur_text_section = text_section;
+                 if (fn->sec) {
+@@ -10314,6 +10835,7 @@ static void gen_inline_functions(TCCState *s)
+                 }
+                 gen_function(sym);
+                 end_macro();
++                fn->busy = 0;
+ 
+                 inline_generated = 1;
+             }
+@@ -10325,11 +10847,11 @@ static void gen_inline_functions(TCCState *s)
+ static void free_inline_functions(TCCState *s)
+ {
+     int i;
+-    /* free tokens of unused inline functions */
++    /* free the saved bodies (kept after their compilation for
++       inline_call()) */
+     for (i = 0; i < s->nb_inline_fns; ++i) {
+         struct InlineFunc *fn = s->inline_fns[i];
+-        if (fn->sym)
+-            tok_str_free(fn->func_str);
++        tok_str_free(fn->func_str);
+     }
+     dynarray_reset(&s->inline_fns, &s->nb_inline_fns);
+ }
+@@ -10527,17 +11049,24 @@ static int decl(int l)
+                         && !sym->type.ref->f.func_dtor
+                         && !ad.alias_target)) {
+                     struct InlineFunc *fn;
+-                    fn = tcc_malloc(sizeof *fn + strlen(file->filename));
++                    fn = tcc_mallocz(sizeof *fn + strlen(file->filename));
+                     strcpy(fn->filename, file->filename);
+                     fn->sym = sym;
++                    fn->fsym = sym;
++                    fn->ftype = sym->type.ref;
+                     fn->sec = ad.section;
+                     fn->is_static = !(sym->type.t & VT_INLINE);
+                     dynarray_add(&tcc_state->inline_fns,
+ 				 &tcc_state->nb_inline_fns, fn);
+                     skip_or_save_block(&fn->func_str);
++                    fn->len = fn->func_str->len;
++                    sym->inl = fn;
+                     if (sym->type.t & VT_STATIC)
+                         inline_fold_check(sym, fn->func_str);
+                 } else {
++                    TokenString *str;
++                    struct InlineFunc *fn = NULL;
++                    int eof;
+                     /* compute text section */
+                     cur_text_section = text_section;
+                     if (ad.section) {
+@@ -10548,19 +11077,28 @@ static int decl(int l)
+                     }
+                     /* the body is saved for kscan_labels() and compiled
+                        from the saved tokens, which end where the file
+-                       goes on (a 0 instead of TOK_EOF) */
+-                    {
+-                        TokenString *str;
+-                        int eof;
+-                        skip_or_save_block(&str);
+-                        eof = str->len - 1; /* end_macro() zeroes len */
+-                        unget_tok(0);
+-                        kscan_labels(str);
+-                        str->str[eof] = 0;
+-                        str->pragma_live = 1;
+-                        begin_macro(str, 1);
+-                        next();
++                       goes on (a 0 instead of TOK_EOF); an always_inline
++                       function's are kept for inline_call() */
++                    skip_or_save_block(&str);
++                    eof = str->len - 1; /* end_macro() zeroes len */
++                    if (sym->type.ref->f.func_alwinl) {
++                        fn = tcc_mallocz(sizeof *fn + strlen(file->filename));
++                        strcpy(fn->filename, file->filename);
++                        fn->fsym = sym;
++                        fn->ftype = sym->type.ref;
++                        fn->func_str = str;
++                        fn->len = str->len;
++                        fn->busy = 1;
++                        dynarray_add(&tcc_state->inline_fns,
++                                     &tcc_state->nb_inline_fns, fn);
++                        sym->inl = fn;
+                     }
++                    unget_tok(0);
++                    kscan_labels(str);
++                    str->str[eof] = 0;
++                    str->pragma_live = 1;
++                    begin_macro(str, fn ? 0 : 1);
++                    next();
+                     /* an empty void function is not called (as with
+                        inline_fold_check; kernel apply_retpolines() stubs) */
+                     if ((sym->type.ref->type.t & VT_BTYPE) == VT_VOID
+@@ -10572,6 +11110,10 @@ static int decl(int l)
+                         unget_tok('{');
+                     }
+                     gen_function(sym);
++                    if (fn) {
++                        str->str[eof] = TOK_EOF;
++                        fn->busy = 0;
++                    }
+                 }
+                 break;
+             } else {
+diff --git a/tests/tests2/155_x86_inline_asm.c b/tests/tests2/155_x86_inline_asm.c
+index c46927d..7c6b6bf 100644
+--- a/tests/tests2/155_x86_inline_asm.c
++++ b/tests/tests2/155_x86_inline_asm.c
+@@ -4,10 +4,17 @@
+ #include <stdio.h>
+ 
+ /* fix 10: flag output constraints */
++#if __SIZEOF_LONG__ == 8
++#define BT "btq"
++#else
++#define BT "btl"
++#endif
+ static int test_bit(unsigned long nr, const unsigned long *addr)
+ {
+     int oldbit;
+-    asm volatile("bt %2, %1" : "=@ccc"(oldbit) : "m"(*addr), "Ir"(nr));
++    /* the kernel's __ASM_SIZE(bt): a plain "bt" has no size once the
++       call is inlined with a constant nr ("Ir" is then an immediate) */
++    asm volatile(BT " %2, %1" : "=@ccc"(oldbit) : "m"(*addr), "Ir"(nr));
+     return oldbit;
+ }
+ 

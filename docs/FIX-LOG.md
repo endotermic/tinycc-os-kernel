@@ -60,6 +60,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 117 | tinycc 0113 |
 | | | | | 118 | tinycc 0114 |
 | | | | | 119 | tinycc 0115 |
+| | | | | 120 | tinycc 0117 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -106,13 +107,14 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/152_gnu_extensions.c` | all | 5, 6, 7, 8, 9, 14, 17, 21, 22, 25, 29, 32, 39, 64, 82, 97, 101, 102 |
 | `tests/tests2/153_dead_code.c` | all | 36, 37, 38, 42, 43, 44, 45, 46, 47, 54 |
 | `tests/tests2/154_cleanup_goto.c` | all | 20, 85, 86 |
-| `tests/tests2/155_x86_inline_asm.c` | i386, x86_64 | 10, 11, 12, 13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 68, 76, 80, 90, 92, 93, 100, 103, 104 |
+| `tests/tests2/155_x86_inline_asm.c` | i386, x86_64 | 10, 11, 12, 13, 15, 16, 18, 23, 26, 27, 33, 35, 49, 50, 52, 57, 68, 76, 80, 90, 92, 93, 100, 103, 104 (120: `test_bit()` with an explicit size) |
 | `tests/tests2/156_codegen_arith.c` | all | 5, 29, 40, 41, 60, 83, 84, 87, 89, 97 |
 | `tests/tests2/157_i386_regparm_pic.c` | i386, without and with `-fPIC` | 65, 74, 78, 83, 87, 88, 89, 105, 114, 116, 117, 118 |
 | `tests/tests2/158_link_group.c` | all | 53 |
 | `tests/tests2/161_gnu_extensions2.c` (+ `.h`) | all | 106, 107, 108, 109, 110, 112, 115 |
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
 | `tests/tests2/163_const_prop.c` | all | 119 |
+| `tests/tests2/164_inline_call.c` | all | 120 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -1787,6 +1789,98 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     compiler on the reduced series (2093 and 2041 tcc invocations, no gcc) and booted:
     `scripts/devices-test.sh` passes its 13 checks on x86_64 and on i386 (the initramfs is the
     one built before, by the previous tcc).
+
+120. 2026-11-04, COMMITTED (patches/tinycc/compatibility/0117, test 0118), `tccgen.c` (inline_call,
+    block TOK_RETURN, decl, gen_inline_functions, free_inline_functions, gen_function,
+    save_lvalues, kval/krecord/kdurable, KSnap/kacc, kcond, gen_opic, kscan_labels, loop_tokens,
+    kkill/kadd2, unary `__builtin_constant_p`), `tccasm.c` (parse_asm_operands, asm_instr),
+    `i386-asm.c` (asm_opcode, asm_compute_constraints), `tcc.h` (Sym.ksym/inl, InlineFunc).
+    Problem: four kernel patches existed because tcc never inlined: an `"i"` asm operand taken
+    from a parameter of an `__always_inline` function is never an immediate in a called function
+    (0003: `rip_rel_ptr()`'s `asm("leaq %c1(%%rip), %0" : "=r"(p) : "i"(p))`; 0004:
+    `__static_cpu_has()`'s asm goto with `"i"(bit)`, `"i"(1 << (bit & 7))` and
+    `"i"(&caps[bit >> 3])`), and a canary called under a condition on a parameter stays
+    referenced when the caller's constant does not reach the body (0017: `field_multiplier()`'s
+    `__bad_mask()` behind the mask check, in every FIELD_PREP() user; 0012: `vma_thp_gfp_mask()`
+    behind `if (order)` in `__swap_cache_alloc()`, whose caller `swap_cache_alloc_folio()` sets
+    `order = highest_order(orders)`, a stub returning 0 without THP, and reassigns it in its loop
+    with `next_order()`, another; also `__scoped_seqlock_invalid_target()` behind the switch on
+    the target of `__scoped_seqlock_next()`, half of 0005).
+    Fix: the call of an `__always_inline` function, or of a merely static one given a constant
+    argument that its body tests, is compiled in place of a call (inline_call(), from the token
+    string of the body that fix 119 keeps for every static or inline function; an
+    `__always_inline` function that is neither is kept too, decl()): the arguments, evaluated
+    and converted as for the call, initialise locals named as the parameters in a scope of
+    their own, so that a constant argument is a known local (fix 119) and folds in the body;
+    the body is parsed from its tokens (kscan_labels() first, its own label stack, the pragma
+    replay); a `return` stores to a result variable (a kprop local too: a body whose returns
+    all give one constant is that constant at the call) and jumps to the end of the body; the
+    caller's locals and labels are unlinked from the identifier table around the body and
+    relinked after it (only those that are linked: the locals of a statement expression stay
+    on local_stack unlinked); funcname, the return type, the switch/loop/kprop state of the
+    caller are saved around it; the body's stack space is given back (loc; the frame takes the
+    low-water mark, inl_loc_min); the end of a body that falls off its last `return` needs no
+    jump. Not inlined: in dead code, under -g or -b, variadic or old-style functions, bodies with
+    a static local, recursion (busy), a nesting deeper than 24, a merely static function from
+    within another one's inlined body, or longer than 1024 tokens, or whose constant parameter
+    appears in no condition (kscan_cond: the parentheses of if/while/switch/for, or next to
+    `!`, `?`, `&&`, `||`, `==`, `!=`) -- the first version inlined every static function given a
+    constant and grew mm/page_alloc.o's text 2.6 times (`___free_pages()` 50 -> 13 478 bytes).
+    What the kernel's bodies then needed: (1) a known local may hold the address of a symbol of
+    file scope (Sym.ksym; not a string literal's or a static local's, whose Sym dies with its
+    block), so that `rip_rel_ptr(&x)` has its `"i"` operand and `if (!fp)` on a known function
+    pointer folds (gen_opic: a non-weak symbol's address compared with 0, kcond); (2) an asm's
+    outputs are invalidated after its inputs were read (`"=r"(p) : "i"(p)`); (3) asm goto
+    targets are gotos for kprop (kscan_labels, klabel_goto from asm_instr); (4) a loop that
+    assigns a variable only the constant it holds at the head, a literal or a call of a function
+    that folds to it (`order = next_order(&orders, order)` without THP), keeps it known (struct
+    kkill cond; the function must be a call at every mention in the loop); (5) `"I"`, `"N"`, `"M"`
+    take only 0-31, 0-255, 0-3 and `"e"` a 32-bit signed value (`"Ir"(65)` of a `bt`, `"er"(1
+    << 40)` of `arch_atomic64_or()` are registers; tcc took the immediate), and an instruction
+    without a suffix, an immediate and a memory operand (`bt $0, (%rax)`) takes the mode's word
+    with GNU as's warning instead of "cannot infer opcode suffix", and `%a` of a symbolic
+    operand ("the address") is printed rip-relative on x86_64 as gcc prints it:
+    `__static_cpu_has()`'s fallback `testb %[bitnum], %a[cap_byte]` got an absolute
+    `boot_cpu_data+0x72`, which runs in arch/x86/boot/startup (position-independent, before
+    the kernel is mapped where it was linked) and killed the first x86_64 kernel before any
+    output, earlyprintk included; (6) `__builtin_constant_p()`
+    of a non-constant makes the stub-fold probe impure (`return __builtin_constant_p(x);` folded
+    to 0 for every call, before the inliner could make it 1); (7) a cleanup call's
+    save_lvalues() stops at the inlined call's vstack base (it turned the enclosing assignment's
+    destination into a temporary: `r = f(7)` left r); (8) `i386-asm.c` asm_opcode: a
+    rip-relative operand followed by an immediate (`testb $1, sym(%rip)`) adjusted the
+    displacement's bytes in place by the immediate's size, which a RELA relocation's consumer
+    (tld, GNU ld) ignores: the addend stayed sym-4 instead of sym-5 and `__static_cpu_has()`'s
+    fallback tested the byte after the one meant (`pgtable_l5_enabled()` true on a 4-level
+    machine: the second x86_64 kernel died in a page-fault recursion out of
+    spurious_kernel_fault()); the adjustment goes into the addend now, as GNU as has it, and
+    the bytes stay 0, which tcc's own linker, adding the addend to them, needs.
+    Test: 164 (the kernel's four patterns and the seqlock switch as dead references that must
+    go, the loop rule, a known function pointer; and the semantics: recursion, labels and gotos,
+    returns in loops, nested inlining, struct returns, a parameter assigned or its address
+    taken, arguments evaluated once, dead code, `__func__`, cleanup, a caller local or label of
+    the body's name, a statement expression's local before and after the call, static locals
+    and variadics as calls, asm goto, `__builtin_constant_p`, calls in loop headers, conditions,
+    switch, sizeof, an immediate after a rip-relative operand), against gcc -O2; 155's
+    `test_bit()` gets the kernel's explicit size, since its inlined `"Ir"(0)` is an immediate
+    now.
+    Verification: `make test` ALL TESTS PASSED on the host (the i386 cross compiler builds the
+    i386 kernel objects); 390 x86_64 and 389 i386 kernel objects (kernel, mm, lib, fs/proc,
+    arch/x86/kernel and mm, net/core and wireless, ath9k, HD-audio) recompiled from their .cmd
+    lines with the vanilla asm.h, cpufeature.h, bitfield.h and gfp.h ahead: all compile, none
+    references __bad_mask, vma_thp_gfp_mask, __scoped_seqlock_invalid_target, __static_cpu_has
+    or rip_rel_ptr, usercopy_64.o has no call of stac()/clac() left; their text grows by 15.7 %
+    (x86_64) and 14.3 % (i386) in all, the always_inline bodies' share of it (lib/sort.o 2.8x,
+    mm/folio.o 2.4x at the top), objects of small inline helpers shrink (alternative.o 45 799 ->
+    44 568 bytes); patches 0003, 0004, 0012 and 0017 removed from patches/linux/series (11
+    kernel patches left) and both kernels rebuilt from the vanilla headers with the new compiler
+    (2091 and 2066 tcc invocations, no gcc; bzImage 7 333 376 bytes on x86_64, 6 778 880 on
+    i386) and booted: `scripts/devices-test.sh` passes its 13 checks on x86_64 and on i386 (the
+    initramfs is the one built before, by the previous tcc). The first two x86_64 kernels did
+    not boot, for (5)'s `%a` and (8)'s addend: both bugs lay in code the kernel never asked of
+    tcc before the inliner compiled `__static_cpu_has()`. What still does not fold:
+    `__scoped_seqlock_bug()` (0005 stays for it: the state is a struct member across loop
+    iterations), 0006 (a constant through a function parameter of a non-static function).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

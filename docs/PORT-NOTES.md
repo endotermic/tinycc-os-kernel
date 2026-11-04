@@ -85,29 +85,33 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
 ## Kernel-side changes (`patches/linux/`)
 
 * workarounds, guarded by `__TINYC__` or `__SIZEOF_INT128__`: the 128-bit cmpxchg block and
-  `freelist_full_t` (tcc has no `__int128`); `rip_rel_ptr()` as a macro and
-  `_static_cpu_has()` as the dynamic test (tcc does not inline, so `"i"` operands from
-  function parameters never become immediates); the seqlock canaries as stubs (need the
-  optimizer to prove states impossible).
+  `freelist_full_t` (tcc has no `__int128`); the seqlock canaries as stubs (0005: one of the
+  two, `__scoped_seqlock_bug()`, needs the optimizer to prove a state kept in a struct across
+  loop iterations impossible; the other, `__scoped_seqlock_invalid_target()`, folds since fix
+  120).  `rip_rel_ptr()` as a macro and `_static_cpu_has()` as the dynamic test (0003, 0004:
+  `"i"` operands from function parameters) and the `__bad_mask()` stub (0017: a canary under a
+  condition on a parameter) went away on 2026-11-04 with tcc fix 120, the inliner.
 * upstreamable, semantics-preserving: `ia32_fxstate_possible()` in fpu/signal.c, where gcc
   propagates a constant through a function parameter (the callee has one caller and is
-  inlined) and tcc does not; the `vma_thp_gfp_mask()` stub (0012) stays for the same reason
-  (mm/swap_state.c passes the order as a parameter).  Four more of this kind (two
-  `IS_ENABLED()` conditions in dma/direct.c, the swiotlb wrapper and `acpi_has_method()`
-  stubs: a constant through a local variable or a stub's return value; K15 and K19 below)
-  went away on 2026-11-03 with tcc fix 119, constant propagation through locals: 15 kernel
-  patches remain.
+  inlined) and tcc does not.  Four of this kind (two `IS_ENABLED()` conditions in
+  dma/direct.c, the swiotlb wrapper and `acpi_has_method()` stubs: a constant through a local
+  variable or a stub's return value; K15 and K19 below) went away on 2026-11-03 with tcc fix
+  119, constant propagation through locals, and the `vma_thp_gfp_mask()` stub (0012:
+  mm/swap_state.c passes the order, a local that a stub set and a loop reassigns with another
+  stub, to a static function that tests it) on 2026-11-04 with fix 120: 11 kernel patches
+  remain.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; tcc has no VEX/EVEX); `X86_BOOT_VIDEO_MODES` makes the
   BIOS video mode setting of the real-mode setup optional (0011; tcc's 16-bit code is twice
   gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without).
 
-Pattern for new finds: anything that needs an `"i"` constraint from a function parameter
-(`__always_inline` helpers) needs a macro form under `__TINYC__`; a constant that flows
-through a local variable or a stub's return value folds since fix 119; one that flows through
-a function parameter or a struct member still needs the condition rewritten so the constant
-is tested directly, which is also better code for gcc.
+Pattern for new finds: a constant that flows through a local variable or a stub's return
+value folds since fix 119, through the parameter of an `__always_inline` function (an `"i"`
+operand too), or of a static function whose body tests it, since fix 120; one that flows
+through the parameter of a function with external linkage, or through a struct member, still
+needs the condition rewritten so the constant is tested directly, which is also better code
+for gcc.
 
 ## What the tcc patches do, in one paragraph each kind
 
@@ -176,18 +180,18 @@ is tested directly, which is also better code for gcc.
    open there. The RCU stall report that the serial transfer provoked was QEMU's UART
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
-9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119): of the 15 kernel
-   patches left, tcc could absorb 0015 and 0017 with the stub fold extended to `if/else
-   return` bodies and to constant arguments, 0003, 0004, 0012 and half of 0005 with an
-   inliner for `__always_inline` and single-caller static functions called with constants
-   (replay of the saved body with the parameters as known locals), 0013 and 0019 with the strength reduction of `long long`
+9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
+   and 120): of the 11 kernel patches left, tcc could absorb 0015 with the stub fold extended
+   to `if/else return` bodies, 0013 and 0019 with the strength reduction of `long long`
    division by a constant on i386, 0010 and 0016 with VEX/EVEX encodings in the assembler,
-   0001 and 0002 with `__int128` on x86_64; 0005's `__scoped_seqlock_bug()`, 0006 (a constant
-   through a function parameter of a function with one caller), 0009 (objtool needs libelf) and 0011 (the 16-bit code size)
-   stay kernel-side.  The real objtool, built with gcc, accepted all 1566 tcc-built x86_64
-   objects of drivers.config (212 warnings in 110 objects: an epilogue after an infinite
-   loop, missing `__noreturn`, `stac()`/`clac()` not inlined, two alternatives' stack layouts
-   in entry.S), and `--orc --stackval` gave no stack warnings on a sample.
+   0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
+   through a function parameter of a function with one caller), 0009 (objtool needs libelf)
+   and 0011 (the 16-bit code size) stay kernel-side.  Fix 120, the inliner, took 0003, 0004,
+   0012 and 0017 on 2026-11-04 (fix 119 had taken 0007, 0008, 0014, 0018).  The real objtool,
+   built with gcc, accepted all 1566 tcc-built x86_64 objects of drivers.config before fix 120
+   (212 warnings in 110 objects: an epilogue after an infinite loop, missing `__noreturn`,
+   `stac()`/`clac()` not inlined -- they are now --, two alternatives' stack layouts in
+   entry.S), and `--orc --stackval` gave no stack warnings on a sample.
 
 ## The device drivers (`kernels/linux/drivers.config`, 2026-10-26)
 
@@ -327,7 +331,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The 15 kernel patches are
+  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The kernel patches (11 since fix 120) are
   applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same
@@ -370,7 +374,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
 * Kernel configuration for it (`minimal.config`): `CONFIG_SMP=y`/`NR_CPUS=8` (make -j; the
   trampoline and the SMP paths compiled without new fixes, but head_64.S and the per-cpu hot
   section needed tcc fixes 71 and 72), `SHMEM`/`TMPFS` (the build directory with a size
-  limit; needed kernel patch 0012, the `vma_thp_gfp_mask()` stub), two 8250 UARTs,
+  limit; needed kernel patch 0012, the `vma_thp_gfp_mask()` stub, until tcc fix 120), two 8250 UARTs,
   `KERNEL_GZIP` instead of tinyconfig's xz (busybox's `xz` only decompresses; its `gzip`
   takes the kernel's `-n -f -9`). `run.sh`
   passes `-smp N,sockets=N,cores=1,threads=1`: without ACPI the CPUs come from SeaBIOS's MP
@@ -831,6 +835,49 @@ build: `OBJTOOL_WERROR` has no default in this tree. `--orc --stackval` (the x86
 warnings on five sample objects (sched/core, page_alloc, namei, traps, string). So a vanilla
 build on a host with libelf would run the real objtool and pass, and the warnings are the
 next things to fix in tcc after the features above.
+
+Fix 120 (2026-11-04), the inliner, took the second feature: 0003, 0004, 0012 and 0017 are
+gone (11 kernel patches remain), and `__scoped_seqlock_invalid_target()` folds too, so of
+0005 only the `__scoped_seqlock_bug()` half is still needed. What it does and does not: a
+call of an `__always_inline` function is always compiled in place (gcc's semantics; this is
+also what removes objtool's UACCESS warnings about `stac()`/`clac()`), a call of a merely
+static function only when a constant argument reaches a parameter that the body tests in a
+condition, never nested in another such body, and never for bodies over 1024 tokens -- the
+first version inlined every static function given a constant and grew mm/page_alloc.o's
+text 2.6 times. The price that remains is the text of the always_inline bodies, which tcc
+cannot shrink: the text of 780 sampled objects grows by 15 % (lib/sort.o 2.8x, mm/folio.o
+2.4x at the top; objects of small helpers shrink). The inlined parameters are kprop locals, so everything fix 119 folds
+through a local now folds through a parameter; what still does not: a constant through the
+parameter of a function with external linkage (0006's `ia32_fxstate_possible()`: its caller
+is not inlined), and the seqlock state in a struct member (0005). mm/swap_state.c needed one
+more rule of fix 119's kind on the way: `order`, set by a stub (`highest_order()` is 0
+without THP) and reassigned in the retry loop by another (`next_order()`), stays known in
+the loop when every assignment in it is the constant it holds at the head (a literal or a
+call of a function that folds to it).
+
+What fix 120 cost to get right (tcc's suite again, plus a sweep of 780 kernel objects of
+both architectures compiled from the vanilla headers): the frame size comes from the final
+`loc`, so giving an inlined body's stack space back needs a low-water mark before the
+epilogue (main got a 0-byte frame); a nested inlined call must hide only the locals above
+the enclosing call's hide point, or the identifier chains get cycles; the locals of a
+statement expression stay on local_stack unlinked after it and must not be relinked; a
+cleanup call's `save_lvalues()` walked the whole vstack and replaced the enclosing
+assignment's destination by a temporary; an "Ir" or "er" operand that becomes a constant
+exposes the constraint ranges tcc never checked (`bt $65`, `orq $1<<40`) and the unsizeable
+`bt $0, (mem)`; a body compiled for the first time (`__static_cpu_has()`) exposes an operand
+modifier never exercised: tcc printed `%a` of `"i"(&boot_cpu_data...)` absolute where gcc
+prints `sym(%rip)`, and the startup code's testb on it faulted before any console existed
+(the first kernel built showed nothing after the BIOS, with earlyprintk too: look at the
+`.pi.o` objects of arch/x86/boot/startup for `R_X86_64_32S` when that happens); the same
+body's `testb $1, boot_cpu_data+110(%rip)` exposed an assembler bug older than everything
+here: the immediate after a rip-relative operand was accounted for in the displacement's
+bytes, not in the RELA addend, so tld linked `boot_cpu_data+115` and `pgtable_l5_enabled()`
+was true on a four-level machine (a page-fault recursion out of `spurious_kernel_fault()`
+into the stack guard page; `objdump -d` of the linked aux block against the feature's byte
+offset showed it); `__builtin_constant_p(param)` in a one-line body was folded to 0 for every
+call by the stub probe before the inliner could make it 1; and gcc evaluates the arguments
+of a call right to left, so a test with two side effects in one `printf()` differs from tcc
+for no compiler reason.
 
 What fix 119 itself cost to get right, for the next feature of this kind (all found by tcc's
 own suite, which compiles tcc with itself): the switch value is loaded after the body and
