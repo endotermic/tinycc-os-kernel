@@ -1,0 +1,513 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 16:44:49 +0200
+Subject: [PATCH] tests: 167_int128, __int128 on x86-64 (expected output from
+ gcc)
+
+Layout and alignment, _Generic, constants (also the ones the 64-bit
+representation cannot fold), conversions from and to every integer
+width, the operators with constant and variable shift counts, signed and
+unsigned division through the helpers, comparisons, compound
+assignments, structs, unions, arrays, pointers, globals with
+initializers, calls with 0 to 7 preceding integer arguments (register
+and stack), mixed with floating point, recursion, the kernel's
+mul_u64_u64_shr / mul_u64_u32_add_u64_shr / entity_before /
+cmpxchg128-union / gf128hash idioms, switch, and a loop of 2000
+pseudo-random 64x64 products and shifts against a 32-bit-limb
+reference.  Skipped where __int128 does not exist (not x86-64, or
+Windows).
+---
+ tests/tests2/167_int128.c      | 313 +++++++++++++++++++++++++++++++++
+ tests/tests2/167_int128.expect | 148 ++++++++++++++++
+ tests/tests2/Makefile          |   3 +
+ 3 files changed, 464 insertions(+)
+ create mode 100644 tests/tests2/167_int128.c
+ create mode 100644 tests/tests2/167_int128.expect
+
+diff --git a/tests/tests2/167_int128.c b/tests/tests2/167_int128.c
+new file mode 100644
+index 0000000..bf25f38
+--- /dev/null
++++ b/tests/tests2/167_int128.c
+@@ -0,0 +1,313 @@
++/* __int128 and unsigned __int128 (x86-64): the type, its arithmetic,
++   conversions, the two-register ABI and the Linux kernel's idioms.
++   The expected output is gcc's. */
++#include <stdio.h>
++#include <stddef.h>
++
++#ifndef __SIZEOF_INT128__
++int main(void)
++{
++    printf("no __int128 on this target\n");
++    return 0;
++}
++#else
++
++typedef unsigned long long u64;
++typedef long long s64;
++typedef unsigned int u32;
++typedef __int128 s128 __attribute__((aligned(16)));
++typedef unsigned __int128 u128 __attribute__((aligned(16)));
++
++static void p(const char *name, u128 v)
++{
++    printf("%s = %016llx %016llx\n", name, (u64)(v >> 64), (u64)v);
++}
++
++/* -------- layout -------- */
++struct S { char c; u128 x; char d; };
++union U { u128 full; struct { u64 low, high; }; };
++struct T { u128 a[2]; int n; };
++
++/* -------- globals, static initializers -------- */
++u128 gu = 12345;
++s128 gs = -12345;
++u128 garr[3] = { 1, 2, 3 };
++static const s128 gneg = -1;
++__int128_t gt = 7;
++__uint128_t gut = 8;
++
++/* -------- the ABI: register and stack cases -------- */
++u128 r0(u128 x) { return x + 1; }
++u128 r1(int a, u128 x) { return x + a; }
++u128 r2(int a, int b, u128 x) { return x + a + b; }
++u128 r3(int a, int b, int c, u128 x) { return x + a + b + c; }
++u128 r4(int a, int b, int c, int d, u128 x) { return x + a + b + c + d; }
++u128 r5(int a, int b, int c, int d, int e, u128 x) { return x + a + b + c + d + e; }
++u128 r6(int a, int b, int c, int d, int e, int f, u128 x) { return x + a + b + c + d + e + f; }
++u128 r7(int a, int b, int c, int d, int e, int f, int g, u128 x, int h, u128 y)
++{
++    return x + y + a + b + c + d + e + f + g + h;
++}
++s128 rs(s128 x, s128 y, s128 z) { return x * y - z; }
++u128 rmix(double d, u128 x, float f, u128 y, long double ld, u128 z)
++{
++    return x + y + z + (int)d + (int)f + (int)ld;
++}
++u128 rfact(unsigned n) { return n < 2 ? 1 : n * rfact(n - 1); }
++int takes_ptr(u128 *q) { *q <<= 1; return (int)*q; }
++
++/* -------- the kernel's idioms -------- */
++static inline u64 mul_u64_u64_shr(u64 a, u64 mul, unsigned int shift)
++{
++    return (u64)(((u128)a * mul) >> shift);
++}
++static inline u64 mul_u64_u32_shr(u64 a, u32 mul, unsigned int shift)
++{
++    return (u64)(((u128)a * mul) >> shift);
++}
++static inline u64 mul_u64_u32_add_u64_shr(u64 a, u32 mul, u64 b, unsigned int shift)
++{
++    return (u64)((((u128)a * mul) + b) >> shift);
++}
++static int entity_before(s64 avg, u64 key, unsigned long load)
++{
++    return avg >= (s128)key * load;
++}
++static int try_cmpxchg128(u128 *ptr, u128 *oldp, u128 new)
++{
++    union U o = { .full = *oldp }, n = { .full = new }, cur = { .full = *ptr };
++    if (cur.low == o.low && cur.high == o.high) {
++        *ptr = n.full;
++        return 1;
++    }
++    *oldp = cur.full;
++    return 0;
++}
++static u128 clmul_like(u64 a0, u64 b0, u64 a1, u64 b3)
++{
++    return (a0 * (u128)b0) ^ (a1 * (u128)b3);
++}
++
++/* 64x64 -> high 64 with 32-bit limbs, the reference for the loop */
++static u64 mulhi64_ref(u64 a, u64 b)
++{
++    u64 a0 = (u32)a, a1 = a >> 32, b0 = (u32)b, b1 = b >> 32;
++    u64 p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
++    u64 mid = (p00 >> 32) + (u32)p01 + (u32)p10;
++    return p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
++}
++
++static u128 sw(u128 v)
++{
++    switch (v) {
++    case 1: return 10;
++    case 2: return 20;
++    case 0x7fffffffffffffffll: return 30;
++    default: return 99;
++    }
++}
++
++int main(void)
++{
++    volatile u64 a = 0xfedcba9876543210ull, b = 0x123456789abcdef1ull, one = 1;
++    volatile s64 sa = -5, sb = 7, smin = (s64)0x8000000000000000ull;
++    volatile int ia = -7, sh = 7, sh70 = 70, sh0 = 0, sh127 = 127;
++    volatile u32 ua = 0x80000001u;
++    volatile short ss = -2;
++    volatile unsigned char uc = 200;
++    volatile _Bool bt = 1;
++    u128 x, y, z;
++    s128 s;
++    struct S st;
++    union U u;
++    struct T t;
++    int i;
++
++    printf("sizeof %d %d %d %d %d, alignof %d %d, offsets %d %d %d %d\n",
++           (int)sizeof(u128), (int)sizeof(s128), (int)sizeof(struct S), (int)sizeof(union U),
++           (int)sizeof(struct T), (int)_Alignof(u128), (int)_Alignof(struct S),
++           (int)offsetof(struct S, x), (int)offsetof(struct S, d), (int)offsetof(struct T, a[1]),
++           (int)offsetof(struct T, n));
++    printf("generic %d %d %d %d\n",
++           _Generic((u128)1, u128: 1, s128: 2, u64: 3, default: 0),
++           _Generic((s128)1, u128: 1, s128: 2, u64: 3, default: 0),
++           _Generic(gt, u128: 1, s128: 2, default: 0),
++           _Generic(gut, u128: 1, s128: 2, default: 0));
++
++    /* constants */
++    p("c1", (u128)0xffffffffffffffffull);
++    p("c2", (u128)-1);
++    p("c3", (s128)-1);
++    p("c4", (u128)1 << 127);
++    p("c5", ~(u128)0 >> 1);
++    p("c6", (u128)5 - 7);
++    p("c7", (u128)0x100000000ull * 0x100000000ull);
++    p("c8", (u128)-1 / 3);
++    p("c9", (u128)(-(s128)1 >> 100));
++    p("c10", (u128)-1 >> 64);
++    p("c11", (u128)12345678901234567ull * 1000000007ull);
++    p("c12", (u128)((s128)-3 * 0x7fffffffffffffffll));
++    p("c13", (u128)0xffffffffffffffffull | 0xffffffffu);
++    p("c14", (u128)1 & 0xffffffffu);
++    p("c15", ((u128)1 << 64) - 1);
++    p("c16", (u128)(s64)-1 + 1);
++    printf("c17 %d %d %d %d %d\n", (u128)-1 > 1, (s128)-1 > 1,
++           ((u128)1 << 64) > (u128)0xffffffffffffffffull, (u128)5 == 5, -(s128)5 < -(s128)4);
++
++    /* conversions */
++    x = a; p("zext64", x);
++    s = sa; p("sext64", (u128)s);
++    x = ia; p("sext32", x);
++    x = ua; p("zext32", x);
++    x = ss; p("sext16", x);
++    x = uc; p("zext8", x);
++    x = bt; p("bool", x);
++    x = (u128)sa; p("u128 of s64", x);
++    s = (s128)a; p("s128 of u64", (u128)s);
++    s = (s128)ua; p("s128 of u32", (u128)s);
++    s = (s128)smin; p("s128 of s64 min", (u128)s);
++    y = ((u128)a << 64) | b;
++    printf("trunc %d %u %lld %llu %hd %hhu %d %d\n", (int)y, (unsigned)y, (s64)y, (u64)y,
++           (short)y, (unsigned char)y, (_Bool)y, (int)(y >> 64));
++    printf("tests %d %d %d %d\n", (_Bool)(y >> 64 << 64), !(y & 0xffff), !!(y & 0xffff), (int)!(y - y));
++    { void *vp = (void *)(size_t)(u128)(size_t)&x; x = (u128)(size_t)vp; printf("ptr %d\n", vp == (void *)&x); }
++
++    /* arithmetic */
++    p("y", y);
++    p("add", y + y);
++    p("add1", y + 1);
++    p("addc", (u128)0xffffffffffffffffull + 1);
++    p("sub", y - ((u128)1 << 64));
++    p("subb", ((u128)1 << 64) - 1);
++    p("neg", -y);
++    p("negs", (u128)-(s128)y);
++    p("not", ~y);
++    p("and", y & ((u128)0xff00ff00ff00ff00ull << 32));
++    p("or", y | ((u128)b << 64));
++    p("xor", y ^ ((u128)b << 64));
++    p("shl5", y << 5);
++    p("shl64", y << 64);
++    p("shl70", y << 70);
++    p("shr3", y >> 3);
++    p("shr64", y >> 64);
++    p("shr70", y >> 70);
++    p("sar3", (u128)((s128)y >> 3));
++    p("sar64", (u128)((s128)y >> 64));
++    p("sar70", (u128)((s128)y >> 70));
++    p("sar127", (u128)((s128)y >> 127));
++    p("vshl7", y << sh);
++    p("vshl70", y << sh70);
++    p("vshl0", y << sh0);
++    p("vshl127", y << sh127);
++    p("vshr7", y >> sh);
++    p("vshr70", y >> sh70);
++    p("vshr0", y >> sh0);
++    p("vshr127", y >> sh127);
++    p("vsar7", (u128)((s128)y >> sh));
++    p("vsar70", (u128)((s128)y >> sh70));
++    p("vsar127", (u128)((s128)y >> sh127));
++    p("mul", (u128)a * b);
++    p("mul32", (u128)ua * ua);
++    p("mul64x32", (u128)a * ua);
++    p("muls", (u128)((s128)sa * sb));
++    p("muls2", (u128)((s128)sa * smin));
++    p("mulsu", (u128)((s128)sa * (u128)a));
++    p("mul128", y * y);
++    p("mul128b", y * b);
++    p("mulc", (u128)a * 10);
++    p("mulsc", (u128)((s128)sa * -10));
++    p("mulc2", 10 * (u128)a);
++    p("sq", (y >> 64) * (y >> 64));
++    p("div", y / a);
++    p("mod", y % a);
++    p("div7", y / 7);
++    p("mod7", y % 7);
++    p("div2p64", y / ((u128)1 << 64));
++    p("mod2p64", y % ((u128)1 << 64));
++    p("div1", y / one);
++    p("divy", y / y);
++    p("divs", (u128)((s128)y / sa));
++    p("mods", (u128)((s128)y % sa));
++    p("divsn", (u128)(-(s128)y / 7));
++    p("modsn", (u128)(-(s128)y % 7));
++    p("divsnn", (u128)(-(s128)y / -7));
++    p("divs16", (u128)((s128)y / 16));
++    p("divsn16", (u128)(-(s128)y / 16));
++    p("modsn16", (u128)(-(s128)y % 16));
++    p("divbig", y / (y >> 3));
++    p("modbig", y % (y >> 3));
++
++    /* comparisons */
++    x = a;
++    printf("cmp %d%d%d%d%d%d %d%d%d%d%d%d %d%d%d%d\n",
++           x < y, x <= y, x > y, x >= y, x == y, x != y,
++           (s128)y < 0, (s128)y < (s128)x, -(s128)y < (s128)x, (s128)x > -1, (s128)y <= (s128)y, (s128)y >= (s128)x,
++           y > (u128)0xffffffffffffffffull, y < ((u128)1 << 127), y != y + 1, y == (y | 0));
++    if (y) printf("if y\n");
++    if (!x) printf("bad\n");
++    if (y && x) printf("and\n");
++    if (y - y || x - x) printf("bad2\n");
++    printf("cond %d %d\n", (int)(ia < 0 ? y : x), (int)(ia > 0 ? y : x));
++    p("cond2", ia > 0 ? y : x);
++
++    /* assignments */
++    { volatile u128 v = y;
++      v |= 1; v &= ~(u128)0xf0; v ^= (u128)1 << 127; v += 0x100; v -= 1;
++      v <<= 3; v >>= 1; v *= 5; v /= 3; v %= (u128)1 << 120; p("compound", v);
++      v++; ++v; v--; p("incdec", v); p("post", v++); p("post2", v);
++      { s128 sv = -(s128)v; sv >>= 1; p("sar=", (u128)sv); sv <<= 70; p("shl=", (u128)sv); } }
++
++    /* memory: structs, unions, arrays, pointers */
++    st.c = 1; st.x = y; st.d = 2; p("struct", st.x); printf("struct cd %d %d\n", st.c, st.d);
++    u.full = y; printf("union %llx %llx\n", u.low, u.high);
++    u.low = 1; u.high = 2; p("union2", u.full);
++    t.a[0] = 1; t.a[1] = y; t.n = 3; p("t", t.a[0] + t.a[1]);
++    { u128 arr[4], *q; for (i = 0; i < 4; i++) arr[i] = (u128)(i + 1) << (i * 40);
++      p("arr", arr[0] + arr[1] + arr[2] + arr[3]); q = arr + 1; q++; p("q", *q); *q = 0; p("sum", arr[0] + arr[1] + arr[2] + arr[3]);
++      p("idx", arr[(u128)1]); printf("ptrdiff %d\n", (int)(q - arr)); }
++    p("gu", gu); p("gs", (u128)gs); p("garr", garr[0] + garr[1] * 2 + garr[2] * 3); p("gneg", (u128)gneg);
++    p("gt", (u128)gt); p("gut", gut);
++    gu += y; p("gu2", gu);
++    { u128 q = 3; printf("takes_ptr %d\n", takes_ptr(&q)); p("q", q); }
++
++    /* calls */
++    p("r0", r0(y)); p("r1", r1(1, y)); p("r2", r2(1, 2, y)); p("r3", r3(1, 2, 3, y));
++    p("r4", r4(1, 2, 3, 4, y)); p("r5", r5(1, 2, 3, 4, 5, y)); p("r6", r6(1, 2, 3, 4, 5, 6, y));
++    p("r7", r7(1, 2, 3, 4, 5, 6, 7, y, 8, x));
++    p("rs", (u128)rs(-3, 1000000007, 5));
++    p("rmix", rmix(1.5, y, 2.5f, x, 3.5L, 1));
++    p("rfact", rfact(30));
++    p("nested", r1(2, r0(r2(1, 1, y))));
++
++    /* the kernel's idioms */
++    printf("mul_u64_u64_shr %llx %llx %llx\n", mul_u64_u64_shr(a, b, 64), mul_u64_u64_shr(a, b, 3), mul_u64_u64_shr(a, b, 0));
++    printf("mul_u64_u32_shr %llx %llx\n", mul_u64_u32_shr(a, ua, 32), mul_u64_u32_shr(a, ua, 64));
++    printf("mul_u64_u32_add_u64_shr %llx %llx\n", mul_u64_u32_add_u64_shr(a, ua, b, 32), mul_u64_u32_add_u64_shr(a, ua, b, 64));
++    printf("entity_before %d %d %d %d\n", entity_before(-5, 3, 7), entity_before(100, 3, 7),
++           entity_before(sa, a, 2), entity_before(smin, a, b));
++    { u128 slot = y, old = y, old2 = x;
++      printf("cmpxchg %d", try_cmpxchg128(&slot, &old, 5)); p("", slot);
++      printf("cmpxchg %d", try_cmpxchg128(&slot, &old2, 6)); p("", slot); p("old2", old2); }
++    p("clmul", clmul_like(a, b, b, a));
++    p("switch", sw(1) + sw(2) * 100 + sw(0x7fffffffffffffffll) * 10000 + sw(y) * 1000000 + sw(0));
++
++    /* a loop against the 64-bit reference */
++    { u64 r = 0x9e3779b97f4a7c15ull, q, sum = 0; s64 ssum = 0; int bad = 0;
++      for (i = 0; i < 2000; i++) {
++          q = r * 6364136223846793005ull + 1442695040888963407ull;
++          x = (u128)r * q;
++          if ((u64)(x >> 64) != mulhi64_ref(r, q) || (u64)x != r * q)
++              bad++;
++          if (x / q != r || x % q != 0)
++              bad++;
++          if ((u64)(((s128)(s64)r * (s64)q) >> 64) != (s64)(mulhi64_ref(r, q) - ((s64)r < 0 ? q : 0) - ((s64)q < 0 ? r : 0)))
++              bad++;
++          z = ((u128)r << (i & 127)) | ((u128)q >> ((i * 7) & 127));
++          sum += (u64)(z >> 64) ^ (u64)z;
++          ssum += (s64)((s128)(s64)q >> (i & 127));
++          r = q;
++      }
++      printf("loop bad=%d sum=%llx ssum=%lld\n", bad, sum, ssum); }
++    return 0;
++}
++#endif
+diff --git a/tests/tests2/167_int128.expect b/tests/tests2/167_int128.expect
+new file mode 100644
+index 0000000..e66f160
+--- /dev/null
++++ b/tests/tests2/167_int128.expect
+@@ -0,0 +1,148 @@
++sizeof 16 16 48 16 48, alignof 16 16, offsets 16 32 16 32
++generic 1 2 2 1
++c1 = 0000000000000000 ffffffffffffffff
++c2 = ffffffffffffffff ffffffffffffffff
++c3 = ffffffffffffffff ffffffffffffffff
++c4 = 8000000000000000 0000000000000000
++c5 = 7fffffffffffffff ffffffffffffffff
++c6 = ffffffffffffffff fffffffffffffffe
++c7 = 0000000000000001 0000000000000000
++c8 = 5555555555555555 5555555555555555
++c9 = ffffffffffffffff ffffffffffffffff
++c10 = 0000000000000000 ffffffffffffffff
++c11 = 00000000000a364c 995584f8c3bd96b1
++c12 = fffffffffffffffe 8000000000000003
++c13 = 0000000000000000 ffffffffffffffff
++c14 = 0000000000000000 0000000000000001
++c15 = 0000000000000000 ffffffffffffffff
++c16 = 0000000000000000 0000000000000000
++c17 1 0 1 1 1
++zext64 = 0000000000000000 fedcba9876543210
++sext64 = ffffffffffffffff fffffffffffffffb
++sext32 = ffffffffffffffff fffffffffffffff9
++zext32 = 0000000000000000 0000000080000001
++sext16 = ffffffffffffffff fffffffffffffffe
++zext8 = 0000000000000000 00000000000000c8
++bool = 0000000000000000 0000000000000001
++u128 of s64 = ffffffffffffffff fffffffffffffffb
++s128 of u64 = 0000000000000000 fedcba9876543210
++s128 of u32 = 0000000000000000 0000000080000001
++s128 of s64 min = ffffffffffffffff 8000000000000000
++trunc -1698898191 2596069105 1311768467463790321 1311768467463790321 -8463 241 1 1985229328
++tests 1 0 1 1
++ptr 1
++y = fedcba9876543210 123456789abcdef1
++add = fdb97530eca86420 2468acf13579bde2
++add1 = fedcba9876543210 123456789abcdef2
++addc = 0000000000000001 0000000000000000
++sub = fedcba987654320f 123456789abcdef1
++subb = 0000000000000000 ffffffffffffffff
++neg = 0123456789abcdef edcba9876543210f
++negs = 0123456789abcdef edcba9876543210f
++not = 0123456789abcdef edcba9876543210e
++and = 0000000076003200 1200560000000000
++or = fefcfef8fefcfef1 123456789abcdef1
++xor = ece8ece0ece8ece1 123456789abcdef1
++shl5 = db97530eca864202 468acf13579bde20
++shl64 = 123456789abcdef1 0000000000000000
++shl70 = 8d159e26af37bc40 0000000000000000
++shr3 = 1fdb97530eca8642 02468acf13579bde
++shr64 = 0000000000000000 fedcba9876543210
++shr70 = 0000000000000000 03fb72ea61d950c8
++sar3 = ffdb97530eca8642 02468acf13579bde
++sar64 = ffffffffffffffff fedcba9876543210
++sar70 = ffffffffffffffff fffb72ea61d950c8
++sar127 = ffffffffffffffff ffffffffffffffff
++vshl7 = 6e5d4c3b2a190809 1a2b3c4d5e6f7880
++vshl70 = 8d159e26af37bc40 0000000000000000
++vshl0 = fedcba9876543210 123456789abcdef1
++vshl127 = 8000000000000000 0000000000000000
++vshr7 = 01fdb97530eca864 202468acf13579bd
++vshr70 = 0000000000000000 03fb72ea61d950c8
++vshr0 = fedcba9876543210 123456789abcdef1
++vshr127 = 0000000000000000 0000000000000001
++vsar7 = fffdb97530eca864 202468acf13579bd
++vsar70 = ffffffffffffffff fffb72ea61d950c8
++vsar127 = ffffffffffffffff ffffffffffffffff
++mul = 121fa00ad77d7423 224a4396cc6d0110
++mul32 = 0000000000000000 4000000100000001
++mul64x32 = 000000007f6e5d4d 3a06d3a076543210
++muls = ffffffffffffffff ffffffffffffffdd
++muls2 = 0000000000000002 8000000000000000
++mulsu = fffffffffffffffb 05b05b05b05b05b0
++mul128 = 45dfee09ccd0aefc ca4ab582281edee1
++mul128b = 2395aa730063adec ca4ab582281edee1
++mulc = 0000000000000009 f49f49f49f49f4a0
++mulsc = 0000000000000000 0000000000000032
++mulc2 = 0000000000000009 f49f49f49f49f4a0
++sq = fdbac097c8dc5acc deec6cd7a44a4100
++div = 0000000000000001 0000000000000000
++mod = 0000000000000000 123456789abcdef1
++div7 = 2468acf13579be02 4bbe557ef188b222
++mod7 = 0000000000000000 0000000000000003
++div2p64 = 0000000000000000 fedcba9876543210
++mod2p64 = 0000000000000000 123456789abcdef1
++div1 = fedcba9876543210 123456789abcdef1
++divy = 0000000000000000 0000000000000001
++divs = 003a4114b5225c63 2f8f21e7e10d6d03
++mods = 0000000000000000 0000000000000000
++divsn = 00299c335ccf668f fd663cca33099702
++modsn = 0000000000000000 0000000000000001
++divsnn = ffd663cca3309970 0299c335ccf668fe
++divs16 = ffedcba987654321 0123456789abcdf0
++divsn16 = 00123456789abcde fedcba9876543210
++modsn16 = 0000000000000000 000000000000000f
++divbig = 0000000000000000 0000000000000008
++modbig = 0000000000000000 0000000000000001
++cmp 110001 110110 1011
++if y
++and
++cond -1698898191 1985229328
++cond2 = 0000000000000000 fedcba9876543210
++compound = 0014dbf86a314dc0 795ceb240795ceaa
++incdec = 0014dbf86a314dc0 795ceb240795ceab
++post = 0014dbf86a314dc0 795ceb240795ceab
++post2 = 0014dbf86a314dc0 795ceb240795ceac
++sar= = fff59203cae7591f c3518a6dfc3518aa
++shl= = d4629b7f0d462a80 0000000000000000
++struct = fedcba9876543210 123456789abcdef1
++struct cd 1 2
++union 123456789abcdef1 fedcba9876543210
++union2 = 0000000000000002 0000000000000001
++t = fedcba9876543210 123456789abcdef2
++arr = 0400000000030000 0000020000000001
++q = 0000000000030000 0000000000000000
++sum = 0400000000000000 0000020000000001
++idx = 0000000000000000 0000020000000000
++ptrdiff 2
++gu = 0000000000000000 0000000000003039
++gs = ffffffffffffffff ffffffffffffcfc7
++garr = 0000000000000000 000000000000000e
++gneg = ffffffffffffffff ffffffffffffffff
++gt = 0000000000000000 0000000000000007
++gut = 0000000000000000 0000000000000008
++gu2 = fedcba9876543210 123456789abd0f2a
++takes_ptr 6
++q = 0000000000000000 0000000000000006
++r0 = fedcba9876543210 123456789abcdef2
++r1 = fedcba9876543210 123456789abcdef2
++r2 = fedcba9876543210 123456789abcdef4
++r3 = fedcba9876543210 123456789abcdef7
++r4 = fedcba9876543210 123456789abcdefb
++r5 = fedcba9876543210 123456789abcdf00
++r6 = fedcba9876543210 123456789abcdf06
++r7 = fedcba9876543211 1111111111111125
++rs = ffffffffffffffff ffffffff4d2fa1e6
++rmix = fedcba9876543211 1111111111111108
++rfact = 00000d13f6370f96 865df5dd54000000
++nested = fedcba9876543210 123456789abcdef6
++mul_u64_u64_shr 121fa00ad77d7423 64494872d98da022 224a4396cc6d0110
++mul_u64_u32_shr 7f6e5d4d3a06d3a0 7f6e5d4d
++mul_u64_u32_add_u64_shr 7f6e5d4d4c3b2a19 7f6e5d4d
++entity_before 0 1 0 0
++cmpxchg 1 = 0000000000000000 0000000000000005
++cmpxchg 0 = 0000000000000000 0000000000000005
++old2 = 0000000000000000 0000000000000005
++clmul = 0000000000000000 0000000000000000
++switch = 0000000000000000 0000000005eb3add
++loop bad=0 sum=1eff85880a302222 ssum=6367969026938697512
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 22bcbc6..6097098 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -16,6 +16,9 @@ ifeq (,$(filter i386,$(ARCH)))
+  SKIP += 98_al_ax_extend.test 99_fastcall.test
+  SKIP += 157_i386_regparm_pic.test 162_i386_mregparm.test
+ endif
++ifneq (x86_64-,$(ARCH)-$(CONFIG_WIN32))
++ SKIP += 167_int128.test # __int128 is x86-64 SysV only
++endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+  SKIP += 127_asm_goto.test    # hardcodes x86 asm

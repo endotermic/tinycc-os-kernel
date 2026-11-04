@@ -1,0 +1,1034 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 16:44:44 +0200
+Subject: [PATCH] x86_64: __int128 and unsigned __int128 (VT_QLONG as a type,
+ two long long words)
+
+The 128-bit integer types of gcc on x86-64, so that code written for
+them (the Linux kernel's u128/s128: cmpxchg128, freelist_aba_t,
+mul_u64_u64_shr, gf128hash) compiles unmodified.  __SIZEOF_INT128__ is
+predefined as 16 (the kernel's CC_HAS_INT128 probe redefines it under
+-Werror); __int128_t and __uint128_t of tccdefs.h become the real types.
+
+VT_QLONG, until now only the ABI class of a 16-byte integer structure
+(two INTEGER eightbytes), is the type: size 16, alignment 16, an integer
+in is_integer_btype(), the usual arithmetic conversions rank it above
+long long, type_to_str() prints it.  A value is held in two registers
+(r, r2) exactly like a long long on the 32-bit targets, so the two-word
+machinery of tccgen.c -- lexpand(), lbuild(), gv_dup() and gen_opl(),
+now gen_opw() -- is parametrised on the word type (VT_WORD1: int or
+long long) and width instead of being compiled under PTR_SIZE == 4 only:
+on x86-64 it works on two long long words.  + - * & | ^ and the
+comparisons come out of it unchanged (the 64x64->128 low product is the
+backend's TOK_UMULL, mul), shifts by a constant too; a shift by a
+variable is inline (gen_shift128(): shld/shrd and a test of bit 6 of the
+count, as gen_shift64() on i386); / and % call __divti3, __modti3,
+__udivti3, __umodti3, written for libtcc1 in 64-bit arithmetic on a
+two-word structure (the same ABI as unsigned __int128).  A constant
+whose high word is loaded with xor would lose the carry between the
+halves of + and -: gen_opw() loads it first.
+
+Casts: widening puts zero or the sign of the 64-bit value into the high
+register (narrower sources are widened to 64 bits first, pointers are
+zero-extended); narrowing keeps the low word; a 128-bit lvalue cast to a
+narrower type is read as its low bytes.  Constants stay 64-bit: an
+__int128 constant is its sign-extended low word, fold_int128() folds
+only what that holds exactly (overflow, a logical shift of a negative
+word, an unsigned division of a value above 2^63 go to run time), an
+unsigned 64-bit constant at or above 2^63 is materialised in registers,
+in a static initializer it is refused.  The backend handles a VT_QLONG
+word as 64 bits (is64_type), classifies the type as INTEGER (two
+registers, 16-byte alignment on the stack; gfunc_call pushes both words
+when the registers are out).
+
+Refused with a message: conversions to and from floating point, an asm
+operand of 128 bits in a register (a memory constraint is fine, the
+kernel passes the 64-bit halves), bitfields (the existing check), atomic
+builtins of 16 bytes (the existing size check); kprop does not track
+__int128 locals.  Only x86-64 SysV (TCC_HAS_INT128): i386 and the other
+targets are untouched and say "'__int128' is not supported on this
+target".
+---
+ include/tccdefs.h |  10 +-
+ lib/libtcc1.c     |  83 ++++++++++++
+ tcc.h             |  15 ++-
+ tccasm.c          |   7 +
+ tccgen.c          | 326 +++++++++++++++++++++++++++++++++++++++++-----
+ tccpp.c           |   5 +
+ tcctok.h          |   5 +
+ x86_64-gen.c      |  52 +++++++-
+ 8 files changed, 462 insertions(+), 41 deletions(-)
+
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 7d7777a..b60f772 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -272,11 +272,17 @@
+ # endif
+ #endif
+ 
+-    /* GCC's __uint128_t appears in some Linux/OSX header files.
+-       Just make it some type with same size and alignment. */
++    /* GCC's __uint128_t appears in some Linux/OSX header files. */
++#if defined __x86_64__ && !defined _WIN32
++    /* the real types (TCC_HAS_INT128) */
++    typedef __int128 __int128_t;
++    typedef unsigned __int128 __uint128_t;
++#else
++    /* Just make it some type with same size and alignment. */
+     struct __uint128__ { char x[16]; } __attribute((__aligned__(16)));
+     #define __int128_t struct __uint128__
+     #define __uint128_t struct __uint128__
++#endif
+ 
+     /* __builtin_va_list */
+ #if defined __x86_64__
+diff --git a/lib/libtcc1.c b/lib/libtcc1.c
+index 878f951..7035ee7 100644
+--- a/lib/libtcc1.c
++++ b/lib/libtcc1.c
+@@ -476,6 +476,89 @@ long long __ashldi3(long long a, int b)
+ 
+ #endif /* __i386__ */
+ 
++#if defined __x86_64__ && defined __SIZEOF_INT128__
++/* 128-bit division and modulo for tcc's __int128 (x86-64).  A 16-byte
++   structure of two words is passed and returned like unsigned __int128
++   under the SysV ABI (two integer registers, %rax:%rdx for the result),
++   so these are written in 64-bit arithmetic and need no __int128 of
++   their own.  Shifts and multiplies are inline in the compiler. */
++typedef struct { unsigned long long lo, hi; } TWtype;
++
++static TWtype __udivmodti4(TWtype n, TWtype d, TWtype *rem)
++{
++    TWtype q, r;
++    int i;
++
++    q.lo = q.hi = r.lo = r.hi = 0;
++    if (n.hi == 0 && d.hi == 0) {
++        q.lo = n.lo / d.lo;
++        r.lo = n.lo % d.lo;
++    } else {
++        /* binary long division, one bit a step */
++        for (i = 127; i >= 0; i--) {
++            r.hi = (r.hi << 1) | (r.lo >> 63);
++            r.lo = (r.lo << 1) | ((i >= 64 ? n.hi >> (i - 64) : n.lo >> i) & 1);
++            if (r.hi > d.hi || (r.hi == d.hi && r.lo >= d.lo)) {
++                unsigned long long t = r.lo - d.lo;
++                r.hi = r.hi - d.hi - (r.lo < d.lo);
++                r.lo = t;
++                if (i >= 64)
++                    q.hi |= 1ULL << (i - 64);
++                else
++                    q.lo |= 1ULL << i;
++            }
++        }
++    }
++    if (rem)
++        *rem = r;
++    return q;
++}
++
++static TWtype __negti(TWtype a)
++{
++    TWtype r;
++    r.lo = -a.lo;
++    r.hi = ~a.hi + (a.lo == 0);
++    return r;
++}
++
++TWtype __udivti3(TWtype n, TWtype d)
++{
++    return __udivmodti4(n, d, 0);
++}
++
++TWtype __umodti3(TWtype n, TWtype d)
++{
++    TWtype r;
++    __udivmodti4(n, d, &r);
++    return r;
++}
++
++TWtype __divti3(TWtype n, TWtype d)
++{
++    int neg = 0;
++    TWtype q;
++    if ((long long)n.hi < 0)
++        n = __negti(n), neg ^= 1;
++    if ((long long)d.hi < 0)
++        d = __negti(d), neg ^= 1;
++    q = __udivmodti4(n, d, 0);
++    return neg ? __negti(q) : q;
++}
++
++TWtype __modti3(TWtype n, TWtype d)
++{
++    int neg = 0;
++    TWtype r;
++    if ((long long)n.hi < 0)
++        n = __negti(n), neg = 1;
++    if ((long long)d.hi < 0)
++        d = __negti(d);
++    __udivmodti4(n, d, &r);
++    return neg ? __negti(r) : r;
++}
++#endif /* __x86_64__ */
++
+ /* XXX: fix tcc's code generator to do this instead */
+ float __floatundisf(unsigned long long a)
+ {
+diff --git a/tcc.h b/tcc.h
+index 7c87f94..2a2942f 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -185,6 +185,13 @@ extern long double strtold (const char *__nptr, char **__endptr);
+ # endif
+ #endif
+ 
++/* __int128 / unsigned __int128 (x86-64 SysV only: two integer registers,
++   rax:rdx for the return value; the Win64 ABI passes 16-byte values by
++   reference, which x86_64-gen.c does not do for them) */
++#if defined TCC_TARGET_X86_64 && !defined TCC_TARGET_PE
++# define TCC_HAS_INT128 1
++#endif
++
+ /* only native compiler supports -run */
+ #if defined _WIN32 == defined TCC_TARGET_PE \
+     && defined __APPLE__ == defined TCC_TARGET_MACHO
+@@ -1099,7 +1106,8 @@ struct filespec {
+ #define VT_DOUBLE           9  /* IEEE double */
+ #define VT_LDOUBLE         10  /* IEEE long double */
+ #define VT_BOOL            11  /* ISOC99 boolean type */
+-#define VT_QLONG           13  /* 128-bit integer. Only used for x86-64 ABI */
++#define VT_QLONG           13  /* 128-bit integer: __int128 on x86-64 (TCC_HAS_INT128),
++                                  elsewhere only used for the x86-64 ABI */
+ #define VT_QFLOAT          14  /* 128-bit float. Only used for x86-64 ABI */
+ 
+ #define VT_UNSIGNED    0x0010  /* unsigned type */
+@@ -1182,7 +1190,7 @@ struct filespec {
+ #define TOK_UDIV    0x83 /* unsigned division */
+ #define TOK_UMOD    0x84 /* unsigned modulo */
+ #define TOK_PDIV    0x85 /* fast division with undefined rounding for pointers */
+-#define TOK_UMULL   0x86 /* unsigned 32x32 -> 64 mul */
++#define TOK_UMULL   0x86 /* unsigned 32x32 -> 64 mul (i386), 64x64 -> 128 (x86_64) */
+ #define TOK_UDIVL   0x8c /* unsigned 64/32 -> 32 div and mod (i386): quotient
+                             in the low word, remainder in the high word */
+ #define TOK_ADDC1   0x87 /* add with carry generation */
+@@ -1750,6 +1758,9 @@ ST_FUNC void gen_increment_tcov (SValue *sv);
+ /* ------------ x86_64-gen.c ------------ */
+ #ifdef TCC_TARGET_X86_64
+ ST_FUNC void gen_opl(int op);
++#ifdef TCC_HAS_INT128
++ST_FUNC void gen_shift128(int op);
++#endif
+ #ifdef TCC_TARGET_PE
+ ST_FUNC void gen_vla_result(int addr);
+ #endif
+diff --git a/tccasm.c b/tccasm.c
+index 17e6068..788b728 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -2626,6 +2626,13 @@ static void parse_asm_operands(ASMOperand *operands, int *nb_operands_ptr,
+                 }
+             }
+             op->vt = vtop;
++#ifdef TCC_HAS_INT128
++            /* an __int128 lives in two registers; only a memory operand
++               can take it whole (gcc would need an "A"-like pair) */
++            if ((vtop->type.t & VT_BTYPE) == VT_QLONG
++                && !strpbrk(op->constraint, "moVQ"))
++                tcc_error("unsupported: 128-bit asm operand in a register (use a memory constraint or the 64-bit halves)");
++#endif
+             skip(')');
+             if (tok == ',') {
+                 next();
+diff --git a/tccgen.c b/tccgen.c
+index 99897cd..ad24cf3 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -88,6 +88,31 @@ static CString initstr;
+ #define VT_PTRDIFF_T (VT_LONG | VT_LLONG)
+ #endif
+ 
++/* Two-word integers: on 32-bit targets a long long is held in two int
++   registers (r, r2) and its operations are built from int operations
++   (gen_opw(), lexpand(), lbuild()); on x86-64 the same machinery gives
++   __int128 (VT_QLONG) from two long long words.  VT_WORD2 is the two-word
++   type, VT_WORD1 the type of a word, WORD1_BITS its width. */
++#if PTR_SIZE == 4
++# define TCC_TWO_WORDS 1
++# define VT_WORD2 VT_LLONG
++# define VT_WORD1 VT_INT
++# define WORD1_BITS 32
++# define TOK___divw3 TOK___divdi3
++# define TOK___modw3 TOK___moddi3
++# define TOK___udivw3 TOK___udivdi3
++# define TOK___umodw3 TOK___umoddi3
++#elif defined TCC_HAS_INT128
++# define TCC_TWO_WORDS 1
++# define VT_WORD2 VT_QLONG
++# define VT_WORD1 VT_LLONG
++# define WORD1_BITS 64
++# define TOK___divw3 TOK___divti3
++# define TOK___modw3 TOK___modti3
++# define TOK___udivw3 TOK___udivti3
++# define TOK___umodw3 TOK___umodti3
++#endif
++
+ /* Constant propagation through local scalars ("kprop").  A local variable
+    (integer or pointer, not volatile, address never taken) whose last store
+    was a constant is known to hold it: kval() replaces a read of such a
+@@ -303,7 +328,11 @@ static inline int is_integer_btype(int bt)
+         || bt == VT_BOOL
+         || bt == VT_SHORT
+         || bt == VT_INT
+-        || bt == VT_LLONG;
++        || bt == VT_LLONG
++#ifdef TCC_HAS_INT128
++        || bt == VT_QLONG
++#endif
++        ;
+ }
+ 
+ static int btype_size(int bt)
+@@ -312,6 +341,7 @@ static int btype_size(int bt)
+         bt == VT_SHORT ? 2 :
+         bt == VT_INT ? 4 :
+         bt == VT_LLONG ? 8 :
++        bt == VT_QLONG ? 16 :
+         bt == VT_PTR ? PTR_SIZE : 0;
+ }
+ 
+@@ -2103,9 +2133,15 @@ ST_FUNC int gv(int rc)
+                     /* load constant */
+                     unsigned long long ll = vtop->c.i;
+                     vtop->c.i = ll; /* first word */
++                    vtop->type.t = load_type;
+                     load(r, vtop);
+                     vtop->r = r; /* save register value */
++#ifdef TCC_HAS_INT128
++                    /* second word: the sign (fold_int128()) */
++                    vpush64(VT_LLONG, -(ll >> 63));
++#else
+                     vpushi(ll >> 32); /* second word */
++#endif
+                 } else if (vtop->r & VT_LVAL) {
+                     /* We do not want to modifier the long long pointer here.
+                        So we save any other instances down the stack */
+@@ -2182,8 +2218,8 @@ ST_FUNC void gv2(int rc1, int rc2)
+     }
+ }
+ 
+-#if PTR_SIZE == 4
+-/* expand 64bit on stack in two ints */
++#ifdef TCC_TWO_WORDS
++/* expand the two-word value on stack in two words (low, high) */
+ ST_FUNC void lexpand(void)
+ {
+     int u, v;
+@@ -2191,22 +2227,25 @@ ST_FUNC void lexpand(void)
+     v = vtop->r & (VT_VALMASK | VT_LVAL);
+     if (v == VT_CONST) {
+         vdup();
+-        vtop[0].c.i >>= 32;
++        if (WORD1_BITS == 32)
++            vtop[0].c.i >>= 32;
++        else /* a 128-bit constant is its sign-extended low word */
++            vtop[0].c.i = -(vtop[0].c.i >> 63);
+     } else if (v == (VT_LVAL|VT_CONST) || v == (VT_LVAL|VT_LOCAL)) {
+         vdup();
+-        vtop[0].c.i += 4;
++        vtop[0].c.i += WORD1_BITS / 8;
+     } else {
+         gv(RC_INT);
+         vdup();
+         vtop[0].r = vtop[-1].r2;
+         vtop[0].r2 = vtop[-1].r2 = VT_CONST;
+     }
+-    vtop[0].type.t = vtop[-1].type.t = VT_INT | u;
++    vtop[0].type.t = vtop[-1].type.t = VT_WORD1 | u;
+ }
+ #endif
+ 
+-#if PTR_SIZE == 4
+-/* build a long long from two ints */
++#ifdef TCC_TWO_WORDS
++/* build a two-word value from two words */
+ static void lbuild(int t)
+ {
+     gv2(RC_INT, RC_INT);
+@@ -2223,8 +2262,8 @@ static void gv_dup(void)
+     int t, rc, r;
+ 
+     t = vtop->type.t;
+-#if PTR_SIZE == 4
+-    if ((t & VT_BTYPE) == VT_LLONG) {
++#ifdef TCC_TWO_WORDS
++    if ((t & VT_BTYPE) == VT_WORD2) {
+         if (t & VT_BITFIELD) {
+             gv(RC_INT);
+             t = vtop->type.t;
+@@ -2254,9 +2293,11 @@ static void gv_dup(void)
+     vtop->r = r;
+ }
+ 
+-#if PTR_SIZE == 4
+-static void gen_opl(int op);
++#ifdef TCC_TWO_WORDS
++static void gen_opw(int op);
++#endif
+ 
++#if PTR_SIZE == 4
+ /* A long long division or modulo (op) of vtop[-1] by the constant vtop,
+    without the libtcc1 helper (freestanding code such as the Linux kernel
+    has none; gcc strength-reduces every division by a constant, so a
+@@ -2282,10 +2323,10 @@ static int gen_opl_divc(int op)
+             c++;
+         if (op == TOK_UDIV) {
+             vtop->c.i = c;
+-            gen_opl(TOK_SHR);
++            gen_opw(TOK_SHR);
+         } else {
+             vtop->c.i = (1ULL << c) - 1;
+-            gen_opl('&');
++            gen_opw('&');
+         }
+         return 1;
+     }
+@@ -2386,9 +2427,12 @@ static int gen_opl_divc(int op)
+     return 0;
+ #endif
+ }
++#endif /* PTR_SIZE == 4 */
+ 
+-/* generate CPU independent (unsigned) long long operations */
+-static void gen_opl(int op)
++#ifdef TCC_TWO_WORDS
++/* generate CPU independent two-word integer operations (long long on
++   32-bit targets, __int128 on x86-64) */
++static void gen_opw(int op)
+ {
+     int t, a, b, op1, c, i;
+     int func;
+@@ -2396,26 +2440,28 @@ static void gen_opl(int op)
+     unsigned short reg_lret = REG_IRE2;
+     SValue tmp;
+ 
++#if PTR_SIZE == 4
+     /* a division or modulo by a constant: no helper call when it can be
+        strength-reduced (gen_opl_divc()) */
+     if ((op == '/' || op == TOK_PDIV || op == '%' || op == TOK_UDIV || op == TOK_UMOD)
+         && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+         && gen_opl_divc(op))
+         return;
++#endif
+ 
+     switch(op) {
+     case '/':
+     case TOK_PDIV:
+-        func = TOK___divdi3;
++        func = TOK___divw3;
+         goto gen_func;
+     case TOK_UDIV:
+-        func = TOK___udivdi3;
++        func = TOK___udivw3;
+         goto gen_func;
+     case '%':
+-        func = TOK___moddi3;
++        func = TOK___modw3;
+         goto gen_mod_func;
+     case TOK_UMOD:
+-        func = TOK___umoddi3;
++        func = TOK___umodw3;
+     gen_mod_func:
+ #ifdef TCC_ARM_EABI
+         reg_iret = TREG_R2;
+@@ -2478,6 +2524,15 @@ static void gen_opl(int op)
+                 op1 = TOK_ADDC1;
+             else
+                 op1 = TOK_SUBC1;
++#ifdef TCC_HAS_INT128
++            /* x86-64 loads a 64-bit zero with xor, which would clear
++               the carry between the halves: load a constant H1 first */
++            if ((vtop[-3].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
++                vrotb(4);
++                gv(RC_INT);
++                vrott(4);
++            }
++#endif
+             gen_op(op1);
+             /* stack: H1 H2 (L1 op L2) */
+             vrotb(3);
+@@ -2511,18 +2566,18 @@ static void gen_opl(int op)
+             vpop();
+             if (op != TOK_SHL)
+                 vswap();
+-            if (c >= 32) {
++            if (c >= WORD1_BITS) {
+                 /* stack: L H */
+                 vpop();
+-                if (c > 32) {
+-                    vpushi(c - 32);
++                if (c > WORD1_BITS) {
++                    vpushi(c - WORD1_BITS);
+                     gen_op(op);
+                 }
+                 if (op != TOK_SAR) {
+                     vpushi(0);
+                 } else {
+                     gv_dup();
+-                    vpushi(31);
++                    vpushi(WORD1_BITS - 1);
+                     gen_op(TOK_SAR);
+                 }
+                 vswap();
+@@ -2533,7 +2588,7 @@ static void gen_opl(int op)
+                 vpushi(c);
+                 gen_op(op);
+                 vswap();
+-                vpushi(32 - c);
++                vpushi(WORD1_BITS - c);
+                 if (op == TOK_SHL)
+                     gen_op(TOK_SHR);
+                 else
+@@ -2554,6 +2609,9 @@ static void gen_opl(int op)
+ #ifdef TCC_TARGET_I386
+             gen_shift64(op);
+             break;
++#elif defined TCC_HAS_INT128
++            gen_shift128(op);
++            break;
+ #endif
+             /* XXX: should provide a faster fallback on x86 ? */
+             switch(op) {
+@@ -2632,12 +2690,13 @@ static void gen_opl(int op)
+         break;
+     }
+ }
+-#endif
++#endif /* TCC_TWO_WORDS */
+ 
+ /* normalize values */
+ static uint64_t value64(uint64_t l1, int t)
+ {
+     if ((t & VT_BTYPE) == VT_LLONG
++        || (t & VT_BTYPE) == VT_QLONG
+         || (PTR_SIZE == 8 && (t & VT_BTYPE) == VT_PTR))
+         return l1;
+     else if (t & VT_UNSIGNED)
+@@ -2657,6 +2716,105 @@ static int gen_opic_lt(uint64_t a, uint64_t b)
+     return (a ^ (uint64_t)1 << 63) < (b ^ (uint64_t)1 << 63);
+ }
+ 
++#ifdef TCC_HAS_INT128
++/* An __int128 constant is kept as its low 64 bits, the high word being
++   their sign (so every constant of long long and below is exact, and an
++   unsigned 128-bit constant at or above 2^63 cannot be one).  Fold the
++   operation of two such constants when the result is exact in that form;
++   return 0 when it is not (or the division is undefined), so that the
++   operation is computed at run time instead. */
++static int fold_int128(int op, uint64_t *pl1, uint64_t l2)
++{
++    uint64_t l1 = *pl1, r;
++    int64_t a = l1, b = l2;
++    int c;
++
++    switch (op) {
++    case '+':
++        r = l1 + l2;
++        if ((int64_t)((l1 ^ r) & (l2 ^ r)) < 0)
++            return 0;
++        break;
++    case '-':
++        r = l1 - l2;
++        if ((int64_t)((l1 ^ l2) & (l1 ^ r)) < 0)
++            return 0;
++        break;
++    case '*':
++        r = l1 * l2;
++        if (b == -1 ? a == INT64_MIN : b && (int64_t)r / b != a)
++            return 0;
++        break;
++    case '&': r = l1 & l2; break;
++    case '^': r = l1 ^ l2; break;
++    case '|': r = l1 | l2; break;
++    case '/':
++    case TOK_PDIV:
++        if (b == 0 || (a == INT64_MIN && b == -1))
++            return 0;
++        r = a / b;
++        break;
++    case '%':
++        if (b == 0)
++            return 0;
++        r = b == -1 ? 0 : a % b;
++        break;
++    case TOK_UDIV:
++    case TOK_UMOD:
++        /* with a negative word the value is above 2^127 */
++        if (b <= 0 || a < 0)
++            return 0;
++        r = op == TOK_UDIV ? l1 / l2 : l1 % l2;
++        break;
++    case TOK_SHL:
++        c = l2 & 127;
++        if (c >= 64) {
++            if (l1)
++                return 0;
++            r = 0;
++        } else {
++            r = l1 << c;
++            if ((int64_t)r >> c != a)
++                return 0;
++        }
++        break;
++    case TOK_SHR:
++        c = l2 & 127;
++        if (c == 0)
++            r = l1;
++        else if (a >= 0)
++            r = c >= 64 ? 0 : l1 >> c;
++        else if (c <= 64) /* the ones of the high word come down */
++            return 0;
++        else
++            r = ~(uint64_t)0 >> (c - 64);
++        break;
++    case TOK_SAR:
++        c = l2 & 127;
++        r = c >= 64 ? -(l1 >> 63) : (uint64_t)(a >> c);
++        break;
++        /* the order of the sign-extended words is the order of the
++           values, signed and unsigned alike */
++    case TOK_ULT: r = l1 < l2; break;
++    case TOK_UGE: r = l1 >= l2; break;
++    case TOK_EQ: r = l1 == l2; break;
++    case TOK_NE: r = l1 != l2; break;
++    case TOK_ULE: r = l1 <= l2; break;
++    case TOK_UGT: r = l1 > l2; break;
++    case TOK_LT: r = a < b; break;
++    case TOK_GE: r = a >= b; break;
++    case TOK_LE: r = a <= b; break;
++    case TOK_GT: r = a > b; break;
++    case TOK_LAND: r = l1 && l2; break;
++    case TOK_LOR: r = l1 || l2; break;
++    default:
++        return 0;
++    }
++    *pl1 = r;
++    return 1;
++}
++#endif
++
+ /* handle integer constant optimizations and various machine
+    independent opt */
+ static void gen_opic(int op)
+@@ -2690,6 +2848,12 @@ static void gen_opic(int op)
+     }
+ 
+     if (c1 && c2) {
++#ifdef TCC_HAS_INT128
++        if (t1 == VT_QLONG || t2 == VT_QLONG) {
++            if (!fold_int128(op, &l1, l2))
++                goto general_case;
++        } else
++#endif
+         switch(op) {
+         case '+': l1 += l2; break;
+         case '-': l1 -= l2; break;
+@@ -2756,7 +2920,8 @@ static void gen_opic(int op)
+             vpop();
+         } else if (c2 && ((l2 == 0 && (op == '&' || op == '*')) ||
+                           (op == '|' &&
+-                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG))) ||
++                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG
++                                          && t2 != VT_QLONG))) ||
+                           (l2 == 1 && (op == '%' || op == TOK_UMOD)))) {
+             /* treat (x & 0), (x * 0), (x | -1) and (x % 1) as constant */
+             if (l2 == 1)
+@@ -2777,7 +2942,8 @@ static void gen_opic(int op)
+                             op == TOK_SHL || op == TOK_SHR || op == TOK_SAR) &&
+                            l2 == 0) ||
+                           (op == '&' &&
+-                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG))))) {
++                            (l2 == -1 || (l2 == 0xFFFFFFFF && t2 != VT_LLONG
++                                          && t2 != VT_QLONG))))) {
+             /* filter out NOP operations like x*1, x-0, x&-1... */
+             vtop--;
+         } else if (c2 && (op == '*' || op == TOK_PDIV || op == TOK_UDIV || op == TOK_UMOD)) {
+@@ -2823,9 +2989,18 @@ static void gen_opic(int op)
+         } else {
+         general_case:
+                 /* call low level op generator */
++#ifdef TCC_HAS_INT128
++                if (t1 == VT_QLONG || t2 == VT_QLONG)
++                    gen_opw(op);
++                else
++#endif
+                 if (t1 == VT_LLONG || t2 == VT_LLONG ||
+                     (PTR_SIZE == 8 && (t1 == VT_PTR || t2 == VT_PTR)))
++#if PTR_SIZE == 4
++                    gen_opw(op);
++#else
+                     gen_opl(op);
++#endif
+                 else
+                     gen_opi(op);
+         }
+@@ -3039,6 +3214,9 @@ static void type_to_str(char *buf, int buf_size,
+     case VT_INT:
+         tstr = "int";
+         goto maybe_long;
++    case VT_QLONG:
++        tstr = "__int128";
++        goto add_tstr;
+     case VT_LLONG:
+         tstr = "long long";
+     maybe_long:
+@@ -3364,6 +3542,13 @@ static int combine_types(CType *dest, SValue *op1, SValue *op2, int op)
+         } else {
+             type.t = VT_FLOAT;
+         }
++#ifdef TCC_HAS_INT128
++    } else if (bt1 == VT_QLONG || bt2 == VT_QLONG) {
++        type.t = VT_QLONG;
++        if ((t1 & (VT_BTYPE | VT_UNSIGNED)) == (VT_QLONG | VT_UNSIGNED) ||
++            (t2 & (VT_BTYPE | VT_UNSIGNED)) == (VT_QLONG | VT_UNSIGNED))
++          type.t |= VT_UNSIGNED;
++#endif
+     } else if (bt1 == VT_LLONG || bt2 == VT_LLONG) {
+         /* cast to biggest op */
+         type.t = VT_LLONG | VT_LONG;
+@@ -3455,6 +3640,9 @@ op_err:
+             if (bt2 == VT_LLONG)
+                 /* XXX: truncate here because gen_opl can't handle ptr + long long */
+                 gen_cast_s(VT_INT);
++#elif defined TCC_HAS_INT128
++            if (bt2 == VT_QLONG)
++                gen_cast_s(VT_PTRDIFF_T);
+ #endif
+             type1 = vtop[-1].type;
+             vpush_type_size(pointed_type(&vtop[-1].type), &align);
+@@ -3644,6 +3832,17 @@ error:
+         }
+ 
+         c = (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST;
++#ifdef TCC_HAS_INT128
++        if (c && dbt_bt == VT_QLONG && !sf
++            && (sbt == (VT_LLONG | VT_UNSIGNED) || sbt_bt == VT_PTR)
++            && (vtop->c.i >> 63)) {
++            /* not representable as a 128-bit constant (fold_int128()):
++               computed in registers instead */
++            if (nocode_wanted & DATA_ONLY_WANTED)
++                tcc_error("unsupported: 128-bit constant at or above 2^63 in an initializer");
++            c = 0;
++        }
++#endif
+         if (c) {
+             /* constant case: we can do it now */
+             /* XXX: in ISOC, cannot do it if error in convert */
+@@ -3653,7 +3852,7 @@ error:
+                 vtop->c.ld = vtop->c.d;
+ 
+             if (df) {
+-                if (sbt_bt == VT_LLONG) {
++                if (sbt_bt == VT_LLONG || sbt_bt == VT_QLONG) {
+                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
+                         vtop->c.ld = vtop->c.i;
+                     else
+@@ -3678,14 +3877,16 @@ error:
+                     else
+                         vtop->c.i = (int64_t)vtop->c.ld;
+                 }
+-                else if (sbt_bt == VT_LLONG || (PTR_SIZE == 8 && sbt == VT_PTR))
++                else if (sbt_bt == VT_LLONG || sbt_bt == VT_QLONG
++                         || (PTR_SIZE == 8 && sbt == VT_PTR))
+                     ;
+                 else if (sbt & VT_UNSIGNED)
+                     vtop->c.i = (uint32_t)vtop->c.i;
+                 else
+                     vtop->c.i = ((uint32_t)vtop->c.i | -(vtop->c.i & 0x80000000));
+ 
+-                if (dbt_bt == VT_LLONG || (PTR_SIZE == 8 && dbt == VT_PTR))
++                if (dbt_bt == VT_LLONG || dbt_bt == VT_QLONG
++                    || (PTR_SIZE == 8 && dbt == VT_PTR))
+                     ;
+                 else if (dbt == VT_BOOL)
+                     vtop->c.i = (vtop->c.i != 0);
+@@ -3723,6 +3924,10 @@ error:
+         }
+ 
+         if (sf || df) {
++#ifdef TCC_HAS_INT128
++            if (sbt_bt == VT_QLONG || dbt_bt == VT_QLONG)
++                tcc_error("unsupported: conversion between __int128 and floating point");
++#endif
+             if (sf && df) {
+                 /* convert from fp to fp */
+                 gen_cvt_ftof(dbt);
+@@ -3749,7 +3954,8 @@ error:
+         if (ds == ss && ds >= 4)
+             goto done;
+         if (dbt_bt == VT_PTR || sbt_bt == VT_PTR) {
+-            tcc_warning("cast between pointer and integer of different size");
++            if (ds <= 8) /* a pointer in an __int128 is exact */
++                tcc_warning("cast between pointer and integer of different size");
+             if (sbt_bt == VT_PTR) {
+                 /* put integer type to allow logical operations below */
+                 vtop->type.t = (PTR_SIZE == 8 ? VT_LLONG : VT_INT);
+@@ -3794,6 +4000,31 @@ error:
+         ss = 4;
+ 
+ #elif PTR_SIZE == 8
++#ifdef TCC_HAS_INT128
++        if (ds == 16) {
++            /* to __int128: the high word is zero or the sign of the low */
++            if (ss < 8)
++                gen_cast_s(VT_LLONG | (sbt & VT_UNSIGNED));
++            if ((sbt & VT_UNSIGNED) || sbt_bt == VT_PTR) {
++                vpushll(0);
++                gv(RC_INT);
++            } else {
++                gv_dup();
++                vpushi(63);
++                gen_op(TOK_SAR);
++            }
++            lbuild(dbt);
++            goto done;
++        }
++        if (ss == 16) {
++            /* from __int128: the low word, then as from long long */
++            lexpand();
++            vpop();
++            if (ds == 8)
++                goto done;
++            ss = 8;
++        }
++#endif
+         if (ds == 8) {
+             /* need to convert from 32bit to 64bit */
+             if (sbt & VT_UNSIGNED) {
+@@ -3889,7 +4120,11 @@ ST_FUNC int type_size(CType *type, int *a)
+         *a = 2;
+         return 2;
+     } else if (bt == VT_QLONG || bt == VT_QFLOAT) {
++#ifdef TCC_HAS_INT128
++        *a = bt == VT_QLONG ? 16 : 8;
++#else
+         *a = 8;
++#endif
+         return 16;
+     } else {
+         /* char, void, function, _Bool */
+@@ -4092,6 +4327,7 @@ static void verify_assign_cast(CType *dt)
+     case VT_SHORT:
+     case VT_INT:
+     case VT_LLONG:
++    case VT_QLONG:
+         if (sbt == VT_PTR || sbt == VT_FUNC) {
+             tcc_warning("assignment makes integer from pointer without a cast");
+         } else if (sbt == VT_STRUCT) {
+@@ -4138,7 +4374,8 @@ static int ktrackable(Sym *s)
+         || (s->type.t & (VT_VOLATILE | VT_ARRAY | VT_VLA | VT_BITFIELD)))
+         return 0;
+     bt = s->type.t & VT_BTYPE;
+-    return is_integer_btype(bt) || bt == VT_PTR;
++    /* not __int128: a known value is 64 bits */
++    return (is_integer_btype(bt) && bt != VT_QLONG) || bt == VT_PTR;
+ }
+ 
+ /* the variable that a stack value reads or stores as a whole, if any */
+@@ -5427,7 +5664,10 @@ static void struct_layout(CType *type, AttributeDef *ad)
+ /* Does 'n' fit into integer type 't' ? */
+ static int in_range(long long n, int t)
+ {
+-    unsigned long long m = (1ULL << (btype_size(t & VT_BTYPE) * 8 - 1)) - 1;
++    unsigned long long m;
++    if (btype_size(t & VT_BTYPE) > 8)
++        return 1;
++    m = (1ULL << (btype_size(t & VT_BTYPE) * 8 - 1)) - 1;
+     if (t & VT_UNSIGNED)
+         return n <= (m << 1) + 1;
+     return n >= -(long long)m - 1 && n <= (long long)m;
+@@ -5769,7 +6009,7 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
+             } else {
+                 if (bt != -1 || (st != -1 && u != VT_INT))
+                     goto tmbt;
+-                if ((t & VT_DEFSIGN) && (u == VT_VOID || u > VT_LLONG))
++                if ((t & VT_DEFSIGN) && (u == VT_VOID || (u > VT_LLONG && u != VT_QLONG)))
+                     goto tmbt;
+                 bt = u;
+             }
+@@ -5786,6 +6026,14 @@ static int parse_btype(CType *type, AttributeDef *ad, int ignore_label)
+         case TOK_INT:
+             u = VT_INT;
+             goto basic_type;
++        case TOK_INT128:
++#ifdef TCC_HAS_INT128
++            u = VT_QLONG;
++#else
++            tcc_error("'__int128' is not supported on this target");
++            u = VT_INT;
++#endif
++            goto basic_type;
+         case TOK___AUTO_TYPE:
+             /* GNU C: the type is taken from the initializer, see
+                decl_initializer_alloc(); 'int' is only a placeholder */
+@@ -9063,7 +9311,9 @@ static int gcase(struct case_t **base, int len, int dsym)
+     int t, l2, e;
+ 
+     t = vtop->type.t & VT_BTYPE;
+-    if (t != VT_LLONG)
++    if (t == VT_QLONG) /* the 64-bit case values, widened like the switch value */
++        t = VT_LLONG | (vtop->type.t & VT_UNSIGNED);
++    else if (t != VT_LLONG)
+         t = VT_INT;
+     while (len) {
+         /* binary search while len > 8, else linear */
+@@ -10404,6 +10654,10 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
+             case VT_INT:
+                 write32le(ptr, val);
+                 break;
++            case VT_QLONG: /* the sign-extended low word (fold_int128()) */
++                write64le(ptr, val);
++                write64le((unsigned char *)ptr + 8, -(val >> 63));
++                break;
+ #else
+ 	    case VT_LLONG:
+                 write64le(ptr, val);
+diff --git a/tccpp.c b/tccpp.c
+index a0a064d..dc079d6 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3772,6 +3772,11 @@ static void tcc_predefs(TCCState *s1, CString *cs, int is_asm)
+       putdef(cs, "__leading_underscore");
+     cstr_printf(cs, "#define __SIZEOF_POINTER__ %d\n", PTR_SIZE);
+     cstr_printf(cs, "#define __SIZEOF_LONG__ %d\n", LONG_SIZE);
++#ifdef TCC_HAS_INT128
++    /* __int128 exists: the Linux kernel's CC_HAS_INT128 probe redefines it
++       under -Werror to see whether it does */
++    cstr_cat(cs, "#define __SIZEOF_INT128__ 16\n", -1);
++#endif
+     if (is_asm) {
+       /* the type-size macros GNU cpp also defines for assembler files
+          (the Linux kernel's asm-generic/bitsperlong.h tests
+diff --git a/tcctok.h b/tcctok.h
+index 9e16090..3d85f45 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -73,6 +73,7 @@
+      DEF(TOK_TYPEOF_UNQUAL2, "__typeof_unqual")
+      DEF(TOK_TYPEOF_UNQUAL3, "__typeof_unqual__")
+      DEF(TOK_LABEL, "__label__")
++     DEF(TOK_INT128, "__int128") /* gcc: 128-bit integers (x86-64) */
+ 
+ /*********************************************************************/
+ /* the following are not keywords. They are included to ease parsing */
+@@ -255,6 +256,10 @@
+      DEF(TOK___ashrdi3, "__ashrdi3")
+      DEF(TOK___lshrdi3, "__lshrdi3")
+      DEF(TOK___ashldi3, "__ashldi3")
++     DEF(TOK___divti3, "__divti3") /* 128-bit division and modulo (x86-64) */
++     DEF(TOK___modti3, "__modti3")
++     DEF(TOK___udivti3, "__udivti3")
++     DEF(TOK___umodti3, "__umodti3")
+      DEF(TOK___floatundisf, "__floatundisf")
+      DEF(TOK___floatundidf, "__floatundidf")
+ # ifndef TCC_ARM_VFP
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index 651bad0..df0a13f 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -246,7 +246,8 @@ static int is64_type(int t)
+ {
+     return ((t & VT_BTYPE) == VT_PTR ||
+             (t & VT_BTYPE) == VT_FUNC ||
+-            (t & VT_BTYPE) == VT_LLONG);
++            (t & VT_BTYPE) == VT_LLONG ||
++            (t & VT_BTYPE) == VT_QLONG); /* a word of an __int128 */
+ }
+ 
+ /* instruction + 4 bytes data. Return the address of the data */
+@@ -486,6 +487,7 @@ void load(int r, SValue *sv)
+         } else {
+             assert(((ft & VT_BTYPE) == VT_INT)
+                    || ((ft & VT_BTYPE) == VT_LLONG)
++                   || ((ft & VT_BTYPE) == VT_QLONG)
+                    || ((ft & VT_BTYPE) == VT_PTR)
+                    || ((ft & VT_BTYPE) == VT_FUNC)
+                 );
+@@ -1127,6 +1129,7 @@ static X86_64_Mode classify_x86_64_inner(CType *ty)
+     case VT_BYTE:
+     case VT_SHORT:
+     case VT_LLONG:
++    case VT_QLONG:
+     case VT_BOOL:
+     case VT_PTR:
+     case VT_FUNC:
+@@ -1381,6 +1384,8 @@ void gfunc_call(int nb_args)
+ 		/* simple type */
+ 		/* XXX: implicit cast ? */
+ 		r = gv(RC_INT);
++		if (reg_count == 2) /* __int128: the high word first */
++		    orex(0,vtop->r2,0,0x50 + REG_VALUE(vtop->r2)); /* push r2 */
+ 		orex(0,r,0,0x50 + REG_VALUE(r)); /* push r */
+ 		break;
+ 	}
+@@ -1806,6 +1811,19 @@ void gen_opi(int op)
+         }
+         vtop--;
+         break;
++    case TOK_UMULL:
++        /* unsigned 64x64 -> 128 (gen_opw(): __int128 multiply): the first
++           operand in %rax, the product in %rdx:%rax */
++        gv2(RC_RAX, RC_RCX);
++        fr = vtop[0].r;
++        vtop--;
++        save_reg(TREG_RDX);
++        save_reg_upstack(TREG_RAX, 1);
++        orex(1, fr, 0, 0xf7); /* mul fr */
++        o(0xe0 + REG_VALUE(fr));
++        vtop->r = TREG_RAX;
++        vtop->r2 = TREG_RDX;
++        break;
+     case TOK_UDIV:
+     case TOK_UMOD:
+         uu = 1;
+@@ -1842,6 +1860,38 @@ void gen_opl(int op)
+     gen_opi(op);
+ }
+ 
++#ifdef TCC_HAS_INT128
++/* __int128 shift by a variable count, inline like gcc (no __ashlti3 and
++   friends: the kernel has no helpers): vtop[-1] is the value, vtop the
++   count; the value goes to %rdx:%rax, the count to %cl */
++ST_FUNC void gen_shift128(int op)
++{
++    gv2(RC_IRET, RC_RCX);
++    if (op == TOK_SHL) {
++        o(0xc2a50f48);          /* shld %cl,%rax,%rdx */
++        o(0xe0d348);            /* shl %cl,%rax */
++        o(0x40c1f6);            /* test $64,%cl */
++        o(0x0574);              /* je 1f */
++        o(0xc28948);            /* mov %rax,%rdx */
++        o(0xc031);              /* xor %eax,%eax */
++    } else {
++        o(0xd0ad0f48);          /* shrd %cl,%rdx,%rax */
++        o(op == TOK_SHR ? 0xead348 : 0xfad348); /* shr/sar %cl,%rdx */
++        o(0x40c1f6);            /* test $64,%cl */
++        if (op == TOK_SHR) {
++            o(0x0574);          /* je 1f */
++            o(0xd08948);        /* mov %rdx,%rax */
++            o(0xd231);          /* xor %edx,%edx */
++        } else {
++            o(0x0774);          /* je 1f */
++            o(0xd08948);        /* mov %rdx,%rax */
++            o(0x3ffac148);      /* sar $63,%rdx */
++        }
++    }
++    vtop--;                     /* 1: the result is in %rdx:%rax */
++}
++#endif
++
+ /* generate a floating point operation 'v = t1 op t2' instruction. The
+    two operands are guaranteed to have the same floating point type */
+ /* XXX: need to use ST1 too */

@@ -84,8 +84,7 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
 
 ## Kernel-side changes (`patches/linux/`)
 
-* workarounds, guarded by `__TINYC__` or `__SIZEOF_INT128__`: the 128-bit cmpxchg block and
-  `freelist_full_t` (tcc has no `__int128`); the seqlock canaries as stubs (0005: one of the
+* workarounds, guarded by `__TINYC__`: the seqlock canaries as stubs (0005: one of the
   two, `__scoped_seqlock_bug()`, needs the optimizer to prove a state kept in a struct across
   loop iterations impossible; the other, `__scoped_seqlock_invalid_target()`, folds since fix
   120).  `rip_rel_ptr()` as a macro and `_static_cpu_has()` as the dynamic test (0003, 0004:
@@ -104,7 +103,9 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   pmdp/pudp_test_and_clear_young() declarations) went the same day without a tcc change,
   fixes 119 to 121 together having made its dead branch disappear; and 0010 and 0016 (K11, K17:
   the AVX assembly of lib/crypto) went the same day with fix 122, the VEX/EVEX encoder, and 123,
-  a `##` comment: 6 kernel patches remain.
+  a `##` comment; and 0001 and 0002 (K1, K2: the 128-bit cmpxchg block of cmpxchg_64.h under
+  `__SIZEOF_INT128__` and a two-word `freelist_full_t` in mm/slab.h) the same day with fix
+  125, `__int128` on x86_64: 4 kernel patches remain, none of them a tcc matter.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -191,16 +192,17 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   to 124): of the 6 kernel patches left, tcc could absorb
-   0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
+   to 125): of the 4 kernel patches left, none is a tcc matter: 0005
+   (`__scoped_seqlock_bug()`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
-   and 0011 (the 16-bit code size) stay kernel-side.  Fix 121, the i386 strength reduction of
+   and 0011 (the 16-bit code size) stay kernel-side.  Fix 125, `__int128` on x86_64, took
+   0001 and 0002 on 2026-11-04, the last two that a compiler feature could take; fix 121, the i386 strength reduction of
    `long long` division by a constant (with a division-free `__builtin_mul_overflow`, the
    inlining of one-return static functions given a constant, and the dropping of effect-free
    statements), took 0013 and 0019 on 2026-11-04; fix 120, the inliner, took 0003, 0004,
    0012 and 0017 the same day (fix 119 had taken 0007, 0008, 0014, 0018), and 0015 was dropped
    the same day with no further tcc change, fixes 119 to 121 together folding its dead
-   branch; fix 122, the VEX/EVEX encoder, took 0010 and 0016 the same day (6 left).  The real objtool,
+   branch; fix 122, the VEX/EVEX encoder, took 0010 and 0016 the same day.  The real objtool,
    built with gcc, accepted all 1566 tcc-built x86_64 objects of drivers.config before fix 120
    (212 warnings in 110 objects: an epilogue after an infinite loop, missing `__noreturn`,
    `stac()`/`clac()` not inlined -- they are now --, two alternatives' stack layouts in
@@ -348,7 +350,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The kernel patches (11 since fix 120) are
+  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The kernel patches (4 since fix 125) are
   applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same
@@ -834,7 +836,8 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
   the two-register ABI; no division (`__divti3` can stay a libtcc1 routine). Defining
   `__SIZEOF_INT128__` also turns on `CC_HAS_INT128` and with it `ARCH_SUPPORTS_INT128`:
   math64.h's 128-bit multiplies and the curve25519/poly1305 64-bit backends get compiled and
-  have to be right. Large.
+  have to be right. Large.  Done 2026-11-04, fix 125 (see the last paragraph of this
+  section): the two-word machinery generalised as described, about 540 lines in tcc.
 
 Kernel-side for good: 0005's `__scoped_seqlock_bug()` (the state lives in a struct across
 loop iterations: no single-pass analysis sees it; the kernel already has the stub form for
@@ -977,6 +980,34 @@ in a static initializer (`PARAM_FROM_CONFIG()` in lib/kunit/executor.c, "initial
 is not constant"), which a KUnit build of the project's own kernel needs; with the fix, tcc
 compiles executor.c too (no gcc in that scratch kernel) and the three boots pass the same
 suites (FIX-LOG 124).
+
+Patches 0001 and 0002 followed the same day with fix 125 (docs/FIX-LOG.md), `__int128` on
+x86_64 (4 kernel patches remain: 0005, 0006, 0009, 0011, all kernel-side; the list of tcc
+features this section proposed is complete). Measured first, from the kernel's sources with
+`__SIZEOF_INT128__` defined (which turns on `CC_HAS_INT128` and `ARCH_SUPPORTS_INT128`): the
+kernel needs loads and stores of a `u128` (a `volatile u128 *`, a union member, an array of
+them), the SysV two-register passing and return of `arch_cmpxchg128()` (inlined since fix
+120), `==`/`!=` on 128 bits (`try_cmpxchg128`), the unsigned and signed 64x64->128 products of
+math64.h's `mul_u64_u64_shr()`/`mul_u64_u32_add_u64_shr()` and fair.c's `(__int128)key *
+load` with a `>> shift` (variable) or `>= avg` after them, and gf128hash.c's xor of such
+products with `>> 64`; no 128-bit division, modulo, floating-point conversion or inline asm
+operand (the asm takes the 64-bit halves). The implementation is about 540 lines in tcc
+(patches 0126 and 0127): `VT_QLONG` becomes the type, the i386 two-word `long long` machinery
+of tccgen.c is parametrised on the word type and works on two 64-bit words (the 11 `PTR_SIZE
+== 4` sites of the list above), `gen_shift128()` is the x86_64 counterpart of i386's
+`gen_shift64()`, the four division helpers live in libtcc1 (never referenced by the kernel:
+`nm -u vmlinux` has no `__divti3`, `__udivti3` or `__multi3`), and a widened operand carries a
+mark (`VT_EXT128`) that survives the spill a 3-register allocator forces, so that the kernel's
+products are a single `mul`/`imul` instead of three multiplies. The x86_64 `.config` of the
+rebuilt kernel has `CONFIG_CC_HAS_INT128=y` and `CONFIG_ARCH_SUPPORTS_INT128=y` (the probe
+compiles `-D__SIZEOF_INT128__=0` under `-Werror`, and tcc's "redefined" warning is an error
+there, as gcc's), so the vanilla cmpxchg_64.h, slab.h, math64.h, fair.c and gf128hash.c paths
+are the ones built: 2094 tcc and 0 gcc invocations, bzImage 7 431 680 bytes (unchanged in
+size; mm/slub.o carries the inlined `cmpxchg16b`); the i386 kernel is unaffected (no
+`__int128` there, the probe fails): 2057 tcc and 0 gcc invocations, bzImage 6 852 608 bytes, also unchanged. `scripts/devices-test.sh` passes its 13 checks
+on both; run.sh boots with `-cpu host` under KVM, whose cx16 makes `system_has_cmpxchg128()`
+true, so SLUB's 128-bit freelist cmpxchg and the scheduler's and timekeeping's 128-bit
+multiplies are exercised by that boot. A scratch x86_64 kernel with CONFIG_KUNIT and the lib/crypto tests (build/int128-scratch/kunit-kernel.sh, a copy of the fix-122 harness; 1888 tcc and 0 gcc invocations, CC_HAS_INT128=y) booted four times, with `-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2` and `host,-pclmulqdq` -- the last one takes the generic gf128hash.c, whose `clmul64()` is the `__int128` code -- passes every suite in every boot: blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed (the benchmarks skipped).
 
 ## Debugging recipes
 

@@ -124,3 +124,6 @@ bugfixes/0122-tccpp-outside-a-macro-body-is-a-comment-in-an-assemb.patch
 features/0123-tests-the-VEX-EVEX-forms-in-asmtest.S-and-the-m16-as.patch
 compatibility/0124-tccgen-a-constant-index-into-a-string-literal-is-the.patch
 features/0125-tests-166_str_index-the-cases-of-fix-124.patch
+features/0126-x86_64-__int128-and-unsigned-__int128-VT_QLONG-as-a-.patch
+features/0127-x86_64-one-mul-imul-for-a-64x64-128-__int128-product.patch
+features/0128-tests-167_int128-__int128-on-x86-64-expected-output-.patch

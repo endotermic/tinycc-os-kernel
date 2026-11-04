@@ -65,11 +65,13 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 122 | tinycc 0121 |
 | | | | | 123 | tinycc 0122 |
 | | | | | 124 | tinycc 0124 |
+| | | | | 125 | tinycc 0126, 0127 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
-last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124.
+last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
+fix 125.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -122,6 +124,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/164_inline_call.c` | all | 120 |
 | `tests/tests2/165_div_const.c` | all (the strength reduction itself on i386) | 121 |
 | `tests/tests2/166_str_index.c` | all | 124 |
+| `tests/tests2/167_int128.c` | x86_64 (skipped elsewhere: no `__int128`) | 125 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -1454,7 +1457,8 @@ K11. 2026-10-22, COMMITTED (upstreamable), `arch/x86/Kconfig.assembler`, `lib/cr
     AVX-512 BLAKE2s function; tcc's assembler has no VEX/EVEX encodings, the glue falls back
     to the SSSE3 and generic code. With binutils nothing changes.
     DROPPED 2026-11-04 with tcc fix 122 (the VEX and EVEX encodings): the vanilla files
-    assemble, instruction for instruction as with GNU as; 6 kernel patches remain.
+    assemble, instruction for instruction as with GNU as; 6 kernel patches remained (4 after
+    fix 125).
 K12. 2026-10-22, COMMITTED (upstreamable), `arch/x86/Kconfig`, `arch/x86/boot/Makefile`,
     `arch/x86/boot/video.c`: `X86_BOOT_VIDEO_MODES` (default y, hidden unless EXPERT) builds the
     BIOS video mode setting (vga=, the menu, the VGA/VESA/BIOS drivers, EDID); without it
@@ -2156,6 +2160,94 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     the three boots of kunit-boot.sh (`-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2`)
     pass every lib/crypto suite (blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed, the benchmarks skipped, in each boot; the scratch kernel was rebuilt in full by the +125p tcc, 2115 tcc and 0 gcc invocations. The saved kunit-kernel.sh lacked `CONFIG_RUNTIME_TESTING_MENU=y`, behind which the lib/crypto tests hide, so its first run here built a kernel without them that printed the KTAP header and no suite; the script sets it now). Both kernels rebuilt with the new tcc (2057 i386 and 2094 x86_64 tcc invocations, 0 gcc; bzImage 6 852 608 and 7 431 680 bytes, both unchanged),
     `scripts/devices-test.sh` passes its 13 checks on both. The test also passes as a static i386 binary built by build/i386/musl-tcc.
+
+125. 2026-11-04, COMMITTED (patches/tinycc/features/0126 the type and its code generation, 0127
+    the native 64x64->128 multiply, test in features/0128), `tcc.h`, `tccgen.c`, `x86_64-gen.c`,
+    `tccpp.c`, `tcctok.h`, `tccasm.c`, `include/tccdefs.h`, `lib/libtcc1.c` (about 540 lines).
+    Problem: tcc had no `__int128`. `include/uapi/linux/types.h` defines `__s128`/`__u128` only
+    under `__SIZEOF_INT128__`, and without them `arch/x86/include/asm/cmpxchg_64.h` (the
+    `union __u128_halves` and the `arch_cmpxchg128*()` helpers) and `mm/slab.h` (`typedef u128
+    freelist_full_t`) do not compile: kernel patches 0001 and 0002 wrapped the first in
+    `#ifdef __SIZEOF_INT128__` and gave the second a two-word structure. With the macro defined
+    `init/Kconfig`'s probe (`cc-option -m64 -D__SIZEOF_INT128__=0` under -Werror, which must
+    fail: tcc's "redefined" warning becomes an error, checked) turns on `CC_HAS_INT128` and so
+    `ARCH_SUPPORTS_INT128`, and the kernel also compiles `include/linux/math64.h`'s
+    `mul_u64_u64_shr()`/`mul_u64_u32_shr()` and `include/vdso/math64.h`'s
+    `mul_u64_u32_add_u64_shr()` (`(u64)(((unsigned __int128)a * mul) >> shift)`),
+    kernel/sched/fair.c's `avg >= (__int128)key * load`, lib/crypto/gf128hash.c's `clmul64()`
+    (`a0 * (u128)b0`, xor, `>> 64`), and the SLUB freelist's `try_cmpxchg128` with a real
+    `u128` (loads, stores, `==`, the union halves into `cmpxchg16b`).  No 128-bit division or
+    modulo anywhere in the kernel, no conversion to or from floating point, no variable shift.
+    Fix: `VT_QLONG` (13), until now only the ABI class of a 16-byte integer structure, is the
+    type on x86-64 SysV (`TCC_HAS_INT128` in tcc.h; the Win64 ABI passes 16-byte values by
+    reference, so PE, i386 and the other targets are untouched and say "'__int128' is not
+    supported on this target"): `__int128`/`unsigned __int128` parse (TOK_INT128; `__int128_t`
+    and `__uint128_t`, until now a 16-byte structure in tccdefs.h, are typedefs of it there),
+    size and alignment 16, an integer for is_integer_btype(), ranked above long long by the
+    usual arithmetic conversions, `__SIZEOF_INT128__ 16` predefined (tccpp.c; `tccdefs.h`'s
+    column-1 conditional must use the platform macros `__x86_64__`/`_WIN32`, which c2str maps to
+    the target macros at tcc's own build time -- `__SIZEOF_INT128__` there was gcc's, and the
+    i386 cross compiler then rejected its own predefs).  A value lives in two registers (r, r2)
+    like a long long on the 32-bit targets: the two-word machinery of tccgen.c, until now under
+    `PTR_SIZE == 4` (lexpand(), lbuild(), gv_dup(), gen_opl() -- renamed gen_opw()), is
+    parametrised on the word type and width (VT_WORD2/VT_WORD1/WORD1_BITS: long long in two
+    ints, or __int128 in two long longs; TCC_TWO_WORDS), so + - * & | ^, the comparisons and
+    the shifts by a constant come out of the same code; a shift by a variable is inline
+    (gen_shift128(): shld/shrd and a test of bit 6 of the count, the counterpart of fix 83's
+    gen_shift64() on i386; the kernel has no `__ashlti3`), / and % call `__divti3`, `__modti3`,
+    `__udivti3`, `__umodti3`, written for libtcc1 in 64-bit arithmetic on a two-word structure
+    (the same registers as `unsigned __int128` under the ABI; the kernel never needs them).  A
+    constant whose high word x86-64 loads with `xor` would clear the carry between the halves of
+    + and -: gen_opw() loads a constant first operand before the low-word operation (found by
+    `-x`: 0 - x had the borrow lost).  gen_cast(): widening puts zero or the sign of the 64-bit
+    value into the high register (narrower sources are widened to 64 bits first, pointers are
+    zero-extended), narrowing keeps the low word (an lvalue is simply re-read as its low bytes);
+    constants stay 64-bit: an `__int128` constant is its sign-extended low word, fold_int128()
+    folds only what that representation holds exactly (an overflowing + - * <<, a logical shift
+    of a negative word, an unsigned division of a value above 2^63 are computed at run time),
+    an unsigned 64-bit constant at or above 2^63 cast to `__int128` is materialised in
+    registers and refused in a static initializer (`(u128)1 << 64` as an initializer is
+    "not constant", as before for anything not folded).  The backend treats a `VT_QLONG` word as
+    64 bits (is64_type(): the spill of the second word of a 16-byte value had been a 32-bit
+    store), classifies the type as INTEGER (two registers; when they run out, both words are
+    pushed, 16-byte aligned), and gen_opi() has TOK_UMULL (`mul`) and the new TOK_SMULL
+    (one-operand `imul`) for a 64x64->128 product in %rdx:%rax.  The native multiply (patch
+    0127): gen_cast() marks a value it widened with VT_EXT128 in `r` (1: the high register is
+    zero, 2: it is the sign of the low one), gv() clears the mark when it reloads the value and
+    save_reg_upstack() keeps it when it spills both words (RC_INT has three registers on
+    x86-64, so one operand of a 128-bit multiply is spilled while the other is widened);
+    gen_opw('*') with two marked (or constant) operands multiplies the two low words with one
+    mul or imul instead of the low product plus two cross products: the kernel's
+    `mul_u64_u64_shr()`, `(u128)a * ua`, `(s128)key * load` and gf128hash's `a0 * (u128)b0`
+    are one multiply each (checked with objdump).  A switch on an `__int128` compares the
+    case values widened like the switch value (gcase() had pushed them as int).  Refused with
+    a message rather than miscompiled: conversions to and from floating point ("unsupported"),
+    an asm operand of 128 bits in a register (a memory constraint, the kernel's `"+m" (*ptr)`,
+    is fine; the kernel passes the 64-bit halves), bitfields and 16-byte atomic builtins (the
+    existing checks); kprop does not track `__int128` locals.
+    Test: tests/tests2/167_int128.c (expected output from gcc -O0, the same at -O2): layout and
+    alignment, `_Generic`, constants including those the 64-bit representation cannot fold,
+    conversions from and to every integer width and sign, the operators with constant and
+    variable shift counts (0, 7, 64, 70, 127), signed and unsigned division through the
+    helpers, comparisons, `?:`, compound assignments and ++/--, structs, unions, arrays,
+    pointers, globals with initializers, calls with 0 to 7 preceding integer arguments
+    (registers and stack), mixed with double/float/long double arguments, recursion, the
+    kernel's mul_u64_u64_shr / mul_u64_u32_add_u64_shr / entity_before / cmpxchg128-union /
+    gf128hash idioms, a switch, and 2000 pseudo-random 64x64 products and shifts against a
+    32-bit-limb reference; passes also under `-b`.  Skipped by tests2/Makefile where the type
+    does not exist.  `make test` ALL TESTS PASSED (host, including the cross-test of every
+    target compiled by `tcc -run tcc.c`).
+    Verification: kernel patches 0001 and 0002 deleted (`scripts/patch.sh --reset linux`, 4 left:
+    0005, 0006, 0009, 0011, none a tcc matter); the x86_64 `.config` now has
+    `CONFIG_CC_HAS_INT128=y` and `CONFIG_ARCH_SUPPORTS_INT128=y` (the probe compiled by tcc), so
+    the vanilla cmpxchg_64.h, slab.h, math64.h, fair.c and gf128hash.c paths with `__int128`
+    are the ones built: 2094 tcc and 0 gcc invocations on x86_64, 2057 on i386 (no
+    `__int128` there: the probe fails and CC_HAS_INT128 stays off); bzImage 7 431 680 and
+    6 852 608 bytes (were 7 431 680 and 6 852 608); `nm -u vmlinux`: no `__divti3`,
+    `__multi3` or `__udivti3`; `scripts/devices-test.sh` passes its 13 checks on both (run.sh
+    boots with `-cpu host` under KVM, whose cx16 makes `system_has_cmpxchg128()` true, so SLUB's
+    128-bit freelist cmpxchg and the scheduler's and timekeeping's 128-bit multiplies are live
+    in that boot); a scratch x86_64 kernel with CONFIG_KUNIT and the lib/crypto tests (build/int128-scratch/kunit-kernel.sh, a copy of the fix-122 harness; 1888 tcc and 0 gcc invocations, CC_HAS_INT128=y) booted four times, with `-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2` and `host,-pclmulqdq` -- the last one takes the generic gf128hash.c, whose `clmul64()` is the `__int128` code -- passes every suite in every boot: blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed (the benchmarks skipped).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 16:44:49 +0200
+Subject: [PATCH] x86_64: one mul/imul for a 64x64->128 __int128 product
+
+(unsigned __int128)a * b, the kernel's mul_u64_u64_shr() and the
+scheduler's (__int128)key * load, took the generic two-word path: mul
+for the low product and two imul for the cross products of the high
+words, which are only the sign or zero extension of the low words.
+
+gen_cast() marks a value it widened to __int128 with VT_EXT128 in r
+(1: the high register is zero, 2: it is the sign of the low one); gv()
+clears it when it reloads the value (vtop->r = r), save_reg_upstack()
+keeps it when it spills both words to the stack (the x86-64 backend has
+three allocatable integer registers, so one operand of a 128-bit
+multiply is usually spilled while the other is widened).  gen_opw('*')
+with two such operands -- a constant counts as either kind when it is
+non-negative, as sign-extended otherwise -- drops their high words and
+multiplies the 64-bit low words with TOK_UMULL (mul) or the new
+TOK_SMULL (one-operand imul), the product in %rdx:%rax.
+---
+ tcc.h        |  5 +++++
+ tccgen.c     | 49 ++++++++++++++++++++++++++++++++++++++++++++++++-
+ x86_64-gen.c |  9 +++++----
+ 3 files changed, 58 insertions(+), 5 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index 2a2942f..294ebd8 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1088,6 +1088,10 @@ struct filespec {
+                                 char/short stored in integer registers) */
+ #define VT_NONCONST  0x1000  /* VT_CONST, but not an (C standard) integer
+                                 constant expression */
++#define VT_EXT128    0x00c0  /* an __int128 in registers whose high word (r2) is
++                                known: 1 = zero, 2 = the sign of the low word
++                                (set by gen_cast, cleared by gv(); lets the
++                                64x64->128 multiply use one mul/imul) */
+ #define VT_MUSTBOUND 0x4000  /* bound checking must be done before
+                                 dereferencing value */
+ #define VT_BOUNDED   0x8000  /* value is bounded. The address of the
+@@ -1191,6 +1195,7 @@ struct filespec {
+ #define TOK_UMOD    0x84 /* unsigned modulo */
+ #define TOK_PDIV    0x85 /* fast division with undefined rounding for pointers */
+ #define TOK_UMULL   0x86 /* unsigned 32x32 -> 64 mul (i386), 64x64 -> 128 (x86_64) */
++#define TOK_SMULL   0x8d /* signed 64x64 -> 128 mul (x86_64) */
+ #define TOK_UDIVL   0x8c /* unsigned 64/32 -> 32 div and mod (i386): quotient
+                             in the low word, remainder in the high word */
+ #define TOK_ADDC1   0x87 /* add with carry generation */
+diff --git a/tccgen.c b/tccgen.c
+index ad24cf3..07014cf 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -1634,7 +1634,9 @@ ST_FUNC void save_reg_upstack(int r, int n)
+                    p->c.i */
+                 p->r = (p->r & ~(VT_VALMASK | VT_BOUNDED)) | VT_LLOCAL;
+             } else {
+-                p->r = VT_LVAL | VT_LOCAL;
++                /* both words of an __int128 went to the stack, so what
++                   is known about its high word (VT_EXT128) stays known */
++                p->r = VT_LVAL | VT_LOCAL | (p->r & VT_EXT128);
+                 p->type.t &= ~VT_ARRAY; /* cannot combine VT_LVAL with VT_ARRAY */
+             }
+             p->sym = NULL;
+@@ -2429,6 +2431,38 @@ static int gen_opl_divc(int op)
+ }
+ #endif /* PTR_SIZE == 4 */
+ 
++#ifdef TCC_HAS_INT128
++/* The native 64x64->128 multiply: an __int128 operand whose high word is
++   known from its low word (a value gen_cast widened, VT_EXT128 still set
++   because nothing reloaded it since, or a constant) needs no partial
++   products.  Returns 1 when both operands are zero-extended, 2 when both
++   are sign-extended (a non-negative constant is either), 0 otherwise. */
++static int ext128_kind(SValue *v)
++{
++    int r = v->r & (VT_VALMASK | VT_LVAL | VT_SYM);
++    if (r == VT_CONST)
++        return (int64_t)v->c.i < 0 ? 2 : 3;
++    /* in registers, or spilled to the stack by save_reg_upstack() */
++    if ((r < VT_CONST && v->r2 < VT_CONST) || r == (VT_LOCAL | VT_LVAL))
++        return BFGET(v->r, VT_EXT128);
++    return 0;
++}
++
++static int mul128_kind(void)
++{
++    int k = ext128_kind(vtop) & ext128_kind(vtop - 1);
++    return k & 1 ? 1 : k & 2 ? 2 : 0;
++}
++
++/* reduce an operand mul128_kind() accepted to its low word */
++static void ext128_low(SValue *v)
++{
++    v->r &= ~VT_EXT128;
++    v->r2 = VT_CONST;
++    v->type.t = VT_LLONG;
++}
++#endif
++
+ #ifdef TCC_TWO_WORDS
+ /* generate CPU independent two-word integer operations (long long on
+    32-bit targets, __int128 on x86-64) */
+@@ -2448,6 +2482,16 @@ static void gen_opw(int op)
+         && gen_opl_divc(op))
+         return;
+ #endif
++#ifdef TCC_HAS_INT128
++    if (op == '*' && (c = mul128_kind())) {
++        t = vtop->type.t;
++        ext128_low(vtop);
++        ext128_low(vtop - 1);
++        gen_op(c == 1 ? TOK_UMULL : TOK_SMULL); /* one mul/imul: rax:rdx */
++        vtop->type.t = t;
++        return;
++    }
++#endif
+ 
+     switch(op) {
+     case '/':
+@@ -4003,6 +4047,7 @@ error:
+ #ifdef TCC_HAS_INT128
+         if (ds == 16) {
+             /* to __int128: the high word is zero or the sign of the low */
++            int ext = 1;
+             if (ss < 8)
+                 gen_cast_s(VT_LLONG | (sbt & VT_UNSIGNED));
+             if ((sbt & VT_UNSIGNED) || sbt_bt == VT_PTR) {
+@@ -4012,8 +4057,10 @@ error:
+                 gv_dup();
+                 vpushi(63);
+                 gen_op(TOK_SAR);
++                ext = 2;
+             }
+             lbuild(dbt);
++            vtop->r |= BFVAL(VT_EXT128, ext);
+             goto done;
+         }
+         if (ss == 16) {
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index df0a13f..6934f8b 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -1812,15 +1812,16 @@ void gen_opi(int op)
+         vtop--;
+         break;
+     case TOK_UMULL:
+-        /* unsigned 64x64 -> 128 (gen_opw(): __int128 multiply): the first
+-           operand in %rax, the product in %rdx:%rax */
++    case TOK_SMULL:
++        /* 64x64 -> 128 (gen_opw(): __int128 multiply): the first operand
++           in %rax, the product in %rdx:%rax */
+         gv2(RC_RAX, RC_RCX);
+         fr = vtop[0].r;
+         vtop--;
+         save_reg(TREG_RDX);
+         save_reg_upstack(TREG_RAX, 1);
+-        orex(1, fr, 0, 0xf7); /* mul fr */
+-        o(0xe0 + REG_VALUE(fr));
++        orex(1, fr, 0, 0xf7); /* mul / imul fr */
++        o((op == TOK_UMULL ? 0xe0 : 0xe8) + REG_VALUE(fr));
+         vtop->r = TREG_RAX;
+         vtop->r2 = TREG_RDX;
+         break;
