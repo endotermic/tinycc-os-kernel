@@ -61,6 +61,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 118 | tinycc 0114 |
 | | | | | 119 | tinycc 0115 |
 | | | | | 120 | tinycc 0117 |
+| | | | | 121 | tinycc 0119 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -115,6 +116,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/162_i386_mregparm.c` | i386, with `-mregparm=3` | 113 |
 | `tests/tests2/163_const_prop.c` | all | 119 |
 | `tests/tests2/164_inline_call.c` | all | 120 |
+| `tests/tests2/165_div_const.c` | all (the strength reduction itself on i386) | 121 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -1881,6 +1883,102 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     tcc before the inliner compiled `__static_cpu_has()`. What still does not fold:
     `__scoped_seqlock_bug()` (0005 stays for it: the state is a struct member across loop
     iterations), 0006 (a constant through a function parameter of a non-static function).
+
+121. 2026-11-04, COMMITTED (patches/tinycc/compatibility/0119, test 0120), `tccgen.c` (gen_opl_divc,
+    gen_opl, dead_expr_stmt, block, vstore, vpush_helper_func, kscan_labels, inline_call,
+    tccgen_init, tccgen_finish), `i386-gen.c` (gen_opi TOK_UDIVL), `tcc.h` (TOK_UDIVL,
+    InlineFunc.sret), `tccpp.c` (end_macros), `include/tccdefs.h` (`__builtin_mul_overflow`).
+    Problem: two kernel patches existed because tcc called the libgcc division routines on
+    i386: gen_opl() compiled every `long long` division or modulo as a call of __divdi3,
+    __moddi3, __udivdi3 or __umoddi3 (unsigned by a power of two excepted, fix 84), while gcc
+    strength-reduces every division by a constant, so that a gcc-built 32-bit kernel never
+    links them and the kernel has none (0013 provided them as `lib/math/divdi3.c` under
+    `CC_IS_TCC`, 0019 made them `asmlinkage` for tcc's stack-argument call). 25 of the i386
+    objects (mm, fs, lib, sched, perf, net/core, ath9k, hwsim, ptp, badblocks, HD-audio USB)
+    called them, at 115 sites: `loff_t / PAGE_SIZE` and `% PAGE_SIZE` everywhere (filemap,
+    shmem, truncate, readahead, iov_iter, buffer, ext4, libfs, datagram, skbuff), `/ 8`,
+    `/ 2`, `/ 4`, `/ 1024`, `% 8`, `% 1024` signed (sched.h, events/core, page-writeback,
+    hwsim_nan, scarlett2, task_mmu), `/ 10000` (backing-dev's BDI_RATIO_SCALE), `/ 12`, `/ 20`,
+    `/ 24` unsigned (mballoc, scatterlist, task_mmu); and 13 sites with no constant divisor
+    at all, which gcc never reaches: `check_mul_overflow()` of 64-bit values (kstrtox,
+    fs/buffer, sched/fair, ptp_clock: tcc's `__builtin_mul_overflow` detected the overflow
+    with a division), `tsf / ieee80211_tu_to_usec(SLOT_TU)` (mac80211_hwsim_nan.c: a static
+    inline of one `return 1024 * tu;`, which gcc inlines and folds), and block/badblocks.c's
+    `rounddown(s, 1 << bb->shift);` and `roundup(...)` statements whose value is unused (six
+    of them; gcc drops the dead computation, the 64-bit modulo by a shift count included).
+    Fix: (1) gen_opl_divc(): a division or modulo by a constant power of two is a shift or
+    a mask also for a signed dividend, with gcc's bias (`q = (x + ((x >> 63) & (2^k - 1)))
+    >> k`, `r = ((x + b) & (2^k - 1)) - b`); on i386 any other divisor of at most 32 bits
+    is two `divl` through the new pseudo-op TOK_UDIVL of gen_opi() (edx:eax / r32, the
+    quotient in the low and the remainder in the high word of a 64-bit result, like
+    TOK_UMULL's product): `q_hi = hi / d`, then `(hi % d : lo) / d`, both with the high word
+    below the divisor, so divl cannot fault; a signed division goes through the unsigned one
+    of |x| = (x ^ s) - s with s = x >> 63, the quotient negated the same way when x and d
+    differ in sign (d's sign is known: s or ~s), the remainder with the sign of x; LLONG_MIN
+    works (|x| = 2^63 unsigned). A divisor above 32 bits, or zero, still calls the helper (as
+    gcc calls __udivdi3 for a variable divisor; the kernel has no such division: do_div()).
+    Other 32-bit targets keep the helper except for the power-of-two case. (2)
+    `__builtin_mul_overflow` (tccdefs.h) of 64-bit magnitudes checks the product through its
+    32-bit halves: overflow when both high halves are set, when the sum of the cross
+    products reaches 2^32, or when adding it shifted to the low product carries; the stored
+    value is the wrapped product in every case, as gcc's. (3) inline_call(): a merely static
+    function whose body is one `return` statement (kscan_labels() sees `{ return ...; }` with
+    one `;`, up to 64 tokens) is inlined when given a constant argument, whatever the body
+    does with it (the rule of fix 120 wanted the parameter in a condition): the known
+    parameter folds in the expression and the call is a constant. (4) dead_expr_stmt(),
+    from block(): an expression statement whose value is unused is dropped when it has no
+    effect. Its tokens are read into a string (tok_str_add_tok, as loop_tokens() saves a
+    loop body), and a scan refuses what is not a plain expression or a statement
+    expression's declaration: assignments other than an initializer, a call (an identifier
+    before `(`; the builtins are keywords and pass), `++`/`--`, jumps, asm, control
+    statements, labels (a `:` without a `?`), attributes, storage classes; the rest is parsed
+    without code at nocode_wanted == fold_probe_level, as fold_probe_expr() probes a stub,
+    and anything with an effect met there keeps the statement: a store (vstore(); except to
+    a local of the statement itself, below dead_probe_loc, such as `__x` of rounddown()), a
+    call (gfunc_call()), a volatile read (gv()); a helper call (vpush_helper_func(), the
+    64-bit modulo) is a computation, not an effect, unlike in the stub probe. The locals,
+    anonymous types, kprop state (a KSnap), loc and the warnings (silenced during the probe)
+    are restored; the string is replayed for the real compilation when the statement stays,
+    the `;` through unget_tok(). (5) tccgen_finish() pops the macro stack (end_macros(), new
+    in tccpp.c) before the saved bodies are freed: an error inside a function body left the
+    body's token string on the stack for preprocess_end() to walk after free (a pre-existing
+    hazard, harmless while nothing reused the memory; the probe's string did).
+    Test: 165 (unsigned and signed `/` and `%` by 1, 2, 3, 7, 8, 10, 100, 1000, 4096, 10^9,
+    2^31, 2^32-1, 2^32-2, 2^32, 2^32+1, 256*10^9, 2^63, 2^64-1, a 64-bit odd number, the
+    negatives of the signed ones, LLONG_MIN and LLONG_MAX as divisors; dividends 0, ±1, small
+    values, the powers of two around 2^31, 2^32, 2^63, LLONG_MIN/MAX, ULLONG_MAX, `hi == d-1`,
+    `hi == d`, `hi == d+1` with several low words, ±d, and 4000 pseudo-random values per divisor
+    with full, short-high and short-low words; every result compared with the division by the
+    same value in a volatile variable, printed values for the record; the kernel's shapes
+    (`loff_t / 4096`, a ratio `/ 10000`, `(bits + 63) / 64`, `(tsf & mask) / 1024`);
+    `__builtin_mul_overflow` of u64, s64 and mixed operands on 17 edge pairs and 20000 random
+    ones against a dividing reference; a one-return static function given a constant folding
+    to a constant (`dead_sret()` must not be referenced), kept as a call with a run-time
+    argument or a two-statement body; dead statements with `dead_unused`/`dead_unused64`
+    references that must vanish (rounddown/roundup of badblocks' shape, `x + 1;`, `(void)x;`,
+    a constant-condition `?:`, a comma expression, `sizeof`, a statement expression, under
+    `if`) and statements that must stay (a conditional read, a used rounddown, a call in a
+    statement expression's initializer or in `?:`/`||`, `++`, `+=`, an assignment in a
+    statement expression, a volatile read, a dead expression plus a call), their effects
+    counted. The expected output is gcc -O2's; it passes on x86_64 (where gen_opl() is not
+    used) and, built with the project's i386 musl-tcc and run on the x86_64 host, on i386 with
+    and without `-mregparm=3`.
+    Verification: `make test` ALL TESTS PASSED on the host (145 tests2 cases; cross-test builds
+    every target: `do_bounds_check` is behind CONFIG_TCC_BCHECK); the 25 i386 kernel objects
+    recompiled from their .cmd lines with the new i386-tcc reference none of the four
+    helpers (nm -u); patches 0013 and 0019 removed from patches/linux/series (9 kernel
+    patches left) and both kernels rebuilt from the reduced series with the new compiler
+    (2063 and 2096 tcc invocations, no gcc; bzImage 6 852 608 bytes on i386,
+    7 423 488 on x86_64): the i386 link succeeds without `lib/math/divdi3.c` and no object
+    of the tree references the helpers; `scripts/devices-test.sh` passes its 13 checks on
+    i386 and on x86_64 (the USB-storage check makes, mounts, writes, remounts and reads a FAT
+    filesystem on the i386 guest: the `__find_get_block_slow()` division by PAGE_SIZE that
+    found 0019 is now two shifts), and test 165's static i386 binary, fetched into the i386 guest with wget and run there, prints gcc's 69 lines byte for byte (md5sum against the .expect: a userland 64-bit division check on the new kernel too). Lessons: the probe's token string must end
+    by itself (a 0), and a probe that stops inside its string (a syntax error: `"12"3;` of
+    test 60) leaves the string on the macro stack, so the replay must pop it first or the
+    stack gets a cycle; an error longjmp out of the probe leaves its globals set (reset in
+    tccgen_init) and the body on the macro stack (hence (5)); gcc's `x / -1` is `-x` while
+    tcc's idiv traps on LLONG_MIN / -1 (undefined; the test avoids it).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

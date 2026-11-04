@@ -1,0 +1,598 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 13:45:42 +0200
+Subject: [PATCH] i386: long long division by a constant without the libgcc
+ helpers
+
+gen_opl() no longer calls __divdi3, __moddi3, __udivdi3 or __umoddi3 for
+a division or modulo by a constant: a power of two is a shift or a mask
+(with gcc's bias for a signed dividend), and on i386 any other divisor
+of at most 32 bits is two divl (the new pseudo-op TOK_UDIVL of gen_opi():
+edx:eax / r32 with the quotient in the low and the remainder in the high
+word; q_hi = hi / d, then (hi % d : lo) / d), a signed one through the
+unsigned division of |x| with the sign restored.  Freestanding code such
+as the Linux kernel has no libgcc, and gcc strength-reduces every
+division by a constant, so a gcc-built 32-bit kernel never links them.
+
+Three more things the kernel's i386 objects needed for that, all of what
+gcc does for them: __builtin_mul_overflow() of 64-bit operands checks the
+product through its 32-bit halves instead of dividing (check_mul_overflow
+in kstrtox.c, fs/buffer.c, sched/fair.c, ptp_clock.c); a static function
+whose body is one return statement is inlined when given a constant
+argument (ieee80211_tu_to_usec(SLOT_TU) is the divisor of a u64 in
+mac80211_hwsim_nan.c); an expression statement without an effect is
+dropped (dead_expr_stmt(): block/badblocks.c's `rounddown(s, 1 <<
+bb->shift);` statements, whose 64-bit modulo by a non-constant has no
+other way out), probed without code the way inline_fold_check() probes
+a stub body, its tokens saved and replayed.
+
+tccgen_finish() pops the macro stack before the saved bodies are freed:
+an error inside a body left the body string on the stack for
+preprocess_end() to read after it was freed.
+---
+ i386-gen.c        |  18 +++
+ include/tccdefs.h |  20 ++-
+ tcc.h             |   4 +
+ tccgen.c          | 319 ++++++++++++++++++++++++++++++++++++++++++----
+ tccpp.c           |   8 +-
+ 5 files changed, 337 insertions(+), 32 deletions(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index d564d20..23266b5 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -1304,6 +1304,24 @@ ST_FUNC void gen_opi(int op)
+         }
+         vtop->r = r;
+         break;
++    case TOK_UDIVL:
++        /* vtop[-1] is a 64-bit unsigned dividend whose high word is
++           below the 32-bit divisor vtop (so that divl cannot fault): the
++           quotient (low word) and the remainder (high word) make up the
++           64-bit result in %edx:%eax.  gen_opl() divides a long long by
++           a constant with two of these. */
++        gv2(RC_EAX, RC_ECX);
++        fr = vtop[0].r;
++        vtop--;
++        /* other values in %eax or %edx (below the dividend) are saved */
++        save_reg_upstack(TREG_EAX, 1);
++        save_reg_upstack(TREG_EDX, 1);
++        o66();
++        o(0xf7); /* div fr, %edx:%eax */
++        o(0xf0 + fr);
++        vtop->r = TREG_EAX;
++        vtop->r2 = TREG_EDX;
++        break;
+     default:
+         opc = 7;
+         goto gen_op8;
+diff --git a/include/tccdefs.h b/include/tccdefs.h
+index 22d635e..7d7777a 100644
+--- a/include/tccdefs.h
++++ b/include/tccdefs.h
+@@ -219,14 +219,22 @@
+         if (__m == 0) __n = 0; \
+         __tcc_ovf_store(__n, __m, __big, r); })
+     /* mul: the 64-bit product of two magnitudes of at most 32 bits cannot
+-       overflow, so the division that detects the overflow (a libtcc1 call
+-       on 32-bit targets) is only compiled for wider operands */
++       overflow; wider ones are checked through their 32-bit halves (no
++       division: a 32-bit target has no helper for it in freestanding code,
++       and gcc checks a 64-bit multiplication without one too) */
+     #define __builtin_mul_overflow(a, b, r) __extension__ ({ \
+         __typeof__(a) __a = (a); __typeof__(b) __b = (b); \
+-        unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b); \
+-        unsigned long long __m = __ma * __mb; \
+-        int __big = sizeof(__a) + sizeof(__b) > 8 && __ma != 0 && __m / __ma != __mb; \
+-        int __n = __m != 0 && (__tcc_ovf_neg(__a) != __tcc_ovf_neg(__b)); \
++        unsigned long long __ma = __tcc_ovf_mag(__a), __mb = __tcc_ovf_mag(__b), __m, __mx; \
++        int __big = 0, __n; \
++        if (sizeof(__a) + sizeof(__b) > 8 && ((__ma | __mb) >> 32)) { \
++            __mx = (__ma >> 32) * (unsigned)__mb + (unsigned)__ma * (__mb >> 32); \
++            __m = (unsigned long long)(unsigned)__ma * (unsigned)__mb; \
++            __big = ((__ma >> 32) && (__mb >> 32)) || (__mx >> 32) != 0 \
++                    || __m + (__mx << 32) < __m; \
++            __m += __mx << 32; \
++        } else \
++            __m = __ma * __mb; \
++        __n = __m != 0 && (__tcc_ovf_neg(__a) != __tcc_ovf_neg(__b)); \
+         __tcc_ovf_store(__n, __m, __big, r); })
+     /* the typed forms: __builtin_{s,u}{add,sub,mul}{,l,ll}_overflow */
+     #define __tcc_ovf_typed(op, t, a, b, r) __builtin_##op##_overflow((t)(a), (t)(b), (t *)(r))
+diff --git a/tcc.h b/tcc.h
+index 9414952..7c87f94 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -703,6 +703,7 @@ typedef struct InlineFunc {
+     char is_static; /* a static non-inline function, only emitted if used */
+     char busy; /* being compiled or inlined: no inlining into itself */
+     signed char inlinable; /* 0 not looked at, 1 yes, -1 no (inline_call()) */
++    char sret; /* the body is one return statement (kscan_labels()) */
+     unsigned cond; /* bit i: the body tests parameter i (kscan_labels()) */
+     char filename[1];
+ } InlineFunc;
+@@ -1182,6 +1183,8 @@ struct filespec {
+ #define TOK_UMOD    0x84 /* unsigned modulo */
+ #define TOK_PDIV    0x85 /* fast division with undefined rounding for pointers */
+ #define TOK_UMULL   0x86 /* unsigned 32x32 -> 64 mul */
++#define TOK_UDIVL   0x8c /* unsigned 64/32 -> 32 div and mod (i386): quotient
++                            in the low word, remainder in the high word */
+ #define TOK_ADDC1   0x87 /* add with carry generation */
+ #define TOK_ADDC2   0x88 /* add with carry use */
+ #define TOK_SUBC1   0x89 /* add with carry generation */
+@@ -1427,6 +1430,7 @@ ST_FUNC int tok_alloc_const(const char *str);
+ ST_FUNC const char *get_tok_str(int v, CValue *cv);
+ ST_FUNC void begin_macro(TokenString *str, int alloc);
+ ST_FUNC void end_macro(void);
++ST_FUNC void end_macros(void);
+ ST_FUNC void end_macro_to(TokenString *str);
+ ST_FUNC int set_idnum(int c, int val);
+ ST_INLN void tok_str_new(TokenString *s);
+diff --git a/tccgen.c b/tccgen.c
+index c4ef576..5b94d4e 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -116,6 +116,7 @@ static void klabs_free(void);
+ static int kscan_static; /* kscan_labels(): the body declares something static */
+ static Sym *kscan_params; /* kscan_labels(): the parameters to look for ... */
+ static unsigned kscan_cond; /* ... in conditions: bit i = parameter i is tested */
++static int kscan_sret; /* kscan_labels(): the body is "{ return ...; }" */
+ 
+ /* The call being inlined (inline_call()): the body of an always_inline
+    function, or of a static function given a constant argument, is
+@@ -145,6 +146,8 @@ static int inl_loc_min; /* the lowest loc of the function: inline_call()
+                            gives the stack space of a body back */
+ #define INL_MAX_DEPTH 24 /* nested inlined calls */
+ #define INL_STATIC_LEN 1024 /* tokens: a merely static function inlined */
++#define INL_SRET_LEN 64 /* tokens: one whose body is a single return statement */
++#define inl_sret_ok(fn) ((fn)->sret && (fn)->len <= INL_SRET_LEN)
+ static int inline_call(Sym *fs, int nb_args);
+ 
+ static struct switch_t {
+@@ -235,6 +238,8 @@ static TokenString *loop_tokens(int kind, int *dead, struct kkill **kills, int *
+ static TokenString *switch_fold_scan(struct switch_t *sw);
+ static int case_cmp(uint64_t a, uint64_t b);
+ static void inline_fold_check(Sym *sym, TokenString *str);
++static int dead_probe_on, dead_probe_loc, dead_probe_warn;
++static int fold_probe_level, fold_impure;
+ static void gv_dup(void);
+ static int get_temp_local_var(int size,int align,int *r2);
+ static void cast_error(CType *st, CType *dt);
+@@ -483,6 +488,9 @@ ST_FUNC void tccgen_init(TCCState *s1)
+     klabs_free();
+     cur_inl = NULL;
+     inl_depth = inl_static = 0;
++    fold_probe_level = -1, fold_impure = 0;
++    if (dead_probe_on) /* an error inside the probe: its warnings return */
++        s1->warn_none = dead_probe_warn, dead_probe_on = 0;
+ }
+ 
+ ST_FUNC int tccgen_compile(TCCState *s1)
+@@ -556,6 +564,11 @@ static void resolve_pending_aliases(void)
+ ST_FUNC void tccgen_finish(TCCState *s1)
+ {
+     tcc_debug_end(s1); /* just in case of errors: free memory */
++    /* a compilation stopped by an error leaves the function body being
++       compiled (a saved token string) and what was pushed over it on the
++       macro stack: pop them while the strings exist (preprocess_end()
++       would read the freed bodies) */
++    end_macros();
+     free_inline_functions(s1);
+     sym_pop(&global_stack, NULL, 0);
+     sym_pop(&local_stack, NULL, 0);
+@@ -1297,7 +1310,8 @@ ST_FUNC Sym *external_helper_sym(int v)
+ /* push a reference to an helper function (such as memmove) */
+ ST_FUNC void vpush_helper_func(int v)
+ {
+-    fold_side_effect();
++    if (!dead_probe_on) /* a computation, not an effect (dead_expr_stmt()) */
++        fold_side_effect();
+     vpushsym(&func_old_type, external_helper_sym(v));
+ }
+ 
+@@ -2241,6 +2255,138 @@ static void gv_dup(void)
+ }
+ 
+ #if PTR_SIZE == 4
++static void gen_opl(int op);
++
++/* A long long division or modulo (op) of vtop[-1] by the constant vtop,
++   without the libtcc1 helper (freestanding code such as the Linux kernel
++   has none; gcc strength-reduces every division by a constant, so a
++   gcc-built 32-bit kernel never links __divdi3 and its kin).  A power of
++   two gives a shift or a mask, with gcc's bias for a signed dividend
++   (q = (x + ((x >> 63) & (2^k - 1))) >> k, r = ((x + bias) & (2^k - 1))
++   - bias); on i386 any other divisor of at most 32 bits gives two divl
++   (TOK_UDIVL, gen_opi()): q_hi = hi / d, then (hi % d : lo) / d, both
++   with the high word below the divisor; a signed division goes through
++   the unsigned one of |x|, the result negated when x and d differ in
++   sign (the remainder takes the sign of x).  Returns 0 when the helper
++   is to be called: a divisor above 32 bits, zero, or another target. */
++static int gen_opl_divc(int op)
++{
++    uint64_t m = vtop->c.i;
++    int t = vtop[-1].type.t;
++    int sign = op == '/' || op == TOK_PDIV || op == '%';
++    int c, neg = 0;
++
++    if (!sign && m && !(m & (m - 1))) {
++        /* unsigned by 2^c: a shift or a mask */
++        for (c = 0; m > 1; m >>= 1)
++            c++;
++        if (op == TOK_UDIV) {
++            vtop->c.i = c;
++            gen_opl(TOK_SHR);
++        } else {
++            vtop->c.i = (1ULL << c) - 1;
++            gen_opl('&');
++        }
++        return 1;
++    }
++    if (sign && (int64_t)m > 1 && !(m & (m - 1))) {
++        /* signed by 2^c, c >= 1 */
++        for (c = 0; m > 1; m >>= 1)
++            c++;
++        vpop();
++        if (op == TOK_PDIV) {
++            /* the rounding does not matter */
++            vpushi(c);
++            gen_op(TOK_SAR);
++            return 1;
++        }
++        gv_dup();                       /* x x */
++        vpushi(63);
++        gen_op(TOK_SAR);                /* x s     (s = -1 or 0) */
++        vpush64(VT_LLONG, (1ULL << c) - 1);
++        gen_op('&');                    /* x b     (the bias) */
++        if (op == '/') {
++            gen_op('+');                /* x+b */
++            vpushi(c);
++            gen_op(TOK_SAR);
++        } else {
++            gv_dup();                   /* x b b */
++            vrott(3);                   /* b x b */
++            gen_op('+');                /* b x+b */
++            vpush64(VT_LLONG, (1ULL << c) - 1);
++            gen_op('&');                /* b (x+b)&(2^c-1) */
++            vswap();
++            gen_op('-');
++        }
++        vtop->type.t = t;
++        return 1;
++    }
++#ifdef TCC_TARGET_I386
++    if (sign && (int64_t)m < 0)
++        neg = 1, m = 0 - m;
++    if (m == 0 || (m >> 32))
++        return 0;
++    vpop();
++    if (sign) {
++        /* |x| and the sign s of x: |x| = (x ^ s) - s */
++        gv_dup();                       /* x x */
++        vpushi(63);
++        gen_op(TOK_SAR);                /* x s */
++        gv_dup();
++        gv_dup();                       /* x s s s */
++        vrotb(4);
++        vswap();                        /* s s x s */
++        gen_op('^');                    /* s s x^s */
++        vswap();
++        gen_op('-');                    /* s |x| */
++        vtop->type.t = VT_LLONG | VT_UNSIGNED;
++    }
++    /* the unsigned division of (hi:lo), on top, by m */
++    lexpand();                          /* lo hi */
++    vpushi(0);
++    lbuild(VT_LLONG | VT_UNSIGNED);     /* lo (0:hi) */
++    vpushi((int)m);
++    gen_opi(TOK_UDIVL);                 /* lo (qh:r1) */
++    lexpand();                          /* lo qh r1 */
++    vrotb(3);
++    vswap();                            /* qh lo r1 */
++    lbuild(VT_LLONG | VT_UNSIGNED);     /* qh (r1:lo) */
++    vpushi((int)m);
++    gen_opi(TOK_UDIVL);                 /* qh (ql:r2) */
++    lexpand();                          /* qh ql r2 */
++    if (op == '%' || op == TOK_UMOD) {
++        vrotb(3);
++        vpop();
++        vswap();
++        vpop();                         /* r2 */
++        vpushi(0);
++    } else {
++        vpop();
++        vswap();                        /* ql qh */
++    }
++    lbuild(VT_LLONG | VT_UNSIGNED);     /* [s] q */
++    if (sign) {
++        if (neg && op != '%') {
++            /* the quotient of a negative divisor: s becomes ~s */
++            vswap();
++            vpush64(VT_LLONG, -1);
++            gen_op('^');
++            vswap();
++        }
++        vswap();                        /* q s */
++        gv_dup();                       /* q s s */
++        vrott(3);                       /* s q s */
++        gen_op('^');                    /* s q^s */
++        vswap();
++        gen_op('-');                    /* (q^s)-s */
++    }
++    vtop->type.t = t;
++    return 1;
++#else
++    return 0;
++#endif
++}
++
+ /* generate CPU independent (unsigned) long long operations */
+ static void gen_opl(int op)
+ {
+@@ -2250,24 +2396,12 @@ static void gen_opl(int op)
+     unsigned short reg_lret = REG_IRE2;
+     SValue tmp;
+ 
+-    /* unsigned division or modulo by a constant power of two: a shift or
+-       a mask, like gcc, instead of the libtcc1 helper (freestanding code
+-       such as the kernel has none) */
+-    if ((op == TOK_UDIV || op == TOK_UMOD)
++    /* a division or modulo by a constant: no helper call when it can be
++       strength-reduced (gen_opl_divc()) */
++    if ((op == '/' || op == TOK_PDIV || op == '%' || op == TOK_UDIV || op == TOK_UMOD)
+         && (vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST
+-        && vtop->c.i && !(vtop->c.i & (vtop->c.i - 1))) {
+-        uint64_t m = vtop->c.i;
+-        if (op == TOK_UDIV) {
+-            for (c = 0; m > 1; m >>= 1)
+-                c++;
+-            vtop->c.i = c;
+-            gen_opl(TOK_SHR);
+-        } else {
+-            vtop->c.i = m - 1;
+-            gen_opl('&');
+-        }
++        && gen_opl_divc(op))
+         return;
+-    }
+ 
+     switch(op) {
+     case '/':
+@@ -4339,7 +4473,7 @@ static void klabs_free(void)
+ static void kscan_labels(TokenString *str)
+ {
+     int prev = 0, prev2 = 0, i, asm_goto = 0, level = 0, colons = 0;
+-    int cond = 0, clevel = 0, plevel = 0;
++    int cond = 0, clevel = 0, plevel = 0, ntok = 0, nsemi = 0, nbrace = 0, sret = 0;
+     struct klab *l;
+     Sym *sa;
+     klabs_free();
+@@ -4350,6 +4484,9 @@ static void kscan_labels(TokenString *str)
+     for (; tok != TOK_EOF; prev2 = prev, prev = tok, next()) {
+         if (tok == TOK_STATIC)
+             kscan_static = 1;
++        if (ntok++ == 1 && tok == TOK_RETURN)
++            sret = 1;
++        nsemi += tok == ';', nbrace += tok == '{';
+         if (kscan_params) {
+             /* a parameter in a condition: the parentheses of if, while,
+                switch, for, or next to !, ?, &&, ||, ==, != */
+@@ -4421,6 +4558,7 @@ static void kscan_labels(TokenString *str)
+         }
+     }
+     end_macro();
++    kscan_sret = sret && nsemi == 1 && nbrace == 1;
+     for (i = 0; i < nb_klabs; i++)
+         if (!klabs[i].defined)
+             klabs[i].back = 1;
+@@ -4451,7 +4589,12 @@ ST_FUNC void vstore(void)
+ {
+     int sbt, dbt, ft, r, size, align, bit_size, bit_pos, delayed_cast;
+ 
+-    fold_side_effect();
++    /* an effect, unless to a local of the statement being probed by
++       dead_expr_stmt() (a statement expression's declaration) */
++    if (!dead_probe_on
++        || (vtop[-1].r & (VT_VALMASK | VT_LVAL | VT_SYM)) != (VT_LOCAL | VT_LVAL)
++        || vtop[-1].c.i >= dead_probe_loc)
++        fold_side_effect();
+     kval(vtop);
+     krecord();
+ 
+@@ -8083,8 +8226,11 @@ static int inline_call(Sym *fs, int nb_args)
+     cst = 0;
+     if (!fs->f.func_alwinl) {
+         /* a merely static function: given a constant argument that the
+-           body tests (fn->cond, from the first scan below), not from
+-           within such an inlined body, and not a big one */
++           body tests (fn->cond, from the first scan below) or a body of
++           one return statement (a small accessor, which gcc inlines and
++           folds: the kernel's ieee80211_tu_to_usec(SLOT_TU) divides a
++           u64 by it), not from within such an inlined body, and not a
++           big one */
+         if (!(fsym->type.t & VT_STATIC) || fn->len > INL_STATIC_LEN
+             || inl_static)
+             return 0;
+@@ -8094,7 +8240,7 @@ static int inline_call(Sym *fs, int nb_args)
+                 && np - 1 - i < 32)
+                 cst |= 1u << (np - 1 - i);
+         }
+-        if (!cst || (fn->inlinable && !(cst & fn->cond)))
++        if (!cst || (fn->inlinable && !(cst & fn->cond) && !inl_sret_ok(fn)))
+             return 0;
+     }
+ 
+@@ -8105,9 +8251,10 @@ static int inline_call(Sym *fs, int nb_args)
+     kscan_params = fn->inlinable ? NULL : fs->next;
+     kscan_labels(fn->func_str);
+     if (!fn->inlinable)
+-        fn->cond = kscan_cond;
++        fn->cond = kscan_cond, fn->sret = kscan_sret;
+     kscan_params = NULL;
+-    if (kscan_static || (!fs->f.func_alwinl && !(cst & fn->cond))) {
++    if (kscan_static || (!fs->f.func_alwinl && !(cst & fn->cond)
++                         && !inl_sret_ok(fn))) {
+         if (kscan_static)
+             fn->inlinable = -1;
+         else
+@@ -9094,6 +9241,128 @@ static void gexpr_decl(void)
+     }
+ }
+ 
++/* An expression statement without an effect is dropped, as gcc drops it.
++   The Linux kernel has such statements: block/badblocks.c's
++   `rounddown(s, 1 << bb->shift);` (its value unused) is a statement
++   expression whose 64-bit modulo would call __umoddi3 on i386, which a
++   gcc-built kernel never links.  Called with tok the first token of a
++   statement whose value is unused: returns 1 with tok at the ';' when the
++   statement is dropped, 0 with the tokens given back otherwise.  Only a
++   statement made of expressions, with the declarations of a statement
++   expression, is considered: a scan of its tokens refuses assignments
++   (except a declaration's initializer), calls (except the builtins that
++   are keywords), ++ and --, jumps, asm, control statements, labels,
++   attributes and storage classes; the rest is parsed without code at
++   nocode_wanted == fold_probe_level (as fold_probe_expr()) and kept when
++   anything with an effect is met: a store, except to a local of the
++   statement itself (dead_probe_loc), a call, a volatile read.  The tokens
++   are read into a string and replayed (as loop_tokens() does), so the
++   position in the body does not matter (an unget_tok() buffer may be in
++   use). */
++static int dead_expr_stmt(void)
++{
++    TokenString *str, *save0;
++    int t, prev = 0, prev2 = 0, level = 0, quest = 0, ok = 1, len;
++    int saved_nocode, saved_loc, saved_warn;
++    Sym *ltop, *gtop;
++    SValue *vt0;
++    struct scope *sc0;
++    KSnap *k;
++
++    if (nocode_wanted || debug_modes || !macro_ptr)
++        return 0;
++#ifdef CONFIG_TCC_BCHECK
++    if (tcc_state->do_bounds_check)
++        return 0;
++#endif
++    str = tok_str_alloc();
++    save0 = cur_save_str, cur_save_str = str;
++    for (;;) {
++        t = tok;
++        if (t == TOK_EOF || (level == 0 && (t == ';' || t == '}')))
++            break;
++        if (t == '{' ? prev != '('
++            : (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3 || t == TOK_GOTO
++               || t == TOK_RETURN || t == TOK_BREAK || t == TOK_CONTINUE
++               || t == TOK_IF || t == TOK_ELSE || t == TOK_WHILE || t == TOK_FOR
++               || t == TOK_DO || t == TOK_SWITCH || t == TOK_CASE
++               || t == TOK_DEFAULT || t == TOK_LABEL || t == TOK_STATIC
++               || t == TOK_EXTERN || t == TOK_TYPEDEF || t == TOK_ATTRIBUTE1
++               || t == TOK_ATTRIBUTE2 || t == TOK_INC || t == TOK_DEC
++               || TOK_ASSIGN(t)
++               || (t == '(' && prev >= TOK_UIDENT)
++               || (t == ':' && quest == 0)
++               || (t == '=' && !(prev >= TOK_UIDENT
++                                 && (prev2 >= TOK_IDENT || prev2 == '*'
++                                     || prev2 == ')' || prev2 == ']'))))) {
++            ok = 0;
++            break;
++        }
++        if (t == '(' || t == '{' || t == '[')
++            level++;
++        else if (t == ')' || t == '}' || t == ']')
++            level--;
++        else if (t == '?')
++            quest++;
++        else if (t == ':')
++            quest--;
++        tok_str_add_tok(str);
++        prev2 = prev, prev = t;
++        next();
++    }
++    cur_save_str = save0;
++    len = str->len;
++    tok_str_add(str, 0); /* the string ends by itself */
++    if (!ok || tok != ';' || !len)
++        goto back;
++    len = str->len;
++
++    /* parse without code */
++    unget_tok(0); /* the ';' */
++    begin_macro(str, 0);
++    next();
++    ltop = local_stack, gtop = global_stack, vt0 = vtop, sc0 = cur_scope;
++    saved_nocode = nocode_wanted, saved_loc = loc;
++    saved_warn = dead_probe_warn = tcc_state->warn_none, tcc_state->warn_none = 1;
++    k = ksnap_take();
++    nocode_wanted = 1;
++    fold_probe_level = 1, fold_impure = 0;
++    dead_probe_on = 1, dead_probe_loc = loc;
++    gexpr();
++    vpop();
++    ok = !fold_impure && tok == ';' && vtop == vt0 && cur_scope == sc0;
++    dead_probe_on = 0;
++    fold_probe_level = -1, fold_impure = 0;
++    nocode_wanted = saved_nocode, loc = saved_loc;
++    tcc_state->warn_none = saved_warn;
++    vtop = vt0;
++    sym_pop(&local_stack, ltop, 0);
++    sym_pop(&global_stack, gtop, 0);
++    ksnap_restore(k), tcc_free(k);
++    if (ok) {
++        tok_str_free(str);
++        return 1;
++    }
++    /* the statement's tokens again, for the real compilation: the ';'
++       read from the unget buffer is given back; when the expression ended
++       before it (its error message comes from the real compilation), the
++       string is still being read and is popped first, the ';' unread */
++    if (tok != ';')
++        end_macro_to(str);
++    else
++        unget_tok(0);
++    str->len = len; /* the replay zeroed it */
++    begin_macro(str, 1);
++    next();
++    return 0;
++back:
++    /* the statement's tokens again, then the token stopped at */
++    unget_tok(0);
++    begin_macro(str, 1);
++    next();
++    return 0;
++}
++
+ static void block(int flags)
+ {
+     int a, b, c, d, e, t;
+@@ -9578,7 +9847,7 @@ again:
+                 if (flags & STMT_EXPR) {
+                     vpop();
+                     gexpr();
+-                } else {
++                } else if (!dead_expr_stmt()) {
+                     gexpr();
+                     vpop();
+                 }
+diff --git a/tccpp.c b/tccpp.c
+index 38e0195..cc5e615 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3862,11 +3862,17 @@ ST_FUNC void preprocess_restart(TCCState *s1, int filetype, Sym *defs, const cha
+ }
+ 
+ /* cleanup from error/setjmp */
+-ST_FUNC void preprocess_end(TCCState *s1)
++/* pop every token string being read */
++ST_FUNC void end_macros(void)
+ {
+     while (macro_stack)
+         end_macro();
+     macro_ptr = NULL;
++}
++
++ST_FUNC void preprocess_end(TCCState *s1)
++{
++    end_macros();
+     while (file)
+         tcc_close();
+     tccpp_delete(s1);

@@ -1,0 +1,348 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 13:45:42 +0200
+Subject: [PATCH] tests: 165_div_const, the cases of fix 121
+
+---
+ tests/tests2/165_div_const.c      | 255 ++++++++++++++++++++++++++++++
+ tests/tests2/165_div_const.expect |  69 ++++++++
+ 2 files changed, 324 insertions(+)
+ create mode 100644 tests/tests2/165_div_const.c
+ create mode 100644 tests/tests2/165_div_const.expect
+
+diff --git a/tests/tests2/165_div_const.c b/tests/tests2/165_div_const.c
+new file mode 100644
+index 0000000..2e7da71
+--- /dev/null
++++ b/tests/tests2/165_div_const.c
+@@ -0,0 +1,255 @@
++/* Long long division and modulo by a constant (fix 121 of the tinycc-os-kernel
++   project): on i386, gen_opl() shifts or masks for a power of two (with the
++   bias of a signed dividend), divides twice (divl) by any other divisor of
++   at most 32 bits, and calls the libtcc1 helper only for a wider one, as
++   the Linux kernel, which has no such helper, expects: gcc strength-reduces
++   every division by a constant.  Every result is compared with the division
++   by the same value held in a volatile variable (a real division), the
++   output must be gcc's.  With it, the two other things the kernel's 32-bit
++   objects needed to lose their __divdi3/__udivdi3/__moddi3/__umoddi3
++   references: __builtin_mul_overflow() of 64-bit operands without a
++   division, a static function of one return statement inlined when given a
++   constant (ieee80211_tu_to_usec(SLOT_TU) is the divisor of a u64), and an
++   expression statement without an effect dropped (badblocks.c's
++   `rounddown(s, 1 << bb->shift);`): tcc -run fails on any reference to the
++   dead_*() symbols below. */
++#include <stdio.h>
++
++typedef unsigned long long u64;
++typedef long long s64;
++
++extern void dead_sret(void);
++extern int dead_unused;
++extern u64 dead_unused64;
++
++int rt; /* 0: a run-time value the compiler cannot know */
++static int effects;
++
++#define LLONG_MIN_ (-0x7fffffffffffffffLL - 1)
++#define LLONG_MAX_ 0x7fffffffffffffffLL
++
++static u64 ux[] = {
++    0, 1, 2, 3, 7, 8, 9, 10, 99, 100, 101, 999, 1000, 1001, 4095, 4096, 4097,
++    0x7fffffff, 0x80000000, 0x80000001, 0xfffffffe, 0xffffffff, 0x100000000ULL,
++    0x100000001ULL, 0x1ffffffffULL, 0x200000000ULL, 0x3b9aca00ULL, 0x3b9aca01ULL,
++    0x7fffffffffffffffULL, 0x8000000000000000ULL, 0x8000000000000001ULL,
++    0xfffffffffffffffeULL, 0xffffffffffffffffULL, 0x123456789abcdef0ULL,
++    0xfedcba9876543210ULL, 0x0000000100000000ULL * 4096, 0xffffffff00000000ULL,
++};
++#define NX (sizeof ux / sizeof ux[0])
++
++static u64 lcg(u64 *s)
++{
++    *s = *s * 6364136223846793005ULL + 1442695040888963407ULL;
++    return *s;
++}
++
++/* a dividend of the pseudo-random stream: full, or with a short high or
++   low word, so that hi == 0, hi < d and hi >= d all come up */
++static u64 pick(u64 *s, int i)
++{
++    u64 r = lcg(s);
++    switch (i & 3) {
++    case 0: return r;
++    case 1: return r >> 33;
++    case 2: return r >> (i & 63);
++    default: return r & 0xffff000000000000ULL;
++    }
++}
++
++static int bad;
++
++#define CHECK_U(D) do { \
++    volatile u64 vd = (D); u64 d = vd, x, s = 12345 + (u64)(D); int i; \
++    u64 xs[] = { ((u64)(D) - 1) << 32 | 0x12345678, (u64)(D) << 32 | 1, \
++                 ((u64)(D) + 1) << 32 | 0xffffffff, ((u64)(D) - 1) << 32, \
++                 (u64)(D) - 1, (u64)(D), (u64)(D) + 1, (u64)(D) * 3 + 2 }; \
++    for (i = 0; i < NX + 8 + 4000; i++) { \
++        x = i < NX ? ux[i] : i < NX + 8 ? xs[i - NX] : pick(&s, i); \
++        if (x / (D) != x / d || x % (D) != x % d) \
++            bad++, printf("mismatch u64 %llx / %llx: %llx %llx (%llx %llx)\n", \
++                          x, (u64)(D), x / (D), x % (D), x / d, x % d); \
++    } \
++    printf("u %llx: %llx %llx %llx %llx %llx %llx\n", (u64)(D), ux[NX - 2] / (D), \
++           ux[NX - 2] % (D), ux[31] / (D), ux[31] % (D), xs[0] / (D), xs[0] % (D)); \
++} while (0)
++
++static s64 sx[] = {
++    0, 1, -1, 2, -2, 3, -3, 7, -7, 8, -8, 9, -9, 10, -10, 99, 100, -100, -101,
++    1000, -1000, 4095, 4096, 4097, -4095, -4096, -4097, 0x7fffffff, -0x7fffffff,
++    0x80000000LL, -0x80000000LL, 0xffffffffLL, -0xffffffffLL, 0x100000000LL,
++    -0x100000000LL, 0x100000001LL, -0x100000001LL, 0x3b9aca00LL, -0x3b9aca00LL,
++    LLONG_MAX_, LLONG_MIN_, LLONG_MIN_ + 1, LLONG_MAX_ - 1, 0x123456789abcdefLL,
++    -0x123456789abcdefLL, 0x7fffffff00000000LL, -0x7fffffff00000000LL,
++};
++#define NSX (sizeof sx / sizeof sx[0])
++
++#define CHECK_S(D) do { \
++    volatile s64 vd = (D); s64 d = vd, x; u64 s = 777 + (u64)(D); int i; \
++    s64 xs[] = { (s64)(((u64)(D) - 1) << 32 | 0x12345678), (s64)((u64)(D) << 32 | 1), \
++                 (s64)(((u64)(D) + 1) << 32 | 0xffffffff), (s64)(D) - 1, (s64)(D), \
++                 (s64)(D) + 1, -(s64)(D), -(s64)(D) - 1 }; \
++    for (i = 0; i < NSX + 8 + 4000; i++) { \
++        x = i < NSX ? sx[i] : i < NSX + 8 ? xs[i - NSX] : (s64)pick(&s, i); \
++        if (x == LLONG_MIN_ && (D) == -1) \
++            continue; /* undefined */ \
++        if (x / (D) != x / d || x % (D) != x % d) \
++            bad++, printf("mismatch s64 %llx / %llx: %llx %llx (%llx %llx)\n", \
++                          (u64)x, (u64)(D), (u64)(x / (D)), (u64)(x % (D)), \
++                          (u64)(x / d), (u64)(x % d)); \
++    } \
++    printf("s %lld: %lld %lld %lld %lld %lld %lld\n", (s64)(D), sx[39] / (D), \
++           sx[39] % (D), (D) == -1 ? 0 : sx[40] / (D), (D) == -1 ? 0 : sx[40] % (D), \
++           xs[0] / (D), \
++           xs[0] % (D)); \
++} while (0)
++
++static void t_div(void)
++{
++    CHECK_U(1); CHECK_U(2); CHECK_U(3); CHECK_U(7); CHECK_U(8); CHECK_U(10);
++    CHECK_U(100); CHECK_U(1000); CHECK_U(4096); CHECK_U(1000000000);
++    CHECK_U(0x80000000U); CHECK_U(0xffffffffU); CHECK_U(0xfffffffeU);
++    CHECK_U(0x100000000ULL); CHECK_U(0x100000001ULL); CHECK_U(0x3b9aca0000ULL);
++    CHECK_U(0x8000000000000000ULL); CHECK_U(0xffffffffffffffffULL);
++    CHECK_U(0x1234567890abcdefULL);
++    CHECK_S(1); CHECK_S(-1); CHECK_S(2); CHECK_S(-2); CHECK_S(3); CHECK_S(-3);
++    CHECK_S(7); CHECK_S(8); CHECK_S(-8); CHECK_S(10); CHECK_S(-10); CHECK_S(100);
++    CHECK_S(1000); CHECK_S(-1000); CHECK_S(4096); CHECK_S(-4096);
++    CHECK_S(1000000000); CHECK_S(-1000000000); CHECK_S(0x80000000LL);
++    CHECK_S(-0x80000000LL); CHECK_S(0xffffffffLL); CHECK_S(-0xffffffffLL);
++    CHECK_S(0x100000000LL); CHECK_S(-0x100000000LL); CHECK_S(0x3b9aca0000LL);
++    CHECK_S(LLONG_MAX_); CHECK_S(LLONG_MIN_); CHECK_S(0x123456789abcdefLL);
++    printf("div %s\n", bad ? "MISMATCHES" : "ok");
++}
++
++/* the kernel's shapes: loff_t / PAGE_SIZE, an index * size / 8 */
++static long page_index(s64 pos) { return pos / 4096; }
++static s64 tenths(s64 ratio) { return ratio / 10000 * 10 + ratio % 10000 / 1000; }
++static u64 words(u64 bits) { return (bits + 63) / 64; }
++static unsigned usec_slot(u64 tsf) { return (tsf & 0xffffff) / 1024; }
++
++static void t_shapes(void)
++{
++    printf("shapes %ld %ld %ld %lld %lld %llu %u\n", page_index(0x12345678LL),
++           page_index(-1), page_index(-4097), tenths(123456), tenths(-123456),
++           words(0x1ffffffffULL), usec_slot(0x123456789ULL));
++}
++
++/* __builtin_mul_overflow of 64-bit operands: the exact answer through the
++   32-bit halves, against the division that defines an overflow */
++static int ref_mul_u(u64 a, u64 b, u64 *r)
++{
++    volatile u64 va = a;
++    *r = a * b;
++    return va != 0 && *r / va != b;
++}
++
++static int ref_mul_s(s64 a, s64 b, s64 *r)
++{
++    u64 ma = a < 0 ? 0 - (u64)a : a, mb = b < 0 ? 0 - (u64)b : b, m;
++    int neg = (a < 0) != (b < 0), big = ref_mul_u(ma, mb, &m);
++    *r = (s64)(a * (u64)b);
++    if (m == 0)
++        return big;
++    return big || (neg ? m > (u64)1 << 63 : m > ((u64)1 << 63) - 1);
++}
++
++static void t_mul_overflow(void)
++{
++    static const u64 cases[][2] = {
++        { 0, 0 }, { 1, 0xffffffffffffffffULL }, { 2, 0xffffffffffffffffULL },
++        { 0xffffffff, 0xffffffff }, { 0x100000000ULL, 0x100000000ULL },
++        { 0x100000000ULL, 0xffffffff }, { 0x80000000, 0x200000000ULL },
++        { 0x80000000, 0x200000001ULL }, { 0x123456789ULL, 0x9876543 },
++        { 0xffffffffffffffffULL, 0xffffffffffffffffULL }, { 3, 5 },
++        { 0x7fffffffffffffffULL, 1 }, { 0x7fffffffffffffffULL, 2 },
++        { 0x8000000000000000ULL, 1 }, { 0x8000000000000000ULL, 0xffffffffffffffffULL },
++        { 0x40000000, 0x200000000ULL }, { 0xfffffffffffffffdULL, 0xfffffffffffffffbULL },
++    };
++    u64 s = 99, a, b, r, rr;
++    s64 sr, srr;
++    int i, o, oo, mism = 0;
++
++    for (i = 0; i < (int)(sizeof cases / sizeof cases[0]); i++) {
++        a = cases[i][0], b = cases[i][1];
++        o = __builtin_mul_overflow(a, b, &r);
++        printf("mul %llx*%llx: %d %llx", a, b, o, r);
++        o = __builtin_mul_overflow((s64)a, (s64)b, &sr);
++        printf(" s %d %lld", o, sr);
++        o = __builtin_mul_overflow(a, (s64)b, &sr);
++        printf(" m %d %lld\n", o, sr);
++    }
++    for (i = 0; i < 20000; i++) {
++        a = pick(&s, i), b = pick(&s, i >> 2);
++        o = __builtin_mul_overflow(a, b, &r);
++        oo = ref_mul_u(a, b, &rr);
++        if (o != oo || r != rr)
++            mism++, printf("mismatch mul u %llx %llx: %d %llx (%d %llx)\n", a, b, o, r, oo, rr);
++        o = __builtin_mul_overflow((s64)a, (s64)b, &sr);
++        oo = ref_mul_s((s64)a, (s64)b, &srr);
++        if (o != oo || sr != srr)
++            mism++, printf("mismatch mul s %llx %llx: %d %llx (%d %llx)\n", a, b, o,
++                           (u64)sr, oo, (u64)srr);
++    }
++    printf("mul_overflow %s\n", mism ? "MISMATCHES" : "ok");
++}
++
++/* a static function of one return statement, given a constant: inlined, so
++   that its value is a constant where the body folds */
++static inline unsigned long tu_to_usec(unsigned long tu) { return 1024 * tu; }
++static int times3plus1(int a) { return a * 3 + 1; }
++static int via_rt(int a) { return a + rt; }
++static s64 longer(int a) { int b = a; return b * 2; } /* two statements: not this rule */
++
++static void t_sret(void)
++{
++    u64 tsf = 0x123456789ULL + rt;
++    if (tu_to_usec(16) != 16384 || times3plus1(2) != 7)
++        dead_sret();
++    printf("sret %llu %d %d %lld %lu\n", tsf / tu_to_usec(512), via_rt(3),
++           times3plus1(rt), longer(5), tu_to_usec(rt));
++}
++
++/* expression statements without an effect are dropped; the others kept */
++static int eff(void) { return ++effects; }
++#define rounddown(x, y) ({ typeof(x) __x = (x); __x - (__x % (y)); })
++#define roundup(x, y) ({ typeof(y) __y = y; (((x) + (__y - 1)) / __y) * __y; })
++static volatile int vol = 5;
++
++static void t_dead(u64 s, int shift)
++{
++    u64 r = 0;
++    int a = 1, *p = &a;
++
++    rounddown(s, 1 << shift);                   /* badblocks.c */
++    roundup(dead_unused64, 1 << shift);
++    dead_unused + 1;
++    (void)dead_unused;
++    dead_unused == 1 ? dead_unused : 2;
++    s * 3 / 7 % 5, dead_unused64 % 10;
++    sizeof(dead_unused64 / 3);
++    ({ typeof(s) __t = s; __t % 1000; });
++    if (rt) dead_unused + 2;
++    rt ? dead_unused : 3;                       /* kept: a conditional read */
++    r = rounddown(s, 1 << shift);               /* kept: used */
++    ({ int __e = eff(); __e + 1; });            /* kept: a call */
++    rt ? eff() : 0;
++    rt || eff();
++    a++;
++    *p += 2;
++    ({ a = 7; a + 1; });                        /* kept: an assignment */
++    vol;                                        /* a volatile read */
++    (void)vol;
++    rounddown(s, 1 << shift) + eff();
++    printf("dead %llu %d %d %d\n", r, a, effects, vol);
++}
++
++int main(void)
++{
++    t_div();
++    t_shapes();
++    t_mul_overflow();
++    t_sret();
++    t_dead(0x123456789abULL + rt, 3 + rt);
++    return 0;
++}
+diff --git a/tests/tests2/165_div_const.expect b/tests/tests2/165_div_const.expect
+new file mode 100644
+index 0000000..5b10b00
+--- /dev/null
++++ b/tests/tests2/165_div_const.expect
+@@ -0,0 +1,69 @@
++u 1: 100000000000 0 fffffffffffffffe 0 12345678 0
++u 2: 80000000000 0 7fffffffffffffff 0 891a2b3c 0
++u 3: 55555555555 1 5555555555555554 2 b0bc1cd2 2
++u 7: 24924924924 4 2492492492492492 0 de077a11 1
++u 8: 20000000000 0 1fffffffffffffff 6 e2468acf 0
++u a: 19999999999 6 1999999999999999 4 e8386f0c 0
++u 64: 28f5c28f5c 10 28f5c28f5c28f5c e fd9f3e4e 0
++u 3e8: 4189374bc 1a0 4189374bc6a7ef 266 ffc31fd4 258
++u 1000: 100000000 0 fffffffffffff ffe fff12345 678
++u 3b9aca00: 44b8 b16d000 44b82fa09 2a4ae5fe fffffffc 9f7e78
++u 80000000: 2000 0 1ffffffff 7ffffffe fffffffe 12345678
++u ffffffff: 1000 1000 100000000 fffffffe ffffffff 12345677
++u fffffffe: 1000 2000 100000002 2 ffffffff 12345676
++u 100000000: 1000 0 ffffffff fffffffe ffffffff 12345678
++u 100000001: fff fffff001 fffffffe 100000000 0 12345678
++u 3b9aca0000: 44 2ae2580000 44b82fa 242bbfffe 298d05f 2c813e5678
++u 8000000000000000: 0 100000000000 1 7ffffffffffffffe 1 7fffffff12345678
++u ffffffffffffffff: 0 100000000000 0 fffffffffffffffe 0 fffffffe12345678
++u 1234567890abcdef: 0 100000000000 e 1234568169abcec 7 113d70a21d81b4ef
++s 1: 9223372036854775807 0 -9223372036854775808 0 305419896 0
++s -1: -9223372036854775807 0 0 0 8284514696 0
++s 2: 4611686018427387903 1 -4611686018427387904 0 2300193596 0
++s -2: -4611686018427387903 1 4611686018427387904 0 6289740996 0
++s 3: 3074457345618258602 1 -3074457345618258602 -2 2965118162 2
++s -3: -3074457345618258602 1 3074457345618258602 -2 5624816429 -1
++s 7: 1317624576693539401 0 -1317624576693539401 -1 3725031953 1
++s 8: 1152921504606846975 7 -1152921504606846976 0 3796273871 0
++s -8: -1152921504606846975 7 1152921504606846976 0 4793660721 0
++s 10: 922337203685477580 7 -922337203685477580 -8 3896012556 0
++s -10: -922337203685477580 7 922337203685477580 -8 4693922036 0
++s 100: 92233720368547758 7 -92233720368547758 -8 4255071822 0
++s 1000: 9223372036854775 807 -9223372036854775 -808 4290977748 600
++s -1000: -9223372036854775 807 9223372036854775 -808 4298956843 -400
++s 4096: 2251799813685247 4095 -2251799813685248 0 4293993285 1656
++s -4096: -2251799813685247 4095 2251799813685248 0 4295941306 -2440
++s 1000000000: 9223372036 854775807 -9223372036 -854775808 4294967292 10452600
++s -1000000000: -9223372036 854775807 9223372036 -854775808 4294967299 -989547400
++s 2147483648: 4294967295 2147483647 -4294967296 0 4294967294 305419896
++s -2147483648: -4294967295 2147483647 4294967296 0 -4294967294 305419896
++s 4294967295: 2147483648 2147483647 -2147483648 -2147483648 -1 -3989547401
++s -4294967295: -2147483648 2147483647 2147483648 -2147483648 0 305419896
++s 4294967296: 2147483647 4294967295 -2147483648 0 0 -3989547400
++s -4294967296: -2147483647 4294967295 2147483648 0 0 -3989547400
++s 256000000000: 36028797 4854775807 -36028797 -4854775808 -28488346 -74562644360
++s 9223372036854775807: 1 0 -1 -1 0 -8284514696
++s -9223372036854775808: 0 9223372036854775807 1 0 0 -3989547400
++s 81985529216486895: 112 40992764608243567 -112 -40992764608243568 -104 -8589934704
++div ok
++shapes 74565 0 -1 123 -123 134217728 4441
++mul 0*0: 0 0 s 0 0 m 0 0
++mul 1*ffffffffffffffff: 0 ffffffffffffffff s 0 -1 m 0 -1
++mul 2*ffffffffffffffff: 1 fffffffffffffffe s 0 -2 m 0 -2
++mul ffffffff*ffffffff: 0 fffffffe00000001 s 1 -8589934591 m 1 -8589934591
++mul 100000000*100000000: 1 0 s 1 0 m 1 0
++mul 100000000*ffffffff: 0 ffffffff00000000 s 1 -4294967296 m 1 -4294967296
++mul 80000000*200000000: 1 0 s 1 0 m 1 0
++mul 80000000*200000001: 1 80000000 s 1 2147483648 m 1 2147483648
++mul 123456789*9876543: 0 ad77d74074225db s 0 781230997663524315 m 0 781230997663524315
++mul ffffffffffffffff*ffffffffffffffff: 1 1 s 0 1 m 1 1
++mul 3*5: 0 f s 0 15 m 0 15
++mul 7fffffffffffffff*1: 0 7fffffffffffffff s 0 9223372036854775807 m 0 9223372036854775807
++mul 7fffffffffffffff*2: 0 fffffffffffffffe s 1 -2 m 1 -2
++mul 8000000000000000*1: 0 8000000000000000 s 0 -9223372036854775808 m 1 -9223372036854775808
++mul 8000000000000000*ffffffffffffffff: 1 8000000000000000 s 1 -9223372036854775808 m 0 -9223372036854775808
++mul 40000000*200000000: 0 8000000000000000 s 1 -9223372036854775808 m 1 -9223372036854775808
++mul fffffffffffffffd*fffffffffffffffb: 1 f s 0 15 m 1 15
++mul_overflow ok
++sret 9320 3 1 10 0
++dead 1250999896488 7 3 5

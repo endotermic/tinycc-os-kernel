@@ -98,8 +98,9 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   variable or a stub's return value; K15 and K19 below) went away on 2026-11-03 with tcc fix
   119, constant propagation through locals, and the `vma_thp_gfp_mask()` stub (0012:
   mm/swap_state.c passes the order, a local that a stub set and a loop reassigns with another
-  stub, to a static function that tests it) on 2026-11-04 with fix 120: 11 kernel patches
-  remain.
+  stub, to a static function that tests it) on 2026-11-04 with fix 120, and the 64-bit
+  division helpers of i386 (K14 and K20 below, 0013 and 0019) the same day with fix 121,
+  the strength reduction of `long long` division by a constant: 9 kernel patches remain.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; tcc has no VEX/EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -181,13 +182,15 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   and 120): of the 11 kernel patches left, tcc could absorb 0015 with the stub fold extended
-   to `if/else return` bodies, 0013 and 0019 with the strength reduction of `long long`
-   division by a constant on i386, 0010 and 0016 with VEX/EVEX encodings in the assembler,
+   to 121): of the 9 kernel patches left, tcc could absorb 0015 with the stub fold extended
+   to `if/else return` bodies, 0010 and 0016 with VEX/EVEX encodings in the assembler,
    0001 and 0002 with `__int128` on x86_64; 0005 (`__scoped_seqlock_bug()`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
-   and 0011 (the 16-bit code size) stay kernel-side.  Fix 120, the inliner, took 0003, 0004,
-   0012 and 0017 on 2026-11-04 (fix 119 had taken 0007, 0008, 0014, 0018).  The real objtool,
+   and 0011 (the 16-bit code size) stay kernel-side.  Fix 121, the i386 strength reduction of
+   `long long` division by a constant (with a division-free `__builtin_mul_overflow`, the
+   inlining of one-return static functions given a constant, and the dropping of effect-free
+   statements), took 0013 and 0019 on 2026-11-04; fix 120, the inliner, took 0003, 0004,
+   0012 and 0017 the same day (fix 119 had taken 0007, 0008, 0014, 0018).  The real objtool,
    built with gcc, accepted all 1566 tcc-built x86_64 objects of drivers.config before fix 120
    (212 warnings in 110 objects: an epilogue after an infinite loop, missing `__noreturn`,
    `stac()`/`clac()` not inlined -- they are now --, two alternatives' stack layouts in
@@ -262,10 +265,13 @@ What the 32-bit kernel needed from the toolchain (fixes 74-93, K14-K16, docs/FIX
 * Freestanding 64-bit arithmetic. The kernel has no libgcc: tcc now inlines 64-bit shifts by
   a variable count (83) and the bit-scan builtins (87) on i386, folds unsigned 64-bit
   division by a power of two (84) and no longer divides in `__builtin_mul_overflow` for
-  32-bit operands (82, every object had `__udivdi3` from `size_mul()`). The dozen real
-  64-bit divisions by other constants (`/ 8`, `/ 100`, ... which gcc strength-reduces) come
-  from kernel patch K14: `GENERIC_LIB_DIVDI3` (`lib/math/divdi3.c` on top of `div64.c`),
-  selected for `X86_32 && CC_IS_TCC`; `CC_IS_TCC` is new too (`$(CC) -v`).
+  32-bit operands (82, every object had `__udivdi3` from `size_mul()`). The real 64-bit
+  divisions by other constants (`/ 8`, `/ 100`, `loff_t / PAGE_SIZE`, ... which gcc
+  strength-reduces) came from kernel patch K14 (`GENERIC_LIB_DIVDI3`, `lib/math/divdi3.c` on
+  top of `div64.c`, selected for `X86_32 && CC_IS_TCC`) until fix 121 (2026-11-04)
+  strength-reduced them in tcc: shifts and masks for powers of two, signed too, two `divl`
+  for any other divisor of at most 32 bits (see the vanilla-kernel section below); K14 and
+  K20 are gone.
 * The 32-bit kernel's assembler forms: `mov PT_FS(%esp), %fs` (77), `"rax"` clobbers in
   shared headers (76), `ds;ds;ds;int $0x80` and `.previous` in the vDSO (80, 81),
   `sysenter`/`ud2a`/`rdpid %eax`/`invpcid` (79), and `(unsigned long)&sym - 0xC0000000` in
@@ -793,6 +799,8 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
   objects still call the helpers: mm, fs, lib, net/mac80211, cfg80211, sound/usb, ptp).
   Missing: signed powers of two, and the multiply-by-reciprocal sequence for other constants
   (`/ 100`, `/ 10`, `/ HZ`), a 64x64->128 high multiply from four 32-bit ones. Medium.
+  Done 2026-11-04, fix 121 (see the paragraph at the end of this section): two `divl`
+  instead of the reciprocal multiply, and three more things the 25 objects needed.
 * 0010 and 0016 (the AVX assembly of lib/crypto): the assembler has no VEX or EVEX
   encodings. The files need about 25 VEX mnemonics (vmovdqa/vmovdqu, vpaddd/vpaddq,
   vpxor/vpor/vpand, vpshufb/vpshufd, vpslld/vpsrld/vpsrlq/vpsllq/vpslldq/vpsrldq, vpalignr,
@@ -878,6 +886,33 @@ offset showed it); `__builtin_constant_p(param)` in a one-line body was folded t
 call by the stub probe before the inliner could make it 1; and gcc evaluates the arguments
 of a call right to left, so a test with two side effects in one `printf()` differs from tcc
 for no compiler reason.
+
+Fix 121 (2026-11-04) took the third feature, the i386 division by a constant: 0013 and 0019
+are gone (9 kernel patches remain). Measured first, with a log in `gen_opl()` over the 25
+i386 objects that referenced the helpers: 115 sites, almost all `loff_t / PAGE_SIZE` and
+its kin (signed, a power of two: the bias shift), the rest `/ 8`, `/ 2`, `/ 4`, `/ 1024`,
+`/ 10000`, `/ 12`, `/ 20`, `/ 24` and `% 8`, `% 1024`, `% PAGE_SIZE`, none above 32 bits;
+so the reciprocal multiply was not needed: two `divl` do it (the pseudo-op TOK_UDIVL,
+quotient and remainder as the two words of a 64-bit value; `q_hi = hi / d`, then
+`(hi % d : lo) / d`), and a signed division is the unsigned one of |x| with the sign put
+back. What the measurement also showed, and what fix 121 therefore includes: 13 of the
+sites had no constant divisor, in three shapes gcc never compiles as a division --
+`check_mul_overflow()` of 64-bit values (tcc's `__builtin_mul_overflow` divided to detect
+the overflow; it now checks the 32-bit halves), `tsf / ieee80211_tu_to_usec(SLOT_TU)`
+(a static inline of one `return 1024 * tu;`: a static function whose body is one return
+statement is now inlined when given a constant, so the divisor is a constant), and
+block/badblocks.c's `rounddown(s, 1 << bb->shift);` statements, whose value is unused (an
+expression statement without an effect is now dropped: its tokens are saved, a scan admits
+only expressions and the declarations of a statement expression, a parse without code
+looks for stores, calls and volatile reads, and the statement is replayed when it stays).
+A divisor above 32 bits, or a variable one, still calls the helper, as gcc does; the
+kernel has neither. Test 165 covers all of it against gcc -O2, on x86_64 and, with the
+project's i386 musl-tcc run on the host, on i386. What it cost: the probe's string must be
+popped before its replay when the parse stopped inside it (a syntax error: the macro stack
+got a cycle and `make test` hung in test 60), and an error inside any function body had
+left the body's token string on the macro stack for `preprocess_end()` to walk after it
+was freed -- harmless until the probe's allocations reused the memory; `tccgen_finish()`
+pops the stack first now.
 
 What fix 119 itself cost to get right, for the next feature of this kind (all found by tcc's
 own suite, which compiles tcc with itself): the switch value is loaded after the body and
