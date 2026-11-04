@@ -66,12 +66,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 123 | tinycc 0122 |
 | | | | | 124 | tinycc 0124 |
 | | | | | 125 | tinycc 0126, 0127 |
+| | | | | 126 | tinycc 0129 |
+| | | | | 127 | tinycc 0130 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125.
+fix 125, 0131 those of fixes 126 and 127.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
@@ -125,12 +127,14 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/165_div_const.c` | all (the strength reduction itself on i386) | 121 |
 | `tests/tests2/166_str_index.c` | all | 124 |
 | `tests/tests2/167_int128.c` | x86_64 (skipped elsewhere: no `__int128`) | 125 |
+| `tests/tests2/168_if0_label.c` | all (the asm goto case on i386, x86_64) | 126 |
+| `tests/tests2/169_cleanup_assign.c` | all | 127 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
 | `tests/asmtest.S` (`make -C tests asmtest`: needs gcc and objdump, not part of `make test`) | x86_64 host (the `__i386__` part checked with `as --32`) | 19, 23, 24, 28, 31, 50, 51, 55, 56, 57, 59, 63, 67, 68, 70, 71, 73, 75, 77, 79, 80, 81, 91, 98, 99 |
 | `tests/m16-check.sh` (needs gcc, binutils, the kernel build directory) | x86_64 host | 62, 63, 65 |
-| the existing suite inside the musl guests | guests | 95, 96 |
+| the existing suite inside the musl guests | guests | 95, 96; 126 and 127 were found by `124_atomic_counter` hanging there (threads on the tcc-built kernel: nothing else exercises them) |
 
 Each test file fails on the upstream base (a static assertion, unresolved references, a
 compiler crash, an unknown constraint, an unknown option, `#error`), checked with a build of
@@ -2248,6 +2252,68 @@ K20. 2026-10-26, COMMITTED (upstreamable; completes K14), `lib/math/divdi3.c`: t
     boots with `-cpu host` under KVM, whose cx16 makes `system_has_cmpxchg128()` true, so SLUB's
     128-bit freelist cmpxchg and the scheduler's and timekeeping's 128-bit multiplies are live
     in that boot); a scratch x86_64 kernel with CONFIG_KUNIT and the lib/crypto tests (build/int128-scratch/kunit-kernel.sh, a copy of the fix-122 harness; 1888 tcc and 0 gcc invocations, CC_HAS_INT128=y) booted four times, with `-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2` and `host,-pclmulqdq` -- the last one takes the generic gf128hash.c, whose `clmul64()` is the `__int128` code -- passes every suite in every boot: blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed (the benchmarks skipped).
+
+126. 2026-11-04, COMMITTED (patches/tinycc/compatibility/0129, test 0131), `tccgen.c` (block(),
+    the `if` statement). Problem: constant propagation through locals (fix 119) took the state
+    after an `if` with a constant condition from whatever the branches left, as if the dead
+    branch could not run. A label inside it makes its end reachable, from a goto or from an
+    asm goto that names it, and at the label's definition the state is that of the gotos
+    (klabel_def()); what the branch then assigned replaced the state of the path the
+    condition had selected instead of joining it. The kernel's `get_user_inline()`
+    (include/linux/uaccess.h) ends with `if (0) { efault: _ret = -EFAULT; }` after the asm
+    goto of `unsafe_get_user()`, so `futex_get_value_locked()` (kernel/futex/futex.h) came
+    out as `return -EFAULT` for every successful read (the disassembly ends in `mov
+    $0xfffffff2,%eax` after the pagefault guard's destructor): `futex_wait_setup()` saw the
+    fault, re-read the word with `get_user()`, which succeeded, and retried forever without
+    checking signals, so `pthread_join()` never returned and SIGKILL did not end the process.
+    Found on 2026-11-04 by the self-hosting test suite run (`./run.sh --selfhost
+    --auto=test`): tests2/124_atomic_counter hung inside the guest for 54 minutes, while the
+    same test passes on the host under every generation of the compiler (the libc there is
+    glibc, the kernel the host's); a 16-thread `pthread_create`/`pthread_join` program compiled
+    on the host hung the guest the same way, with one CPU too, and QEMU's monitor sampled the
+    stuck CPU in futex_wait_setup / __futex_hash / futex_get_value_locked. The kernel built by
+    the 125-patch compiler (before fix 125) hangs the same way: the regression is fix 119's,
+    not the `__int128` work. Fix: the `if` snapshots the state before the body for a constant
+    condition too and merges or restores it as for an unknown one; only a true condition
+    without an else keeps the body's state alone (the else of a true condition, and the body
+    of a false one, start dead and matter only through their labels). Reproducer: `int r = 0;
+    if (f) goto l; if (0) { l: r = -14; } return r;` returned -14 for f == 0. Verification:
+    tests2/168_if0_label (forward goto, with else, the else dead, nested, a return under the
+    label, the get_user_inline() shape as a statement expression with a local label and an asm
+    goto; expected output from gcc -O0, the same at -O2); `make test` ALL TESTS PASSED;
+    kernel/futex/waitwake.o recompiled: futex_get_value_locked() returns `_ret` (kept across
+    the destructor call); the guest test suite and the thread programs, see 127.
+127. 2026-11-04, COMMITTED (patches/tinycc/bugfixes/0130, test 0131), `tccgen.c` (save_lvalues(),
+    expr_eq()). Problem (upstream tcc has it too): save_lvalues(), run before a cleanup call so
+    that the cleanup function cannot change an operand already on the value stack, copied
+    every symbol lvalue into a temporary, including the destination of the assignment being
+    parsed, which expr_eq() keeps on the stack while it parses the right-hand side. A statement
+    expression there that declares a `__attribute__((cleanup))` variable, or a `for` loop with
+    one, ends its scope with the call, and the store that followed went to the copy: `r = ({
+    int *q __cleanup(f) = p; 5; })` left r unchanged (a struct member, a global and a
+    compound assignment the same). The kernel's `get_user_inline()` is such a statement
+    expression (`scoped_user_read_access()` is a `for` loop with a `__cleanup` pointer), so
+    `x = get_user_inline(...)` would never assign x; the kernel's uses are `return
+    get_user_inline()` and `if (get_user_inline())`, which were fine, but the shape is one
+    line away in every user of the scoped accessors. Fix: expr_eq() records the destinations of
+    the assignments in progress (plain and compound; the duplicate a compound assignment
+    reads may still be copied) in a stack of value-stack slots and save_lvalues() skips them;
+    the stack is reset with the other per-compilation state after an error. Verification:
+    tests2/169_cleanup_assign (plain, compound, a struct member, a global, chained, a `for`
+    with the cleanup variable, and the return, condition, operand and argument uses; expected
+    output from gcc -O0, the same at -O2); `make test` ALL TESTS PASSED (149 tests2 cases);
+    with both fixes the x86_64 system was rebuilt from scratch (every component by the
+    131-patch compiler), and inside the guest tests2/124_atomic_counter and the whole suite
+    pass again (`./run.sh --selfhost --auto=test`: see the self-hosting notes for the run).
+    Two existing tests had to be made deterministic for the guests (the first suite run there
+    since 2026-10-23; patch 0131): 164_inline_call printed two label addresses with `%p`, one of
+    them null (glibc writes `(nil)`, musl `0`); and 161_gnu_extensions2 checked `(long)&e % 16`
+    on an `aligned(16)` local, which the i386 backend does not guarantee (it never realigns the
+    stack; locals are placed at word alignment in the frame), so the value depended on the
+    caller's frame: 14 under the shipped compiler's `-run`, 13 under the guest-built one's,
+    with a byte-identical test object. The aligned variable is a static one now, whose address
+    the data section's alignment makes deterministic (the attribute on a non-first declarator,
+    fix 108's subject, is still what is tested).
 
 C3. 2026-10-26, configuration, `kernels/linux/drivers.config`: `CONFIG_CFG80211_CERTIFICATION_ONUS=y`
     and `# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set`. The signature check of the

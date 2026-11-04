@@ -127,3 +127,6 @@ features/0125-tests-166_str_index-the-cases-of-fix-124.patch
 features/0126-x86_64-__int128-and-unsigned-__int128-VT_QLONG-as-a-.patch
 features/0127-x86_64-one-mul-imul-for-a-64x64-128-__int128-product.patch
 features/0128-tests-167_int128-__int128-on-x86-64-expected-output-.patch
+compatibility/0129-tccgen-a-label-in-the-dead-branch-of-a-constant-if-j.patch
+bugfixes/0130-tccgen-a-cleanup-call-inside-the-right-hand-side-lea.patch
+features/0131-tests-168_if0_label-and-169_cleanup_assign-the-cases.patch

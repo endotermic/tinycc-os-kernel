@@ -510,6 +510,51 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   (`-nostdinc -isystem build/<arch>/musl/install/include -L build/<arch>/musl/lib`), which is
   how both bugs were debugged (FIX-LOG 95: an in-tree musl build with backtraces).
 
+* The whole system rebuilt by the 131-patch compiler, and the hang it showed (2026-11-04,
+  evening): after fixes 119 to 125 (constant propagation, the inliner, the i386 division, the
+  VEX/EVEX assembler, `__int128`) only the kernels had been rebuilt, so `install.sh --clean`
+  + `install.sh --arch X --output iso --selfhost` redid everything on both architectures:
+  kernel (x86_64 2838 tcc and 0 gcc invocations from a clean tree, bzImage 7 431 680 bytes;
+  i386 2788 and 0, 6 852 608), musl, busybox (its `devmem` has an `unsigned __int128` path
+  that tcc compiled for the first time), ncurses, nnn, LibreSSL (no `__int128` in 4.4.0; the
+  static links fetches https://example.com/ on the host, both architectures), the X stack,
+  the guest tcc (`e23dabe+131p` in the tarball), make, the images and the ISOs: 7 min 17 s
+  for x86_64, 13 min for i386 while x86_64 guests were running. `scripts/devices-test.sh`
+  passes 13/13 on both. `scripts/selfhost-test.sh` host, qemu (generation 2 with the shipped
+  toolchain), `AUTO=all` (the guest-built toolchain) and generation 3 pass on x86_64 (the
+  drivers kernel builds in the guest in about 4 min with 8 virtual CPUs, 7 665 152 bytes;
+  513 MB of tmpfs). The test-suite run (`./run.sh --selfhost --auto=test`) hung for 54
+  minutes with no output: tests2/124_atomic_counter (16 threads, atomics) never ended, and
+  SIGKILL did not end it. Not a user-space miscompile: a plain 16-thread
+  pthread_create/pthread_join program compiled on the host (static musl) hangs the guest the
+  same way, with one CPU too, while every tests2 case passes on the host under each
+  generation of the compiler. The kernel: QEMU's monitor (`-qmp`, `info registers`,
+  `x/96gx $rsp`, addresses mapped with System.map, since the configuration has no kallsyms
+  and no sysrq) sampled the stuck CPU in futex_wait_setup -> futex_get_value_locked ->
+  __futex_hash; the disassembly of `futex_get_value_locked()` ended in `mov $0xfffffff2,%eax`
+  after the pagefault guard's destructor: `get_user_inline()`'s `if (0) { efault: _ret =
+  -EFAULT; }` after the asm goto had left `_ret` "known" as -EFAULT (fix 119's propagation
+  did not join the state of the taken path for a constant condition; FIX-LOG 126), so every
+  futex wait saw a fault, re-read the word successfully with `get_user()` and retried
+  forever without checking signals. A kernel built by the 125-patch compiler hangs the same
+  way: the regression had been there since fix 119 (2026-11-03); nothing in the kernel build,
+  devices-test or the self-hosting builds uses threads, only the guest test-suite run does.
+  Fixing it uncovered a second, upstream bug in the same construct (FIX-LOG 127: the
+  destination of `r = ({ ... __cleanup ... })` was copied before the cleanup call, so the
+  store went to the copy). With fixes 126 and 127 (131 patches) everything was rebuilt from
+  scratch again, and the guest suite prints ALL TESTS PASSED in 10 s on x86_64 (140 tests2
+  cases, 124 among them); test 164 needed its null `%p` printed as an integer (musl prints
+  `0`, glibc `(nil)`). On i386 the same chain passes: generation 2 with the shipped and with
+  the guest-built toolchain and generation 3 (3 min 19 s per kernel in the guest, 7 036 928
+  bytes, 440 MB of tmpfs; each run with its boot about 4 min 30 s), and the suite's one
+  failure there was the test, not the compiler: 161_gnu_extensions2 checked `(long)&e % 16`
+  on an `aligned(16)` local, which the i386 backend does not guarantee (it never realigns the
+  stack), so the value depended on the caller's frame and differed between the shipped and
+  the guest-built compiler's `-run` harnesses with a byte-identical test object; the test
+  uses a static variable now. The rule from the fix 73 and fix 95 entries extends: the guest
+  test-suite run is the only exercise of threads on the tcc-built kernel, so it belongs to
+  every verification of a kernel-affecting compiler change.
+
 ## The window manager: JWM with every optional library (2026-10-29)
 
 JWM 2.4.6 is the guest's window manager, built by `scripts/build.sh jwm` (between xdm and

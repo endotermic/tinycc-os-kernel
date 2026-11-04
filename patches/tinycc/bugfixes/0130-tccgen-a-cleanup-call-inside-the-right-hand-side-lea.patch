@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 19:02:05 +0200
+Subject: [PATCH] tccgen: a cleanup call inside the right-hand side leaves the
+ assignment's destination alone
+
+save_lvalues(), run before a cleanup call so that the function cannot
+change an operand already on the value stack, copied every symbol lvalue
+into a temporary -- including the destination of the assignment being
+parsed, which expr_eq() keeps on the stack while it parses the
+right-hand side.  A statement expression there that declares a
+__cleanup variable, or a for loop with one, ends its scope with the
+call, and the store that followed went to the copy: the variable kept
+its old value (r = ({ int *q __cleanup(f) = p; 5; }) left r unchanged;
+the same in upstream tcc).  The kernel's get_user_inline() is such a
+statement expression (a scoped user access is a __cleanup variable).
+
+expr_eq() records the destinations of the assignments in progress
+(plain and compound, where the duplicate that is read may still be
+copied) and save_lvalues() skips them.
+---
+ tccgen.c | 65 ++++++++++++++++++++++++++++++++++++++------------------
+ 1 file changed, 44 insertions(+), 21 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 3d13969..2ad5d06 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -47,6 +47,8 @@ ST_DATA char debug_modes;
+ 
+ ST_DATA SValue *vtop;
+ static SValue _vstack[1 + VSTACK_SIZE];
++static SValue *asg_dst[VSTACK_SIZE]; /* assignment destinations, see save_lvalues() */
++static int nb_asg_dst;
+ #define vstack (_vstack + 1)
+ 
+ ST_DATA int nocode_wanted; /* no code generation wanted */
+@@ -518,6 +520,7 @@ ST_FUNC void tccgen_init(TCCState *s1)
+     klabs_free();
+     cur_inl = NULL;
+     inl_depth = inl_static = 0;
++    nb_asg_dst = 0;
+     fold_probe_level = -1, fold_impure = 0;
+     if (dead_probe_on) /* an error inside the probe: its warnings return */
+         s1->warn_none = dead_probe_warn, dead_probe_on = 0;
+@@ -8358,10 +8361,14 @@ static void expr_eq(void)
+         test_lvalue();
+         next();
+         if (t == '=') {
++            asg_dst[nb_asg_dst++] = vtop;
+             expr_eq();
++            --nb_asg_dst;
+         } else {
+             vdup();
++            asg_dst[nb_asg_dst++] = vtop - 1;
+             expr_eq();
++            --nb_asg_dst;
+             gen_op(TOK_ASSIGN_OP(t));
+         }
+         vstore();
+@@ -9400,6 +9407,22 @@ static void end_switch(void)
+ /* ------------------------------------------------------------------------- */
+ /* __attribute__((cleanup(fn))) */
+ 
++/* the destinations of the assignments being parsed: expr_eq() keeps the
++   lvalue on the value stack while it parses the right-hand side, and a
++   statement expression there can end a scope with a cleanup call.
++   save_lvalues() must leave those alone: the store that follows has to
++   reach the variable, not a copy (r = ({ T x __cleanup(f) = ...; v; }),
++   the kernel's get_user_inline() under a scoped user access, left r
++   untouched) */
++static int is_asg_dst(SValue *sv)
++{
++    int i;
++    for (i = 0; i < nb_asg_dst; i++)
++        if (asg_dst[i] == sv)
++            return 1;
++    return 0;
++}
++
+ /* protect symbol lvalues from further modification (in an inlined body,
+    those of the body: the enclosing expression's below cur_inl->vbase, an
+    assignment's destination for one, must stay what they are) */
+@@ -9407,7 +9430,7 @@ static void save_lvalues(void)
+ {
+     SValue *sv = vtop, *stop = cur_inl ? cur_inl->vbase : vstack - 1;
+     while (sv > stop) {
+-        if (sv->sym && (sv->r & VT_LVAL)) {
++        if (sv->sym && (sv->r & VT_LVAL) && !is_asg_dst(sv)) {
+             int align, size = type_size(&sv->type, &align);
+             int r2, l = get_temp_local_var(size, align, &r2);
+             vset(&sv->type, VT_LOCAL | VT_LVAL, l), vtop->r2 = r2;
+@@ -9753,36 +9776,36 @@ again:
+         kc = kcond();
+         a = gvtst(1, 0);
+         skip(')');
+-        if (kc < 0)
+-            k0 = ksnap_take(); /* the state on the other path */
++        /* the state on the other path.  Taken for a constant condition
++           too: a label in the dead branch makes its end live (the kernel's
++           get_user_inline(): "if (0) { efault: ret = -EFAULT; }", reached
++           from an asm goto), and what that branch assigned must then join
++           the state of the path that was taken, not replace it */
++        k0 = ksnap_take();
+         block(0);
+         alive = !nocode_wanted;
+         if (tok == TOK_ELSE) {
+             d = gjmp(0);
+             gsym(a);
+             next();
+-            if (kc < 0) {
+-                if (alive)
+-                    k1 = ksnap_take();
+-                ksnap_restore(k0);
+-            }
++            if (alive)
++                k1 = ksnap_take();
++            ksnap_restore(k0);
+             block(0);
+-            if (kc < 0) {
+-                if (!nocode_wanted) {
+-                    if (alive)
+-                        ksnap_merge(k1);
+-                } else if (alive)
+-                    ksnap_restore(k1);
+-            }
++            if (!nocode_wanted) {
++                if (alive)
++                    ksnap_merge(k1);
++            } else if (alive)
++                ksnap_restore(k1);
+             gsym(d); /* patch else jmp */
+         } else {
+             gsym(a);
+-            if (kc < 0) {
+-                if (alive)
+-                    ksnap_merge(k0);
+-                else
+-                    ksnap_restore(k0);
+-            }
++            if (kc > 0)
++                ; /* a true condition: the body is the only path here */
++            else if (alive)
++                ksnap_merge(k0);
++            else
++                ksnap_restore(k0);
+         }
+         tcc_free(k0), tcc_free(k1);
+         prev_scope_s(&o);

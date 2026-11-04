@@ -1,0 +1,353 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 19:02:05 +0200
+Subject: [PATCH] tests: 168_if0_label and 169_cleanup_assign, the cases of
+ fixes 126 and 127; 161 and 164 made deterministic in the musl guests
+
+168: a constant if whose dead branch holds a label reached by a goto or
+an asm goto (forward, with else, the else dead, nested, a return under
+the label, and the kernel's get_user_inline() shape as a statement
+expression with a local label).  169: the destination of an assignment
+whose right-hand side is a statement expression with a cleanup variable
+(plain, compound, a struct member, a global, chained, a for loop with the
+cleanup variable, and the return, condition, operand and argument uses
+that were fine before).  Expected output from gcc -O0, the same at -O2.
+
+Two existing tests failed only inside the self-hosting guests, the first
+run of the suite there since 2026-10-23: 164_inline_call printed two
+label addresses with %p, one of them null (glibc writes "(nil)", musl
+"0"); printed as integers.  161_gnu_extensions2 checked (long)&e % 16 on
+an aligned(16) local; the i386 backend does not realign the stack, so
+that depends on the caller's frame and differed between the first- and
+second-generation compilers' -run harnesses (the compiled test was
+byte-identical); the aligned variable is a static one now, whose
+address the data section's alignment makes deterministic.  Both
+expectations are unchanged apart from 164's line.
+---
+ tests/tests2/161_gnu_extensions2.c     |   6 +-
+ tests/tests2/164_inline_call.c         |   3 +-
+ tests/tests2/164_inline_call.expect    |   2 +-
+ tests/tests2/168_if0_label.c           | 121 +++++++++++++++++++++++++
+ tests/tests2/168_if0_label.expect      |   6 ++
+ tests/tests2/169_cleanup_assign.c      | 103 +++++++++++++++++++++
+ tests/tests2/169_cleanup_assign.expect |  12 +++
+ 7 files changed, 249 insertions(+), 4 deletions(-)
+ create mode 100644 tests/tests2/168_if0_label.c
+ create mode 100644 tests/tests2/168_if0_label.expect
+ create mode 100644 tests/tests2/169_cleanup_assign.c
+ create mode 100644 tests/tests2/169_cleanup_assign.expect
+
+diff --git a/tests/tests2/161_gnu_extensions2.c b/tests/tests2/161_gnu_extensions2.c
+index 30b3f4c..a012bcf 100644
+--- a/tests/tests2/161_gnu_extensions2.c
++++ b/tests/tests2/161_gnu_extensions2.c
+@@ -65,12 +65,14 @@ static int test_decl_attr(int x)
+ {
+     int a, __attribute__((unused)) unused_var, c;
+     int d, __attribute__((aligned(16))) e;
+-    static int s1, __attribute__((unused)) s2 = 3, s3 = 4;
++    static int s1, __attribute__((unused)) s2 = 3, s3 = 4, __attribute__((aligned(16))) s4;
+     a = x;
+     c = a + 1;
+     d = c;
+     e = d * 2;
+-    return c + e + s2 + s3 + ((long)&e % 16 == 0);
++    /* the static one's address: tcc's i386 backend does not realign the stack, so
++       (long)&e % 16 would depend on the caller's frame there */
++    return c + e + s2 + s3 + ((long)&s4 % 16 == 0);
+ }
+ 
+ /* fix 110: an enumerator referenced by a later one of the same list keeps
+diff --git a/tests/tests2/164_inline_call.c b/tests/tests2/164_inline_call.c
+index 4443160..f751ce6 100644
+--- a/tests/tests2/164_inline_call.c
++++ b/tests/tests2/164_inline_call.c
+@@ -269,7 +269,8 @@ out:
+     s = stat_counter();
+     printf("static %d %d %d\n", s, stat_counter(), varargs(3, 4, 5));
+     printf("cmp %d %d\n", cmparg(a[0] < a[1]), cmparg(a[1] < a[0]));
+-    printf("loop %d %p %p\n", noret_loop(0), label_addr(0), label_addr(1));
++    /* the pointers as integers: musl prints a null %p as 0, glibc as (nil) */
++    printf("loop %d %ld %ld\n", noret_loop(0), (long)label_addr(0), (long)label_addr(1));
+     printf("bcp %d %d\n", bcp(5), bcp(rt));
+     for (i = sw_in(1); i < sw_in(2); i += sw_in(rt))
+         s += i;
+diff --git a/tests/tests2/164_inline_call.expect b/tests/tests2/164_inline_call.expect
+index b12b86e..8a3fec8 100644
+--- a/tests/tests2/164_inline_call.expect
++++ b/tests/tests2/164_inline_call.expect
+@@ -21,7 +21,7 @@ cleanup 8 7
+ float 2.5 3298534883328 2.5
+ static 1 2 3
+ cmp 3 0
+-loop 5 (nil) 0x1
++loop 5 0 1
+ bcp 1 0
+ header 11
+ cond 20 1 4
+diff --git a/tests/tests2/168_if0_label.c b/tests/tests2/168_if0_label.c
+new file mode 100644
+index 0000000..02576a9
+--- /dev/null
++++ b/tests/tests2/168_if0_label.c
+@@ -0,0 +1,121 @@
++/* Fix 126: constant propagation through locals after an if with a constant
++   condition whose dead branch holds a label.  The label makes the end of
++   the branch reachable (from a goto or an asm goto), and what the branch
++   assigned must join the state of the path the condition selected, not
++   replace it: the kernel's get_user_inline() ends with
++   "if (0) { efault: ret = -EFAULT; }" and returned -EFAULT for every
++   successful read (the futex wait loop never ended, pthread_join hung). */
++#include <stdio.h>
++
++static int fwd(int fail)
++{
++    int ret = 0;
++    if (fail)
++        goto efault;
++    if (0) {
++    efault:
++        ret = -14;
++    }
++    return ret;
++}
++
++static int with_else(int fail)
++{
++    int ret = 0;
++    if (fail)
++        goto bad;
++    if (0) {
++    bad:
++        ret = -1;
++    } else {
++        ret = ret + 2;
++    }
++    return ret;
++}
++
++static int else_dead(int fail)
++{
++    int ret = 0;
++    if (fail)
++        goto bad;
++    if (1) {
++        ret = ret + 2;
++    } else {
++    bad:
++        ret = -1;
++    }
++    return ret;
++}
++
++static int nested(int fail)
++{
++    int ret = 0, x = 5;
++    if (fail)
++        goto bad;
++    if (0) {
++        if (0) {
++        bad:
++            ret = -1;
++            x = 6;
++        }
++        x = x + 1;
++    }
++    return ret * 100 + x;
++}
++
++static int after_return(int fail)
++{
++    int ret = 0;
++    if (fail)
++        goto bad;
++    if (0) {
++    bad:
++        ret = -1;
++        return ret;
++    }
++    return ret;
++}
++
++#if defined __x86_64__ || defined __i386__
++/* the kernel's shape: a statement expression with a local label that an
++   asm goto names, the error path under if (0) */
++static int get_user_like(int *dest, int *from, int fail)
++{
++    int ret;
++    ret = ({
++        __label__ efault;
++        int _ret = 0;
++        if (fail)
++            goto efault;
++        __asm__ goto("mov %1,%0" : "=r"(*dest) : "m"(*from) : : efault);
++        if (0) {
++        efault:
++            _ret = -14;
++        }
++        _ret;
++    });
++    return ret;
++}
++#else
++static int get_user_like(int *dest, int *from, int fail)
++{
++    if (fail)
++        return -14;
++    *dest = *from;
++    return 0;
++}
++#endif
++
++int main(void)
++{
++    int v = 7, d = 0;
++    printf("fwd %d %d\n", fwd(0), fwd(1));
++    printf("with_else %d %d\n", with_else(0), with_else(1));
++    printf("else_dead %d %d\n", else_dead(0), else_dead(1));
++    printf("nested %d %d\n", nested(0), nested(1));
++    printf("after_return %d %d\n", after_return(0), after_return(1));
++    printf("get_user_like %d", get_user_like(&d, &v, 0));
++    printf(" %d", d);
++    printf(" %d\n", get_user_like(&d, &v, 1));
++    return 0;
++}
+diff --git a/tests/tests2/168_if0_label.expect b/tests/tests2/168_if0_label.expect
+new file mode 100644
+index 0000000..c9ca644
+--- /dev/null
++++ b/tests/tests2/168_if0_label.expect
+@@ -0,0 +1,6 @@
++fwd 0 -14
++with_else 2 -1
++else_dead 2 -1
++nested 5 -93
++after_return 0 -1
++get_user_like 0 7 -14
+diff --git a/tests/tests2/169_cleanup_assign.c b/tests/tests2/169_cleanup_assign.c
+new file mode 100644
+index 0000000..8fe39f5
+--- /dev/null
++++ b/tests/tests2/169_cleanup_assign.c
+@@ -0,0 +1,103 @@
++/* Fix 127: the destination of an assignment whose right-hand side is a
++   statement expression that ends a scope with a cleanup call.  The lvalue
++   waits on the value stack while the right-hand side is parsed, and the
++   cleanup call copied it into a temporary (save_lvalues(), so that the
++   cleanup function cannot change an operand already read) -- the store
++   then went to the copy and the variable kept its old value.  The kernel:
++   get_user_inline() is a statement expression around a scoped user access
++   (a __cleanup variable). */
++#include <stdio.h>
++
++static int ends;
++static void endf(int **p) { ends++; }
++static void endi(int *p) { ends += 10; }
++
++struct s { int a, b; };
++static struct s gs;
++static int g = 99;
++
++static int asg(int *from)
++{
++    int r = 99;
++    r = ({ int *q __attribute__((cleanup(endf))) = from; 5; });
++    return r;
++}
++static int asgv(int *from)
++{
++    int r = 99;
++    r = ({ int *q __attribute__((cleanup(endf))) = from; *q + 1; });
++    return r;
++}
++static int compound(int *from)
++{
++    int r = 100;
++    r += ({ int *q __attribute__((cleanup(endf))) = from; *q; });
++    r -= ({ int x __attribute__((cleanup(endi))) = 2; x; });
++    return r;
++}
++static int member(int *from)
++{
++    struct s l = { 1, 2 };
++    l.b = ({ int *q __attribute__((cleanup(endf))) = from; *q * 2; });
++    gs.a = ({ int *q __attribute__((cleanup(endf))) = from; *q * 3; });
++    return l.a * 1000 + l.b * 100 + gs.a;
++}
++static int global(int *from)
++{
++    g = ({ int *q __attribute__((cleanup(endf))) = from; *q + 10; });
++    return g;
++}
++static int chained(int *from)
++{
++    int a = 1, b = 2;
++    a = b = ({ int *q __attribute__((cleanup(endf))) = from; *q; });
++    return a * 10 + b;
++}
++static int in_loop(int *from)
++{
++    int r = 99;
++    r = ({ int x = 0;
++           for (int *q __attribute__((cleanup(endf))) = from; !x; x = 1)
++               ;
++           x + *from; });
++    return r;
++}
++static int ret(int *from)
++{
++    return ({ int *q __attribute__((cleanup(endf))) = from; *q + 20; });
++}
++static int cond(int *from)
++{
++    if (({ int *q __attribute__((cleanup(endf))) = from; *q; }) == 7)
++        return 1;
++    return 0;
++}
++static int operand(int *from)
++{
++    int x = 3;
++    return x + ({ int *q __attribute__((cleanup(endf))) = from; *q; });
++}
++static int arg2(int a, int b) { return a * 10 + b; }
++static int argument(int *from)
++{
++    int x = 4;
++    return arg2(x, ({ int *q __attribute__((cleanup(endf))) = from; *q; }));
++}
++
++int main(void)
++{
++    int v = 7;
++    printf("asg %d\n", asg(&v));
++    printf("asgv %d\n", asgv(&v));
++    printf("compound %d\n", compound(&v));
++    printf("member %d\n", member(&v));
++    printf("global %d\n", global(&v));
++    printf("chained %d\n", chained(&v));
++    printf("in_loop %d\n", in_loop(&v));
++    printf("ret %d\n", ret(&v));
++    printf("cond %d\n", cond(&v));
++    printf("operand %d\n", operand(&v));
++    printf("argument %d\n", argument(&v));
++    printf("ends %d\n", ends);
++    return 0;
++}
+diff --git a/tests/tests2/169_cleanup_assign.expect b/tests/tests2/169_cleanup_assign.expect
+new file mode 100644
+index 0000000..f41ef3a
+--- /dev/null
++++ b/tests/tests2/169_cleanup_assign.expect
+@@ -0,0 +1,12 @@
++asg 5
++asgv 8
++compound 105
++member 2421
++global 17
++chained 77
++in_loop 8
++ret 27
++cond 1
++operand 10
++argument 47
++ends 22

@@ -171,8 +171,8 @@ gcc, binutils, flex or bison:
 
 | In the guest | What |
 |------|------|
-| `/usr/src/linux-7.3.0.tar.gz` (16 MB, 8600 files, 92 MB unpacked) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 128 patches, the linker suite, GNU make |
+| `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 431 files with the drivers) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 131 patches, the linker suite, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -203,11 +203,15 @@ transfer, 2 minutes in all), `boot` boots the received kernel and checks for gen
 `AUTO=all` has the guest run `build-toolchain` first and build the kernel with its own,
 second-generation tcc and tld (`./run.sh --selfhost --auto=all`), and the same test run on a
 guest-built kernel (`KERNEL=out/<arch>/selfhost/bzImage scripts/selfhost-test.sh all`) builds
-generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23).
+generation 3 inside generation 2; both verified on x86_64 and i386 (2026-10-23, and again
+on 2026-11-04 with the 131-patch compiler and the drivers kernel: about 4 min per generation
+on x86_64, 3 min 20 s on i386, 8 virtual CPUs).
 `./run.sh --selfhost --auto=test` rebuilds the toolchain and runs tcc's own test suite on it
 inside the guest (`build-toolchain --test`): ALL TESTS PASSED on both architectures
 (2026-10-23, after fixes 95 and 96, which only a statically linked musl tcc shows; the
-shared-object tests are skipped, the image has no dynamic loader). Sizes and times are in
+shared-object tests are skipped, the image has no dynamic loader; 2026-11-04 again with the
+131-patch compiler, after the run had found fixes 126 and 127: a futex hang of the tcc-built
+kernel that only this run's threaded test reaches, see `docs/FIX-LOG.md`). Sizes and times are in
 `docs/PORT-NOTES.md` ("Self-hosting"). On the ISO the image is the sixth and
 seventh menu entries (`./run.sh --iso --selfhost` selects them).
 
@@ -229,7 +233,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 128 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/tinycc/` | 131 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
 | `patches/linux/` | 4 kernel patches in `workarounds/` and `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
@@ -246,7 +250,7 @@ Patches are applied in the order of `patches/<component>/series`; the four-digit
 every file is its position in that order, so `ls patches/*/*/` sorts the same way. The
 directories only sort them by kind:
 
-* **tinycc/bugfixes** (32): tcc was wrong before: a miscompile (goto chains), broken
+* **tinycc/bugfixes** (33): tcc was wrong before: a miscompile (goto chains), broken
   encodings (swapgs, mov imm, movaps), truncated constants and addends, stale symbols,
   broken out-of-tree builds, `$` in `.S` macros, a tentative definition in a named
   section, forward labels in symbol differences, an `.eh_frame` CIE in every assembler file,
@@ -257,7 +261,7 @@ directories only sort them by kind:
   segment-register moves, the 8/16-bit relocations in the x86_64 linker and against local
   labels on i386, and regparm with floating-point arguments (all found by the new tests),
   and a `##` comment in a `.S` file lexed as token pasting.
-* **tinycc/compatibility** (54): accept what GCC (and GNU as) accept, with GCC's
+* **tinycc/compatibility** (55): accept what GCC (and GNU as) accept, with GCC's
   semantics: builtins, `__auto_type`, `typeof_unqual`, packed enums, cast to union,
   `transparent_union`, forward aliases, `_Pragma`, `#pragma GCC visibility`, global
   register variables, inline-asm constraints and modifiers, the dead-code behaviour an
@@ -273,7 +277,7 @@ directories only sort them by kind:
   tcc's own linker), and from the regression tests the `"X"` constraint on i386, `"i"`
   constants printed in the width of their type, `__auto_type` without qualifiers and an
   alias to a static function declared later.
-* **tinycc/features** (40): new capabilities: two-pass assembly (inline and whole files),
+* **tinycc/features** (41): new capabilities: two-pass assembly (inline and whole files),
   GNU as macros, `--start-group`, `-S` (asm-offsets text), `-m16` with GCC's `-mregparm`
   and runtime `.code16/.code32/.code64` in one x86 assembler, inline constant-size
   memcpy/memset, the `m16-check.sh` verification, instruction-table additions (0F 01
@@ -289,7 +293,7 @@ directories only sort them by kind:
   64x64->128 product, `__SIZEOF_INT128__`), so that the kernel's `u128` code
   (cmpxchg128, the SLUB freelist, `mul_u64_u64_shr()`, GHASH) compiles unmodified; and
   the patches that add regression tests for the fixes to tcc's own suite
-  (`tests/tests2/152`-`167`, `tests/pp/24.S`, `tests/asmtest.S`), so that `make test`
+  (`tests/tests2/152`-`169`, `tests/pp/24.S`, `tests/asmtest.S`), so that `make test`
   guards them (see `docs/FIX-LOG.md`, "Tests").
 * **linux/workarounds** (1): guarded by `__TINYC__`: the kernel needs a compiler that
   proves a seqlock state impossible for this spot (the ones that needed inlining went
@@ -328,8 +332,8 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 
 | Arch | Status |
 |------|--------|
-| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2085 invocations including Kconfig probes with the drivers of 2026-10-26, 0 gcc) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 13 checks); self-hosting (the kernel rebuilds itself inside the guest) |
-| i386 | works (2026-10-23): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2099 tcc invocations with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
+| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 13 checks); self-hosting (the kernel rebuilds itself inside the guest) |
+| i386 | works (2026-10-23; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2788 tcc invocations from a clean tree with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
 `install.sh --arch` accepts all three and explains what is missing for arm64. The scripts

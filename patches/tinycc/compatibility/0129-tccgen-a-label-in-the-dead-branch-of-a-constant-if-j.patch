@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 4 Nov 2026 19:02:05 +0200
+Subject: [PATCH] tccgen: a label in the dead branch of a constant if joins the
+ other path's state
+
+Constant propagation (kprop) took the state after an if with a constant
+condition from whatever the branches left, as if the dead branch could
+not run.  A label inside it makes its end reachable -- from a goto, or
+from an asm goto that names it -- and the state at the label's
+definition is that of the gotos (klabel_def()); what the branch then
+assigned replaced the state of the path the condition had selected
+instead of joining it.  The kernel's get_user_inline() ends with
+"if (0) { efault: _ret = -EFAULT; }" after an asm goto, and
+futex_get_value_locked() came out as "return -EFAULT" for every
+successful read: futex_wait_setup() retried forever and pthread_join
+never returned (tests2/124_atomic_counter hung inside the guest).
+
+The if now snapshots the state before the body for a constant condition
+too and merges or restores it as for an unknown one; only a true
+condition without an else keeps the body's state alone.
+---
+ tccgen.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 07014cf..3d13969 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -9745,7 +9745,7 @@ again:
+         tcc_tcov_check_line (tcc_state, 0), tcc_tcov_block_begin (tcc_state);
+ 
+     if (t == TOK_IF) {
+-        KSnap *k0 = NULL, *k1 = NULL;
++        KSnap *k0, *k1 = NULL;
+         int kc, alive;
+         new_scope_s(&o);
+         skip('(');
