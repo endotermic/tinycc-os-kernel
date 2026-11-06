@@ -1,4 +1,3 @@
 # patches/linux: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
-upstreamable/0006-x86-fpu-spell-out-where-32-bit-signal-frames-are-pos.patch
 upstreamable/0009-kbuild-let-OBJTOOL-name-an-objtool-that-is-not-built.patch
 upstreamable/0011-x86-boot-make-the-video-mode-setting-code-optional.patch

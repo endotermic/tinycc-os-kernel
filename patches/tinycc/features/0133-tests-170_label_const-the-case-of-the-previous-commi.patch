@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 6 Nov 2026 18:03:44 +0200
+Subject: [PATCH] tests: 170_label_const, the case of the previous commit
+ (expected output from gcc -O2)
+
+---
+ tests/tests2/170_label_const.c      | 187 ++++++++++++++++++++++++++++
+ tests/tests2/170_label_const.expect |  22 ++++
+ 2 files changed, 209 insertions(+)
+ create mode 100644 tests/tests2/170_label_const.c
+ create mode 100644 tests/tests2/170_label_const.expect
+
+diff --git a/tests/tests2/170_label_const.c b/tests/tests2/170_label_const.c
+new file mode 100644
+index 0000000..e8e351d
+--- /dev/null
++++ b/tests/tests2/170_label_const.c
+@@ -0,0 +1,187 @@
++/* Constant propagation across a label that a later goto targets (fix 129 of
++   the tinycc-os-kernel project).  A label reached by a backward goto used to
++   make every local unknown; now only the locals assigned textually after the
++   label are, as at a loop's head: a path that comes back to the label can only
++   have run the stores written after it.  The kernel's
++   copy_fpstate_to_sigframe() tests ia32_fxstate, known false since its
++   '&= IS_ENABLED(...)', after a 'retry:' label, and otherwise calls code that
++   references convert_from_fxsr(), which does not exist on x86-64 without IA32
++   emulation.  tcc -run fails on any reference to the dead_*() functions; the
++   output must be gcc's. */
++#include <stdio.h>
++
++extern void dead_after_label(void), dead_two_labels(void), dead_inner(void),
++    dead_param(void);
++int enabled; /* 0: a run-time value */
++
++/* the kernel's shape: known false before the label, not assigned after it */
++static int t_retry(int tries)
++{
++    int k = 1, n = 0, y = 0;
++    k &= 0;
++retry:
++    n++;
++    if (k)
++        dead_after_label();
++    if (y) /* assigned after the label: 0 on the first pass only */
++        printf("y %d\n", y);
++    y = n;
++    if (n < tries)
++        goto retry;
++    return n + y;
++}
++
++/* assigned after the label: not folded */
++static int t_written(void)
++{
++    int x = 0, n = 0;
++again:
++    if (x)
++        printf("x %d\n", x);
++    x = 1;
++    if (++n < 3)
++        goto again;
++    return x + n;
++}
++
++/* an earlier goto's state joins the fall-through at a label a later goto
++   reaches too */
++static int t_join(int c)
++{
++    int z = 2, n = 0;
++    if (c)
++        goto L;
++    z = 3;
++L:
++    if (z == 2)
++        printf("z 2\n");
++    else
++        printf("z 3\n");
++    if (++n < 2)
++        goto L;
++    return z;
++}
++
++/* two labels: a store between them is after the first, before the second */
++static int t_two(int tries)
++{
++    int a = 0, b = 0, n = 0;
++first:
++    if (a)
++        printf("a %d\n", a); /* assigned after 'first' */
++    a = 1;
++second:
++    if (b)
++        dead_two_labels(); /* b is assigned after neither label */
++    n++;
++    if (n == 1)
++        goto second;
++    if (n < tries)
++        goto first;
++    return a + b + n;
++}
++
++/* a label inside a loop body, next to the loop's own stores */
++static int t_loop(void)
++{
++    int i, s = 0, f = 0;
++    for (i = 0; i < 3; i++) {
++        int g = 0;
++    inner:
++        if (g)
++            printf("g %d\n", g);
++        if (f)
++            dead_inner(); /* f is never assigned after 'inner' */
++        s += i;
++        if (!g && i == 1) {
++            g = 1;
++            goto inner;
++        }
++    }
++    return s + f;
++}
++
++/* a computed-goto target: the jump may come from anywhere, nothing is known */
++static int t_computed(int c)
++{
++    static void *tbl[2] = { &&a, &&b };
++    int x = 0;
++    goto *tbl[c];
++a:
++    x = 5;
++b:
++    if (x == 5)
++        printf("x 5\n");
++    else
++        printf("x 0\n");
++    return x;
++}
++
++/* ++, a compound assignment and an asm output after the label are stores */
++static int t_ops(void)
++{
++    int p = 0, q = 0, r = 0, n = 0;
++back:
++    if (p || q || r)
++        printf("p %d q %d r %d\n", p, q, r);
++    p++;
++    q |= 2;
++#if defined __i386__ || defined __x86_64__
++    __asm__("movl $7, %0" : "=r"(r));
++#else
++    r = 7;
++#endif
++    if (++n < 2)
++        goto back;
++    return p + q + r;
++}
++
++/* a parameter given a constant (the call is compiled in place) tested after
++   a label its body loops back to; the body's own loop variable is unknown */
++static int t_inl(int flag, int tries)
++{
++    int n = 0;
++rep:
++    if (flag)
++        dead_param();
++    if (++n < tries)
++        goto rep;
++    return n;
++}
++
++/* two labels of one name (a block's local label and the function's): the
++   name gives no position to reason from, nothing is assumed at either */
++static int t_local(void)
++{
++    int i = 0;
++    ({
++        {
++            __label__ LBL;
++        LBL:
++            if (i++ == 0)
++                goto LBL;
++        }
++        goto LBL;
++    });
++LBL:
++    return i;
++}
++
++int main(void)
++{
++    int j0, j1, c0, c1;
++    printf("%d\n", t_retry(3));
++    printf("%d\n", t_written());
++    j0 = t_join(0);
++    j1 = t_join(1);
++    printf("%d %d\n", j0, j1);
++    printf("%d\n", t_two(3));
++    printf("%d\n", t_loop());
++    c0 = t_computed(0);
++    c1 = t_computed(1);
++    printf("%d %d\n", c0, c1);
++    printf("%d\n", t_ops());
++    printf("%d\n", t_inl(0, 2));
++    printf("%d\n", t_local());
++    return 0;
++}
+diff --git a/tests/tests2/170_label_const.expect b/tests/tests2/170_label_const.expect
+new file mode 100644
+index 0000000..398e5e5
+--- /dev/null
++++ b/tests/tests2/170_label_const.expect
+@@ -0,0 +1,22 @@
++y 1
++y 2
++6
++x 1
++x 1
++4
++z 3
++z 3
++z 2
++z 2
++3 2
++a 1
++4
++g 1
++4
++x 5
++x 0
++5 0
++p 1 q 2 r 7
++11
++2
++2

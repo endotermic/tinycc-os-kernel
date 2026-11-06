@@ -172,7 +172,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 431 files with the drivers) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 131 patches, the linker suite, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 133 patches, the linker suite, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -233,8 +233,8 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 131 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 3 kernel patches in `upstreamable/` |
+| `patches/tinycc/` | 133 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
+| `patches/linux/` | 2 kernel patches in `upstreamable/` |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
@@ -261,7 +261,7 @@ directories only sort them by kind:
   segment-register moves, the 8/16-bit relocations in the x86_64 linker and against local
   labels on i386, and regparm with floating-point arguments (all found by the new tests),
   and a `##` comment in a `.S` file lexed as token pasting.
-* **tinycc/compatibility** (55): accept what GCC (and GNU as) accept, with GCC's
+* **tinycc/compatibility** (57): accept what GCC (and GNU as) accept, with GCC's
   semantics: builtins, `__auto_type`, `typeof_unqual`, packed enums, cast to union,
   `transparent_union`, forward aliases, `_Pragma`, `#pragma GCC visibility`, global
   register variables, inline-asm constraints and modifiers, the dead-code behaviour an
@@ -277,7 +277,7 @@ directories only sort them by kind:
   tcc's own linker), and from the regression tests the `"X"` constraint on i386, `"i"`
   constants printed in the width of their type, `__auto_type` without qualifiers and an
   alias to a static function declared later.
-* **tinycc/features** (41): new capabilities: two-pass assembly (inline and whole files),
+* **tinycc/features** (43): new capabilities: two-pass assembly (inline and whole files),
   GNU as macros, `--start-group`, `-S` (asm-offsets text), `-m16` with GCC's `-mregparm`
   and runtime `.code16/.code32/.code64` in one x86 assembler, inline constant-size
   memcpy/memset, the `m16-check.sh` verification, instruction-table additions (0F 01
@@ -301,14 +301,14 @@ directories only sort them by kind:
   loop), is now `kernels/linux/tcc-canary.h`, given to every kernel compile through
   Kbuild's `KCFLAGS=-include` instead of a change to the tree (the ones that needed
   inlining went with tcc fix 120, the two that needed `__int128` with fix 125).
-* **linux/upstreamable** (3): a semantics-preserving rewrite that stops depending on
-  constant propagation through the parameter of a function with one caller
-  (`ia32_fxstate_possible()`) and two toolchain-capability options: `OBJTOOL=` for an
+* **linux/upstreamable** (2): two toolchain-capability options, `OBJTOOL=` for an
   external objtool and the `X86_BOOT_VIDEO_MODES` option for the real-mode setup;
-  candidates for mainline.  Fifteen more of both kinds went away with tcc fixes 119
+  candidates for mainline.  Sixteen more of both kinds went away with tcc fixes 119
   (constant propagation through locals), 120 (the inliner), 121 (i386 division by a
   constant without the libgcc helpers), 122 (the VEX/EVEX encodings of the AVX crypto
-  assembly, which the `CONFIG_AS_AVX*` probes had gated) and 125 (`__int128` on x86_64).
+  assembly, which the `CONFIG_AS_AVX*` probes had gated), 125 (`__int128` on x86_64) and
+  129 (a constant local kept across a label that a later goto reaches: the
+  `ia32_fxstate_possible()` rewrite of fpu/signal.c, dropped 2026-11-06).
 
 Every tcc patch compiles on its own (the series was built commit by commit) and the tip
 passes `make test`, on the glibc host and inside both musl guests, including the project's

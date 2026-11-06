@@ -68,6 +68,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 125 | tinycc 0126, 0127 |
 | | | | | 126 | tinycc 0129 |
 | | | | | 127 | tinycc 0130 |
+| | | | | 129 | tinycc 0132 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -76,7 +77,7 @@ last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 01
 fix 125, 0131 those of fixes 126 and 127.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
-kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006,
+kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
 K15 = 0014, K16 = 0015, K17 = 0016, K18 = 0017, K19 = 0018, K20 = 0019.
 
@@ -130,6 +131,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/167_int128.c` | x86_64 (skipped elsewhere: no `__int128`) | 125 |
 | `tests/tests2/168_if0_label.c` | all (the asm goto case on i386, x86_64) | 126 |
 | `tests/tests2/169_cleanup_assign.c` | all | 127 |
+| `tests/tests2/170_label_const.c` | all (the asm output case on i386, x86_64) | 129 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2469,3 +2471,53 @@ C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS
     (mac80211_hwsim needs only MAC80211). cfg80211 reports "failed to load regulatory.db" at
     boot (no firmware files in the image) and uses the world regulatory domain.
 
+
+129. 2026-11-06, COMMITTED (patches/tinycc/compatibility/0132, test 0133), `tccgen.c`
+    (kscan_labels(), klabel_goto(), klabel_def()). The number 128 is left to the i386 jump
+    relaxation (short jumps, the code-size work for kernel patch 0011) in progress in
+    src/tinycc, uncommitted on 2026-11-06. Problem: fix 119's constant propagation made every
+    local unknown at a label that a later goto reaches (or that the body does not define):
+    "a goto may come from anywhere". The kernel's copy_fpstate_to_sigframe()
+    (arch/x86/kernel/fpu/signal.c) clears `ia32_fxstate` with `&= (IS_ENABLED(CONFIG_X86_32)
+    || IS_ENABLED(CONFIG_IA32_EMULATION))` -- known false since fix 119 -- and tests it after
+    its `retry:` label (the `goto retry` after a faulting copy_fpregs_to_sigframe()), so
+    `(ia32_fxstate || !use_fxsr()) && !save_fsave_header(tsk, buf)` kept the call of the
+    static inline save_fsave_header(), whose body references convert_from_fxsr() (regset.c,
+    built only with X86_32 or IA32_EMULATION) and a 16-bit `__put_user()`
+    (`__put_user_nocheck_2`, under the same condition): two undefined symbols at the vmlinux
+    link, which kernel patch 0006 (K7) avoided by testing `ia32_fxstate_possible() &&
+    ia32_fxstate`. The `__fpu_restore_sig()` half of that patch had already become
+    unnecessary with fix 120, which compiles the call with its constant argument in place
+    (the vanilla file with the committed tcc before this fix: 9137 bytes of text, those two
+    symbols undefined; PORT-NOTES had the patch down as "interprocedural"). Fix: what a path
+    back to a label can have changed is what the stores textually after the label assign,
+    as loop_tokens() already assumes for a loop body. kscan_labels(), which scans the body's
+    tokens for its labels and gotos before it is parsed, now also records for every
+    identifier the last position where it is assigned (the loop scan's notion: an assignment
+    operator or ++/-- after it, past closing parentheses; ++/-- or & before it; any mention
+    inside an asm statement; a member name after . or -> is none), and klabel_def() at a
+    label with a later goto joins the earlier gotos' states as for any label and then
+    forgets the locals assigned after the label's position (compiler temporaries always); a
+    computed goto's target (&&label), a label the body does not define and a name that two
+    labels of the body carry (a block's `__label__` next to the function's label of the same
+    name: the scan keys labels by name, so the first version gave the inner label the outer
+    one's position, took the `i++` between them for a store before the label, kept `i` known
+    and turned tcctest.c's `LBL: if (i++ == 0) goto LBL;` into an endless loop -- found by
+    `make test`'s test3, which ran 32 minutes before it was noticed) still forget
+    everything. Soundness: a value known at the label comes from stores before it that every
+    path executes alike (a join had dropped it otherwise); a path that returns to the label
+    from later text executes only stores that exist textually, those after the label being
+    the forgotten ones, and a store before it re-executed on the way back is the same
+    constant store. Verification: tests2/170_label_const (the kernel's shape; a variable
+    assigned after the label not folded; an earlier goto's join at a label with a later
+    goto; two labels with a store between them; a label inside a for body; a computed-goto
+    target forgetting everything; ++, |= and an asm output as stores; a parameter given a
+    constant tested after a label its body loops back to; the two labels of one name;
+    expected output from gcc -O2, which links, folding the dead_*() calls itself); the
+    vanilla fpu/signal.c compiled with the kernel's own command gives 8187 bytes of text, the
+    same as the patched file, and no extra undefined symbol; `make test` ALL TESTS PASSED
+    (tests2 included; tcctest.c through three generations of tcc in test3). Both kernels rebuilt
+    from a clean build directory by the 133-patch compiler from the 2-patch tree (x86_64 2838
+    tcc invocations, i386 2788, 0 gcc, bzImages of the previous sizes), `nm vmlinux` without
+    `convert_from_fxsr`, and `scripts/devices-test.sh` passes its 13 checks on both (the
+    x86_64 config has `CONFIG_IA32_EMULATION` off, so the dropped code really is absent).

@@ -130,3 +130,5 @@ features/0128-tests-167_int128-__int128-on-x86-64-expected-output-.patch
 compatibility/0129-tccgen-a-label-in-the-dead-branch-of-a-constant-if-j.patch
 bugfixes/0130-tccgen-a-cleanup-call-inside-the-right-hand-side-lea.patch
 features/0131-tests-168_if0_label-and-169_cleanup_assign-the-cases.patch
+compatibility/0132-tccgen-a-label-that-a-later-goto-reaches-forgets-onl.patch
+features/0133-tests-170_label_const-the-case-of-the-previous-commi.patch

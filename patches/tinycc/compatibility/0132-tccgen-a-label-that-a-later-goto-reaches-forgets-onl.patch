@@ -1,0 +1,260 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 6 Nov 2026 18:03:44 +0200
+Subject: [PATCH] tccgen: a label that a later goto reaches forgets only the
+ locals assigned after it
+
+The constant propagation through locals made every variable unknown at a
+label that a backward goto targets (or that is not defined in the body),
+since the jump may come from anywhere.  What a path back to the label can
+have changed is only what the stores textually after the label assign, as
+for a loop (loop_tokens()): kscan_labels() now also records, for every
+identifier, the last position where it is assigned (an assignment operator
+or ++/-- after it, ++/-- or & before it, any mention inside an asm
+statement), and klabel_def() forgets, at such a label, the locals assigned
+after its position (compiler temporaries too), after joining the states of
+the earlier gotos as for any other label.  A computed goto's target
+(&&label) and a label the body does not define still forget everything.
+
+The kernel's copy_fpstate_to_sigframe() (arch/x86/kernel/fpu/signal.c)
+clears ia32_fxstate with '&= IS_ENABLED(CONFIG_X86_32) ||
+IS_ENABLED(CONFIG_IA32_EMULATION)' and tests it after its 'retry:' label;
+without this the save_fsave_header() call stayed and referenced
+convert_from_fxsr() and a 16-bit __put_user() that do not exist on x86-64
+without IA32 emulation, which the project's kernel patch 0006 worked
+around.  With it the vanilla file compiles to the same text as the patched
+one.
+---
+ tccgen.c | 126 ++++++++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 111 insertions(+), 15 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 2ad5d06..97fda38 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -130,8 +130,10 @@ static CString initstr;
+    what both agree on stays known (KSnap snapshots and kacc accumulators
+    of the paths that break/continue to a point), the variables that a
+    loop may assign are unknown throughout the loop (its tokens are scanned
+-   at the head, loop_tokens()), and a label makes everything unknown.
+-   Dead code records nothing. */
++   at the head, loop_tokens()), and a label that a later goto reaches makes
++   unknown the variables that are assigned after it (kscan_labels(); a path
++   back to the label can only have run those stores), a computed goto's
++   target everything.  Dead code records nothing. */
+ typedef struct KSnap {
+     int n;
+     struct { Sym *s; long long v; Sym *sym; } e[1];
+@@ -4775,12 +4777,43 @@ static int kcond(void)
+ }
+ 
+ /* The labels of the function being compiled, from a scan of its tokens
+-   before it is parsed (kscan_labels()).  A label that only earlier gotos
+-   reach joins their states (a) with the fall-through; one that a later
+-   goto or a computed goto (&&label) reaches is the head of a loop, where
+-   everything is unknown. */
+-static struct klab { int v, back, defined; struct kacc a; } *klabs;
++   before it is parsed (kscan_labels()).  A label joins the states of the
++   earlier gotos that reach it (a) with the fall-through; one that a later
++   goto reaches (back) is the head of a loop, where the variables assigned
++   after it (pos, kwrites) are unknown; one whose address is taken
++   (&&label), that is not defined in the body, or whose name a second label
++   of the body carries (a block's __label__) (addr) may be reached from
++   anywhere: everything is unknown there. */
++static struct klab { int v, back, addr, defined, done, pos; struct kacc a; } *klabs;
+ static int nb_klabs;
++/* kscan_labels(): the last position (token count) where the identifier v
++   is assigned in the body, as loop_tokens() counts assignments */
++static struct kwrite { int v, pos; } *kwrites;
++static int nb_kwrites;
++
++static void kwrite_add(int v, int pos)
++{
++    int i;
++    for (i = 0; i < nb_kwrites; i++)
++        if (kwrites[i].v == v) {
++            if (kwrites[i].pos < pos)
++                kwrites[i].pos = pos;
++            return;
++        }
++    kwrites = tcc_realloc(kwrites, (nb_kwrites + 1) * sizeof *kwrites);
++    kwrites[nb_kwrites].v = v, kwrites[nb_kwrites].pos = pos;
++    nb_kwrites++;
++}
++
++/* the identifier v is assigned somewhere after the position pos */
++static int kwritten_after(int v, int pos)
++{
++    int i;
++    for (i = 0; i < nb_kwrites; i++)
++        if (kwrites[i].v == v)
++            return kwrites[i].pos > pos;
++    return 0;
++}
+ 
+ static struct klab *klab_find(int v)
+ {
+@@ -4809,6 +4842,7 @@ static void klabs_free(void)
+     for (i = 0; i < nb_klabs; i++)
+         tcc_free(klabs[i].a.k);
+     tcc_free(klabs), klabs = NULL, nb_klabs = 0;
++    tcc_free(kwrites), kwrites = NULL, nb_kwrites = 0;
+ }
+ 
+ /* scan a function body (a token string ending with TOK_EOF; the current
+@@ -4820,6 +4854,7 @@ static void kscan_labels(TokenString *str)
+ {
+     int prev = 0, prev2 = 0, i, asm_goto = 0, level = 0, colons = 0;
+     int cond = 0, clevel = 0, plevel = 0, ntok = 0, nsemi = 0, nbrace = 0, sret = 0;
++    int pend = 0, prevp = 0, in_asm = 0, depth = 0;
+     struct klab *l;
+     Sym *sa;
+     klabs_free();
+@@ -4833,6 +4868,37 @@ static void kscan_labels(TokenString *str)
+         if (ntok++ == 1 && tok == TOK_RETURN)
+             sret = 1;
+         nsemi += tok == ';', nbrace += tok == '{';
++        /* the assignments, as loop_tokens() finds them: an identifier
++           followed (after closing parentheses) by an assignment operator
++           or ++/--, preceded by ++/-- or &, or anywhere in an asm
++           statement; a member name is none */
++        if (pend && tok == ')') {
++            /* closing parentheses after the identifier: wait */
++        } else {
++            if (pend) {
++                if (tok == '=' || TOK_ASSIGN(tok) || tok == TOK_INC || tok == TOK_DEC)
++                    kwrite_add(pend, ntok);
++                pend = 0;
++            }
++            if (in_asm) {
++                if (tok == '(')
++                    depth++;
++                else if (tok == ')') {
++                    if (--depth <= 0)
++                        in_asm = 0;
++                } else if (tok >= TOK_UIDENT && depth > 0)
++                    kwrite_add(tok, ntok);
++            } else if (tok == TOK_ASM1 || tok == TOK_ASM2 || tok == TOK_ASM3) {
++                in_asm = 1, depth = 0;
++            } else if (tok >= TOK_UIDENT && prev != '.' && prev != TOK_ARROW) {
++                if (prevp == TOK_INC || prevp == TOK_DEC || prevp == '&')
++                    kwrite_add(tok, ntok);
++                else
++                    pend = tok;
++            }
++            if (tok != '(')
++                prevp = tok;
++        }
+         if (kscan_params) {
+             /* a parameter in a condition: the parentheses of if, while,
+                switch, for, or next to !, ?, &&, ||, ==, != */
+@@ -4888,8 +4954,10 @@ static void kscan_labels(TokenString *str)
+                     if (l->defined)
+                         l->back = 1;
+                 }
+-            } else if (prev == TOK_LAND) /* &&label */
+-                klab_add(tok)->back = 1;
++            } else if (prev == TOK_LAND) { /* &&label */
++                l = klab_add(tok);
++                l->back = l->addr = 1;
++            }
+         } else if (tok == '(' && prev == TOK_GOTO
+                    && (prev2 == TOK_ASM1 || prev2 == TOK_ASM2 || prev2 == TOK_ASM3
+                        || prev2 == TOK_VOLATILE1 || prev2 == TOK_VOLATILE2
+@@ -4900,33 +4968,55 @@ static void kscan_labels(TokenString *str)
+                    && (prev2 == ';' || prev2 == '{' || prev2 == '}'
+                        || prev2 == ':' || prev2 == ')' || prev2 == TOK_ELSE
+                        || prev2 == TOK_DO || prev2 == 0)) {
+-            klab_add(prev)->defined = 1;
++            l = klab_add(prev);
++            if (l->defined)
++                l->addr = 1; /* a second label of the name (a local label of a block): no position to reason from */
++            else
++                l->defined = 1, l->pos = ntok;
+         }
+     }
+     end_macro();
+     kscan_sret = sret && nsemi == 1 && nbrace == 1;
+     for (i = 0; i < nb_klabs; i++)
+         if (!klabs[i].defined)
+-            klabs[i].back = 1;
++            klabs[i].back = klabs[i].addr = 1;
+ }
+ 
+-/* a goto (or an asm goto) to the label v: its state reaches the label */
++/* a goto (or an asm goto) to the label v: its state reaches the label
++   (an earlier goto; a later one can only have run the stores after the
++   label, see klabel_def) */
+ ST_FUNC void klabel_goto(int v)
+ {
+     struct klab *l = klab_find(v);
+-    if (l && !l->back)
++    if (l && !l->addr && !l->done)
+         kacc_add(&l->a);
+ }
+ 
++/* at the head of the loop that a backward goto to the label at pos forms:
++   the variables assigned after the label are unknown (a temporary too) */
++static void kkill_written_after(int pos)
++{
++    Sym *s;
++    int v;
++    for (s = local_stack; s; s = s->prev) {
++        v = s->v & ~SYM_FIELD;
++        if (s->kst == 1 && (v >= SYM_FIRST_ANOM || kwritten_after(v, pos)))
++            s->kst = 0;
++    }
++}
++
+ /* the definition of the label v */
+ static void klabel_def(int v)
+ {
+     struct klab *l = klab_find(v);
+     if (!kprop_on())
+         return;
+-    if (l && !l->back)
++    if (l && !l->addr) {
+         kacc_join(&l->a, !nocode_wanted);
+-    else
++        if (l->back)
++            kkill_written_after(l->pos);
++        l->done = 1;
++    } else
+         kkill_all(); /* a goto may come from anywhere */
+ }
+ 
+@@ -8576,6 +8666,8 @@ static int inline_call(Sym *fs, int nb_args)
+     Sym *saved_kinit;
+     struct klab *saved_klabs;
+     int saved_nb_klabs;
++    struct kwrite *saved_kwrites;
++    int saved_nb_kwrites;
+     struct inl_ctx ctx;
+     TokenString ts;
+ 
+@@ -8616,7 +8708,9 @@ static int inline_call(Sym *fs, int nb_args)
+     /* the body's labels, and whether it may be inlined at all */
+     unget_tok(0);
+     saved_klabs = klabs, saved_nb_klabs = nb_klabs;
++    saved_kwrites = kwrites, saved_nb_kwrites = nb_kwrites;
+     klabs = NULL, nb_klabs = 0;
++    kwrites = NULL, nb_kwrites = 0;
+     kscan_params = fn->inlinable ? NULL : fs->next;
+     kscan_labels(fn->func_str);
+     if (!fn->inlinable)
+@@ -8630,6 +8724,7 @@ static int inline_call(Sym *fs, int nb_args)
+             fn->inlinable = 1;
+         klabs_free();
+         klabs = saved_klabs, nb_klabs = saved_nb_klabs;
++        kwrites = saved_kwrites, nb_kwrites = saved_nb_kwrites;
+         next();
+         return 0;
+     }
+@@ -8782,6 +8877,7 @@ static int inline_call(Sym *fs, int nb_args)
+     cur_kbrk = saved_kbrk, cur_kcont = saved_kcont, kinit_sym = saved_kinit;
+     klabs_free();
+     klabs = saved_klabs, nb_klabs = saved_nb_klabs;
++    kwrites = saved_kwrites, nb_kwrites = saved_nb_kwrites;
+     cur_inl = ctx.prev;
+     inl_depth--;
+     inl_static -= !fs->f.func_alwinl;

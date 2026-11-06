@@ -110,8 +110,10 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   the AVX assembly of lib/crypto) went the same day with fix 122, the VEX/EVEX encoder, and 123,
   a `##` comment; and 0001 and 0002 (K1, K2: the 128-bit cmpxchg block of cmpxchg_64.h under
   `__SIZEOF_INT128__` and a two-word `freelist_full_t` in mm/slab.h) the same day with fix
-  125, `__int128` on x86_64: 4 kernel patches remained, none of them a tcc matter; 0005 (K5,
-  K6) left on 2026-11-06 for the `tcc-canary.h` header above, 3 remain, all upstreamable.
+  125, `__int128` on x86_64: 4 kernel patches remained, none of them a tcc matter -- so it
+  seemed; 0005 (K5, K6) left on 2026-11-06 for the `tcc-canary.h` header above, and 0006
+  (K7) the same day with tcc fix 129 (a constant local kept across a label that a later goto
+  reaches); 2 remain (0009, 0011), both upstreamable.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -200,9 +202,10 @@ for gcc.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
    to 125): of the 4 kernel patches left on 2026-11-04, none is a tcc matter: 0005
    (`__scoped_seqlock_bug()`; gone on 2026-11-06 without a tree change, see
-   `kernels/linux/tcc-canary.h`), 0006 (a constant
-   through a function parameter of a function with one caller), 0009 (objtool needs libelf)
-   and 0011 (the 16-bit code size) stay kernel-side.  Fix 125, `__int128` on x86_64, took
+   `kernels/linux/tcc-canary.h`), 0006 (believed to be a constant through a function
+   parameter of a function with one caller; in fact the constant was lost at the `retry:`
+   label of copy_fpstate_to_sigframe(), which tcc fix 129 keeps -- gone on 2026-11-06),
+   0009 (objtool needs libelf) and 0011 (the 16-bit code size) stay kernel-side.  Fix 125, `__int128` on x86_64, took
    0001 and 0002 on 2026-11-04, the last two that a compiler feature could take; fix 121, the i386 strength reduction of
    `long long` division by a constant (with a division-free `__builtin_mul_overflow`, the
    inlining of one-return static functions given a constant, and the dropping of effect-free
@@ -894,8 +897,10 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
 Kernel-side for good: 0005's `__scoped_seqlock_bug()` (the state lives in a struct across
 loop iterations: no single-pass analysis sees it; the kernel already has the stub form for
 GCC 8, KASAN and UBSAN -- which is why it could leave the series on 2026-11-06 for a
-header outside the tree, see the end of this section), 0006 (a constant through the parameter of a function with one
-caller: interprocedural), 0009 (objtool is built on the host with libelf; the self-hosting
+header outside the tree, see the end of this section), 0006 (believed interprocedural, a
+constant through the parameter of a function with one caller; fix 120 had taken that half,
+and the reference left came from the constant lost at the `retry:` label of
+copy_fpstate_to_sigframe(): tcc fix 129, 2026-11-06, see the end of this section), 0009 (objtool is built on the host with libelf; the self-hosting
 guest has none: a build recipe matter, not tcc's), 0011 (the real-mode setup compiled by
 `-m16` tcc is 39 488 bytes with the video mode code against the boot protocol's 32 KB, 27 328
 without; closing the gap needs an optimizer, and the option is a reasonable kernel knob).
@@ -928,7 +933,7 @@ cannot shrink: the text of 780 sampled objects grows by 15 % (lib/sort.o 2.8x, m
 2.4x at the top; objects of small helpers shrink). The inlined parameters are kprop locals, so everything fix 119 folds
 through a local now folds through a parameter; what still does not: a constant through the
 parameter of a function with external linkage (0006's `ia32_fxstate_possible()`: its caller
-is not inlined), and the seqlock state in a struct member (0005). mm/swap_state.c needed one
+is not inlined -- but that half was already folded, see fix 129 --), and the seqlock state in a struct member (0005; both gone on 2026-11-06). mm/swap_state.c needed one
 more rule of fix 119's kind on the way: `order`, set by a stub (`highest_order()` is 0
 without THP) and reassigned in the retry loop by another (`next_order()`), stays known in
 the loop when every assignment in it is the constant it holds at the head (a literal or a
@@ -1105,6 +1110,29 @@ bytes with the guest's tcc of 2026-11-04, the size of the generation-2 kernels o
 The pruned tree in the image is the 3-patch `patched` branch with the vanilla seqlock.h, so
 the guest's vmlinux link itself is the proof that build-kernel.c's flag took effect (Kbuild's
 log prints no flags).
+
+Patch 0006 left the same day with tcc fix 129 (docs/FIX-LOG.md; 2 kernel patches remain:
+0009 and 0011). Measured first with the committed tcc and the kernel's own compile command:
+the vanilla fpu/signal.c left `convert_from_fxsr` and `__put_user_nocheck_2` undefined
+(9137 bytes of text against 8186 for the patched file), both from the `save_fsave_header()`
+call of copy_fpstate_to_sigframe() -- not from `__fpu_restore_sig()`, whose constant
+parameter fix 120 already folds, so the "interprocedural" diagnosis above was out of date.
+The call survives because `ia32_fxstate`, known false after its `&= IS_ENABLED(...)`, is
+tested after the `retry:` label that a later `goto retry` targets, where fix 119 forgot
+every local. Fix 129 forgets there only the locals assigned textually after the label (the
+pre-scan of the body's tokens that already finds its labels records every identifier's
+last assignment), the rule loop_tokens() applies to a loop body; a computed goto's target
+still forgets everything, and so does a name that two labels of the function carry (a
+block's `__label__`: the first version keyed the positions by name and turned a loop of
+tcctest.c into an endless one, which `make test` caught). With it the vanilla file compiles
+to the patched file's text (8187 bytes, 1 byte from the refinement) with nothing extra
+undefined, and tcc's suite passes. Both kernels rebuilt
+from scratch by the 133-patch compiler from the 2-patch tree (0 gcc, the previous image
+sizes) pass `scripts/devices-test.sh` on both architectures. The i386 jump-relaxation work
+in `src/tinycc` (uncommitted that day, fix 128 reserved for it) was left alone: fix 129 was
+developed and exported from a clean clone of the tree at 3c18ff2, so the host binaries in
+`src/tinycc` do not have it until that work is committed and the series re-applied
+(`scripts/patch.sh --reset tinycc`, or a rebase of the work onto patch 0133).
 
 ## Debugging recipes
 
