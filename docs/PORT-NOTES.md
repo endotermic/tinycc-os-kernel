@@ -1100,9 +1100,11 @@ gives a bzImage of the 2026-11-04 size, 6 852 608 bytes). The guest side the sam
 GNU make's tarball was fetched again (`scripts/fetch.sh make`; the re-fetch of 2026-11-04 had
 not brought `src/.downloads/` back): `scripts/selfhost-test.sh host` builds the pruned tree
 with build-kernel.c to the host kernel's exact size (7 427 584 bytes), and `selfhost-test.sh
-all` on x86_64 builds generation 2 inside the guest in 3m22s (`KCFLAGS=-include/usr/share/
-tinycc-os-kernel/tcc-canary.h` in its log, 7 665 152 bytes with the guest's tcc of 2026-11-04)
-and boots it (`#2`).
+all` on x86_64 builds generation 2 inside the guest in 3m22s and boots it (`#2`; 7 665 152
+bytes with the guest's tcc of 2026-11-04, the size of the generation-2 kernels of that day).
+The pruned tree in the image is the 3-patch `patched` branch with the vanilla seqlock.h, so
+the guest's vmlinux link itself is the proof that build-kernel.c's flag took effect (Kbuild's
+log prints no flags).
 
 ## Debugging recipes
 
