@@ -1096,10 +1096,13 @@ vanilla seqlock.h (x86_64 2095 and i386 2788 tcc invocations, 0 gcc), `nm vmlinu
 -- the i386 one built by the committed tcc (3c18ff2+131p; the i386 kernel first built that
 day with the uncommitted i386 jump-relaxation work then in `src/tinycc` did not boot at all,
 which is that work's state, not this change's: the same tree with the committed compiler
-gives a bzImage of the 2026-11-04 size, 6 852 608 bytes). The guest side (build-kernel.c
-with the flag, the header in `/usr/share/tinycc-os-kernel/`) compiles but was not run through
-`scripts/selfhost-test.sh` that day: `scripts/build.sh selfhost` needs GNU make's tarball in
-`src/.downloads/`, which the re-fetch of 2026-11-04 had not brought back.
+gives a bzImage of the 2026-11-04 size, 6 852 608 bytes). The guest side the same day, once
+GNU make's tarball was fetched again (`scripts/fetch.sh make`; the re-fetch of 2026-11-04 had
+not brought `src/.downloads/` back): `scripts/selfhost-test.sh host` builds the pruned tree
+with build-kernel.c to the host kernel's exact size (7 427 584 bytes), and `selfhost-test.sh
+all` on x86_64 builds generation 2 inside the guest in 3m22s (`KCFLAGS=-include/usr/share/
+tinycc-os-kernel/tcc-canary.h` in its log, 7 665 152 bytes with the guest's tcc of 2026-11-04)
+and boots it (`#2`).
 
 ## Debugging recipes
 
