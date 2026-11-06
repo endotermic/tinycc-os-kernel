@@ -1,0 +1,1116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 6 Nov 2026 19:08:27 +0200
+Subject: [PATCH] tests: 171_codesize, the cases of the previous commit
+
+Every pattern the i386 code generator changed, with the output gcc gives
+(-O0 and -O2 agree): comparisons of every width, sign and condition with
+constants around the byte and word limits, zero loads and two-word
+carries, regparm calls with every permutation of register arguments
+(long long pairs, spilled values, calls as arguments), forward and
+backward jumps around blocks of every size near the 127-byte limit,
+chains, computed gotos through a static table, relocations after shrunk
+jumps, the prologue's sub removed or shortened, and char/short/long long
+returns.  Runs on every target; the regparm attributes apply on i386
+only, where a static musl build of it was compared with the expected
+output as well.
+---
+ tests/tests2/171_codesize.c      | 297 ++++++++++++
+ tests/tests2/171_codesize.expect | 784 +++++++++++++++++++++++++++++++
+ 2 files changed, 1081 insertions(+)
+ create mode 100644 tests/tests2/171_codesize.c
+ create mode 100644 tests/tests2/171_codesize.expect
+
+diff --git a/tests/tests2/171_codesize.c b/tests/tests2/171_codesize.c
+new file mode 100644
+index 0000000..308e09f
+--- /dev/null
++++ b/tests/tests2/171_codesize.c
+@@ -0,0 +1,297 @@
++/* Fix 128: the i386 code-size improvements (the real-mode setup of the
++   kernel, -m16, must fit 32 KB with the video mode code).  Every pattern the
++   code generator changed, with the expected output from gcc: zero loads with
++   xor (the flags: a two-word subtraction with a constant high word), test
++   instead of cmp $0, comparisons of byte/short/int/pointer lvalues with a
++   constant done in memory with the condition made unsigned for a zero
++   extended operand, the register arguments of a regparm call moved without
++   push/pop (xchg/mov permutations, long long pairs, spilled values), jumps
++   relaxed to rel8 at the end of the function (forward and backward, around
++   blocks of every size near the 127-byte limit, chains, labels whose
++   address is taken and relocations after shrunk jumps, the prologue's sub
++   removed or shortened), and the return of char/short/long long values. */
++#include <stdio.h>
++
++#if defined __i386__
++#define RP3 __attribute__((regparm(3)))
++#define RP1 __attribute__((regparm(1)))
++#else
++#define RP3
++#define RP1
++#endif
++
++static int out;
++static void p(const char *name, long long v) { printf("%s: %lld\n", name, v); }
++#define P(e) p(#e, (long long)(e))
++
++/* ---- comparisons with constants: every width, sign and condition ---- */
++#define CMPS(T, v, c) \
++    (((T)(v) < (c)) << 0) | (((T)(v) <= (c)) << 1) | (((T)(v) > (c)) << 2) \
++    | (((T)(v) >= (c)) << 3) | (((T)(v) == (c)) << 4) | (((T)(v) != (c)) << 5)
++
++struct mixed { char c; unsigned char uc; short s; unsigned short us; int i; unsigned ui; long long ll; _Bool b; int bf:3; unsigned ubf:5; const char *ptr; };
++static struct mixed gm;
++static volatile int gvol;
++static const int cvals[] = { -129, -128, -127, -1, 0, 1, 5, 100, 127, 128, 200, 255, 256, 1000,
++    32767, 32768, 65535, 65536, -32768, -32769, 2147483647, -2147483647 - 1 };
++
++static int cmp_char(char x, int c) { return CMPS(int, x, c); }
++static int cmp_uchar(unsigned char x, int c) { return CMPS(int, x, c); }
++static int cmp_short(short x, int c) { return CMPS(int, x, c); }
++static int cmp_ushort(unsigned short x, int c) { return CMPS(int, x, c); }
++static int cmp_int(int x, int c) { return CMPS(int, x, c); }
++static int cmp_uint(unsigned x, unsigned c) { return CMPS(unsigned, x, c); }
++static int cmp_uchar_u(unsigned char x, unsigned c) { return CMPS(unsigned, x, c); }
++static int cmp_char_u(signed char x, unsigned c) { return CMPS(unsigned, x, c); }
++
++/* the constant written in the source: the memory compare is used only then */
++#define LIT(T, x) do { T v = (x); int r = 0; \
++    r |= (v < 0) << 0; r |= (v <= 0) << 1; r |= (v > 0) << 2; r |= (v >= 0) << 3; \
++    r |= (v == 0) << 4; r |= (v != 0) << 5; \
++    r |= (v < 5) << 6; r |= (v <= 5) << 7; r |= (v > 5) << 8; r |= (v >= 5) << 9; \
++    r |= (v < -1) << 10; r |= (v >= -1) << 11; r |= (v == -1) << 12; \
++    r |= (v < 127) << 13; r |= (v > 127) << 14; r |= (v <= 128) << 15; r |= (v >= 128) << 16; \
++    r |= (v < 255) << 17; r |= (v >= 255) << 18; r |= (v > 256) << 19; r |= (v == 256) << 20; \
++    r |= (v < 32767) << 21; r |= (v > 32768) << 22; r |= (v <= 65535) << 23; r |= (v != 65536) << 24; \
++    r |= (v < 1000000) << 25; r |= (v >= -1000000) << 26; r |= (v == -200) << 27; \
++    r |= (v > 5u) << 28; r |= (v <= 200u) << 29; r |= (v < 0x80000000u) << 30; \
++    printf("%s %lld: %d\n", #T, (long long)v, r); } while (0)
++
++static void literal_compares(void)
++{
++    int i;
++    for (i = 0; i < (int)(sizeof cvals / sizeof cvals[0]); i++) {
++        LIT(char, cvals[i]); LIT(signed char, cvals[i]); LIT(unsigned char, cvals[i]);
++        LIT(short, cvals[i]); LIT(unsigned short, cvals[i]);
++        LIT(int, cvals[i]); LIT(unsigned, cvals[i]); LIT(long long, cvals[i]);
++        LIT(_Bool, cvals[i]);
++    }
++}
++
++static void struct_compares(struct mixed *m)
++{
++    int r = 0;
++    r |= (m->c < 0) << 0; r |= (m->uc > 200) << 1; r |= (m->s == -5) << 2;
++    r |= (m->us >= 40000) << 3; r |= (m->i != 7) << 4; r |= (m->ui <= 3) << 5;
++    r |= (m->ll == 0) << 6; r |= (m->b == 1) << 7; r |= (m->b) << 8;
++    r |= (m->bf < 0) << 9; r |= (m->ubf > 20) << 10; r |= (m->ptr == 0) << 11;
++    r |= (m->ptr != 0) << 12; r |= (gm.c >= 0) << 13; r |= (gm.uc == 255) << 14;
++    r |= (gvol > 1) << 15; r |= (gvol == 0) << 16;
++    r |= (m->c > 'a') << 17; r |= (m->uc < 'z') << 18;
++    printf("struct %d\n", r);
++}
++
++/* ---- zero loads, tests, long long carries ---- */
++static long long neg(long long x) { return -x; }
++static long long zero_minus(long long x) { return 0 - x; }
++static long long minus_zero(long long x) { return x - 0; }
++static long long c_minus(long long x) { return 0x100000000LL - x; }
++static long long c_minus2(long long x) { return 5 - x; }
++static long long plus_c(long long x) { return x + 0xffffffffLL; }
++static long long c_plus(long long x) { return 0x100000000LL + x; }
++static unsigned long long uneg(unsigned long long x) { return 0 - x; }
++static int sgn(long long x) { return (x < 0) ? -1 : (x > 0) ? 1 : 0; }
++static int zero_tests(int x) {
++    int r = 0;
++    if (x == 0) r |= 1; if (x != 0) r |= 2; if (x < 0) r |= 4; if (x <= 0) r |= 8;
++    if (x > 0) r |= 16; if (x >= 0) r |= 32;
++    if ((unsigned)x > 0) r |= 64; if ((unsigned)x <= 0) r |= 128;
++    r |= (!x) << 8; r |= (!!x) << 9;
++    return r;
++}
++static int logical(int a, int b) { return (a > 1 && b < 3) + 2 * (a || b) + 4 * (!a && !b); }
++static int zero(void) { return 0; }
++static char czero(void) { return 0; }
++static long long llzero(void) { return 0; }
++static unsigned char ucret(int x) { return x; }
++static short sret(int x) { return x; }
++static signed char scret(int x) { return x; }
++static long long llret(int x) { return (long long)x << 20; }
++static unsigned short usret(int x) { return x; }
++
++/* ---- regparm calls: moves instead of push/pop ---- */
++static RP3 int f3(int a, int b, int c) { return a * 100 + b * 10 + c; }
++static RP3 int f2(int a, int b) { return a * 10 + b; }
++static RP3 int f1(int a) { return a + 1; }
++static RP3 long long fll(long long a, int b) { return a * 10 + b; }
++static RP3 long long fll2(int a, long long b) { return a * 1000 + b; }
++static RP3 int f4(int a, int b, int c, int d) { return a * 1000 + b * 100 + c * 10 + d; }
++static RP3 int fmix(int a, double d, int b, char c, short s) { return a + (int)d * 10 + b * 100 + c * 1000 + s * 10000; }
++static RP1 int g1(int a, int b) { return a - b; }
++static RP3 int fc(char a, unsigned char b, short c) { return a + b * 10 + c * 100; }
++struct s4 { int x; }; struct s8 { int x, y; }; struct s12 { int x, y, z; };
++static RP3 int fs4(struct s4 s, int b) { return s.x * 10 + b; }
++static RP3 int fs8(int a, struct s8 s) { return a * 100 + s.x * 10 + s.y; }
++static RP3 int fs12(struct s12 s, int b) { return s.x + s.y + s.z + b; }
++static RP3 int fv(int a, ...) { return a; }
++static RP3 int (*fp)(int, int, int) = f3;
++static int counter;
++static RP3 int next(void) { return ++counter; }
++static RP3 int nextn(int n) { return counter += n; }
++/* calls as arguments (the earlier values are spilled by the later calls);
++   pure, since the evaluation order of arguments is unspecified */
++static RP3 int k1(void) { return 1; }
++static RP3 int k2(void) { return 2; }
++static RP3 int k3(void) { return 3; }
++static RP3 int k4(void) { return 4; }
++static RP3 int kn(int n) { return n * 11; }
++static int cdecl_call(int a, int b, int c) { return a * 100 + b * 10 + c; }
++static RP3 int hidden_sret(void) { struct s12 r = { 1, 2, 3 }; return fs12(r, 4); }
++struct big { int a[5]; };
++static RP3 struct big retbig(int x) { struct big b = {{ x, x + 1, x + 2, x + 3, x + 4 }}; return b; }
++
++static void regparm_calls(void)
++{
++    int x = 1, y = 2, z = 3;
++    long long L = 0x100000005LL;
++    struct s4 s4 = { 7 }; struct s8 s8 = { 8, 9 }; struct s12 s12 = { 1, 2, 3 };
++    P(f3(x, y, z)); P(f3(z, y, x)); P(f3(y + 1, x + 1, z + 1)); P(f3(z + 1, y + 1, x + 1));
++    P(f2(x, y)); P(f2(y, x)); P(f2(y + 1, x + 1)); P(f1(x)); P(f1(x + y));
++    counter = 0; P(f3(k1(), k2(), k3())); P(f3(k3(), x, k1())); P(f2(k2(), k1())); P(f3(next(), x, y)); P(f3(x, next(), y)); P(f3(x, y, next()));
++    P(f3(kn(1), kn(10), kn(100))); P(f1(next())); P(f2(nextn(5), 1)); P(f2(1, nextn(5)));
++    P(fll(L, x)); P(fll(L + 1, next())); P(fll2(x, L)); P(fll2(next(), L + 2));
++    P(f4(x, y, z, 4)); P(f4(k1(), k2(), k3(), k4())); P(f4(k4(), x, k2(), next())); P(f4(4, 3, 2, 1));
++    P(fmix(x, 2.5, y, 'a', 7)); P(fmix(k1(), 1.0, k2(), 2, k3()));
++    P(g1(x, y)); P(g1(k2(), k1()));
++    P(fc(-1, 200, -300)); P(fc((char)k1(), (unsigned char)k2(), (short)k3()));
++    P(fs4(s4, 5)); P(fs8(1, s8)); P(fs12(s12, 4)); P(fs4(s4, next()));
++    P(fv(5, 6, 7)); P(fp(x, y, z)); P(fp(z, x, y)); P(fp(k1(), k2(), k3())); P(fp(k3(), k1(), k2()));
++    P(cdecl_call(x, y, z)); P(cdecl_call(k3(), k2(), k1()));
++    P(hidden_sret()); P(retbig(3).a[4]); P(retbig(next()).a[0]);
++    P(f3(f1(x), f2(x, y), f1(z))); P(f3(f3(1, 2, 3), f3(4, 5, 6), f3(7, 8, 9)));
++    P(f2(x, y) + f2(y, z) * f2(z, x)); P(f1(x) * f1(y) + f1(z) * f1(x) + f1(y) * f1(z));
++    out = f3(x, y, z) + f3(y, z, x); P(out);
++}
++
++/* ---- jumps: blocks of every size around the rel8 limit ---- */
++#define S1 s += k; k ^= s >> 3;
++#define S2 S1 S1
++#define S4 S2 S2
++#define S8 S4 S4
++#define BLOCK(n, body) static int blk##n(int c, int s, int k) { if (c) { body } else { s -= 1; } return s + k; }
++BLOCK(1, S1) BLOCK(2, S2) BLOCK(3, S2 S1) BLOCK(4, S4) BLOCK(5, S4 S1) BLOCK(6, S4 S2)
++BLOCK(7, S4 S2 S1) BLOCK(8, S8) BLOCK(9, S8 S1) BLOCK(10, S8 S2) BLOCK(11, S8 S2 S1)
++BLOCK(12, S8 S4) BLOCK(13, S8 S4 S1) BLOCK(14, S8 S4 S2) BLOCK(15, S8 S4 S2 S1)
++BLOCK(16, S8 S8) BLOCK(20, S8 S8 S4) BLOCK(24, S8 S8 S8) BLOCK(32, S8 S8 S8 S8)
++
++static int loop_sizes(int n)
++{
++    int s = 0, k = 1, i;
++    for (i = 0; i < n; i++) { S1 }
++    for (i = 0; i < n; i++) { S4 }
++    for (i = 0; i < n; i++) { S8 S4 }
++    for (i = 0; i < n; i++) { S8 S8 }
++    for (i = 0; i < n; i++) { S8 S8 S8 S8 }
++    while (s > 100000) { S8 S4 S2 s -= 100000; }
++    do { S8 S4 S1 } while (k < 0);
++    return s + k;
++}
++
++static int many_branches(int x)
++{
++    int r = 0, s = 0, k = x;
++    if (x > 1) r += 1; else r -= 1;
++    if (x > 2) { r += 2; S4 } else { r -= 2; S4 }
++    if (x > 3) { r += 3; S8 } else { r -= 3; S8 }
++    if (x > 4) { r += 4; S8 S8 } else if (x > 2) { r -= 4; S8 S8 } else { S8 S4 }
++    if (x == 5 || x == 7 || (x > 20 && x < 30) || !(x & 1)) { r += 1000; S8 }
++    switch (x) {
++    case 1: r += 10; break;
++    case 2: r += 20; S8 break;
++    case 3: r += 30; S8 S8 break;
++    case 4: r += 40;
++    case 5: r += 50; S8 S8 S4 break;
++    case 6: r += 60; S4 break;
++    default: r += 70; break;
++    }
++    return r + x;
++}
++
++static int backward(int n)
++{
++    int s = 0, k = 3, i = 0;
++again:
++    S8 S8 S4
++    if (++i < n) goto again;
++    S8
++    if (i < 2 * n) { i++; goto again; }
++    return s;
++}
++
++static int computed(int x)
++{
++    static const void *tbl[] = { &&l0, &&l1, &&l2, &&l3 };
++    int s = 0, k = x;
++    if (x > 3) { S8 S8 S8 return s; }
++    goto *tbl[x];
++l0: s += 1; S8 goto done;
++l1: s += 2; S8 S8 goto done;
++l2: s += 3; S4 goto done;
++l3: s += 4; S8 S8 S4 goto done;
++done:
++    S8
++    return s + x;
++}
++
++static const char *strs[] = { "zero", "one", "two" };
++static int static_fn(int x) { return x * 3; }
++static int relocs_after_jumps(int x)
++{
++    int s = 0, k = x;
++    if (x > 1) { S8 S4 }
++    s += static_fn(x) + (int)strs[x & 1][0] + gm.i + cvals[3];
++    if (x > 2) { S8 S8 S8 }
++    s += static_fn(s) + printf("%s\n", strs[x % 3]);
++    return s + k;
++}
++
++static int leaf_nolocals(int a, int b) { return a * b + 1; }
++static int leaf_bigframe(int a) { char buf[300]; int i; for (i = 0; i < 300; i++) buf[i] = a + i; return buf[299] + buf[0]; }
++static int spill(int a, int b, int c, int d, int e, int f, int g, int h)
++{
++    return a * b + c * d + e * f + g * h + (a * b * c + d * e * f) * (g + h) + f1(a) * f1(b) * f1(c) * f1(d);
++}
++
++int main(void)
++{
++    int i, j;
++    for (i = 0; i < (int)(sizeof cvals / sizeof cvals[0]); i++) {
++        int c = cvals[i];
++        for (j = 0; j < (int)(sizeof cvals / sizeof cvals[0]); j++) {
++            int v = cvals[j];
++            printf("%d %d: %x %x %x %x %x %x %x %x\n", v, c, cmp_char(v, c), cmp_uchar(v, c),
++                   cmp_short(v, c), cmp_ushort(v, c), cmp_int(v, c), cmp_uint(v, c),
++                   cmp_uchar_u(v, c), cmp_char_u(v, c));
++        }
++    }
++    literal_compares();
++    gm.c = -3; gm.uc = 255; gm.s = -5; gm.us = 50000; gm.i = 7; gm.ui = 2; gm.ll = 0;
++    gm.b = 1; gm.bf = -2; gm.ubf = 25; gm.ptr = "x"; gvol = 2;
++    struct_compares(&gm);
++    gm.c = 'b'; gm.uc = 'y'; gm.ll = 1; gm.b = 0; gm.ptr = 0; gvol = 0; gm.bf = 3; gm.ubf = 1;
++    struct_compares(&gm);
++    for (i = 0; i < 6; i++) {
++        long long v = i == 0 ? 0 : i == 1 ? 1 : i == 2 ? -1 : i == 3 ? 0x100000000LL : i == 4 ? 0x7fffffffffffffffLL : -0x8000000000000000LL;
++        printf("%lld: %lld %lld %lld %lld %lld %lld %lld %llu %d\n", v, neg(v), zero_minus(v), minus_zero(v),
++               c_minus(v), c_minus2(v), plus_c(v), c_plus(v), uneg(v), sgn(v));
++    }
++    for (i = 0; i < 5; i++) {
++        int v = i == 0 ? 0 : i == 1 ? 1 : i == 2 ? -1 : i == 3 ? 2147483647 : -2147483647 - 1;
++        printf("%d: %x %d %d %d\n", v, zero_tests(v), logical(v, 2), logical(2, v), logical(v, v));
++    }
++    P(zero()); P(czero()); P(llzero()); P(ucret(300)); P(ucret(-1)); P(sret(70000)); P(sret(-70000));
++    P(scret(200)); P(scret(-200)); P(llret(-3)); P(llret(5)); P(usret(-1)); P(usret(70000));
++    regparm_calls();
++    for (i = 0; i < 2; i++) {
++        printf("blk %d: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", i,
++               blk1(i, 5, 3), blk2(i, 5, 3), blk3(i, 5, 3), blk4(i, 5, 3), blk5(i, 5, 3), blk6(i, 5, 3),
++               blk7(i, 5, 3), blk8(i, 5, 3), blk9(i, 5, 3), blk10(i, 5, 3), blk11(i, 5, 3), blk12(i, 5, 3),
++               blk13(i, 5, 3), blk14(i, 5, 3), blk15(i, 5, 3), blk16(i, 5, 3), blk20(i, 5, 3),
++               blk24(i, 5, 3), blk32(i, 5, 3));
++    }
++    P(loop_sizes(0)); P(loop_sizes(1)); P(loop_sizes(7));
++    for (i = 0; i < 9; i++) printf("branches %d: %d %d %d\n", i, many_branches(i), backward(i + 1), computed(i & 7));
++    P(relocs_after_jumps(0)); P(relocs_after_jumps(2)); P(relocs_after_jumps(5));
++    P(leaf_nolocals(6, 7)); P(leaf_bigframe(2)); P(spill(1, 2, 3, 4, 5, 6, 7, 8)); P(spill(8, 7, 6, 5, 4, 3, 2, 1));
++    return 0;
++}
+diff --git a/tests/tests2/171_codesize.expect b/tests/tests2/171_codesize.expect
+new file mode 100644
+index 0000000..940758e
+--- /dev/null
++++ b/tests/tests2/171_codesize.expect
+@@ -0,0 +1,784 @@
++-129 -129: 2c 2c 1a 2c 1a 1a 23 23
++-128 -129: 2c 2c 2c 2c 2c 2c 23 2c
++-127 -129: 2c 2c 2c 2c 2c 2c 23 2c
++-1 -129: 2c 2c 2c 2c 2c 2c 23 2c
++0 -129: 2c 2c 2c 2c 2c 23 23 23
++1 -129: 2c 2c 2c 2c 2c 23 23 23
++5 -129: 2c 2c 2c 2c 2c 23 23 23
++100 -129: 2c 2c 2c 2c 2c 23 23 23
++127 -129: 2c 2c 2c 2c 2c 23 23 23
++128 -129: 2c 2c 2c 2c 2c 23 23 2c
++200 -129: 2c 2c 2c 2c 2c 23 23 2c
++255 -129: 2c 2c 2c 2c 2c 23 23 2c
++256 -129: 2c 2c 2c 2c 2c 23 23 23
++1000 -129: 2c 2c 2c 2c 2c 23 23 2c
++32767 -129: 2c 2c 2c 2c 2c 23 23 2c
++32768 -129: 2c 2c 23 2c 2c 23 23 23
++65535 -129: 2c 2c 2c 2c 2c 23 23 2c
++65536 -129: 2c 2c 2c 2c 2c 23 23 23
++-32768 -129: 2c 2c 23 2c 23 23 23 23
++-32769 -129: 2c 2c 2c 2c 23 23 23 2c
++2147483647 -129: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -129: 2c 2c 2c 2c 23 23 23 23
++-129 -128: 2c 2c 23 2c 23 23 23 23
++-128 -128: 1a 2c 1a 2c 1a 1a 23 1a
++-127 -128: 2c 2c 2c 2c 2c 2c 23 2c
++-1 -128: 2c 2c 2c 2c 2c 2c 23 2c
++0 -128: 2c 2c 2c 2c 2c 23 23 23
++1 -128: 2c 2c 2c 2c 2c 23 23 23
++5 -128: 2c 2c 2c 2c 2c 23 23 23
++100 -128: 2c 2c 2c 2c 2c 23 23 23
++127 -128: 2c 2c 2c 2c 2c 23 23 23
++128 -128: 1a 2c 2c 2c 2c 23 23 1a
++200 -128: 2c 2c 2c 2c 2c 23 23 2c
++255 -128: 2c 2c 2c 2c 2c 23 23 2c
++256 -128: 2c 2c 2c 2c 2c 23 23 23
++1000 -128: 2c 2c 2c 2c 2c 23 23 2c
++32767 -128: 2c 2c 2c 2c 2c 23 23 2c
++32768 -128: 2c 2c 23 2c 2c 23 23 23
++65535 -128: 2c 2c 2c 2c 2c 23 23 2c
++65536 -128: 2c 2c 2c 2c 2c 23 23 23
++-32768 -128: 2c 2c 23 2c 23 23 23 23
++-32769 -128: 2c 2c 2c 2c 23 23 23 2c
++2147483647 -128: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -128: 2c 2c 2c 2c 23 23 23 23
++-129 -127: 2c 2c 23 2c 23 23 23 23
++-128 -127: 23 2c 23 2c 23 23 23 23
++-127 -127: 1a 2c 1a 2c 1a 1a 23 1a
++-1 -127: 2c 2c 2c 2c 2c 2c 23 2c
++0 -127: 2c 2c 2c 2c 2c 23 23 23
++1 -127: 2c 2c 2c 2c 2c 23 23 23
++5 -127: 2c 2c 2c 2c 2c 23 23 23
++100 -127: 2c 2c 2c 2c 2c 23 23 23
++127 -127: 2c 2c 2c 2c 2c 23 23 23
++128 -127: 23 2c 2c 2c 2c 23 23 23
++200 -127: 2c 2c 2c 2c 2c 23 23 2c
++255 -127: 2c 2c 2c 2c 2c 23 23 2c
++256 -127: 2c 2c 2c 2c 2c 23 23 23
++1000 -127: 2c 2c 2c 2c 2c 23 23 2c
++32767 -127: 2c 2c 2c 2c 2c 23 23 2c
++32768 -127: 2c 2c 23 2c 2c 23 23 23
++65535 -127: 2c 2c 2c 2c 2c 23 23 2c
++65536 -127: 2c 2c 2c 2c 2c 23 23 23
++-32768 -127: 2c 2c 23 2c 23 23 23 23
++-32769 -127: 2c 2c 2c 2c 23 23 23 2c
++2147483647 -127: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -127: 2c 2c 2c 2c 23 23 23 23
++-129 -1: 2c 2c 23 2c 23 23 23 23
++-128 -1: 23 2c 23 2c 23 23 23 23
++-127 -1: 23 2c 23 2c 23 23 23 23
++-1 -1: 1a 2c 1a 2c 1a 1a 23 1a
++0 -1: 2c 2c 2c 2c 2c 23 23 23
++1 -1: 2c 2c 2c 2c 2c 23 23 23
++5 -1: 2c 2c 2c 2c 2c 23 23 23
++100 -1: 2c 2c 2c 2c 2c 23 23 23
++127 -1: 2c 2c 2c 2c 2c 23 23 23
++128 -1: 23 2c 2c 2c 2c 23 23 23
++200 -1: 23 2c 2c 2c 2c 23 23 23
++255 -1: 1a 2c 2c 2c 2c 23 23 1a
++256 -1: 2c 2c 2c 2c 2c 23 23 23
++1000 -1: 23 2c 2c 2c 2c 23 23 23
++32767 -1: 1a 2c 2c 2c 2c 23 23 1a
++32768 -1: 2c 2c 23 2c 2c 23 23 23
++65535 -1: 1a 2c 1a 2c 2c 23 23 1a
++65536 -1: 2c 2c 2c 2c 2c 23 23 23
++-32768 -1: 2c 2c 23 2c 23 23 23 23
++-32769 -1: 1a 2c 2c 2c 23 23 23 1a
++2147483647 -1: 1a 2c 1a 2c 2c 23 23 1a
++-2147483648 -1: 2c 2c 2c 2c 23 23 23 23
++-129 0: 2c 2c 23 2c 23 2c 2c 2c
++-128 0: 23 2c 23 2c 23 2c 2c 2c
++-127 0: 23 2c 23 2c 23 2c 2c 2c
++-1 0: 23 2c 23 2c 23 2c 2c 2c
++0 0: 1a 1a 1a 1a 1a 1a 1a 1a
++1 0: 2c 2c 2c 2c 2c 2c 2c 2c
++5 0: 2c 2c 2c 2c 2c 2c 2c 2c
++100 0: 2c 2c 2c 2c 2c 2c 2c 2c
++127 0: 2c 2c 2c 2c 2c 2c 2c 2c
++128 0: 23 2c 2c 2c 2c 2c 2c 2c
++200 0: 23 2c 2c 2c 2c 2c 2c 2c
++255 0: 23 2c 2c 2c 2c 2c 2c 2c
++256 0: 1a 1a 2c 2c 2c 2c 1a 1a
++1000 0: 23 2c 2c 2c 2c 2c 2c 2c
++32767 0: 23 2c 2c 2c 2c 2c 2c 2c
++32768 0: 1a 1a 23 2c 2c 2c 1a 1a
++65535 0: 23 2c 23 2c 2c 2c 2c 2c
++65536 0: 1a 1a 1a 1a 2c 2c 1a 1a
++-32768 0: 1a 1a 23 2c 23 2c 1a 1a
++-32769 0: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 0: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 0: 1a 1a 1a 1a 23 2c 1a 1a
++-129 1: 2c 2c 23 2c 23 2c 2c 2c
++-128 1: 23 2c 23 2c 23 2c 2c 2c
++-127 1: 23 2c 23 2c 23 2c 2c 2c
++-1 1: 23 2c 23 2c 23 2c 2c 2c
++0 1: 23 23 23 23 23 23 23 23
++1 1: 1a 1a 1a 1a 1a 1a 1a 1a
++5 1: 2c 2c 2c 2c 2c 2c 2c 2c
++100 1: 2c 2c 2c 2c 2c 2c 2c 2c
++127 1: 2c 2c 2c 2c 2c 2c 2c 2c
++128 1: 23 2c 2c 2c 2c 2c 2c 2c
++200 1: 23 2c 2c 2c 2c 2c 2c 2c
++255 1: 23 2c 2c 2c 2c 2c 2c 2c
++256 1: 23 23 2c 2c 2c 2c 23 23
++1000 1: 23 2c 2c 2c 2c 2c 2c 2c
++32767 1: 23 2c 2c 2c 2c 2c 2c 2c
++32768 1: 23 23 23 2c 2c 2c 23 23
++65535 1: 23 2c 23 2c 2c 2c 2c 2c
++65536 1: 23 23 23 23 2c 2c 23 23
++-32768 1: 23 23 23 2c 23 2c 23 23
++-32769 1: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 1: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 1: 23 23 23 23 23 2c 23 23
++-129 5: 2c 2c 23 2c 23 2c 2c 2c
++-128 5: 23 2c 23 2c 23 2c 2c 2c
++-127 5: 23 2c 23 2c 23 2c 2c 2c
++-1 5: 23 2c 23 2c 23 2c 2c 2c
++0 5: 23 23 23 23 23 23 23 23
++1 5: 23 23 23 23 23 23 23 23
++5 5: 1a 1a 1a 1a 1a 1a 1a 1a
++100 5: 2c 2c 2c 2c 2c 2c 2c 2c
++127 5: 2c 2c 2c 2c 2c 2c 2c 2c
++128 5: 23 2c 2c 2c 2c 2c 2c 2c
++200 5: 23 2c 2c 2c 2c 2c 2c 2c
++255 5: 23 2c 2c 2c 2c 2c 2c 2c
++256 5: 23 23 2c 2c 2c 2c 23 23
++1000 5: 23 2c 2c 2c 2c 2c 2c 2c
++32767 5: 23 2c 2c 2c 2c 2c 2c 2c
++32768 5: 23 23 23 2c 2c 2c 23 23
++65535 5: 23 2c 23 2c 2c 2c 2c 2c
++65536 5: 23 23 23 23 2c 2c 23 23
++-32768 5: 23 23 23 2c 23 2c 23 23
++-32769 5: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 5: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 5: 23 23 23 23 23 2c 23 23
++-129 100: 2c 2c 23 2c 23 2c 2c 2c
++-128 100: 23 2c 23 2c 23 2c 2c 2c
++-127 100: 23 2c 23 2c 23 2c 2c 2c
++-1 100: 23 2c 23 2c 23 2c 2c 2c
++0 100: 23 23 23 23 23 23 23 23
++1 100: 23 23 23 23 23 23 23 23
++5 100: 23 23 23 23 23 23 23 23
++100 100: 1a 1a 1a 1a 1a 1a 1a 1a
++127 100: 2c 2c 2c 2c 2c 2c 2c 2c
++128 100: 23 2c 2c 2c 2c 2c 2c 2c
++200 100: 23 2c 2c 2c 2c 2c 2c 2c
++255 100: 23 2c 2c 2c 2c 2c 2c 2c
++256 100: 23 23 2c 2c 2c 2c 23 23
++1000 100: 23 2c 2c 2c 2c 2c 2c 2c
++32767 100: 23 2c 2c 2c 2c 2c 2c 2c
++32768 100: 23 23 23 2c 2c 2c 23 23
++65535 100: 23 2c 23 2c 2c 2c 2c 2c
++65536 100: 23 23 23 23 2c 2c 23 23
++-32768 100: 23 23 23 2c 23 2c 23 23
++-32769 100: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 100: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 100: 23 23 23 23 23 2c 23 23
++-129 127: 1a 1a 23 2c 23 2c 1a 1a
++-128 127: 23 2c 23 2c 23 2c 2c 2c
++-127 127: 23 2c 23 2c 23 2c 2c 2c
++-1 127: 23 2c 23 2c 23 2c 2c 2c
++0 127: 23 23 23 23 23 23 23 23
++1 127: 23 23 23 23 23 23 23 23
++5 127: 23 23 23 23 23 23 23 23
++100 127: 23 23 23 23 23 23 23 23
++127 127: 1a 1a 1a 1a 1a 1a 1a 1a
++128 127: 23 2c 2c 2c 2c 2c 2c 2c
++200 127: 23 2c 2c 2c 2c 2c 2c 2c
++255 127: 23 2c 2c 2c 2c 2c 2c 2c
++256 127: 23 23 2c 2c 2c 2c 23 23
++1000 127: 23 2c 2c 2c 2c 2c 2c 2c
++32767 127: 23 2c 2c 2c 2c 2c 2c 2c
++32768 127: 23 23 23 2c 2c 2c 23 23
++65535 127: 23 2c 23 2c 2c 2c 2c 2c
++65536 127: 23 23 23 23 2c 2c 23 23
++-32768 127: 23 23 23 2c 23 2c 23 23
++-32769 127: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 127: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 127: 23 23 23 23 23 2c 23 23
++-129 128: 23 23 23 2c 23 2c 23 23
++-128 128: 23 1a 23 2c 23 2c 1a 2c
++-127 128: 23 2c 23 2c 23 2c 2c 2c
++-1 128: 23 2c 23 2c 23 2c 2c 2c
++0 128: 23 23 23 23 23 23 23 23
++1 128: 23 23 23 23 23 23 23 23
++5 128: 23 23 23 23 23 23 23 23
++100 128: 23 23 23 23 23 23 23 23
++127 128: 23 23 23 23 23 23 23 23
++128 128: 23 1a 1a 1a 1a 1a 1a 2c
++200 128: 23 2c 2c 2c 2c 2c 2c 2c
++255 128: 23 2c 2c 2c 2c 2c 2c 2c
++256 128: 23 23 2c 2c 2c 2c 23 23
++1000 128: 23 2c 2c 2c 2c 2c 2c 2c
++32767 128: 23 2c 2c 2c 2c 2c 2c 2c
++32768 128: 23 23 23 2c 2c 2c 23 23
++65535 128: 23 2c 23 2c 2c 2c 2c 2c
++65536 128: 23 23 23 23 2c 2c 23 23
++-32768 128: 23 23 23 2c 23 2c 23 23
++-32769 128: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 128: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 128: 23 23 23 23 23 2c 23 23
++-129 200: 23 23 23 2c 23 2c 23 23
++-128 200: 23 23 23 2c 23 2c 23 2c
++-127 200: 23 23 23 2c 23 2c 23 2c
++-1 200: 23 2c 23 2c 23 2c 2c 2c
++0 200: 23 23 23 23 23 23 23 23
++1 200: 23 23 23 23 23 23 23 23
++5 200: 23 23 23 23 23 23 23 23
++100 200: 23 23 23 23 23 23 23 23
++127 200: 23 23 23 23 23 23 23 23
++128 200: 23 23 23 23 23 23 23 2c
++200 200: 23 1a 1a 1a 1a 1a 1a 2c
++255 200: 23 2c 2c 2c 2c 2c 2c 2c
++256 200: 23 23 2c 2c 2c 2c 23 23
++1000 200: 23 2c 2c 2c 2c 2c 2c 2c
++32767 200: 23 2c 2c 2c 2c 2c 2c 2c
++32768 200: 23 23 23 2c 2c 2c 23 23
++65535 200: 23 2c 23 2c 2c 2c 2c 2c
++65536 200: 23 23 23 23 2c 2c 23 23
++-32768 200: 23 23 23 2c 23 2c 23 23
++-32769 200: 23 2c 2c 2c 23 2c 2c 2c
++2147483647 200: 23 2c 23 2c 2c 2c 2c 2c
++-2147483648 200: 23 23 23 23 23 2c 23 23
++-129 255: 23 23 23 2c 23 2c 23 23
++-128 255: 23 23 23 2c 23 2c 23 2c
++-127 255: 23 23 23 2c 23 2c 23 2c
++-1 255: 23 1a 23 2c 23 2c 1a 2c
++0 255: 23 23 23 23 23 23 23 23
++1 255: 23 23 23 23 23 23 23 23
++5 255: 23 23 23 23 23 23 23 23
++100 255: 23 23 23 23 23 23 23 23
++127 255: 23 23 23 23 23 23 23 23
++128 255: 23 23 23 23 23 23 23 2c
++200 255: 23 23 23 23 23 23 23 2c
++255 255: 23 1a 1a 1a 1a 1a 1a 2c
++256 255: 23 23 2c 2c 2c 2c 23 23
++1000 255: 23 23 2c 2c 2c 2c 23 2c
++32767 255: 23 1a 2c 2c 2c 2c 1a 2c
++32768 255: 23 23 23 2c 2c 2c 23 23
++65535 255: 23 1a 23 2c 2c 2c 1a 2c
++65536 255: 23 23 23 23 2c 2c 23 23
++-32768 255: 23 23 23 2c 23 2c 23 23
++-32769 255: 23 1a 2c 2c 23 2c 1a 2c
++2147483647 255: 23 1a 23 2c 2c 2c 1a 2c
++-2147483648 255: 23 23 23 23 23 2c 23 23
++-129 256: 23 23 23 2c 23 2c 23 23
++-128 256: 23 23 23 2c 23 2c 23 2c
++-127 256: 23 23 23 2c 23 2c 23 2c
++-1 256: 23 23 23 2c 23 2c 23 2c
++0 256: 23 23 23 23 23 23 23 23
++1 256: 23 23 23 23 23 23 23 23
++5 256: 23 23 23 23 23 23 23 23
++100 256: 23 23 23 23 23 23 23 23
++127 256: 23 23 23 23 23 23 23 23
++128 256: 23 23 23 23 23 23 23 2c
++200 256: 23 23 23 23 23 23 23 2c
++255 256: 23 23 23 23 23 23 23 2c
++256 256: 23 23 1a 1a 1a 1a 23 23
++1000 256: 23 23 2c 2c 2c 2c 23 2c
++32767 256: 23 23 2c 2c 2c 2c 23 2c
++32768 256: 23 23 23 2c 2c 2c 23 23
++65535 256: 23 23 23 2c 2c 2c 23 2c
++65536 256: 23 23 23 23 2c 2c 23 23
++-32768 256: 23 23 23 2c 23 2c 23 23
++-32769 256: 23 23 2c 2c 23 2c 23 2c
++2147483647 256: 23 23 23 2c 2c 2c 23 2c
++-2147483648 256: 23 23 23 23 23 2c 23 23
++-129 1000: 23 23 23 2c 23 2c 23 23
++-128 1000: 23 23 23 2c 23 2c 23 2c
++-127 1000: 23 23 23 2c 23 2c 23 2c
++-1 1000: 23 23 23 2c 23 2c 23 2c
++0 1000: 23 23 23 23 23 23 23 23
++1 1000: 23 23 23 23 23 23 23 23
++5 1000: 23 23 23 23 23 23 23 23
++100 1000: 23 23 23 23 23 23 23 23
++127 1000: 23 23 23 23 23 23 23 23
++128 1000: 23 23 23 23 23 23 23 2c
++200 1000: 23 23 23 23 23 23 23 2c
++255 1000: 23 23 23 23 23 23 23 2c
++256 1000: 23 23 23 23 23 23 23 23
++1000 1000: 23 23 1a 1a 1a 1a 23 2c
++32767 1000: 23 23 2c 2c 2c 2c 23 2c
++32768 1000: 23 23 23 2c 2c 2c 23 23
++65535 1000: 23 23 23 2c 2c 2c 23 2c
++65536 1000: 23 23 23 23 2c 2c 23 23
++-32768 1000: 23 23 23 2c 23 2c 23 23
++-32769 1000: 23 23 2c 2c 23 2c 23 2c
++2147483647 1000: 23 23 23 2c 2c 2c 23 2c
++-2147483648 1000: 23 23 23 23 23 2c 23 23
++-129 32767: 23 23 23 2c 23 2c 23 23
++-128 32767: 23 23 23 2c 23 2c 23 2c
++-127 32767: 23 23 23 2c 23 2c 23 2c
++-1 32767: 23 23 23 2c 23 2c 23 2c
++0 32767: 23 23 23 23 23 23 23 23
++1 32767: 23 23 23 23 23 23 23 23
++5 32767: 23 23 23 23 23 23 23 23
++100 32767: 23 23 23 23 23 23 23 23
++127 32767: 23 23 23 23 23 23 23 23
++128 32767: 23 23 23 23 23 23 23 2c
++200 32767: 23 23 23 23 23 23 23 2c
++255 32767: 23 23 23 23 23 23 23 2c
++256 32767: 23 23 23 23 23 23 23 23
++1000 32767: 23 23 23 23 23 23 23 2c
++32767 32767: 23 23 1a 1a 1a 1a 23 2c
++32768 32767: 23 23 23 2c 2c 2c 23 23
++65535 32767: 23 23 23 2c 2c 2c 23 2c
++65536 32767: 23 23 23 23 2c 2c 23 23
++-32768 32767: 23 23 23 2c 23 2c 23 23
++-32769 32767: 23 23 1a 1a 23 2c 23 2c
++2147483647 32767: 23 23 23 2c 2c 2c 23 2c
++-2147483648 32767: 23 23 23 23 23 2c 23 23
++-129 32768: 23 23 23 2c 23 2c 23 23
++-128 32768: 23 23 23 2c 23 2c 23 2c
++-127 32768: 23 23 23 2c 23 2c 23 2c
++-1 32768: 23 23 23 2c 23 2c 23 2c
++0 32768: 23 23 23 23 23 23 23 23
++1 32768: 23 23 23 23 23 23 23 23
++5 32768: 23 23 23 23 23 23 23 23
++100 32768: 23 23 23 23 23 23 23 23
++127 32768: 23 23 23 23 23 23 23 23
++128 32768: 23 23 23 23 23 23 23 2c
++200 32768: 23 23 23 23 23 23 23 2c
++255 32768: 23 23 23 23 23 23 23 2c
++256 32768: 23 23 23 23 23 23 23 23
++1000 32768: 23 23 23 23 23 23 23 2c
++32767 32768: 23 23 23 23 23 23 23 2c
++32768 32768: 23 23 23 1a 1a 1a 23 23
++65535 32768: 23 23 23 2c 2c 2c 23 2c
++65536 32768: 23 23 23 23 2c 2c 23 23
++-32768 32768: 23 23 23 1a 23 2c 23 23
++-32769 32768: 23 23 23 23 23 2c 23 2c
++2147483647 32768: 23 23 23 2c 2c 2c 23 2c
++-2147483648 32768: 23 23 23 23 23 2c 23 23
++-129 65535: 23 23 23 23 23 2c 23 23
++-128 65535: 23 23 23 23 23 2c 23 2c
++-127 65535: 23 23 23 23 23 2c 23 2c
++-1 65535: 23 23 23 1a 23 2c 23 2c
++0 65535: 23 23 23 23 23 23 23 23
++1 65535: 23 23 23 23 23 23 23 23
++5 65535: 23 23 23 23 23 23 23 23
++100 65535: 23 23 23 23 23 23 23 23
++127 65535: 23 23 23 23 23 23 23 23
++128 65535: 23 23 23 23 23 23 23 2c
++200 65535: 23 23 23 23 23 23 23 2c
++255 65535: 23 23 23 23 23 23 23 2c
++256 65535: 23 23 23 23 23 23 23 23
++1000 65535: 23 23 23 23 23 23 23 2c
++32767 65535: 23 23 23 23 23 23 23 2c
++32768 65535: 23 23 23 23 23 23 23 23
++65535 65535: 23 23 23 1a 1a 1a 23 2c
++65536 65535: 23 23 23 23 2c 2c 23 23
++-32768 65535: 23 23 23 23 23 2c 23 23
++-32769 65535: 23 23 23 23 23 2c 23 2c
++2147483647 65535: 23 23 23 1a 2c 2c 23 2c
++-2147483648 65535: 23 23 23 23 23 2c 23 23
++-129 65536: 23 23 23 23 23 2c 23 23
++-128 65536: 23 23 23 23 23 2c 23 2c
++-127 65536: 23 23 23 23 23 2c 23 2c
++-1 65536: 23 23 23 23 23 2c 23 2c
++0 65536: 23 23 23 23 23 23 23 23
++1 65536: 23 23 23 23 23 23 23 23
++5 65536: 23 23 23 23 23 23 23 23
++100 65536: 23 23 23 23 23 23 23 23
++127 65536: 23 23 23 23 23 23 23 23
++128 65536: 23 23 23 23 23 23 23 2c
++200 65536: 23 23 23 23 23 23 23 2c
++255 65536: 23 23 23 23 23 23 23 2c
++256 65536: 23 23 23 23 23 23 23 23
++1000 65536: 23 23 23 23 23 23 23 2c
++32767 65536: 23 23 23 23 23 23 23 2c
++32768 65536: 23 23 23 23 23 23 23 23
++65535 65536: 23 23 23 23 23 23 23 2c
++65536 65536: 23 23 23 23 1a 1a 23 23
++-32768 65536: 23 23 23 23 23 2c 23 23
++-32769 65536: 23 23 23 23 23 2c 23 2c
++2147483647 65536: 23 23 23 23 2c 2c 23 2c
++-2147483648 65536: 23 23 23 23 23 2c 23 23
++-129 -32768: 2c 2c 2c 2c 2c 2c 23 23
++-128 -32768: 2c 2c 2c 2c 2c 2c 23 2c
++-127 -32768: 2c 2c 2c 2c 2c 2c 23 2c
++-1 -32768: 2c 2c 2c 2c 2c 2c 23 2c
++0 -32768: 2c 2c 2c 2c 2c 23 23 23
++1 -32768: 2c 2c 2c 2c 2c 23 23 23
++5 -32768: 2c 2c 2c 2c 2c 23 23 23
++100 -32768: 2c 2c 2c 2c 2c 23 23 23
++127 -32768: 2c 2c 2c 2c 2c 23 23 23
++128 -32768: 2c 2c 2c 2c 2c 23 23 2c
++200 -32768: 2c 2c 2c 2c 2c 23 23 2c
++255 -32768: 2c 2c 2c 2c 2c 23 23 2c
++256 -32768: 2c 2c 2c 2c 2c 23 23 23
++1000 -32768: 2c 2c 2c 2c 2c 23 23 2c
++32767 -32768: 2c 2c 2c 2c 2c 23 23 2c
++32768 -32768: 2c 2c 1a 2c 2c 23 23 23
++65535 -32768: 2c 2c 2c 2c 2c 23 23 2c
++65536 -32768: 2c 2c 2c 2c 2c 23 23 23
++-32768 -32768: 2c 2c 1a 2c 1a 1a 23 23
++-32769 -32768: 2c 2c 2c 2c 23 23 23 2c
++2147483647 -32768: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -32768: 2c 2c 2c 2c 23 23 23 23
++-129 -32769: 2c 2c 2c 2c 2c 2c 23 23
++-128 -32769: 2c 2c 2c 2c 2c 2c 23 2c
++-127 -32769: 2c 2c 2c 2c 2c 2c 23 2c
++-1 -32769: 2c 2c 2c 2c 2c 2c 23 2c
++0 -32769: 2c 2c 2c 2c 2c 23 23 23
++1 -32769: 2c 2c 2c 2c 2c 23 23 23
++5 -32769: 2c 2c 2c 2c 2c 23 23 23
++100 -32769: 2c 2c 2c 2c 2c 23 23 23
++127 -32769: 2c 2c 2c 2c 2c 23 23 23
++128 -32769: 2c 2c 2c 2c 2c 23 23 2c
++200 -32769: 2c 2c 2c 2c 2c 23 23 2c
++255 -32769: 2c 2c 2c 2c 2c 23 23 2c
++256 -32769: 2c 2c 2c 2c 2c 23 23 23
++1000 -32769: 2c 2c 2c 2c 2c 23 23 2c
++32767 -32769: 2c 2c 2c 2c 2c 23 23 2c
++32768 -32769: 2c 2c 2c 2c 2c 23 23 23
++65535 -32769: 2c 2c 2c 2c 2c 23 23 2c
++65536 -32769: 2c 2c 2c 2c 2c 23 23 23
++-32768 -32769: 2c 2c 2c 2c 2c 2c 23 23
++-32769 -32769: 2c 2c 2c 2c 1a 1a 23 2c
++2147483647 -32769: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -32769: 2c 2c 2c 2c 23 23 23 23
++-129 2147483647: 23 23 23 23 23 2c 23 23
++-128 2147483647: 23 23 23 23 23 2c 23 2c
++-127 2147483647: 23 23 23 23 23 2c 23 2c
++-1 2147483647: 23 23 23 23 23 2c 23 2c
++0 2147483647: 23 23 23 23 23 23 23 23
++1 2147483647: 23 23 23 23 23 23 23 23
++5 2147483647: 23 23 23 23 23 23 23 23
++100 2147483647: 23 23 23 23 23 23 23 23
++127 2147483647: 23 23 23 23 23 23 23 23
++128 2147483647: 23 23 23 23 23 23 23 2c
++200 2147483647: 23 23 23 23 23 23 23 2c
++255 2147483647: 23 23 23 23 23 23 23 2c
++256 2147483647: 23 23 23 23 23 23 23 23
++1000 2147483647: 23 23 23 23 23 23 23 2c
++32767 2147483647: 23 23 23 23 23 23 23 2c
++32768 2147483647: 23 23 23 23 23 23 23 23
++65535 2147483647: 23 23 23 23 23 23 23 2c
++65536 2147483647: 23 23 23 23 23 23 23 23
++-32768 2147483647: 23 23 23 23 23 2c 23 23
++-32769 2147483647: 23 23 23 23 23 2c 23 2c
++2147483647 2147483647: 23 23 23 23 1a 1a 23 2c
++-2147483648 2147483647: 23 23 23 23 23 2c 23 23
++-129 -2147483648: 2c 2c 2c 2c 2c 2c 23 23
++-128 -2147483648: 2c 2c 2c 2c 2c 2c 23 2c
++-127 -2147483648: 2c 2c 2c 2c 2c 2c 23 2c
++-1 -2147483648: 2c 2c 2c 2c 2c 2c 23 2c
++0 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++1 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++5 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++100 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++127 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++128 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++200 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++255 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++256 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++1000 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++32767 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++32768 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++65535 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++65536 -2147483648: 2c 2c 2c 2c 2c 23 23 23
++-32768 -2147483648: 2c 2c 2c 2c 2c 2c 23 23
++-32769 -2147483648: 2c 2c 2c 2c 2c 2c 23 2c
++2147483647 -2147483648: 2c 2c 2c 2c 2c 23 23 2c
++-2147483648 -2147483648: 2c 2c 2c 2c 1a 1a 23 23
++char 127: 2007141164
++signed char 127: 2007141164
++unsigned char 127: 2007141164
++short -129: 396535011
++unsigned short 65407: 1473071916
++int -129: 396535011
++unsigned 4294967167: 357386028
++long long -129: 1738712291
++_Bool 1: 1738713324
++char -128: 396535011
++signed char -128: 396535011
++unsigned char 128: 2007223084
++short -128: 396535011
++unsigned short 65408: 1473071916
++int -128: 396535011
++unsigned 4294967168: 357386028
++long long -128: 1738712291
++_Bool 1: 1738713324
++char -127: 396535011
++signed char -127: 396535011
++unsigned char 129: 2007190316
++short -127: 396535011
++unsigned short 65409: 1473071916
++int -127: 396535011
++unsigned 4294967169: 357386028
++long long -127: 1738712291
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short -1: 396540131
++unsigned short 65535: 1473071916
++int -1: 396540131
++unsigned 4294967295: 357391148
++long long -1: 1738717411
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short 0: 1738713306
++unsigned short 0: 1738713306
++int 0: 1738713306
++unsigned 0: 1671603418
++long long 0: 1738713306
++_Bool 0: 1738713306
++char 1: 1738713324
++signed char 1: 1738713324
++unsigned char 1: 1738713324
++short 1: 1738713324
++unsigned short 1: 1738713324
++int 1: 1738713324
++unsigned 1: 1671603436
++long long 1: 1738713324
++_Bool 1: 1738713324
++char 5: 1738713772
++signed char 5: 1738713772
++unsigned char 5: 1738713772
++short 5: 1738713772
++unsigned short 5: 1738713772
++int 5: 1738713772
++unsigned 5: 1671603884
++long long 5: 1738713772
++_Bool 1: 1738713324
++char 100: 2007149356
++signed char 100: 2007149356
++unsigned char 100: 2007149356
++short 100: 2007149356
++unsigned short 100: 2007149356
++int 100: 2007149356
++unsigned 100: 1940039468
++long long 100: 2007149356
++_Bool 1: 1738713324
++char 127: 2007141164
++signed char 127: 2007141164
++unsigned char 127: 2007141164
++short 127: 2007141164
++unsigned short 127: 2007141164
++int 127: 2007141164
++unsigned 127: 1940031276
++long long 127: 2007141164
++_Bool 1: 1738713324
++char -128: 396535011
++signed char -128: 396535011
++unsigned char 128: 2007223084
++short 128: 2007223084
++unsigned short 128: 2007223084
++int 128: 2007223084
++unsigned 128: 1940113196
++long long 128: 2007223084
++_Bool 1: 1738713324
++char -56: 396535011
++signed char -56: 396535011
++unsigned char 200: 2007190316
++short 200: 2007190316
++unsigned short 200: 2007190316
++int 200: 2007190316
++unsigned 200: 1940080428
++long long 200: 2007190316
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short 255: 1470450476
++unsigned short 255: 1470450476
++int 255: 1470450476
++unsigned 255: 1403340588
++long long 255: 1470450476
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short 256: 1471499052
++unsigned short 256: 1471499052
++int 256: 1471499052
++unsigned 256: 1404389164
++long long 256: 1471499052
++_Bool 1: 1738713324
++char -24: 396535011
++signed char -24: 396535011
++unsigned char 232: 1470319404
++short 1000: 1470974764
++unsigned short 1000: 1470974764
++int 1000: 1470974764
++unsigned 1000: 1403864876
++long long 1000: 1470974764
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short 32767: 1468877612
++unsigned short 32767: 1468877612
++int 32767: 1468877612
++unsigned 32767: 1401767724
++long long 32767: 1468877612
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short -32768: 396535011
++unsigned short 32768: 1468877612
++int 32768: 1468877612
++unsigned 32768: 1401767724
++long long 32768: 1468877612
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short -1: 396540131
++unsigned short 65535: 1473071916
++int 65535: 1473071916
++unsigned 65535: 1405962028
++long long 65535: 1473071916
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short 0: 1738713306
++unsigned short 0: 1738713306
++int 65536: 1447906092
++unsigned 65536: 1380796204
++long long 65536: 1447906092
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short -32768: 396535011
++unsigned short 32768: 1468877612
++int -32768: 396535011
++unsigned 4294934528: 357386028
++long long -32768: 1738712291
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short 32767: 1468877612
++unsigned short 32767: 1468877612
++int -32769: 396535011
++unsigned 4294934527: 357386028
++long long -32769: 1738712291
++_Bool 1: 1738713324
++char -1: 396540131
++signed char -1: 396540131
++unsigned char 255: 1470450476
++short -1: 396540131
++unsigned short 65535: 1473071916
++int 2147483647: 1431128876
++unsigned 2147483647: 1364018988
++long long 2147483647: 1431128876
++_Bool 1: 1738713324
++char 0: 1738713306
++signed char 0: 1738713306
++unsigned char 0: 1738713306
++short 0: 1738713306
++unsigned short 0: 1738713306
++int -2147483648: 329426147
++unsigned 2147483648: 290277164
++long long -2147483648: 1671603427
++_Bool 1: 1738713324
++struct 55279
++struct 469036
++0: 0 0 0 4294967296 5 4294967295 4294967296 0 0
++1: -1 -1 1 4294967295 4 4294967296 4294967297 18446744073709551615 1
++-1: 1 1 -1 4294967297 6 4294967294 4294967295 1 -1
++4294967296: -4294967296 -4294967296 4294967296 0 -4294967291 8589934591 8589934592 18446744069414584320 1
++9223372036854775807: -9223372036854775807 -9223372036854775807 9223372036854775807 -9223372032559808511 -9223372036854775802 -9223372032559808514 -9223372032559808513 9223372036854775809 1
++-9223372036854775808: -9223372036854775808 -9223372036854775808 -9223372036854775808 -9223372032559808512 -9223372036854775803 -9223372032559808513 -9223372032559808512 9223372036854775808 -1
++0: 1a9 2 3 4
++1: 272 2 3 2
++-1: 24e 2 3 2
++2147483647: 272 3 2 2
++-2147483648: 24e 2 3 2
++zero(): 0
++czero(): 0
++llzero(): 0
++ucret(300): 44
++ucret(-1): 255
++sret(70000): 4464
++sret(-70000): -4464
++scret(200): -56
++scret(-200): 56
++llret(-3): -3145728
++llret(5): 5242880
++usret(-1): 65535
++usret(70000): 4464
++f3(x, y, z): 123
++f3(z, y, x): 321
++f3(y + 1, x + 1, z + 1): 324
++f3(z + 1, y + 1, x + 1): 432
++f2(x, y): 12
++f2(y, x): 21
++f2(y + 1, x + 1): 32
++f1(x): 2
++f1(x + y): 4
++f3(k1(), k2(), k3()): 123
++f3(k3(), x, k1()): 311
++f2(k2(), k1()): 21
++f3(next(), x, y): 112
++f3(x, next(), y): 122
++f3(x, y, next()): 123
++f3(kn(1), kn(10), kn(100)): 3300
++f1(next()): 5
++f2(nextn(5), 1): 91
++f2(1, nextn(5)): 24
++fll(L, x): 42949673011
++fll(L + 1, next()): 42949673035
++fll2(x, L): 4294968301
++fll2(next(), L + 2): 4294983303
++f4(x, y, z, 4): 1234
++f4(k1(), k2(), k3(), k4()): 1234
++f4(k4(), x, k2(), next()): 4137
++f4(4, 3, 2, 1): 4321
++fmix(x, 2.5, y, 'a', 7): 167221
++fmix(k1(), 1.0, k2(), 2, k3()): 32211
++g1(x, y): -1
++g1(k2(), k1()): 1
++fc(-1, 200, -300): -28001
++fc((char)k1(), (unsigned char)k2(), (short)k3()): 321
++fs4(s4, 5): 75
++fs8(1, s8): 189
++fs12(s12, 4): 10
++fs4(s4, next()): 88
++fv(5, 6, 7): 5
++fp(x, y, z): 123
++fp(z, x, y): 312
++fp(k1(), k2(), k3()): 123
++fp(k3(), k1(), k2()): 312
++cdecl_call(x, y, z): 123
++cdecl_call(k3(), k2(), k1()): 321
++hidden_sret(): 10
++retbig(3).a[4]: 7
++retbig(next()).a[0]: 19
++f3(f1(x), f2(x, y), f1(z)): 324
++f3(f3(1, 2, 3), f3(4, 5, 6), f3(7, 8, 9)): 17649
++f2(x, y) + f2(y, z) * f2(z, x): 725
++f1(x) * f1(y) + f1(z) * f1(x) + f1(y) * f1(z): 26
++out: 354
++blk 0: 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7
++blk 1: 10 13 15 18 19 22 23 26 26 29 29 32 39 42 48 48 61 99 196
++loop_sizes(0): 11
++loop_sizes(1): 2890
++loop_sizes(7): -1320173909
++branches 0: 1064 972 1
++branches 1: 5 7826 21
++branches 2: 1018 886243 30
++branches 3: 29 6908311 68
++branches 4: 1096 751165236 174
++branches 5: 1065 -1200569831 158
++branches 6: 1076 227869935 128
++branches 7: 1087 2004929700 114
++branches 8: 1088 972086867 1
++zero
++relocs_after_jumps(0): 517
++two
++relocs_after_jumps(2): 639
++two
++relocs_after_jumps(5): 4432
++leaf_nolocals(6, 7): 43
++leaf_bigframe(2): 47
++spill(1, 2, 3, 4, 5, 6, 7, 8): 2110
++spill(8, 7, 6, 5, 4, 3, 2, 1): 4312

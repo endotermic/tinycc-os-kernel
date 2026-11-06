@@ -1,0 +1,1144 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 6 Nov 2026 19:08:27 +0200
+Subject: [PATCH] i386: code size: jumps relaxed to rel8 at the end of the
+ function, zero loads with xor, test, compares in memory, regparm arguments
+ without push/pop
+
+The kernel's real-mode setup, compiled by i386-tcc -m16, must fit the
+boot protocol's 32 KB (_end <= 0x8000 in setup.ld, .bss included), and
+tcc's 16-bit code was twice the size of gcc -Os's (kernel patch 0011
+makes the BIOS video mode code optional for that reason).  The code
+generator now emits:
+
+ * jumps relaxed to their short forms when the function is complete
+   (gfunc_epilog -> relax_function): gjmp()/gjmp_cond() still emit the
+   rel32 forms, since a forward target is unknown, and record every jump
+   with a target inside the function (and the prologue's `sub $frame,%esp`,
+   whose immediate is known only at the end) in rjumps[]; the fixed point
+   of "fits rel8 once the jumps before it shrank" is computed, the code
+   moved, and the displacements, the relocations and the symbols inside
+   the function patched; tccdbg maps its line and scope addresses through
+   gen_relax_map().  Not done for a function with inline asm (the
+   assembler resolves its own displacements and folds label differences
+   into other sections: jump labels, alternatives, exception tables) or
+   with bounds checking.  func_asm_seen is complete only at the epilogue,
+   so relax_function() tests it there (the first version read it in
+   rj_reset() at the prologue, relaxed every asm function and left the
+   i386 kernel's recorded label addresses stale: it did not boot), and
+   label_pop(), which defines the ELF symbols of the function's labels
+   after the epilogue (`static void *tbl[] = { &&l0, ... }`), maps their
+   positions through gen_relax_map() too (computed gotos jumped into the
+   old layout).
+ * a zero loaded with `xor r,r` (load_imm; the two-word arithmetic of
+   tccgen loads a constant high word before the low-word operation on
+   every target now, since the xor clears the carry).
+ * `test r,r` for a comparison with 0.
+ * a byte, short, int or pointer lvalue compared with a constant in
+   memory (gen_cmp_mem), at its own width when the constant fits, with
+   the signed conditions turned unsigned for a zero-extended operand.
+ * the register arguments of a regparm call loaded and permuted with
+   xchg/mov (gen_reg_args) instead of pushed and popped word by word.
+
+With the vanilla video files the setup is 28 953 bytes, _end 0x84b0
+(34 521 and 0x9a70 before; gcc -Os: 15 100, 0x4e80): still 1 200 bytes
+over the limit, so kernel patch 0011 stays.
+---
+ i386-gen.c | 583 ++++++++++++++++++++++++++++++++++++++++++++++-------
+ tcc.h      |  13 ++
+ tccdbg.c   | 147 +++++++++++---
+ tccgen.c   |  38 +++-
+ 4 files changed, 671 insertions(+), 110 deletions(-)
+
+diff --git a/i386-gen.c b/i386-gen.c
+index 23266b5..b20ce16 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -148,10 +148,244 @@ static int gen_opsize16(int opc)
+     if (b == 0x66)
+         return opc >> 8;
+     if (!(b == 0x88 || b == 0x8a || b == 0x86 || b == 0xc6 || b == 0xf6 || b == 0xfe
+-          || (b >= 0xd8 && b <= 0xdf)))
++          || b == 0x80 || (b >= 0xd8 && b <= 0xdf)))
+         g(0x66);
+     return opc;
+ }
++
++/* Code size: the jumps of a function are relaxed to their short forms
++   when the function is complete (gfunc_epilog).  gjmp()/gjmp_cond() emit
++   the rel32 forms (5/6 bytes, one more with -m16), since the target of a
++   forward jump is not known when it is emitted, yet most displacements fit
++   a rel8 (2 bytes).  Every jump with a target inside the function (gjmp,
++   gjmp_cond, gjmp_addr) and the `sub $frame,%esp` of the prologue (whose
++   immediate, known only at the end, usually fits a byte, or is 0) are
++   recorded in rjumps[]; relax_function() finds the jumps whose
++   displacement fits once the ones before them have shrunk, moves the code,
++   and patches the displacements, the relocations and the symbols inside the
++   function.  tccdbg.c maps its line and scope addresses through
++   gen_relax_map().  Not done when the function has inline asm (the
++   assembler resolves its own displacements and defines its own symbols:
++   func_asm_seen) or bounds checking (fixed offsets patched later). */
++enum { RJ_JMP, RJ_JCC, RJ_SHORT, RJ_SUB };
++typedef struct RelaxJump {
++    int pos;    /* offset of the instruction (prefix included) */
++    int len;    /* its length */
++    int nlen;   /* its length after relaxation */
++    int kind;
++    int cc;     /* RJ_JCC: the 0x8x condition opcode */
++    int target; /* the target, in the offsets before relaxation */
++    int saved;  /* bytes saved by the jumps before this one */
++} RelaxJump;
++static RelaxJump *rjumps;
++static int nb_rjumps, nb_rjumps_alloc;
++static int relax_off;      /* no relaxation for this function */
++static int relax_start, relax_end, relax_saved; /* of the last relaxed function */
++
++static void rj_reset(void)
++{
++    nb_rjumps = 0;
++    relax_saved = 0;
++    relax_off = func_asm_seen;
++#ifdef CONFIG_TCC_BCHECK
++    if (tcc_state->do_bounds_check)
++        relax_off = 1;
++#endif
++}
++
++static void rj_add(int pos, int len, int kind, int cc)
++{
++    RelaxJump *rj;
++    if (nocode_wanted)
++        return; /* nothing was emitted */
++    if (nb_rjumps && pos < rjumps[nb_rjumps - 1].pos + rjumps[nb_rjumps - 1].len)
++        relax_off = 1; /* not in order: cannot happen */
++    if (nb_rjumps >= nb_rjumps_alloc) {
++        nb_rjumps_alloc = nb_rjumps_alloc ? 2 * nb_rjumps_alloc : 64;
++        rjumps = tcc_realloc(rjumps, nb_rjumps_alloc * sizeof *rjumps);
++    }
++    rj = &rjumps[nb_rjumps++];
++    rj->pos = pos;
++    rj->len = rj->nlen = len;
++    rj->kind = kind;
++    rj->cc = cc;
++    rj->target = 0;
++    rj->saved = 0;
++}
++
++ST_FUNC void gen_relax_free(void)
++{
++    tcc_free(rjumps);
++    rjumps = NULL;
++    nb_rjumps = nb_rjumps_alloc = 0;
++}
++
++/* the offset 'off' of the function before its relaxation, after it (the
++   identity outside the function, or when nothing was relaxed) */
++ST_FUNC int gen_relax_map(int off)
++{
++    int lo, hi, mid;
++    RelaxJump *rj;
++    if (!relax_saved || off <= relax_start || off > relax_end)
++        return off;
++    /* the last recorded instruction that starts before off */
++    lo = 0, hi = nb_rjumps;
++    while (lo < hi) {
++        mid = (lo + hi) / 2;
++        if (rjumps[mid].pos < off)
++            lo = mid + 1;
++        else
++            hi = mid;
++    }
++    if (lo == 0)
++        return off;
++    rj = &rjumps[lo - 1];
++    if (off >= rj->pos + rj->len)
++        return off - rj->saved - (rj->len - rj->nlen);
++    off -= rj->pos; /* inside it: cannot happen for a target or a line */
++    return rj->pos - rj->saved + (off < rj->nlen ? off : rj->nlen);
++}
++
++ST_FUNC int gen_relax_saved(void)
++{
++    return relax_saved;
++}
++
++/* the size of a jump's new form and its displacement */
++static int rj_disp(RelaxJump *rj, int *disp)
++{
++    int np = rj->pos - rj->saved, nt = gen_relax_map(rj->target);
++    *disp = nt - (np + rj->nlen);
++    return rj->nlen;
++}
++
++static void relax_function(int frame)
++{
++    int i, k, n = nb_rjumps, changed, disp, start = func_ind, end = ind;
++    int src, dst, seg;
++    unsigned char *d = cur_text_section->data;
++    RelaxJump *rj;
++    Section *sr;
++    ElfW_Rel *rel;
++    ElfW(Sym) *sym, *sym_end;
++
++    relax_start = start, relax_end = end, relax_saved = 0;
++    if (relax_off || func_asm_seen || n == 0 || nocode_wanted)
++        return;
++    for (i = 0; i < n; i++) {
++        rj = &rjumps[i];
++        if (rj->kind == RJ_SUB) {
++#ifdef TCC_TARGET_PE
++            if (frame >= 4096)
++                continue; /* the __chkstk prologue */
++#endif
++            if (frame == 0)
++                rj->nlen = 0;
++            else if (frame == (signed char)frame)
++                rj->nlen = rj->len - 3; /* sub $imm8,%esp */
++            continue;
++        }
++        if (rj->kind == RJ_SHORT)
++            rj->target = rj->pos + 2 + (signed char)d[rj->pos + 1];
++        else
++            rj->target = rj->pos + rj->len + (int)read32le(d + rj->pos + rj->len - 4);
++        if (rj->target < start || rj->target > end)
++            return; /* not a jump within the function: leave everything */
++    }
++    /* a long jump shrinks when its displacement fits rel8; what the ones
++       before it save moves its target closer, hence the iteration (the
++       displacements only ever shrink, so the result is a fixed point) */
++    do {
++        changed = 0;
++        for (i = 0, k = 0; i < n; i++)
++            rjumps[i].saved = k, k += rjumps[i].len - rjumps[i].nlen;
++        for (i = 0; i < n; i++) {
++            rj = &rjumps[i];
++            if (rj->kind != RJ_JMP && rj->kind != RJ_JCC)
++                continue;
++            if (rj->nlen == 2)
++                continue;
++            rj->nlen = 2, rj_disp(rj, &disp);
++            if (disp == (signed char)disp)
++                changed = 1;
++            else
++                rj->nlen = rj->len;
++        }
++    } while (changed);
++    for (i = 0, k = 0; i < n; i++)
++        rjumps[i].saved = k, k += rjumps[i].len - rjumps[i].nlen;
++    if (k == 0)
++        return;
++    relax_saved = k;
++    /* every short jump still reaches its target (it does: the distances
++       only shrank) */
++    for (i = 0; i < n; i++) {
++        rj = &rjumps[i];
++        if (rj->kind != RJ_SUB && rj->nlen == 2) {
++            rj_disp(rj, &disp);
++            if (disp != (signed char)disp) {
++                relax_saved = 0;
++                return;
++            }
++        }
++    }
++    /* move the code and write the new forms */
++    for (i = 0, src = dst = start; i < n; i++) {
++        rj = &rjumps[i];
++        seg = rj->pos - src;
++        if (dst != src)
++            memmove(d + dst, d + src, seg);
++        dst += seg;
++        src = rj->pos + rj->len;
++        if (rj->kind == RJ_SUB) {
++            if (rj->nlen == rj->len) {
++                memmove(d + dst, d + rj->pos, rj->len);
++            } else if (rj->nlen) {
++                k = dst;
++                if (M16)
++                    d[k++] = 0x66;
++                d[k++] = 0x83; /* sub $imm8,%esp */
++                d[k++] = 0xec;
++                d[k++] = frame;
++            }
++        } else {
++            rj_disp(rj, &disp);
++            k = dst;
++            if (rj->nlen == 2) {
++                d[k++] = rj->kind == RJ_JCC ? rj->cc - 0x10 : 0xeb;
++                d[k++] = disp;
++            } else {
++                if (M16)
++                    d[k++] = 0x66;
++                if (rj->kind == RJ_JCC)
++                    d[k++] = 0x0f, d[k++] = rj->cc;
++                else
++                    d[k++] = 0xe9;
++                write32le(d + k, disp);
++            }
++        }
++        dst += rj->nlen;
++    }
++    seg = end - src;
++    if (dst != src)
++        memmove(d + dst, d + src, seg);
++    dst += seg;
++    memset(d + dst, 0, end - dst);
++    ind = dst;
++    /* the relocations and the symbols of the function */
++    sr = cur_text_section->reloc;
++    if (sr) {
++        for_each_elem(sr, 0, rel, ElfW_Rel)
++            if (rel->r_offset > (unsigned)start && rel->r_offset < (unsigned)end)
++                rel->r_offset = gen_relax_map(rel->r_offset);
++    }
++    sym = (ElfW(Sym) *)symtab_section->data;
++    sym_end = (ElfW(Sym) *)(symtab_section->data + symtab_section->data_offset);
++    for (sym++; sym < sym_end; sym++)
++        if (sym->st_shndx == cur_text_section->sh_num
++            && sym->st_value > (unsigned)start && sym->st_value <= (unsigned)end)
++            sym->st_value = gen_relax_map(sym->st_value);
++}
+ #ifdef CONFIG_TCC_BCHECK
+ static addr_t func_bound_offset;
+ static unsigned long func_bound_ind;
+@@ -352,6 +586,21 @@ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+     }
+ }
+ 
++/* mov $c, r; a zero with xor (2 bytes instead of 5; the flags are
++   clobbered, which tccgen's two-word arithmetic allows for: gen_opl()
++   loads a constant high word before the low-word operation) */
++static void load_imm(int r, int fr, Sym *sym, int c)
++{
++    o66();
++    if (c == 0 && !(fr & VT_SYM)) {
++        o(0x31); /* xor r, r */
++        o(0xc0 + r * 9);
++    } else {
++        o(0xb8 + r); /* mov $xx, r */
++        gen_addr32(fr, sym, c);
++    }
++}
++
+ /* load 'r' from value 'sv' */
+ ST_FUNC void load(int r, SValue *sv)
+ {
+@@ -440,9 +689,7 @@ ST_FUNC void load(int r, SValue *sv)
+                 o(0x83 | (r << 3));
+                 gen_gotoff32(sv->sym, fc);
+             } else {
+-                o66();
+-                o(0xb8 + r); /* mov $xx, r */
+-                gen_addr32(fr, sv->sym, fc);
++                load_imm(r, fr, sv->sym, fc);
+             }
+         } else if (v == VT_LOCAL) {
+             if (fc) {
+@@ -461,12 +708,11 @@ ST_FUNC void load(int r, SValue *sv)
+             o(0xc0b60f + r * 0x90000); /* movzbl %al, %eax */
+         } else if (v == VT_JMP || v == VT_JMPI) {
+             t = v & 1;
+-            o66();
+-            oad(0xb8 + r, t); /* mov $1, r */
+-            o(M16 ? 0x06eb : 0x05eb); /* jmp after */
++            load_imm(r, 0, NULL, t); /* mov $1, r */
++            o(0xeb); /* jmp after */
++            g((t ^ 1) ? 5 + M16 : 2 + M16);
+             gsym(fc);
+-            o66();
+-            oad(0xb8 + r, t ^ 1); /* mov $0, r */
++            load_imm(r, 0, NULL, t ^ 1); /* mov $0, r */
+         } else if (v != r) {
+             o66();
+             o(0x89);
+@@ -722,12 +968,160 @@ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int
+ #endif
+ }
+ 
++/* push the argument vtop on the stack; returns its size there */
++static int push_arg(void)
++{
++    int size, align, r;
++    if ((vtop->type.t & VT_BTYPE) == VT_STRUCT) {
++        size = type_size(&vtop->type, &align);
++        /* align to stack align size */
++        size = (size + 3) & ~3;
++        /* allocate the necessary size on stack */
++#ifdef TCC_TARGET_PE
++        if (size >= 4096) {
++            save_reg(TREG_EDX);
++            r = get_reg(RC_EAX);
++            oad(0x68, size); // push size
++            /* cannot call normal 'alloca' with bound checking */
++            gen_static_call(tok_alloc_const("__alloca"));
++            gadd_sp(4);
++        } else
++#endif
++        {
++            o66();
++            oad(0xec81, size); /* sub $xxx, %esp */
++            /* generate structure store */
++            r = get_reg(RC_INT);
++            o66();
++            o(0xe089 + (r << 8)); /* mov %esp, r */
++        }
++        vset(&vtop->type, r | VT_LVAL, 0);
++        vswap();
++        vstore();
++    } else if (is_float(vtop->type.t)) {
++        gv(RC_FLOAT); /* only one float register */
++        if ((vtop->type.t & VT_BTYPE) == VT_FLOAT)
++            size = 4;
++        else if ((vtop->type.t & VT_BTYPE) == VT_DOUBLE)
++            size = 8;
++        else
++            size = 12;
++        o66();
++        oad(0xec81, size); /* sub $xxx, %esp */
++        o67();
++        if (size == 12)
++            o(0x7cdb);
++        else
++            o(0x5cd9 + size - 4); /* fstp[s|l] 0(%esp) */
++        g(0x24);
++        g(0x00);
++    } else {
++        /* simple type (currently always same size) */
++        /* XXX: implicit cast ? */
++        r = gv(RC_INT);
++        if ((vtop->type.t & VT_BTYPE) == VT_LLONG) {
++            size = 8;
++            o66();
++            o(0x50 + vtop->r2); /* push r */
++        } else {
++            size = 4;
++        }
++        o66();
++        o(0x50 + r); /* push r */
++    }
++    vtop--;
++    return size;
++}
++
++/* the value is in registers (both words of a long long) */
++static int arg_in_regs(SValue *sv)
++{
++    if ((sv->r & VT_LVAL) || (sv->r & VT_VALMASK) >= VT_CONST)
++        return 0;
++    if ((sv->type.t & VT_BTYPE) == VT_LLONG && sv->r2 >= VT_CONST)
++        return 0;
++    return 1;
++}
++
++/* The register arguments of a regparm call, A1..An at vtop[-(n-1)]..vtop[0],
++   into regs[0], regs[1], regs[2] in order (a long long takes two) without
++   a push and a pop per word: each argument is loaded into a register, its
++   own when that is free, then the registers are permuted with xchg/mov.
++   Nothing else holds a register (gfunc_call() saved everything below the
++   arguments and put the function address in memory).  Returns 0, with the
++   arguments possibly in other registers, when they could not all be kept
++   in registers (the caller pushes them then). */
++static int gen_reg_args(int n, const uint8_t *regs)
++{
++    int cur[3], tgt[3], owner[3], word[3], nw, i, j, k, w, pass;
++    SValue *sv;
++
++    for (pass = 0; pass < 3; pass++) {
++        for (i = n - 1, w = 0; i >= 0; i--) { /* A1 first */
++            int words = (vtop[-i].type.t & VT_BTYPE) == VT_LLONG ? 2 : 1;
++            vrotb(i + 1);
++            if (!arg_in_regs(vtop)) {
++                int rc = RC_INT;
++                if (words == 1 && !reg_in_use(regs[w]))
++                    rc = reg_classes[regs[w]] & ~RC_INT;
++                gv(rc);
++            }
++            vrott(i + 1);
++            w += words;
++        }
++        for (i = 0; i < n; i++)
++            if (!arg_in_regs(&vtop[-i]))
++                break;
++        if (i == n)
++            break;
++    }
++    if (pass == 3)
++        return 0;
++    for (i = n - 1, nw = 0; i >= 0; i--) {
++        sv = &vtop[-i];
++        owner[nw] = i, word[nw] = 0, cur[nw] = sv->r & VT_VALMASK, tgt[nw] = regs[nw], nw++;
++        if ((sv->type.t & VT_BTYPE) == VT_LLONG)
++            owner[nw] = i, word[nw] = 1, cur[nw] = sv->r2, tgt[nw] = regs[nw], nw++;
++    }
++    for (;;) {
++        for (k = 0; k < nw && cur[k] == tgt[k]; k++)
++            ;
++        if (k == nw)
++            break;
++        for (j = 0; j < nw && cur[j] != tgt[k]; j++)
++            ;
++        o66();
++        if (j == nw) {
++            o(0x89); /* mov cur, tgt: the target register is free */
++            g(0xc0 | cur[k] << 3 | tgt[k]);
++        } else {
++            /* the target holds word j: exchange */
++            if (cur[k] == TREG_EAX)
++                g(0x90 + cur[j]); /* xchg %eax, r */
++            else if (cur[j] == TREG_EAX)
++                g(0x90 + cur[k]);
++            else
++                o(0x87), g(0xc0 | cur[k] << 3 | cur[j]);
++            cur[j] = cur[k];
++        }
++        cur[k] = tgt[k];
++    }
++    for (k = 0; k < nw; k++) {
++        sv = &vtop[-owner[k]];
++        if (word[k])
++            sv->r2 = cur[k];
++        else
++            sv->r = (sv->r & ~VT_VALMASK) | cur[k];
++    }
++    return 1;
++}
++
+ /* Generate function call. The function address is pushed first, then
+    all the parameters in call order. This functions pops all the
+    parameters and the function address. */
+ ST_FUNC void gfunc_call(int nb_args)
+ {
+-    int size, align, r, args_size, i, func_call, regparm_nb;
++    int align, r, args_size, i, func_call, regparm_nb, nreg_args = 0, reg_struct = 0;
+     Sym *func_sym;
+ 
+ #ifdef CONFIG_TCC_BCHECK
+@@ -768,6 +1162,9 @@ ST_FUNC void gfunc_call(int nb_args)
+             if (!isfloat[i] && w < regparm_nb) {
+                 tmp[k++] = vtop[-(nb_args - 1 - i)];
+                 w += (asize[i] + 3) / 4;
++                nreg_args++;
++                if ((tmp[k - 1].type.t & VT_BTYPE) == VT_STRUCT)
++                    reg_struct = 1; /* pushed and popped, as before */
+             }
+         for (i = 0, w = 0; i < nb_args; i++)
+             if (isfloat[i] || w >= regparm_nb)
+@@ -799,68 +1196,16 @@ ST_FUNC void gfunc_call(int nb_args)
+     }
+ 
+     args_size = 0;
+-    for(i = 0;i < nb_args; i++) {
+-        if ((vtop->type.t & VT_BTYPE) == VT_STRUCT) {
+-            size = type_size(&vtop->type, &align);
+-            /* align to stack align size */
+-            size = (size + 3) & ~3;
+-            /* allocate the necessary size on stack */
+-#ifdef TCC_TARGET_PE
+-            if (size >= 4096) {
+-                save_reg(TREG_EDX);
+-                r = get_reg(RC_EAX);
+-                oad(0x68, size); // push size
+-                /* cannot call normal 'alloca' with bound checking */
+-                gen_static_call(tok_alloc_const("__alloca"));
+-                gadd_sp(4);
+-            } else
+-#endif
+-            {
+-                o66();
+-                oad(0xec81, size); /* sub $xxx, %esp */
+-                /* generate structure store */
+-                r = get_reg(RC_INT);
+-                o66();
+-                o(0xe089 + (r << 8)); /* mov %esp, r */
+-            }
+-            vset(&vtop->type, r | VT_LVAL, 0);
+-            vswap();
+-            vstore();
+-            args_size += size;
+-        } else if (is_float(vtop->type.t)) {
+-            gv(RC_FLOAT); /* only one float register */
+-            if ((vtop->type.t & VT_BTYPE) == VT_FLOAT)
+-                size = 4;
+-            else if ((vtop->type.t & VT_BTYPE) == VT_DOUBLE)
+-                size = 8;
+-            else
+-                size = 12;
+-            o66();
+-            oad(0xec81, size); /* sub $xxx, %esp */
+-            o67();
+-            if (size == 12)
+-                o(0x7cdb);
+-            else
+-                o(0x5cd9 + size - 4); /* fstp[s|l] 0(%esp) */
+-            g(0x24);
+-            g(0x00);
+-            args_size += size;
+-        } else {
+-            /* simple type (currently always same size) */
+-            /* XXX: implicit cast ? */
+-            r = gv(RC_INT);
+-            if ((vtop->type.t & VT_BTYPE) == VT_LLONG) {
+-                size = 8;
+-                o66();
+-                o(0x50 + vtop->r2); /* push r */
+-            } else {
+-                size = 4;
+-            }
+-            o66();
+-            o(0x50 + r); /* push r */
+-            args_size += size;
+-        }
+-        vtop--;
++    if (reg_struct)
++        nreg_args = 0;
++    for (i = 0; i < nb_args - nreg_args; i++)
++        args_size += push_arg();
++    if (nreg_args && gen_reg_args(nreg_args, fastcall_regs)) {
++        vtop -= nreg_args; /* in %eax, %edx, %ecx */
++        regparm_nb = 0;
++    } else {
++        for (; i < nb_args; i++)
++            args_size += push_arg();
+     }
+ 
+     /* fast call case */
+@@ -958,6 +1303,10 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+     }
+     param_index = 0;
+ 
++    /* the `sub $frame,%esp` after `push %ebp; mov %esp,%ebp`: relaxed
++       to its 8-bit form, or removed, by relax_function() */
++    rj_reset();
++    rj_add(ind + 3 + 2 * M16, 6 + M16, RJ_SUB, 0);
+     ind += FUNC_PROLOG_SIZE;
+     func_sub_sp_offset = ind;
+     /* if the function returns a structure, then add an
+@@ -1105,26 +1454,32 @@ ST_FUNC void gfunc_epilog(void)
+         gen_le32(3);
+     }
+     ind = saved_ind;
++    relax_function(v);
+ }
+ 
+ /* generate a jump to a label */
+ ST_FUNC int gjmp(int t)
+ {
++    int p = ind;
+     o66();
+-    return gjmp2(0xe9, t);
++    t = gjmp2(0xe9, t);
++    rj_add(p, 5 + M16, RJ_JMP, 0);
++    return t;
+ }
+ 
+ /* generate a jump to a fixed address */
+ ST_FUNC void gjmp_addr(int a)
+ {
+-    int r;
++    int r, p = ind;
+     r = a - ind - 2;
+     if (r == (signed char)r) {
+         g(0xeb);
+         g(r);
++        rj_add(p, 2, RJ_SHORT, 0);
+     } else {
+         o66();
+         oad(0xe9, a - ind - 5);
++        rj_add(p, 5 + M16, RJ_JMP, 0);
+     }
+ }
+ 
+@@ -1156,9 +1511,11 @@ ST_FUNC int gjmp_append(int n, int t)
+ 
+ ST_FUNC int gjmp_cond(int op, int t)
+ {
++    int p = ind;
+     o66();
+     g(0x0f);
+     t = gjmp2(op - 16, t);
++    rj_add(p, 6 + M16, RJ_JCC, op - 16);
+     return t;
+ }
+ 
+@@ -1178,7 +1535,10 @@ ST_FUNC void gen_opi(int op)
+             vswap();
+             c = vtop->c.i;
+             o66();
+-            if (c == (signed char)c) {
++            if (c == 0 && op >= TOK_ULT && op <= TOK_GT) {
++                o(0x85); /* test r, r: the flags of cmp $0, r */
++                o(0xc0 + r * 9);
++            } else if (c == (signed char)c) {
+                 /* generate inc and dec for smaller code */
+                 if ((c == 1 || c == -1) && (op == '+' || op == '-')) {
+                     opc = (c == 1) ^ (op == '+');
+@@ -1328,6 +1688,79 @@ ST_FUNC void gen_opi(int op)
+     }
+ }
+ 
++/* A comparison of an integer lvalue in memory with a constant without
++   loading the value (gen_op()): vtop[-1] the lvalue (byte, short, int or
++   pointer sized), vtop the constant, op the comparison as gen_op()
++   adjusted it for the operands' common type (an int or a pointer).  `cmp
++   $imm, mem` saves the load and its extension; a byte or a word is
++   compared at its own width when the constant is representable in it: a
++   sign extension preserves both orders, a zero extension gives
++   non-negative values, whose signed order is the unsigned order of the
++   bytes, so the signed conditions become the unsigned ones.  Returns 0,
++   nothing emitted, when the operands do not qualify. */
++ST_FUNC int gen_cmp_mem(int op)
++{
++    SValue *lv = vtop - 1;
++    int r = lv->r, bt = lv->type.t & VT_BTYPE, u = lv->type.t & VT_UNSIGNED;
++    int c, opc;
++
++    if (op < TOK_ULT || op > TOK_GT)
++        return 0;
++    if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) != VT_CONST)
++        return 0;
++    if (!(r & VT_LVAL) || (lv->type.t & VT_BITFIELD))
++        return 0;
++    if ((r & VT_VALMASK) >= VT_CONST && (r & VT_VALMASK) != VT_CONST
++        && (r & VT_VALMASK) != VT_LOCAL)
++        return 0; /* VT_LLOCAL: the pointer is on the stack */
++#ifdef CONFIG_TCC_BCHECK
++    if (r & VT_MUSTBOUND)
++        return 0;
++#endif
++    if ((r & VT_SYM) && (lv->sym->type.t & VT_TLS))
++        return 0;
++#if defined CONFIG_TCC_PIC
++    if ((r & (VT_VALMASK | VT_SYM)) == (VT_CONST | VT_SYM)
++        && !(lv->sym->type.t & VT_STATIC))
++        return 0; /* through the GOT */
++#endif
++    c = vtop->c.i;
++    if (bt == VT_BYTE || bt == VT_BOOL) {
++        if (bt == VT_BOOL)
++            u = VT_UNSIGNED;
++        if (u ? (c < 0 || c > 255) : c != (signed char)c)
++            return 0;
++        opc = 0x80; /* cmpb $imm8, mem */
++    } else if (bt == VT_SHORT) {
++        if (u ? (c < 0 || c > 65535) : c != (short)c)
++            return 0;
++        opc = c == (signed char)c ? 0x8366 : 0x8166; /* cmpw $imm, mem */
++    } else if (bt == VT_INT || bt == VT_PTR) {
++        u = 0;
++        opc = c == (signed char)c ? 0x83 : 0x81; /* cmpl $imm, mem */
++    } else {
++        return 0;
++    }
++    if (u) {
++        switch (op) {
++        case TOK_LT: op = TOK_ULT; break;
++        case TOK_GE: op = TOK_UGE; break;
++        case TOK_LE: op = TOK_ULE; break;
++        case TOK_GT: op = TOK_UGT; break;
++        }
++    }
++    gen_modrm(opc, 7, r, lv->sym, lv->c.i);
++    if (opc == 0x8166)
++        gen_le16(c);
++    else if (opc == 0x81)
++        gen_le32(c);
++    else
++        g(c);
++    vtop--;
++    vset_VT_CMP(op);
++    return 1;
++}
++
+ /* generate a floating point operation 'v = t1 op t2' instruction. The
+    two operands are guaranteed to have the same floating point type */
+ /* XXX: need to use ST1 too */
+diff --git a/tcc.h b/tcc.h
+index 294ebd8..c41f93b 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1510,6 +1510,7 @@ ST_DATA CType func_vt; /* current function return type (used by return instructi
+ ST_DATA int func_var; /* true if current function is variadic */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
++ST_DATA int func_asm_seen; /* the function has an asm statement */
+ ST_DATA const char *funcname;
+ 
+ ST_FUNC void tccgen_init(TCCState *s1);
+@@ -1565,6 +1566,7 @@ ST_FUNC int get_reg_ex(int rc, int rc2);
+ ST_FUNC void save_reg(int r);
+ ST_FUNC void save_reg_upstack(int r, int n);
+ ST_FUNC int get_reg(int rc);
++ST_FUNC int reg_in_use(int r);
+ ST_FUNC void save_regs(int n);
+ ST_FUNC void gaddrof(void);
+ ST_FUNC int gv(int rc);
+@@ -1707,6 +1709,17 @@ ST_FUNC int gjmp(int t);
+ ST_FUNC void gjmp_addr(int a);
+ ST_FUNC int gjmp_cond(int op, int t);
+ ST_FUNC int gjmp_append(int n, int t);
++#ifdef TCC_TARGET_I386
++/* jump relaxation (i386-gen.c): the function's offsets before and after,
++   the bytes it saved, the record buffer; the compare in memory */
++ST_FUNC int gen_relax_map(int off);
++ST_FUNC int gen_relax_saved(void);
++ST_FUNC void gen_relax_free(void);
++ST_FUNC int gen_cmp_mem(int op);
++#else
++#define gen_relax_map(off) (off)
++#define gen_relax_saved() 0
++#endif
+ ST_FUNC void gen_opi(int op);
+ ST_FUNC void gen_opf(int op);
+ ST_FUNC void gen_cvt_ftoi(int t);
+diff --git a/tccdbg.c b/tccdbg.c
+index dcc51d2..fa44d36 100644
+--- a/tccdbg.c
++++ b/tccdbg.c
+@@ -394,6 +394,19 @@ struct _tccdbg {
+         int base_type_used[N_DEFAULT_DEBUG];
+     } dwarf_info;
+ 
++    /* the line program of the function being compiled, as events, so
++       that it can be regenerated when the code generator moved the code
++       (gen_relax_map()): a row (pc, line, file), or a raw opcode byte
++       emitted outside a row (pc -1) */
++    struct {
++        struct line_ev { int pc, line, file; } *ev;
++        int n, alloc;
++        int in_row;     /* dwarf_line_row() is emitting: its bytes are not events */
++        int line_mark;  /* dwarf_line.line_size at the function start */
++        int stab_mark;  /* stab_section->data_offset at the function start */
++        int last_pc, last_line, last_file; /* dwarf_line's at the function start */
++    } line_evs;
++
+     struct dwarf_str_hash *dwarf_str[N_STR_HASH];
+     struct dwarf_str_hash *dwarf_line_str[N_STR_HASH];
+ 
+@@ -424,6 +437,7 @@ struct _tccdbg {
+ #define dwarf_sym                 s1->dState->dwarf_sym
+ #define dwarf_line                s1->dState->dwarf_line
+ #define dwarf_info                s1->dState->dwarf_info
++#define line_evs                  s1->dState->line_evs
+ #define dwarf_str                 s1->dState->dwarf_str
+ #define dwarf_line_str            s1->dState->dwarf_line_str
+ #define tcov_data                 s1->dState->tcov_data
+@@ -652,8 +666,21 @@ static void dwarf_line_strp(Section *s, const char *str)
+     dwarf_string(s, dwarf_line_str_section, dwarf_sym.line_str, str);
+ }
+ 
++static void line_ev_add(TCCState *s1, int pc, int line, int file)
++{
++    struct line_ev *ev;
++    if (line_evs.n >= line_evs.alloc) {
++        line_evs.alloc = line_evs.alloc ? 2 * line_evs.alloc : 256;
++        line_evs.ev = tcc_realloc(line_evs.ev, line_evs.alloc * sizeof *ev);
++    }
++    ev = &line_evs.ev[line_evs.n++];
++    ev->pc = pc, ev->line = line, ev->file = file;
++}
++
+ static void dwarf_line_op(TCCState *s1, unsigned char op)
+ {
++    if (func_ind != -1 && !line_evs.in_row)
++        line_ev_add(s1, -1, op, 0);
+     if (dwarf_line.line_size >= dwarf_line.line_max_size) {
+ 	dwarf_line.line_max_size += 1024;
+ 	dwarf_line.line_data =
+@@ -1411,6 +1438,9 @@ ST_FUNC void tcc_debug_end(TCCState *s1)
+ 	ptr = section_ptr_add(dwarf_line_section, dwarf_line.line_size - 3);
+ 	memmove(ptr - 3, dwarf_line.line_data, dwarf_line.line_size);
+ 	tcc_free(dwarf_line.line_data);
++	tcc_free(line_evs.ev);
++	line_evs.ev = NULL;
++	line_evs.n = line_evs.alloc = 0;
+ 	write32le(dwarf_line_section->data + dwarf_line.start,
+ 		  dwarf_line_section->data_offset - dwarf_line.start - 4);
+     }
+@@ -1479,30 +1509,20 @@ ST_FUNC void tcc_debug_eincl(TCCState *s1)
+ }
+ 
+ /* generate line number info */
+-ST_FUNC void tcc_debug_line(TCCState *s1)
++/* a row of the line program: the address pc in the current function,
++   its line and file */
++static void dwarf_line_row(TCCState *s1, int pc, int line, int file)
+ {
+-    BufferedFile *f;
+-
+-    if (!s1->do_debug)
+-        return;
+-    if (cur_text_section != text_section || nocode_wanted)
+-        return;
+-    f = put_new_file(s1);
+-    if (!f)
+-        return;
+-    if (last_line_num == f->line_num)
+-        return;
+-    last_line_num = f->line_num;
+-
+-    if (s1->dwarf) {
+-	int len_pc = (ind - dwarf_line.last_pc) / DWARF_MIN_INSTR_LEN;
+-	int len_line = f->line_num - dwarf_line.last_line;
++    line_evs.in_row = 1;
++    {
++	int len_pc = (pc - dwarf_line.last_pc) / DWARF_MIN_INSTR_LEN;
++	int len_line = line - dwarf_line.last_line;
+ 	int n = len_pc * DWARF_LINE_RANGE + len_line + DWARF_OPCODE_BASE - DWARF_LINE_BASE;
+ 
+-	if (dwarf_line.cur_file != dwarf_line.last_file) {
+-	    dwarf_line.last_file = dwarf_line.cur_file;
++	if (file != dwarf_line.last_file) {
++	    dwarf_line.last_file = file;
+ 	    dwarf_line_op(s1, DW_LNS_set_file);
+-	    dwarf_uleb128_op(s1, dwarf_line.cur_file);
++	    dwarf_uleb128_op(s1, file);
+ 	}
+ 	if (len_pc &&
+ 	    len_line >= DWARF_LINE_BASE && len_line <= (DWARF_OPCODE_BASE + DWARF_LINE_BASE) &&
+@@ -1531,8 +1551,31 @@ ST_FUNC void tcc_debug_line(TCCState *s1)
+ 		}
+ 	    }
+ 	}
+-	dwarf_line.last_pc = ind;
+-	dwarf_line.last_line = f->line_num;
++    }
++    dwarf_line.last_pc = pc;
++    dwarf_line.last_line = line;
++    line_evs.in_row = 0;
++}
++
++ST_FUNC void tcc_debug_line(TCCState *s1)
++{
++    BufferedFile *f;
++
++    if (!s1->do_debug)
++        return;
++    if (cur_text_section != text_section || nocode_wanted)
++        return;
++    f = put_new_file(s1);
++    if (!f)
++        return;
++    if (last_line_num == f->line_num)
++        return;
++    last_line_num = f->line_num;
++
++    if (s1->dwarf) {
++        if (func_ind != -1)
++            line_ev_add(s1, ind, f->line_num, dwarf_line.cur_file);
++        dwarf_line_row(s1, ind, f->line_num, dwarf_line.cur_file);
+     }
+     else
+     {
+@@ -1545,6 +1588,38 @@ ST_FUNC void tcc_debug_line(TCCState *s1)
+     }
+ }
+ 
++/* The code generator moved the code of the function (i386-gen.c's jump
++   relaxation): regenerate the function's part of the line program from
++   the recorded events with the addresses mapped, or map the stabs
++   N_SLINE entries in place.  tcc_debug_finish() maps the scopes. */
++static void tcc_debug_relax_lines(TCCState *s1)
++{
++    int i;
++    if (!gen_relax_saved())
++        return;
++    if (s1->dwarf) {
++        dwarf_line.line_size = line_evs.line_mark;
++        dwarf_line.last_pc = line_evs.last_pc;
++        dwarf_line.last_line = line_evs.last_line;
++        dwarf_line.last_file = line_evs.last_file;
++        line_evs.in_row = 1; /* the replay is not recorded */
++        for (i = 0; i < line_evs.n; i++) {
++            struct line_ev *ev = &line_evs.ev[i];
++            if (ev->pc == -1)
++                dwarf_line_op(s1, ev->line);
++            else
++                dwarf_line_row(s1, gen_relax_map(ev->pc), ev->line, ev->file);
++        }
++        line_evs.in_row = 0;
++    } else {
++        Stab_Sym *st = (Stab_Sym *)(stab_section->data + line_evs.stab_mark);
++        Stab_Sym *end = (Stab_Sym *)(stab_section->data + stab_section->data_offset);
++        for (; st < end; st++)
++            if (st->n_type == N_SLINE)
++                st->n_value = gen_relax_map(func_ind + st->n_value) - func_ind;
++    }
++}
++
+ static void tcc_debug_stabs (TCCState *s1, const char *str, int type, unsigned long value,
+                              Section *sec, int sym_index, int info)
+ {
+@@ -2202,7 +2277,14 @@ static void tcc_debug_finish (TCCState *s1, struct _debug_info *cur)
+ {
+     while (cur) {
+         struct _debug_info *next = cur->next;
+-        int i;
++        int i, start = cur->start, end = cur->end;
++
++        /* an inner scope was recorded before the code generator moved the
++           code (the root's end is the final size) */
++        if (cur->parent && func_ind != -1) {
++            start = gen_relax_map(func_ind + start) - func_ind;
++            end = gen_relax_map(func_ind + end) - func_ind;
++        }
+ 
+         if (s1->dwarf) {
+ 
+@@ -2251,11 +2333,11 @@ static void tcc_debug_finish (TCCState *s1, struct _debug_info *cur)
+ 			           : DWARF_ABBREV_LEXICAL_EMPTY_BLOCK);
+             dwarf_reloc(dwarf_info_section, section_sym, R_DATA_PTR);
+ #if PTR_SIZE == 4
+-            dwarf_data4(dwarf_info_section, func_ind + cur->start);
+-            dwarf_data4(dwarf_info_section, cur->end - cur->start);
++            dwarf_data4(dwarf_info_section, func_ind + start);
++            dwarf_data4(dwarf_info_section, end - start);
+ #else
+-            dwarf_data8(dwarf_info_section, func_ind + cur->start);
+-            dwarf_data8(dwarf_info_section, cur->end - cur->start);
++            dwarf_data8(dwarf_info_section, func_ind + start);
++            dwarf_data8(dwarf_info_section, end - start);
+ #endif
+             tcc_debug_finish (s1, cur->child);
+ 	    if (cur->child)
+@@ -2274,9 +2356,9 @@ static void tcc_debug_finish (TCCState *s1, struct _debug_info *cur)
+                 tcc_free (s->str);
+             }
+             tcc_free (cur->sym);
+-            put_stabn(s1, N_LBRAC, 0, 0, cur->start);
++            put_stabn(s1, N_LBRAC, 0, 0, start);
+             tcc_debug_finish (s1, cur->child);
+-            put_stabn(s1, N_RBRAC, 0, 0, cur->end);
++            put_stabn(s1, N_RBRAC, 0, 0, end);
+         }
+         tcc_free (cur);
+         cur = next;
+@@ -2324,6 +2406,12 @@ ST_FUNC void tcc_debug_funcstart(TCCState *s1, Sym *sym)
+         return;
+     debug_info_root = NULL;
+     debug_info = NULL;
++    line_evs.n = 0;
++    line_evs.line_mark = dwarf_line.line_size;
++    line_evs.stab_mark = stab_section ? stab_section->data_offset : 0;
++    line_evs.last_pc = dwarf_line.last_pc;
++    line_evs.last_line = dwarf_line.last_line;
++    line_evs.last_file = dwarf_line.last_file;
+     tcc_debug_stabn(s1, N_LBRAC, ind - func_ind);
+     f = put_new_file(s1);
+     if (!f)
+@@ -2376,6 +2464,7 @@ ST_FUNC void tcc_debug_funcend(TCCState *s1, int size)
+ #endif
+     if (!s1->do_debug)
+         return;
++    tcc_debug_relax_lines(s1);
+     min_instr_len = dwarf_line.last_pc == ind ? 0 : DWARF_MIN_INSTR_LEN;
+     ind -= min_instr_len;
+     tcc_debug_line(s1);
+diff --git a/tccgen.c b/tccgen.c
+index 97fda38..0b8e6e4 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -74,6 +74,7 @@ ST_DATA CType func_vt; /* current function return type (used by return instructi
+ ST_DATA int func_var; /* true if current function is variadic (used by return instruction) */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
++ST_DATA int func_asm_seen; /* the function has an asm statement (i386-gen.c) */
+ static int func_old;
+ ST_DATA const char *funcname;
+ ST_DATA CType int_type, func_old_type, char_type, char_pointer_type;
+@@ -599,6 +600,9 @@ static void resolve_pending_aliases(void)
+ ST_FUNC void tccgen_finish(TCCState *s1)
+ {
+     tcc_debug_end(s1); /* just in case of errors: free memory */
++#ifdef TCC_TARGET_I386
++    gen_relax_free();
++#endif
+     /* a compilation stopped by an error leaves the function body being
+        compiled (a saved token string) and what was pushed over it on the
+        macro stack: pop them while the strings exist (preprocess_end()
+@@ -1018,7 +1022,7 @@ ST_FUNC void label_pop(Sym **ptop, Sym *slast, int keep)
+             if (s->c) {
+                 /* define corresponding symbol. A size of
+                    1 is put. */
+-                put_extern_sym(s, cur_text_section, s->jind, 1);
++                put_extern_sym(s, cur_text_section, gen_relax_map(s->jind), 1);
+             }
+         }
+         /* remove label */
+@@ -1676,6 +1680,16 @@ ST_FUNC int get_reg_ex(int rc, int rc2)
+ }
+ #endif
+ 
++/* the register r holds a value of the stack */
++ST_FUNC int reg_in_use(int r)
++{
++    SValue *p;
++    for (p = vstack; p <= vtop; p++)
++        if ((p->r & VT_VALMASK) == r || p->r2 == r)
++            return 1;
++    return 0;
++}
++
+ /* find a free register of class 'rc'. If none, save one register */
+ ST_FUNC int get_reg(int rc)
+ {
+@@ -2573,15 +2587,13 @@ static void gen_opw(int op)
+                 op1 = TOK_ADDC1;
+             else
+                 op1 = TOK_SUBC1;
+-#ifdef TCC_HAS_INT128
+-            /* x86-64 loads a 64-bit zero with xor, which would clear
+-               the carry between the halves: load a constant H1 first */
++            /* x86 loads a zero with xor, which would clear the carry
++               between the halves: load a constant H1 first */
+             if ((vtop[-3].r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST) {
+                 vrotb(4);
+                 gv(RC_INT);
+                 vrott(4);
+             }
+-#endif
+             gen_op(op1);
+             /* stack: H1 H2 (L1 op L2) */
+             vrotb(3);
+@@ -3747,6 +3759,18 @@ op_err:
+             else if (op == TOK_GE)
+                 op = TOK_UGE;
+         }
++#ifdef TCC_TARGET_I386
++        /* a memory operand compared with a constant: in memory */
++        if (op_class == CMP_OP && (t & VT_BTYPE) != VT_LLONG && !is_float(t)
++            && (vtop[-1].r & VT_LVAL) && !nocode_wanted) {
++            if (vtop[-1].type.t & VT_VOLATILE)
++                fold_side_effect();
++            if (gen_cmp_mem(op)) {
++                vtop->type.t = VT_INT;
++                return;
++            }
++        }
++#endif
+         vswap();
+         gen_cast_s(t);
+         vswap();
+@@ -7656,7 +7680,7 @@ ST_FUNC void unary(void)
+            kernel's _THIS_IP_), and label_pop() only defines the symbols of
+            labels that were referenced by then */
+         if (s->r == LABEL_DEFINED)
+-            put_extern_sym(s, cur_text_section, s->jind, 1);
++            put_extern_sym(s, cur_text_section, gen_relax_map(s->jind), 1);
+         vpushsym(&s->type, s);
+         next();
+         break;
+@@ -10280,6 +10304,7 @@ again:
+         skip(';');
+ 
+     } else if (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3) {
++        func_asm_seen = 1;
+         asm_instr();
+ 
+     } else {
+@@ -11496,6 +11521,7 @@ static void gen_function(Sym *sym)
+ 
+     funcname = get_tok_str(sym->v, NULL);
+     func_ind = ind;
++    func_asm_seen = 0;
+     func_vt = sym->type.ref->type;
+     func_var = sym->type.ref->f.func_type == FUNC_ELLIPSIS;
+     func_old = sym->type.ref->f.func_type == FUNC_OLD;

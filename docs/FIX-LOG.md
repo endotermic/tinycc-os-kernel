@@ -68,6 +68,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 125 | tinycc 0126, 0127 |
 | | | | | 126 | tinycc 0129 |
 | | | | | 127 | tinycc 0130 |
+| | | | | 128 | tinycc 0134 |
 | | | | | 129 | tinycc 0132 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
@@ -132,6 +133,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/168_if0_label.c` | all (the asm goto case on i386, x86_64) | 126 |
 | `tests/tests2/169_cleanup_assign.c` | all | 127 |
 | `tests/tests2/170_label_const.c` | all (the asm output case on i386, x86_64) | 129 |
+| `tests/tests2/171_codesize.c` | all (the regparm and relaxation cases on i386) | 128 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2472,10 +2474,50 @@ C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS
     boot (no firmware files in the image) and uses the world regulatory domain.
 
 
+128. 2026-11-06, COMMITTED (patches/tinycc/features/0134, test 0135), `i386-gen.c` (relax_function(),
+    rj_add(), gen_relax_map(), load_imm(), gen_cmp_mem(), gen_reg_args(), push_arg(), gfunc_prolog(),
+    gfunc_epilog(), gjmp(), gjmp_cond(), gjmp_append(), gen_opi()), `tccgen.c` (reg_in_use(), gen_opw(),
+    gen_op(), label_pop(), func_asm_seen), `tccdbg.c` (line and scope addresses through gen_relax_map()),
+    `tcc.h`. The i386 code-size pass for kernel patch 0011 (K12), written on 2026-11-04/05 and left
+    uncommitted in src/tinycc until this evening, when the investigation of 0011 found its two bugs.
+    What it does: every jump with a target inside the function (gjmp, gjmp_cond, gjmp_addr) and the
+    prologue's `sub $frame,%esp` are recorded in rjumps[]; at gfunc_epilog(), relax_function() computes
+    the fixed point of "fits rel8 once the jumps before it shrank", moves the code, writes the short
+    forms (the sub shortened to imm8 or removed), and patches the text relocations' offsets and the
+    symbols inside the function; tccdbg maps its addresses through gen_relax_map(). A zero is loaded
+    with `xor r,r` (gen_opw() loads a constant high word first on every target, the xor clears the
+    carry), a comparison with 0 is `test r,r`, a byte/short/int/pointer lvalue compared with a constant
+    is compared in memory at its own width (gen_cmp_mem(); signed conditions become unsigned for a
+    zero-extended operand), and the register arguments of a regparm call are loaded and permuted with
+    xchg/mov (gen_reg_args()) instead of pushed and popped. Not done with inline asm or bounds checking.
+    Bug 1 (found 2026-11-06): rj_reset() copied func_asm_seen into relax_off at the prologue, before
+    the body was parsed, so every function with inline asm was relaxed and the values the assembler
+    folds into other sections (`.long 1b - .`, `.long 1b`: jump labels, alternatives, exception tables)
+    went stale: the i386 kernel built by that compiler did not boot (PORT-NOTES, 2026-11-06). Fix:
+    relax_function() tests func_asm_seen itself, at the epilogue. Bug 2: label_pop() defines the ELF
+    symbols of the function's labels after gfunc_epilog() with their pre-relaxation positions, so a
+    `static void *tbl[] = { &&l0, ... }` (R_386_32 against the label symbols) jumped into the old
+    layout: 171_codesize's computed() gave 28 instead of 21 for x=1 as a static i386 binary (the
+    x86_64 run of the test had passed: no relaxation there). Fix: label_pop() and the early
+    definition in unary() map the position through gen_relax_map() (identity on other targets, and
+    inside a body: rj_reset() clears relax_saved at the prologue). Sizes of the real-mode setup with
+    the vanilla video files (build/size-scratch/measure.sh, the kernel's flags, `_end` from
+    setup.elf; the limit is setup.ld's `_end <= 0x8000`, .bss included, not setup.bin's size): gcc -Os
+    15 100 B / _end 0x4e80; the 133-patch tcc 34 521 / 0x9a70; this pass 28 953 / 0x84b0 -- 1 200 bytes
+    over, 352 of them the price of leaving the asm functions alone (28 601 / 0x8350 with bug 1). The
+    gap left is tcc's stack-resident locals: 710 loads and 589 stores through %ebp at 5 bytes each in
+    26 337 bytes of text, which only a register allocator removes (peepholes left: 135 constant
+    stores through a register, 21 frame-less functions keeping push/mov/leave, 31 compound
+    assignments on locals, about 1.1 KB together); so K12 stays. Verification: `make test` ALL TESTS
+    PASSED (363 steps, 171_codesize included); 171_codesize as a static i386 musl binary (with and
+    without -g) matches gcc's output; the i386 kernel built by the fixed compiler from the untouched
+    i386 configuration (6 815 744 B, 1832 tcc, 0 gcc) boots to the shell; the full rebuild of both
+    architectures with the 135-patch compiler and their device tests: the fresh run of 2026-11-06
+    evening (PORT-NOTES).
 129. 2026-11-06, COMMITTED (patches/tinycc/compatibility/0132, test 0133), `tccgen.c`
     (kscan_labels(), klabel_goto(), klabel_def()). The number 128 is left to the i386 jump
     relaxation (short jumps, the code-size work for kernel patch 0011) in progress in
-    src/tinycc, uncommitted on 2026-11-06. Problem: fix 119's constant propagation made every
+    src/tinycc, uncommitted on 2026-11-06 (committed that evening: entry 128 above). Problem: fix 119's constant propagation made every
     local unknown at a label that a later goto reaches (or that the body does not define):
     "a goto may come from anywhere". The kernel's copy_fpstate_to_sigframe()
     (arch/x86/kernel/fpu/signal.c) clears `ia32_fxstate` with `&= (IS_ENABLED(CONFIG_X86_32)

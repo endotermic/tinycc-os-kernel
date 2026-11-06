@@ -901,9 +901,11 @@ header outside the tree, see the end of this section), 0006 (believed interproce
 constant through the parameter of a function with one caller; fix 120 had taken that half,
 and the reference left came from the constant lost at the `retry:` label of
 copy_fpstate_to_sigframe(): tcc fix 129, 2026-11-06, see the end of this section), 0009 (objtool is built on the host with libelf; the self-hosting
-guest has none: a build recipe matter, not tcc's), 0011 (the real-mode setup compiled by
-`-m16` tcc is 39 488 bytes with the video mode code against the boot protocol's 32 KB, 27 328
-without; closing the gap needs an optimizer, and the option is a reasonable kernel knob).
+guest has none: a build recipe matter, not tcc's), 0011 (the limit is setup.ld's `_end <= 0x8000`, the 4.4 KB .bss included: with the video mode
+code the setup's `_end` is 0x9a70 by the 133-patch compiler and 0x84b0 by the 135-patch one with
+tcc fix 128's code-size pass, 1 200 bytes over, gcc -Os's being 0x4e80; what is left is tcc's
+stack-resident locals, 710 loads and 589 stores through %ebp at 5 bytes each in 26 KB of text,
+which only a register allocator removes; the option is a reasonable kernel knob).
 
 objtool, which Kbuild runs on every object of this configuration (CONFIG_OBJTOOL=y through
 HAVE_STATIC_CALL_INLINE; the project replaces it by `objtool-stub`), was built from the pinned
@@ -1133,6 +1135,16 @@ in `src/tinycc` (uncommitted that day, fix 128 reserved for it) was left alone: 
 developed and exported from a clean clone of the tree at 3c18ff2, so the host binaries in
 `src/tinycc` do not have it until that work is committed and the series re-applied
 (`scripts/patch.sh --reset tinycc`, or a rebase of the work onto patch 0133).
+
+That work was committed the same evening as tcc fix 128 (patches 0134, 0135; FIX-LOG.md has the
+measurements), after the investigation of patch 0011 found why its kernel did not boot: the
+asm check of the relaxation ran at the prologue, before any asm statement had been seen, so
+the addresses the assembler folds into other sections went stale; and the ELF symbols of a
+function's labels, defined after the epilogue, kept their pre-relaxation positions (computed
+goto tables), which the x86_64 run of its test could not show. `src/tinycc` is the 135-patch
+series again (the two fix-129 patches applied, the work rebased on them, the stamp refreshed).
+The setup with the video mode code is 1 200 bytes over the limit with the pass, so 0011
+stays; the fresh rebuild of both architectures that followed is recorded below.
 
 ## Debugging recipes
 
