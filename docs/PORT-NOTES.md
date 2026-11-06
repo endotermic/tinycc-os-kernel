@@ -1146,6 +1146,19 @@ series again (the two fix-129 patches applied, the work rebased on them, the sta
 The setup with the video mode code is 1 200 bytes over the limit with the pass, so 0011
 stays; the fresh rebuild of both architectures that followed is recorded below.
 
+The fresh run of 2026-11-06 evening (build/logs/fresh-*.log): `scripts/build.sh clean` and
+`install.sh --output all --selfhost` for each architecture with the 135-patch compiler, from
+sources fetched again (src/ had held only tinycc, linux and make since 2026-11-04; the first
+attempt died on a connection reset from xorg.freedesktop.org, the second fetch went through).
+x86_64: 2838 tcc and 0 gcc invocations, bzImage 7 423 488 bytes, setup.bin 19 219, the ISO and
+the self-hosting image, built in 6m04s; i386: 2788 tcc, 0 gcc, bzImage 6 815 744 (36 864 less
+than the 133-patch compiler's), setup.bin 19 315, 6m02s. `scripts/devices-test.sh` passes its
+13 checks on both. In the i386 guest (`./run.sh --arch i386 --selfhost --auto=test`) the
+guest's tcc rebuilt tcc and i386-tcc from the 135-patch tree and its suite passed, 171_codesize
+included (143 tests2 cases, 7 s). Not run that evening: the x86_64 guest suite and the
+self-hosting generations (the x86_64 code generator is untouched by fix 128 apart from the
+order of the two-word constant load).
+
 ## Debugging recipes
 
 ```bash

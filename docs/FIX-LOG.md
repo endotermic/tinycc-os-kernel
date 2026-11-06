@@ -2512,8 +2512,9 @@ C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS
     PASSED (363 steps, 171_codesize included); 171_codesize as a static i386 musl binary (with and
     without -g) matches gcc's output; the i386 kernel built by the fixed compiler from the untouched
     i386 configuration (6 815 744 B, 1832 tcc, 0 gcc) boots to the shell; the full rebuild of both
-    architectures with the 135-patch compiler and their device tests: the fresh run of 2026-11-06
-    evening (PORT-NOTES).
+    architectures with the 135-patch compiler (x86_64 2838 tcc, i386 2788, 0 gcc) pass devices-test's 13
+    checks on both, and the i386 guest rebuilt tcc from the tree and passed the suite with 171 (the
+    fresh run of 2026-11-06 evening, PORT-NOTES).
 129. 2026-11-06, COMMITTED (patches/tinycc/compatibility/0132, test 0133), `tccgen.c`
     (kscan_labels(), klabel_goto(), klabel_def()). The number 128 is left to the i386 jump
     relaxation (short jumps, the code-size work for kernel patch 0011) in progress in
