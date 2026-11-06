@@ -84,10 +84,15 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
 
 ## Kernel-side changes (`patches/linux/`)
 
-* workarounds, guarded by `__TINYC__`: the seqlock canaries as stubs (0005: one of the
+* workarounds: none since 2026-11-06. The seqlock canaries as stubs (0005: one of the
   two, `__scoped_seqlock_bug()`, needs the optimizer to prove a state kept in a struct across
   loop iterations impossible; the other, `__scoped_seqlock_invalid_target()`, folds since fix
-  120).  `rip_rel_ptr()` as a macro and `_static_cpu_has()` as the dynamic test (0003, 0004:
+  120) left the tree on 2026-11-06: `kernels/linux/tcc-canary.h` defines the empty
+  `static inline` stub the kernel itself selects for GCC 8, KASAN and UBSAN_ALIGNMENT, and
+  `scripts/build.sh` and `build-kernel.c` give it to every kernel compile through
+  `KCFLAGS=-include` (the kernel's own hook; the `extern` declaration that follows in
+  seqlock.h takes the static linkage, and a unit that never calls it emits nothing).
+  `rip_rel_ptr()` as a macro and `_static_cpu_has()` as the dynamic test (0003, 0004:
   `"i"` operands from function parameters) and the `__bad_mask()` stub (0017: a canary under a
   condition on a parameter) went away on 2026-11-04 with tcc fix 120, the inliner.
 * upstreamable, semantics-preserving: `ia32_fxstate_possible()` in fpu/signal.c, where gcc
@@ -105,7 +110,8 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   the AVX assembly of lib/crypto) went the same day with fix 122, the VEX/EVEX encoder, and 123,
   a `##` comment; and 0001 and 0002 (K1, K2: the 128-bit cmpxchg block of cmpxchg_64.h under
   `__SIZEOF_INT128__` and a two-word `freelist_full_t` in mm/slab.h) the same day with fix
-  125, `__int128` on x86_64: 4 kernel patches remain, none of them a tcc matter.
+  125, `__int128` on x86_64: 4 kernel patches remained, none of them a tcc matter; 0005 (K5,
+  K6) left on 2026-11-06 for the `tcc-canary.h` header above, 3 remain, all upstreamable.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` makes the
@@ -192,8 +198,9 @@ for gcc.
    behaviour, not the compiler (see the section below).
 8. Targets: arm64 (see README), other kernels.
 9. The vanilla kernel (investigated 2026-11-03, see the section below and docs/FIX-LOG.md 119
-   to 125): of the 4 kernel patches left, none is a tcc matter: 0005
-   (`__scoped_seqlock_bug()`), 0006 (a constant
+   to 125): of the 4 kernel patches left on 2026-11-04, none is a tcc matter: 0005
+   (`__scoped_seqlock_bug()`; gone on 2026-11-06 without a tree change, see
+   `kernels/linux/tcc-canary.h`), 0006 (a constant
    through a function parameter of a function with one caller), 0009 (objtool needs libelf)
    and 0011 (the 16-bit code size) stay kernel-side.  Fix 125, `__int128` on x86_64, took
    0001 and 0002 on 2026-11-04, the last two that a compiler feature could take; fix 121, the i386 strength reduction of
@@ -886,7 +893,8 @@ Per remaining patch, the tcc feature that would remove it, with what was measure
 
 Kernel-side for good: 0005's `__scoped_seqlock_bug()` (the state lives in a struct across
 loop iterations: no single-pass analysis sees it; the kernel already has the stub form for
-GCC 8, KASAN and UBSAN), 0006 (a constant through the parameter of a function with one
+GCC 8, KASAN and UBSAN -- which is why it could leave the series on 2026-11-06 for a
+header outside the tree, see the end of this section), 0006 (a constant through the parameter of a function with one
 caller: interprocedural), 0009 (objtool is built on the host with libelf; the self-hosting
 guest has none: a build recipe matter, not tcc's), 0011 (the real-mode setup compiled by
 `-m16` tcc is 39 488 bytes with the video mode code against the boot protocol's 32 KB, 27 328
@@ -1053,6 +1061,45 @@ size; mm/slub.o carries the inlined `cmpxchg16b`); the i386 kernel is unaffected
 on both; run.sh boots with `-cpu host` under KVM, whose cx16 makes `system_has_cmpxchg128()`
 true, so SLUB's 128-bit freelist cmpxchg and the scheduler's and timekeeping's 128-bit
 multiplies are exercised by that boot. A scratch x86_64 kernel with CONFIG_KUNIT and the lib/crypto tests (build/int128-scratch/kunit-kernel.sh, a copy of the fix-122 harness; 1888 tcc and 0 gcc invocations, CC_HAS_INT128=y) booted four times, with `-cpu host`, `host,-sha-ni`, `host,-sha-ni,-avx2,-bmi2` and `host,-pclmulqdq` -- the last one takes the generic gf128hash.c, whose `clmul64()` is the `__int128` code -- passes every suite in every boot: blake2s 12, ghash 13, polyval 14, sha1 10, sha224 10, sha256 13 passed, 0 failed (the benchmarks skipped).
+
+Patch 0005 left on 2026-11-06 without any tcc or kernel change (3 kernel patches remain:
+0006, 0009, 0011, all upstreamable). The kernel's own stub path for GCC 8, KASAN and
+UBSAN_ALIGNMENT is `static inline void __scoped_seqlock_bug(void) { }`; `kernels/linux/
+tcc-canary.h` holds exactly that line, and Kbuild's `KCFLAGS` hook (`KBUILD_CFLAGS +=
+$(KCFLAGS)` in the top Makefile) adds `-include<path>/tcc-canary.h` to every kernel compile
+(`scripts/build.sh` step_kernel, the glued form so the make argument stays one word;
+`userland/selfhost/build-kernel.c` the same with the copy in `/usr/share/tinycc-os-kernel/`).
+Checked before the change with the in-tree tcc, i386-tcc and gcc: a unit with seqlock.h's
+`extern void __scoped_seqlock_bug(void);` after the header compiles (C11 6.2.2p4: the
+later extern declaration takes the prior static linkage) and leaves no undefined symbol --
+tcc inlines the empty body away, so the dead `ss_done` arm is a compare and a return; a
+unit that never calls it emits nothing (`nm` of a `-Werror -Wall` probe object is empty, so
+Kbuild's `cc-option` probes, which carry KBUILD_CFLAGS, are unchanged). The macro has five
+users in the tree (kernel/sched/cputime.c, fs/proc/array.c, fs/proc/base.c, fs/afs/callback.c,
+lib/test_context-analysis.c); only the first three are in these kernels. What this trades:
+the canary no longer fails the link for tcc (it always would have), and every kernel build
+must carry the flag -- a bare `make` in `build/<arch>/linux`, or a user's own `KCFLAGS=` on
+the command line, fails at the vmlinux link with the undefined symbol in cputime.o and the
+two proc objects, which names the cause. The header covers this one symbol only: every other
+canary (`__compiletime_assert_N`, `__bad_mask()`, ...) must still fail the link, since tcc
+builds rely on that in place of `__compiletime_error`. Modules (off in both configs) would
+work too, the stub being per translation unit. If a kernel bump renames the canary the link
+fails; if upstream adopts a `__TINYC__` clause or another stub condition tcc meets, the two
+definitions collide at compile time and the header goes. The patch series itself was
+re-derived by rebasing the three remaining commits of `src/linux` onto `base`; the exported
+patches equal the kept files apart from blank lines, so the files kept their numbers (0006,
+0009, 0011) as earlier drops did, with the stamp `.git/tcc-port-series` refreshed by hand
+(`scripts/export-patches.sh` would renumber and assign the first entry the old first
+entry's directory, `workarounds/`). Verified the same day: both kernels rebuilt from the
+vanilla seqlock.h (x86_64 2095 and i386 2788 tcc invocations, 0 gcc), `nm vmlinux` has no
+`__scoped_seqlock_bug` on either, and `scripts/devices-test.sh` passes its 13 checks on both
+-- the i386 one built by the committed tcc (3c18ff2+131p; the i386 kernel first built that
+day with the uncommitted i386 jump-relaxation work then in `src/tinycc` did not boot at all,
+which is that work's state, not this change's: the same tree with the committed compiler
+gives a bzImage of the 2026-11-04 size, 6 852 608 bytes). The guest side (build-kernel.c
+with the flag, the header in `/usr/share/tinycc-os-kernel/`) compiles but was not run through
+`scripts/selfhost-test.sh` that day: `scripts/build.sh selfhost` needs GNU make's tarball in
+`src/.downloads/`, which the re-fetch of 2026-11-04 had not brought back.
 
 ## Debugging recipes
 

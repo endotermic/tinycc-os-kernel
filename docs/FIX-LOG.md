@@ -75,7 +75,8 @@ an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 a
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
 fix 125, 0131 those of fixes 126 and 127.
 
-Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005, K7 = 0006,
+Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
+kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006,
 K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
 K15 = 0014, K16 = 0015, K17 = 0016, K18 = 0017, K19 = 0018, K20 = 0019.
 
@@ -758,6 +759,10 @@ helpers are real .text functions with tcc -> benign modpost mismatches).
 K5. 2026-10-21, APPLIED (uncommitted), `include/linux/seqlock.h`: `|| defined(__TINYC__)` in the
     #if that selects the empty `__scoped_seqlock_bug()` stub (the extern canary assumes the
     compiler proves ss_done impossible after inlining).
+    2026-11-06: DROPPED from the series (with K6, patch 0005). The same empty stub is now
+    `kernels/linux/tcc-canary.h`, given to every kernel compile by `KCFLAGS=-include` from
+    scripts/build.sh and build-kernel.c; the tree is unchanged here (PORT-NOTES, the
+    vanilla-kernel section).
 K6. 2026-10-21, APPLIED (uncommitted), `include/linux/seqlock.h`: under `__TINYC__`
     `__scoped_seqlock_invalid_target()` is an empty static inline instead of the extern canary
     (the switch on the constant target is only folded after inlining).

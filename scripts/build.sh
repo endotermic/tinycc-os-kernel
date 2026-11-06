@@ -243,7 +243,10 @@ step_kernel() {
     # built inside the guest by userland/selfhost/build-kernel is #2, and so on
     # KCC_TCC: the compiler tcc-kcc runs for the target code (TCC stays the host compiler for
     # tcc-hostcc); for i386 the cross compiler next to it
-    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc OBJTOOL=$KCC/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1"
+    # KCFLAGS: kernels/linux/tcc-canary.h defines the seqlock canary __scoped_seqlock_bug() as
+    # the empty stub the kernel uses for GCC 8 (tcc cannot prove the call dead), so the tree
+    # needs no patch for it; build-kernel passes the same flag in the guest
+    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc OBJTOOL=$KCC/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1 KCFLAGS=-include$ROOT/kernels/linux/tcc-canary.h"
     if [ ! -f "$KB/.config" ]; then
         $MK -s tinyconfig >"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "tinyconfig failed"
     fi
@@ -1086,7 +1089,7 @@ step_selfhost() {
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
     #    not in the guest), the kernel and tcc patches and the notes
-    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/drivers.config" "$ROOT/kernels/linux/$ARCH.config" "$ROOT/kernels/linux/tcc.config" "$STAGE/usr/share/tinycc-os-kernel/"
+    cp "$ROOT/kernels/linux/minimal.config" "$ROOT/kernels/linux/drivers.config" "$ROOT/kernels/linux/$ARCH.config" "$ROOT/kernels/linux/tcc.config" "$ROOT/kernels/linux/tcc-canary.h" "$STAGE/usr/share/tinycc-os-kernel/"
     cp "$KB/scripts/kconfig/lexer.lex.c" "$KB/scripts/kconfig/parser.tab.c" "$KB/scripts/kconfig/parser.tab.h" \
         "$STAGE/usr/share/tinycc-os-kernel/kconfig/" || die "no pre-generated Kconfig lexer/parser in $KB/scripts/kconfig"
     cp -r "$ROOT/patches" "$STAGE/usr/share/tinycc-os-kernel/patches"

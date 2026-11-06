@@ -234,8 +234,8 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
 | `patches/tinycc/` | 131 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 4 kernel patches in `workarounds/` and `upstreamable/` |
-| `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`; C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
+| `patches/linux/` | 3 kernel patches in `upstreamable/` |
+| `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
@@ -295,9 +295,12 @@ directories only sort them by kind:
   the patches that add regression tests for the fixes to tcc's own suite
   (`tests/tests2/152`-`169`, `tests/pp/24.S`, `tests/asmtest.S`), so that `make test`
   guards them (see `docs/FIX-LOG.md`, "Tests").
-* **linux/workarounds** (1): guarded by `__TINYC__`: the kernel needs a compiler that
-  proves a seqlock state impossible for this spot (the ones that needed inlining went
-  with tcc fix 120, the two that needed `__int128` with fix 125).
+* **linux/workarounds** (0): empty since 2026-11-06. The last one, the seqlock canary
+  `__scoped_seqlock_bug()` as the empty stub the kernel itself uses for GCC 8, KASAN and
+  UBSAN (tcc cannot prove the `ss_done` state impossible: it lives in a struct across the
+  loop), is now `kernels/linux/tcc-canary.h`, given to every kernel compile through
+  Kbuild's `KCFLAGS=-include` instead of a change to the tree (the ones that needed
+  inlining went with tcc fix 120, the two that needed `__int128` with fix 125).
 * **linux/upstreamable** (3): a semantics-preserving rewrite that stops depending on
   constant propagation through the parameter of a function with one caller
   (`ia32_fxstate_possible()`) and two toolchain-capability options: `OBJTOOL=` for an

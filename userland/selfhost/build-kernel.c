@@ -407,6 +407,8 @@ int main(int argc, char **argv)
         die("no %s/linux-*.tar.gz", src);
     if (!is_file(fmt("%s/minimal.config", share)) || !is_file(fmt("%s/drivers.config", share)) || !is_file(fmt("%s/tcc.config", share)))
         die("no Kconfig fragments in %s", share);
+    if (!is_file(fmt("%s/tcc-canary.h", share)))
+        die("no tcc-canary.h in %s (the seqlock canary stub given to Kbuild through KCFLAGS)", share);
     if (!is_file(fmt("%s/kconfig/lexer.lex.c", share)))
         die("no pre-generated Kconfig lexer in %s/kconfig", share);
     uname(&u);
@@ -464,6 +466,7 @@ int main(int argc, char **argv)
     argf(&mk, "CC=%s/tcc-kcc", bin);
     argf(&mk, "HOSTCC=%s/tcc-hostcc", bin);
     argf(&mk, "OBJTOOL=%s/objtool-stub", bin);
+    argf(&mk, "KCFLAGS=-include%s/tcc-canary.h", share);
     argf(&mk, "LD=%s/ld", bin);
     argf(&mk, "NM=%s/nm", bin);
     argf(&mk, "OBJCOPY=%s/objcopy", bin);
