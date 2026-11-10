@@ -113,12 +113,15 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   125, `__int128` on x86_64: 4 kernel patches remained, none of them a tcc matter -- so it
   seemed; 0005 (K5, K6) left on 2026-11-06 for the `tcc-canary.h` header above, and 0006
   (K7) the same day with tcc fix 129 (a constant local kept across a label that a later goto
-  reaches); 2 remain (0009, 0011), both upstreamable.
+  reaches), and 0011 (K12) on 2026-11-10 with tcc fix 130 (the setup fits the 32 KB with its
+  video mode code); 1 remains (0009), upstreamable.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
   (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
-  AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` makes the
-  BIOS video mode setting of the real-mode setup optional (0011; tcc's 16-bit code is twice
-  gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without).
+  AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` made the
+  BIOS video mode setting of the real-mode setup optional (0011; tcc's 16-bit code was twice
+  gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without;
+  dropped 2026-11-10 with tcc fix 130, which brings the setup with the video code to `_end`
+  0x7b90 of the 0x8000 allowed).
 
 Pattern for new finds: a constant that flows through a local variable or a stub's return
 value folds since fix 119, through the parameter of an `__always_inline` function (an `"i"`
@@ -172,8 +175,8 @@ for gcc.
    references to labels keep their relocations where GNU as resolves them (semantically
    equal, a few bytes bigger: the kernel .S objects differ from GNU as's in exactly that);
    `.altmacro` is accepted but its `%expr`/`<...>` forms are not implemented; `-m16` code is
-   about twice the size of gcc -Os's (no register allocation), the reason for kernel patch
-   0011; the real objtool could not be built without libelf.
+   about 1.7 times the size of gcc -Os's (no register allocation; it was twice, the reason
+   for kernel patch 0011 until fix 130); the real objtool could not be built without libelf.
 3. tld: no `.eh_frame_hdr` generation, no GOT/PLT/dynamic relocations/TLS (the kernel needs
    none), `.strtab` not tail-merged, `readelf` only `-r`; see `../tools/tld/README.md`.
 4. tcc polish: `__builtin_popcount*` still calls libtcc1; `_Pragma("pack")` only warns; the
@@ -205,7 +208,8 @@ for gcc.
    `kernels/linux/tcc-canary.h`), 0006 (believed to be a constant through a function
    parameter of a function with one caller; in fact the constant was lost at the `retry:`
    label of copy_fpstate_to_sigframe(), which tcc fix 129 keeps -- gone on 2026-11-06),
-   0009 (objtool needs libelf) and 0011 (the 16-bit code size) stay kernel-side.  Fix 125, `__int128` on x86_64, took
+   0009 (objtool needs libelf) stays kernel-side; 0011 (the 16-bit code size) went on
+   2026-11-10 with tcc fix 130.  Fix 125, `__int128` on x86_64, took
    0001 and 0002 on 2026-11-04, the last two that a compiler feature could take; fix 121, the i386 strength reduction of
    `long long` division by a constant (with a division-free `__builtin_mul_overflow`, the
    inlining of one-return static functions given a constant, and the dropping of effect-free
@@ -905,7 +909,9 @@ guest has none: a build recipe matter, not tcc's), 0011 (the limit is setup.ld's
 code the setup's `_end` is 0x9a70 by the 133-patch compiler and 0x84b0 by the 135-patch one with
 tcc fix 128's code-size pass, 1 200 bytes over, gcc -Os's being 0x4e80; what is left is tcc's
 stack-resident locals, 710 loads and 589 stores through %ebp at 5 bytes each in 26 KB of text,
-which only a register allocator removes; the option is a reasonable kernel knob).
+which only a register allocator removes; the option is a reasonable kernel knob -- gone on
+2026-11-10 all the same, without a register allocator, with tcc fix 130: see the end of this
+section).
 
 objtool, which Kbuild runs on every object of this configuration (CONFIG_OBJTOOL=y through
 HAVE_STATIC_CALL_INLINE; the project replaces it by `objtool-stub`), was built from the pinned
@@ -1159,6 +1165,58 @@ included (143 tests2 cases, 7 s). Not run that evening: the x86_64 guest suite a
 self-hosting generations (the x86_64 code generator is untouched by fix 128 apart from the
 order of the two-word constant load).
 
+Patch 0011 left on 2026-11-10 with tcc fix 130 (docs/FIX-LOG.md 130; the real-mode setup
+keeps its BIOS video mode code: 1 kernel patch remains, 0009). The measurement
+(build/size-scratch/measure.sh: every boot/*.c including the vanilla video files, compiled
+with the kernel's own command lines by `i386-tcc -m16` and by `gcc -m16`, linked with
+setup.ld without its ASSERTs) gave `_end` 0x84b0 against setup.ld's 0x8000 with the 135-patch
+compiler, and showed where the bytes were rather than in the stack-resident locals alone: 46
+of the setup's 181 functions contain inline asm (the `outb`/`inb`/`rdfs`/`intcall` helpers of
+boot.h), and fix 128 relaxed no jump in them at all (294 long jumps, 46 seven-byte prologue
+`sub`s); 109 locals were reloaded by the instruction right after their store (the regparm
+prologue saves `%eax` to `-4(%ebp)` and the first statement loads it back); and the 265
+accesses to globals each carried a 0x67 prefix with a 32-bit address, where `.code16gcc`
+code uses a 16-bit one. Fix 130 does the four things (relaxation in asm functions unless the
+assembler folded an address of the function or aligned in it; the relaxation's fixed point
+measured against mapped targets, which had also silently left four big functions of the
+setup unrelaxed; a just-stored local taken from its register; 16-bit absolute addresses with
+R_386_16 relocations), and the setup with the video code comes to `_end` 0x7b90, 1 136 bytes
+under the limit (text 25 233 bytes against gcc -Os's 14 859: 1.7 times). The first version
+broke the `jz 1f` of video.c's blank-filling asm: a local label's relocation was made
+section-relative at the end of its statement (asm_fixup_local_label_relocs()), the label's
+address folded into the in-place addend where no symbol remap reaches, so the label now
+keeps its symbol while its function may still be relaxed and tccelf_end_file() converts the
+relocation at the end of the file; the regression test caught the first form as a static i386
+binary on the host, and the second form -- the addends patched by hand, every R_386_PC32 taken
+for a jump displacement -- the i386 kernel caught: the `.long 1b - .` exception-table entries
+were 4 bytes off, its first expected fault (copy_to_kernel_nofault() in early boot) found no
+entry, and it panicked before any console (QEMU's gdb stub, `hbreak exc_page_fault`, and the
+pt_regs on the init stack located it). A third form the i386 guest's own `make test` caught:
+tests2 passed but test3 (tcctest.c through three generations of tcc) crashed on `eb ff` jumps,
+because a narrower reload into the register that holds a just-stored local (`r == (signed
+char)r` in gjmp_addr()) left the note claiming the whole slot, and the full-width reload of r
+came from the sign-extended byte: every backward jump of the self-compiled compiler looked
+short. The host suite and the cross-compiled i386 tests cannot see that class of bug (the
+compiler is compiled by gcc there); the static i386 tcc of `scripts/build.sh --arch i386
+guest-tcc` runs on the host, so `build/i386/tcc-guest/src/tcc` compiling tcc.c and tcctest.c
+through three generations is the host-side check for it (and bisecting the parts of a fix
+with environment switches in that compiler found the culprit in four rebuilds).
+The tree lost the commit (`git reset --hard` of `patched` to the 0009 commit; the stamp
+refreshed by hand as for the earlier drops, the file keeping its number), tcc.config its
+`# CONFIG_X86_BOOT_VIDEO_MODES is not set` line, and run.sh its note. Both kernels rebuilt the
+same day from the 1-patch tree by the 137-patch compiler, from removed build trees
+(`scripts/build.sh host-tcc kernel` for each architecture, 3m07s together): x86_64 2842 tcc
+and 0 gcc invocations, bzImage 7 431 680 bytes (8 192 more than on 2026-11-06: setup.bin
+26 585 instead of 19 219, its `_end` 0x7b70, `probe_cards`/`set_mode`/`vesa_store_edid` in
+the symbol table); i386 2792 tcc and 0 gcc, bzImage 6 574 080 bytes (241 664 less than the
+6 815 744 of 2026-11-06: the relaxation of the asm functions and the reloads apply to the -m32
+kernel as well; setup.bin 26 665, `_end` 0x7bc0). `tests/m16-check.sh all` passes against the
+rebuilt tree, its link check included; `scripts/devices-test.sh` passes its 13 checks on
+both; the i386 kernel boots with `vga=normal` on the command line to the shell; and the i386
+guest (`./run.sh --arch i386 --selfhost --auto=test`, the image repacked with the 137-patch
+source and a guest tcc rebuilt by the new compiler) rebuilt tcc, i386-tcc and tld and passed
+tcc's suite, test3 and 172_reload_relax included (144 tests2 cases).
+
 ## Debugging recipes
 
 ```bash
@@ -1186,8 +1244,14 @@ scripts/build.sh clean all               # a build from scratch; src/ (and the i
 After a tcc change: `make -C src/tinycc && make -C src/tinycc test`, commit, then
 `scripts/build.sh host-tcc kernel`: the host-tcc step rebuilds tcc and i386-tcc with the
 new version tag, which makes Kbuild rebuild every object (a plain `make` in src/tinycc
-leaves the version string stale and Kbuild then keeps the old objects). Rebuilding tcc
-while a kernel build runs makes that build inconsistent.
+leaves the version string stale and Kbuild then keeps the old objects). The tag is the base
+hash plus the patch count, so an amended fix with the same count changes nothing for Kbuild:
+`rm -rf build/<arch>/linux` before the kernel step then (2026-11-10: the i386 kernel kept
+objects of a broken intermediate compiler). Rebuilding tcc while a kernel build runs makes
+that build inconsistent. For an i386 code-generator change, also rebuild the static i386
+tcc (`scripts/build.sh --arch i386 guest-tcc`, after `rm -rf build/i386/tcc-guest`) and
+compile tcc.c and tcctest.c with it through three generations on the host: what the
+gcc-built i386-tcc gets right, a tcc compiled by it may not.
 
 ## Methodology notes
 

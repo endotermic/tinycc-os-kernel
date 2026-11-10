@@ -134,3 +134,5 @@ compatibility/0132-tccgen-a-label-that-a-later-goto-reaches-forgets-onl.patch
 features/0133-tests-170_label_const-the-case-of-the-previous-commi.patch
 features/0134-i386-code-size-jumps-relaxed-to-rel8-at-the-end-of-t.patch
 features/0135-tests-171_codesize-the-cases-of-the-previous-commit.patch
+features/0136-i386-code-size-relaxation-in-functions-with-inline-a.patch
+features/0137-tests-172_reload_relax-the-cases-of-the-previous-com.patch

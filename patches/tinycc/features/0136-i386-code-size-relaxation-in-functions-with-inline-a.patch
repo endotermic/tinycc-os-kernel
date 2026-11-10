@@ -1,0 +1,547 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 10 Nov 2026 16:06:05 +0200
+Subject: [PATCH] i386: code size: relaxation in functions with inline asm,
+ mapped targets in its iteration, jumps to the next instruction removed, a
+ local reloaded right after its store taken from the register, 16-bit absolute
+ addresses with -m16
+
+The kernel's real-mode setup with its video mode code was 1200 bytes
+over the 32 KB of the boot protocol (_end 0x84b0 against setup.ld's
+0x8000) with the code-size pass of the previous commit; it is 1136
+bytes under now (0x7b90), so kernel patch 0011 (X86_BOOT_VIDEO_MODES)
+can go.
+
+ * relax_function() no longer gives up on a function with an asm
+   statement: the assembler's forward references leave relocations and
+   symbols, which are patched like the compiler's own.  What would go
+   wrong is an address of the function's section that the assembler
+   folds into the code -- a displacement to a label it has already
+   defined (asm_local_sym_here()), the difference of two labels
+   (asm_expr_sum(), asm_pass_resolve()), .org -- or an alignment in it:
+   tccasm.c and i386-asm.c report those with gen_relax_asm_fixed() and
+   such a function is left alone.  func_asm_seen is gone.  A local
+   label of such a function keeps its symbol until the end of the file
+   (gen_relax_active(), asked by asm_fixup_local_label_relocs()), so
+   that relaxation moves it like any symbol; converted at once, its
+   address would sit in the in-place addend of a section-relative
+   relocation, which the kernel's `.long 1b - .` exception-table
+   entries showed: a first version patched such addends and misjudged
+   them by the 4 bytes of a jump displacement, and the i386 kernel died
+   on its first expected fault in copy_to_kernel_nofault().
+ * The fixed-point iteration mapped nothing: gen_relax_map() is the
+   identity while relax_saved is 0, so a backward jump was measured
+   against its unmapped target, looked shorter than it would be, and the
+   final check then dropped the relaxation of the whole function
+   (vsprintf, display_menu, __cmdline_find_option, raw_set_mode in the
+   setup).  relax_saved is set during the iteration; a jmp to the next
+   instruction is removed (nlen 0).
+ * load() of a local that the instruction(s) just emitted stored a
+   register to (`x = e; ... x ...`, a spilled value used at once, the
+   saves of the regparm prologue) emits nothing when that register is
+   the one wanted, else a mov/movzx/movsx from it (3 bytes instead of 5
+   with -m16); a narrower load at the same offset is served by a wider
+   store.  store() notes the stores emitted since the last other
+   instruction (st_notes[]); a label (gind(), gsym_addr() at ind), an
+   asm statement and the next function's prologue forget them
+   (gen_sync()).  A narrower load into the register that holds the slot
+   (`r == (signed char)r` with r just stored, tcc's own gjmp_addr())
+   narrows the note to those bytes: the first version kept it whole, the
+   full-width load of r that followed was taken from the extended byte,
+   every backward jump of the self-compiled tcc looked short, and test3
+   of the guest's suite crashed while tests2 and the cross-compiled
+   tests passed.
+ * gen_modrm() with -m16 encodes an absolute address in the 16-bit form
+   (modrm 0x06, an R_386_16 relocation), as GNU as does for .code16gcc,
+   instead of 0x67 with a 32-bit one: 3 bytes less per global access.
+   Such code is linked below 64 KB (the setup, the real-mode
+   trampoline); tld reports an overflow.
+
+The setup with the video mode code, i386-tcc -m16, _end: 0x84b0 ->
+0x8120 (relaxation with asm, reloads) -> 0x7b90 (mapped targets, 16-bit
+addresses); gcc -Os gives 0x4e80.  make test passes, tests/m16-check.sh
+codegen finds the -m16 and -m32 streams of the boot objects identical.
+---
+ i386-asm.c |   4 +-
+ i386-gen.c | 185 +++++++++++++++++++++++++++++++++++++++++++++++------
+ tcc.h      |   7 +-
+ tccasm.c   |  12 ++++
+ tccgen.c   |   4 +-
+ 5 files changed, 187 insertions(+), 25 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index b54c3d0..5774cd7 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -676,8 +676,10 @@ static ElfSym *asm_local_sym_here(Sym *sym)
+ {
+     ElfSym *esym = elfsym(sym);
+     if (esym && esym->st_shndx == cur_text_section->sh_num
+-        && ELFW(ST_BIND)(esym->st_info) == STB_LOCAL)
++        && ELFW(ST_BIND)(esym->st_info) == STB_LOCAL) {
++        gen_relax_asm_fixed(esym->st_shndx); /* its address is folded in */
+         return esym;
++    }
+     return NULL;
+ }
+ 
+diff --git a/i386-gen.c b/i386-gen.c
+index b20ce16..d844124 100644
+--- a/i386-gen.c
++++ b/i386-gen.c
+@@ -153,6 +153,83 @@ static int gen_opsize16(int opc)
+     return opc;
+ }
+ 
++/* Code size: the value a register was just stored to a local with
++   (`mov %eax,-4(%ebp)`) is still in the register when the next
++   instruction loads that local, which tccgen emits for `x = e; ... x
++   ...`, for a value spilled and used at once and for the register
++   arguments the prologue of a regparm function saves: load() then emits
++   nothing, or a `mov` from that register (3 bytes instead of 5 with
++   -m16; a 1- or 2-byte local becomes a movzx/movsx from it).  The stores
++   emitted since the last other instruction are noted with the position
++   they hold at; a label (gind(), a gsym_addr() at ind: code arrives from
++   elsewhere), an asm statement and the prologue of the next function
++   forget them (gen_sync()). */
++typedef struct StoreNote { int off, reg, size; } StoreNote;
++static StoreNote st_notes[4];
++static int nb_st_notes, st_notes_ind = -1;
++
++ST_FUNC void gen_sync(void)
++{
++    nb_st_notes = 0, st_notes_ind = -1;
++}
++
++/* a store of 'size' bytes of register 'reg' to the local at 'off' was
++   emitted from 'before' to ind */
++static void st_note(int before, int reg, int off, int size)
++{
++    int i;
++    if (before == ind || size == 0)
++        return; /* nothing emitted (nocode_wanted), or not a plain store */
++    if (before != st_notes_ind)
++        nb_st_notes = 0;
++    for (i = 0; i < nb_st_notes; i++)
++        if (st_notes[i].off < off + size && off < st_notes[i].off + st_notes[i].size)
++            st_notes[i--] = st_notes[--nb_st_notes]; /* overlapping slot: the new store counts */
++    if (nb_st_notes == sizeof st_notes / sizeof st_notes[0])
++        memmove(st_notes, st_notes + 1, --nb_st_notes * sizeof st_notes[0]);
++    st_notes[nb_st_notes].off = off;
++    st_notes[nb_st_notes].reg = reg;
++    st_notes[nb_st_notes++].size = size;
++    st_notes_ind = ind;
++}
++
++/* the load of 'size' bytes of the local at 'off' into register 'r' with
++   the opcode 'opc' (0x8b, or a movzx/movsx), done from the register that
++   holds the value when one does (a wider store serves a narrower load at
++   the same offset: little endian): returns 1 then */
++static int st_reuse(int r, int off, int size, int opc)
++{
++    int i, j, k, reg;
++    if (ind != st_notes_ind || size == 0)
++        return 0;
++    for (i = 0; i < nb_st_notes; i++) {
++        if (st_notes[i].off != off || st_notes[i].size < size)
++            continue;
++        reg = st_notes[i].reg;
++        if (reg == r && size == 4)
++            return 1; /* the register still holds it */
++        opc = gen_opsize16(opc);
++        o(opc);
++        o(0xc0 | r << 3 | reg); /* mov/movzx/movsx reg, r */
++        /* the slots stored from r hold its old value now, except this
++           one: the extension of r's own low bytes leaves them as they
++           are, but only those (`r == (signed char)r` with r just stored:
++           the full-width load of r that follows must not take r) */
++        for (j = k = 0; j < nb_st_notes; j++) {
++            if (j == i) {
++                if (reg == r && size < st_notes[j].size)
++                    st_notes[j].size = size;
++                st_notes[k++] = st_notes[j];
++            } else if (st_notes[j].reg != r)
++                st_notes[k++] = st_notes[j];
++        }
++        nb_st_notes = k;
++        st_notes_ind = ind;
++        return 1;
++    }
++    return 0;
++}
++
+ /* Code size: the jumps of a function are relaxed to their short forms
+    when the function is complete (gfunc_epilog).  gjmp()/gjmp_cond() emit
+    the rel32 forms (5/6 bytes, one more with -m16), since the target of a
+@@ -164,9 +241,17 @@ static int gen_opsize16(int opc)
+    displacement fits once the ones before them have shrunk, moves the code,
+    and patches the displacements, the relocations and the symbols inside the
+    function.  tccdbg.c maps its line and scope addresses through
+-   gen_relax_map().  Not done when the function has inline asm (the
+-   assembler resolves its own displacements and defines its own symbols:
+-   func_asm_seen) or bounds checking (fixed offsets patched later). */
++   gen_relax_map().  An asm statement of the function leaves relocations
++   and symbols for its forward references, patched like the compiler's
++   own (a local label keeps its symbol until the end of the file while
++   its function may still be relaxed: gen_relax_active(), asked by
++   asm_fixup_local_label_relocs() before it makes the relocation
++   section-relative); when the assembler instead folds an address of the function's section
++   into the code (a displacement to a label it has already defined, the
++   difference of two labels, .org) or aligns in it, the bytes moved
++   would make it wrong, so tccasm.c and i386-asm.c report that
++   (gen_relax_asm_fixed()) and the function is not relaxed; nor is one
++   with bounds checking (fixed offsets patched later). */
+ enum { RJ_JMP, RJ_JCC, RJ_SHORT, RJ_SUB };
+ typedef struct RelaxJump {
+     int pos;    /* offset of the instruction (prefix included) */
+@@ -180,13 +265,16 @@ typedef struct RelaxJump {
+ static RelaxJump *rjumps;
+ static int nb_rjumps, nb_rjumps_alloc;
+ static int relax_off;      /* no relaxation for this function */
++static Section *relax_sec; /* the section of the function being compiled */
+ static int relax_start, relax_end, relax_saved; /* of the last relaxed function */
+ 
+ static void rj_reset(void)
+ {
+     nb_rjumps = 0;
+     relax_saved = 0;
+-    relax_off = func_asm_seen;
++    relax_off = 0;
++    relax_sec = cur_text_section;
++    gen_sync();
+ #ifdef CONFIG_TCC_BCHECK
+     if (tcc_state->do_bounds_check)
+         relax_off = 1;
+@@ -220,6 +308,21 @@ ST_FUNC void gen_relax_free(void)
+     nb_rjumps = nb_rjumps_alloc = 0;
+ }
+ 
++/* the assembler wrote an address of section sh_num into the code that
++   relax_function() would move (see above) */
++ST_FUNC void gen_relax_asm_fixed(int sh_num)
++{
++    if (relax_sec && sh_num == relax_sec->sh_num)
++        relax_off = 1;
++}
++
++/* whether a label of section sh_num may still move: the function being
++   compiled into it is relaxed at its end */
++ST_FUNC int gen_relax_active(int sh_num)
++{
++    return relax_sec && sh_num == relax_sec->sh_num && !relax_off;
++}
++
+ /* the offset 'off' of the function before its relaxation, after it (the
+    identity outside the function, or when nothing was relaxed) */
+ ST_FUNC int gen_relax_map(int off)
+@@ -270,7 +373,8 @@ static void relax_function(int frame)
+     ElfW(Sym) *sym, *sym_end;
+ 
+     relax_start = start, relax_end = end, relax_saved = 0;
+-    if (relax_off || func_asm_seen || n == 0 || nocode_wanted)
++    relax_sec = NULL;
++    if (relax_off || n == 0 || nocode_wanted)
+         return;
+     for (i = 0; i < n; i++) {
+         rj = &rjumps[i];
+@@ -294,7 +398,13 @@ static void relax_function(int frame)
+     }
+     /* a long jump shrinks when its displacement fits rel8; what the ones
+        before it save moves its target closer, hence the iteration (the
+-       displacements only ever shrink, so the result is a fixed point) */
++       displacements only ever shrink, so the result is a fixed point).
++       gen_relax_map() maps the targets by the current nlen/saved once
++       relax_saved is set (the count is final below; until 2026-11-10 it
++       was 0 here, the targets stayed unmapped, backward jumps looked
++       shorter than they were and the check below then gave up on the
++       whole function).  A jmp to the next instruction goes away. */
++    relax_saved = 1;
+     do {
+         changed = 0;
+         for (i = 0, k = 0; i < n; i++)
+@@ -303,10 +413,12 @@ static void relax_function(int frame)
+             rj = &rjumps[i];
+             if (rj->kind != RJ_JMP && rj->kind != RJ_JCC)
+                 continue;
+-            if (rj->nlen == 2)
+-                continue;
++            if (rj->nlen != rj->len)
++                continue; /* already short */
+             rj->nlen = 2, rj_disp(rj, &disp);
+-            if (disp == (signed char)disp)
++            if (rj->kind == RJ_JMP && disp == 0)
++                rj->nlen = 0, changed = 1;
++            else if (disp == (signed char)disp)
+                 changed = 1;
+             else
+                 rj->nlen = rj->len;
+@@ -314,16 +426,16 @@ static void relax_function(int frame)
+     } while (changed);
+     for (i = 0, k = 0; i < n; i++)
+         rjumps[i].saved = k, k += rjumps[i].len - rjumps[i].nlen;
++    relax_saved = k;
+     if (k == 0)
+         return;
+-    relax_saved = k;
+     /* every short jump still reaches its target (it does: the distances
+        only shrank) */
+     for (i = 0; i < n; i++) {
+         rj = &rjumps[i];
+-        if (rj->kind != RJ_SUB && rj->nlen == 2) {
++        if (rj->kind != RJ_SUB && rj->nlen <= 2) {
+             rj_disp(rj, &disp);
+-            if (disp != (signed char)disp) {
++            if (rj->nlen == 0 ? disp != 0 : disp != (signed char)disp) {
+                 relax_saved = 0;
+                 return;
+             }
+@@ -351,7 +463,9 @@ static void relax_function(int frame)
+         } else {
+             rj_disp(rj, &disp);
+             k = dst;
+-            if (rj->nlen == 2) {
++            if (rj->nlen == 0) {
++                /* removed */
++            } else if (rj->nlen == 2) {
+                 d[k++] = rj->kind == RJ_JCC ? rj->cc - 0x10 : 0xeb;
+                 d[k++] = disp;
+             } else {
+@@ -432,6 +546,8 @@ ST_FUNC void gen_le32(int c)
+ /* output a symbol and patch all calls to it */
+ ST_FUNC void gsym_addr(int t, int a)
+ {
++    if (t && a == ind)
++        gen_sync(); /* a jump arrives here */
+     while (t) {
+         unsigned char *ptr = cur_text_section->data + t;
+         uint32_t n = read32le(ptr); /* next value */
+@@ -520,9 +636,19 @@ ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
+    opcode bits */
+ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+ {
+-    int op_reg = REG_VALUE(op_r2) << 3;
+-
+-    o67(); /* all memory operands use 32-bit addressing */
++    int op_reg = REG_VALUE(op_r2) << 3, abs16 = 0;
++
++    /* -m16: memory operands use 32-bit addressing (0x67), except an
++       absolute address, which takes the 16-bit form (modrm 0x06, an
++       R_386_16 relocation) as GNU as's .code16gcc gives it: such code
++       is linked below 64 KB (the kernel's real-mode setup) */
++    if (M16 && (r & (VT_VALMASK | VT_SYM)) == (VT_CONST | VT_SYM)
++        && !(sym->type.t & VT_TLS) && !PIC)
++        abs16 = 1;
++    else if (M16 && (r & VT_VALMASK) == VT_CONST && (unsigned)c <= 0xffff)
++        abs16 = 1;
++    else
++        o67();
+     opc = gen_opsize16(opc);
+     if ((r & VT_SYM) && (sym->type.t & VT_TLS)) {
+ #ifdef TCC_TARGET_PE
+@@ -566,6 +692,11 @@ static void gen_modrm(int opc, int op_r2, int r, Sym *sym, int c)
+         if (PIC && (r & VT_SYM)) {
+             o(0x83 | op_reg); /* sym@GOTOFF(%ebx) */
+             gen_gotoff32(sym, c);
++        } else if (abs16) {
++            o(0x06 | op_reg);
++            if (r & VT_SYM)
++                greloc(cur_text_section, sym, ind, R_386_16);
++            gen_le16(c);
+         } else {
+             o(0x05 | op_reg);
+             gen_addr32(r, sym, c);
+@@ -661,6 +792,10 @@ ST_FUNC void load(int r, SValue *sv)
+         } else {
+             opc = 0x8b;     /* movl */
+         }
++        if (v == VT_LOCAL && !(sv->type.t & VT_VOLATILE)
++            && st_reuse(r, fc, opc == 0x8b ? 4 * ((ft & VT_BTYPE) == VT_INT || (ft & VT_BTYPE) == VT_PTR)
++                        : (opc == 0xbe0f || opc == 0xb60f) ? 1 : (opc == 0xbf0f || opc == 0xb70f) ? 2 : 0, opc))
++            return; /* from the register just stored to it */
+         gen_modrm(opc, r, fr, sv->sym, fc);
+     } else {
+         if ((fr & VT_SYM) && (sv->sym->type.t & VT_TLS)) {
+@@ -763,7 +898,11 @@ ST_FUNC void store(int r, SValue *v)
+ #endif
+ 
+     if (fr == VT_CONST || fr == VT_LOCAL || (v->r & VT_LVAL)) {
++        int before = ind;
+         gen_modrm(opc, r, v->r, v->sym, fc);
++        if (fr == VT_LOCAL && !(v->type.t & VT_VOLATILE))
++            st_note(before, r, fc, bt == VT_SHORT ? 2 : (bt == VT_BYTE || bt == VT_BOOL) ? 1
++                    : (bt == VT_INT || bt == VT_PTR) ? 4 : 0);
+     } else if (fr != r) {
+         opc = gen_opsize16(opc);
+ 	o(opc);
+@@ -1322,7 +1461,9 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+             /* regparm: the structure return pointer is the first
+                argument, in %eax; the caller does not pop it */
+             loc -= 4;
+-            gen_modrm(0x89, fastcall_regs_ptr[regi++], VT_LOCAL, NULL, loc);
++            k = ind;
++            gen_modrm(0x89, fastcall_regs_ptr[regi], VT_LOCAL, NULL, loc);
++            st_note(k, fastcall_regs_ptr[regi++], loc, 4);
+             func_vc = loc;
+             param_index++;
+             fastcall_nb_regs--;
+@@ -1355,8 +1496,11 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+                 addr += size;
+             } else {
+                 loc -= size;
+-                for (k = 0; k < w; k++)
++                for (k = 0; k < w; k++) {
++                    int before = ind;
+                     gen_modrm(0x89, fastcall_regs_ptr[regi + k], VT_LOCAL, NULL, loc + 4 * k);
++                    st_note(before, fastcall_regs_ptr[regi + k], loc + 4 * k, 4);
++                }
+                 param_addr = loc;
+                 regi += w;
+                 fastcall_nb_regs -= w;
+@@ -1364,8 +1508,9 @@ ST_FUNC void gfunc_prolog(Sym *func_sym)
+         } else if (param_index < fastcall_nb_regs) {
+             /* save FASTCALL register */
+             loc -= 4;
+-            /* movl */
+-            gen_modrm(0x89, fastcall_regs_ptr[param_index], VT_LOCAL, NULL, loc);
++            k = ind;
++            gen_modrm(0x89, fastcall_regs_ptr[param_index], VT_LOCAL, NULL, loc); /* movl */
++            st_note(k, fastcall_regs_ptr[param_index], loc, 4);
+             param_addr = loc;
+         } else {
+             param_addr = addr;
+diff --git a/tcc.h b/tcc.h
+index c41f93b..5a26328 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1510,7 +1510,6 @@ ST_DATA CType func_vt; /* current function return type (used by return instructi
+ ST_DATA int func_var; /* true if current function is variadic */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
+-ST_DATA int func_asm_seen; /* the function has an asm statement */
+ ST_DATA const char *funcname;
+ 
+ ST_FUNC void tccgen_init(TCCState *s1);
+@@ -1716,9 +1715,15 @@ ST_FUNC int gen_relax_map(int off);
+ ST_FUNC int gen_relax_saved(void);
+ ST_FUNC void gen_relax_free(void);
+ ST_FUNC int gen_cmp_mem(int op);
++ST_FUNC void gen_relax_asm_fixed(int sh_num);
++ST_FUNC int gen_relax_active(int sh_num);
++ST_FUNC void gen_sync(void);
+ #else
+ #define gen_relax_map(off) (off)
+ #define gen_relax_saved() 0
++#define gen_relax_asm_fixed(sh_num)
++#define gen_relax_active(sh_num) 0
++#define gen_sync()
+ #endif
+ ST_FUNC void gen_opi(int op);
+ ST_FUNC void gen_opf(int op);
+diff --git a/tccasm.c b/tccasm.c
+index 788b728..f55f126 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -122,6 +122,7 @@ static int asm_pass_resolve(ExprValue *pe, ExprValue *e2)
+         && s1 == s2 && s1 != SHN_UNDEF) {
+         pe->v += v1 - v2;
+         pe->sym = NULL;
++        gen_relax_asm_fixed(s1);
+         return 1;
+     }
+     if (asm_pass.pass == 1) {
+@@ -211,6 +212,11 @@ static void asm_fixup_local_label_relocs(TCCState *s1)
+             if (!((name[0] == 'L' && name[1] == '.' && name[2] == '.')
+                   || (name[0] == '.' && name[1] == 'L')))
+                 continue;
++            /* a label of the function being compiled may still move
++               (i386 jump relaxation): it keeps its symbol, and
++               tccelf_end_file() makes the relocation section-relative */
++            if (gen_relax_active(esym->st_shndx))
++                continue;
+ #ifdef TCC_TARGET_I386
+             /* an 8- or 16-bit field cannot hold the label's offset as its
+                in-place addend ("jecxz 1f" far into .text): keep the label */
+@@ -648,6 +654,7 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		    /* we also accept defined symbols in the same section */
+ 		    pe->v += (int)(esym1->st_value - esym2->st_value);
+ 		    pe->sym = NULL;
++		    gen_relax_asm_fixed(esym1->st_shndx);
+ 		} else if (asm_pass_resolve(pe, &e2)) {
+ 		    /* labels defined later: the difference of two labels of
+ 		       one section is a constant also when one of them comes
+@@ -659,6 +666,7 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		       this actually makes the value PC-relative.  */
+ 		    pe->v += (int)(0 - esym2->st_value);
+ 		    pe->pcrel = 1;
++		    gen_relax_asm_fixed(esym2->st_shndx);
+ 		    e2.sym = NULL;
+ 		} else if (asm_pass.pass >= 2 && e2.sym && asm_pass_lookup(e2.sym, &s2, &v2)
+ 			   && s2 == cur_text_section->sh_num
+@@ -667,6 +675,7 @@ static inline void asm_expr_sum(TCCState *s1, ExprValue *pe)
+ 		       (".byte start_of_setup-1f" in the kernel's boot header) */
+ 		    pe->v += (int)(0 - v2);
+ 		    pe->pcrel = 1;
++		    gen_relax_asm_fixed(s2);
+ 		    e2.sym = NULL;
+ 		} else {
+ cannot_relocate:
+@@ -1495,6 +1504,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+                 tcc_error("alignment must be a positive power of two");
+             offset = (ind + n - 1) & -n;
+             size = offset - ind;
++            gen_relax_asm_fixed(sec->sh_num);
+             /* the section must have a compatible alignment */
+             if (sec->sh_addralign < n)
+                 sec->sh_addralign = n;
+@@ -1945,6 +1955,7 @@ static void asm_parse_directive(TCCState *s1, int global)
+                 tcc_error("attempt to .org backwards");
+             v = c = 0;
+             size = n - ind;
++            gen_relax_asm_fixed(cur_text_section->sh_num);
+             goto zero_pad;
+         }
+         break;
+@@ -2855,6 +2866,7 @@ ST_FUNC void asm_global_instr(void)
+         tcc_assemble_inline(tcc_state, astr->data, astr->size - 1, 1);
+     
+     cur_text_section->data_offset = ind;
++    gen_sync(); /* the registers and the memory may have changed */
+ 
+     /* restore the current C token */
+     next();
+diff --git a/tccgen.c b/tccgen.c
+index 0b8e6e4..613aca1 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -74,7 +74,6 @@ ST_DATA CType func_vt; /* current function return type (used by return instructi
+ ST_DATA int func_var; /* true if current function is variadic (used by return instruction) */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
+-ST_DATA int func_asm_seen; /* the function has an asm statement (i386-gen.c) */
+ static int func_old;
+ ST_DATA const char *funcname;
+ ST_DATA CType int_type, func_old_type, char_type, char_pointer_type;
+@@ -292,6 +291,7 @@ ST_FUNC void gsym(int t)
+ static int gind()
+ {
+   int t = ind;
++  gen_sync(); /* code arrives here from elsewhere */
+   CODE_ON();
+   if (debug_modes)
+     tcc_tcov_block_begin(tcc_state);
+@@ -10304,7 +10304,6 @@ again:
+         skip(';');
+ 
+     } else if (t == TOK_ASM1 || t == TOK_ASM2 || t == TOK_ASM3) {
+-        func_asm_seen = 1;
+         asm_instr();
+ 
+     } else {
+@@ -11521,7 +11520,6 @@ static void gen_function(Sym *sym)
+ 
+     funcname = get_tok_str(sym->v, NULL);
+     func_ind = ind;
+-    func_asm_seen = 0;
+     func_vt = sym->type.ref->type;
+     func_var = sym->type.ref->f.func_type == FUNC_ELLIPSIS;
+     func_old = sym->type.ref->f.func_type == FUNC_OLD;

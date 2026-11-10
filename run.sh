@@ -59,9 +59,8 @@
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
 # host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
 # 1024x768 = XGA: the preferred mode of the VGA's EDID, which the kernel's bochs-drm driver
-# sets, and for the ISO also GRUB's gfxpayload through an SMBIOS OEM string; the tcc kernel
-# is built without the real-mode video mode setting (CONFIG_X86_BOOT_VIDEO_MODES,
-# kernels/linux/tcc.config), so vga= is not passed; RES= (empty) leaves the EDID and GRUB to their
+# sets, and for the ISO also GRUB's gfxpayload through an SMBIOS OEM string; vga= is not
+# passed, the display driver sets the mode; RES= (empty) leaves the EDID and GRUB to their
 # defaults), APPEND (extra kernel command line parameters for the direct boot, e.g.
 # tcc.devtest), AUDIO (QEMU audio backend of the sound card: none, the default, plays into
 # the void; pa, pipewire, alsa, sdl play on the host), USBSTICK (disk image attached as the

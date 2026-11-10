@@ -70,16 +70,17 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 127 | tinycc 0130 |
 | | | | | 128 | tinycc 0134 |
 | | | | | 129 | tinycc 0132 |
+| | | | | 130 | tinycc 0136 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
-K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011, K13 = 0012, K14 = 0013,
+K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011 (dropped 2026-11-10: fix 130), K13 = 0012, K14 = 0013,
 K15 = 0014, K16 = 0015, K17 = 0016, K18 = 0017, K19 = 0018, K20 = 0019.
 
 Fixes 57-70 and K10-K12 (2026-10-22) made the kernel build independent of gcc and
@@ -134,6 +135,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/169_cleanup_assign.c` | all | 127 |
 | `tests/tests2/170_label_const.c` | all (the asm output case on i386, x86_64) | 129 |
 | `tests/tests2/171_codesize.c` | all (the regparm and relaxation cases on i386) | 128 |
+| `tests/tests2/172_reload_relax.c` | all (the relaxation and reload cases on i386; the 16-bit addresses by `tests/m16-check.sh`) | 130 |
 | `tests/tests2/159_depfile.c` | all | 3, 68 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2564,3 +2566,74 @@ C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS
     tcc invocations, i386 2788, 0 gcc, bzImages of the previous sizes), `nm vmlinux` without
     `convert_from_fxsr`, and `scripts/devices-test.sh` passes its 13 checks on both (the
     x86_64 config has `CONFIG_IA32_EMULATION` off, so the dropped code really is absent).
+
+130. 2026-11-10, COMMITTED (patches/tinycc/features/0136, test 0137 = tests2/172_reload_relax),
+    `i386-gen.c` (relax_function(), gen_relax_asm_fixed(), gen_relax_active(), st_note(),
+    st_reuse(), gen_sync(), gsym_addr(), load(), store(), gfunc_prolog(), gen_modrm()),
+    `tccasm.c` (asm_instr(), asm_expr_sum(), asm_pass_resolve(), asm_fixup_local_label_relocs(),
+    .align, .org), `i386-asm.c`
+    (asm_local_sym_here()), `tccgen.c` (gind()), `tcc.h`. Problem: kernel patch 0011 (K12), the
+    `X86_BOOT_VIDEO_MODES` option, existed because the real-mode setup with its BIOS video mode
+    code did not fit the 32 KB of the boot protocol when built by `i386-tcc -m16`: `_end` 0x84b0
+    against setup.ld's 0x8000 with fix 128's code-size pass (0x9a70 before it; gcc -Os 0x4e80).
+    Measured on the setup's 181 functions (build/size-scratch/measure.sh: the kernel's own
+    command lines, the vanilla video files included): 46 functions were not relaxed at all
+    because they contain inline asm (fix 128 switched the relaxation off for them: 294 long
+    jumps and 46 seven-byte `sub $frame,%esp` remained), 109 locals were loaded by the
+    instruction right after the one that stored them (`x = e; ... x ...`, the regparm
+    prologue's saves) and 265 absolute memory operands (the globals) carried a 0x67 prefix with
+    a 32-bit address. Fix, four parts. (1) Relaxation in functions with asm: the assembler's
+    forward references leave relocations and symbols, patched like the compiler's own; a local
+    label's relocation used to be made section-relative at the end of its statement
+    (asm_fixup_local_label_relocs(), fix 26: tccasm's "L..text" anchor with the label's
+    address folded into the in-place addend, which no symbol remap reaches -- the test showed
+    the `jz 1f` of video.c's shape jumping 10 bytes past its label), so while the function may
+    still be relaxed (gen_relax_active()) the label keeps its symbol and tccelf_end_file()
+    makes the relocation section-relative at the end of the file, after the remap (a first
+    version patched the folded addends instead and took every R_386_PC32 for a jump
+    displacement, 4 bytes off for the `.long 1b - .` entries of the kernel's exception table:
+    the i386 kernel's first expected fault, in copy_to_kernel_nofault() during early boot,
+    found no entry and panicked before any console -- QEMU's gdb stub and the pt_regs on the
+    init stack told); what cannot be patched is an address of
+    the function's section that the assembler folds into the code -- a displacement to a label
+    already defined (asm_local_sym_here()), the difference of two labels (asm_expr_sum(),
+    asm_pass_resolve()), .org -- or an .align in it, and those report gen_relax_asm_fixed(),
+    which keeps the function unrelaxed (func_asm_seen is gone). (2) The fixed-point iteration
+    of relax_function() measured every jump against its unmapped target (gen_relax_map() is the
+    identity while relax_saved is 0), so a backward jump looked shorter than it would be and the
+    final check then abandoned the whole function (vsprintf, display_menu,
+    __cmdline_find_option, raw_set_mode); relax_saved is set during the iteration, and a jmp to
+    the next instruction is removed. (3) store() notes the stores emitted since the last other
+    instruction (st_notes[], 4 entries: register, offset, size; a store overlapping an earlier
+    note replaces it), and load() of a noted local emits nothing when the register is the one
+    wanted, else a `mov`/`movzx`/`movsx` from it (a wider store serves a narrower load at the
+    same offset, and that narrower load into the register itself narrows the note to those
+    bytes: `r == (signed char)r` with r just stored is tcc's own gjmp_addr(), and the first
+    version, keeping the note whole, took the full-width load of r that follows from the
+    sign-extended byte, so every backward jump of a tcc compiled by i386-tcc looked short
+    and the guest's test3 crashed with `eb ff` jumps while tests2 and the cross-compiled
+    tests all passed; found by bisecting the four parts with environment switches on the
+    static i386 tcc the guest-tcc step builds, which runs on the host); the regparm
+    prologue's saves are noted too; a label (gind(), gsym_addr() at ind), an asm statement
+    and the next prologue forget them (gen_sync()); volatile locals are left alone. (4) gen_modrm() with -m16 encodes an absolute address as modrm 0x06 with a
+    16-bit displacement and an R_386_16 relocation (GNU as's .code16gcc form; x86 real-mode code
+    is linked below 64 KB, and tld reports an overflow) instead of 0x67 and 32 bits: 3 bytes per
+    access. Result: `_end` 0x84b0 -> 0x8120 (parts 1 and 3) -> 0x7b90 (2 and 4), 1 136 bytes
+    under the limit; text 27 582 -> 25 233 bytes (gcc -Os 14 859), 119 long jumps left (all
+    beyond 127 bytes), 25 reload pairs (all across a label), no 0x67 prefix on an absolute
+    operand. Not done: locals in registers (865 loads and 729 stores through %ebp remain) and
+    `push $imm8; pop %reg` for small constants (246 of them, 1 byte each with -m16, 2 with
+    -m32). Verification: tests2/172_reload_relax (expected output from gcc, -O2 = -O0; passes
+    with tcc on x86_64 and as a static i386 musl binary with and without -mregparm=3; the
+    narrow-then-wide reload case added after the guest's test3 failure), `make test` ALL
+    TESTS PASSED on the host, tcc.c and tcctest.c compiled by the static i386 tcc through
+    three generations on the host with outputs equal to the cross-compiled run, `tests/m16-check.sh`: the -m16 and -m32 instruction
+    streams of the 16 boot objects identical, the asm snippet lists byte-equal to GNU as, the
+    regparm and file checks pass (its link check wants the video objects of a rebuilt kernel
+    tree). Kernel patch 0011 dropped the same day (patches/linux/series, the
+    `X86_BOOT_VIDEO_MODES` line of kernels/linux/tcc.config, run.sh's note); both kernels
+    rebuilt from removed build trees (x86_64 2842 tcc invocations, i386 2792, 0 gcc; the
+    setups 26 585 and 26 665 bytes with `_end` 0x7b70 and 0x7bc0), `scripts/devices-test.sh`
+    13/13 on both, the i386 kernel booted with `vga=normal`, and the i386 guest's `--auto=test`
+    run (tcc rebuilt by the guest's tcc, itself built by the new compiler) ALL TESTS PASSED,
+    test3 included; details in PORT-NOTES (the vanilla-kernel section, 2026-11-10).
