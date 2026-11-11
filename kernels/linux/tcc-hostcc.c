@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * tcc-hostcc: tinycc as Kbuild's HOSTCC (fixdep, kconfig, modpost, sorttable, relocs,
- * vdso2c, mkpiggy, tools/build ...), against the host libc.  tools/include needs a
+ * vdso2c, mkpiggy, tools/build, objtool against tools/libelf ...), against the host libc.  tools/include needs a
  * __GNUC__ (for __must_be_array and friends): claim a modest GCC 4.2 like the busybox
  * build does, so that glibc's headers do not take the paths of newer gcc extensions.
  * The -U of the __REDIRECT macros lets glibc define its own without "redefined" noise;

@@ -1,2 +1,0 @@
-# patches/linux: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
-upstreamable/0009-kbuild-let-OBJTOOL-name-an-objtool-that-is-not-built.patch

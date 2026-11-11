@@ -347,7 +347,7 @@ int main(int argc, char **argv)
     time_t t0, t1;
     long el;
     int i, k;
-    static const char *tools[] = { "ld", "nm", "objcopy", "readelf", "ar", "strip", "tcc-kcc", "tcc-hostcc", "objtool-stub", "flex", "bison" };
+    static const char *tools[] = { "ld", "nm", "objcopy", "readelf", "ar", "strip", "tcc-kcc", "tcc-hostcc", "flex", "bison" };
 
     if (!jobs || !*jobs)
         jobs = fmt("%ld", sysconf(_SC_NPROCESSORS_ONLN) > 0 ? sysconf(_SC_NPROCESSORS_ONLN) : 1);
@@ -465,7 +465,10 @@ int main(int argc, char **argv)
     argf(&mk, "ARCH=%s", karch);
     argf(&mk, "CC=%s/tcc-kcc", bin);
     argf(&mk, "HOSTCC=%s/tcc-hostcc", bin);
-    argf(&mk, "OBJTOOL=%s/objtool-stub", bin);
+    /* objtool is built by Kbuild here (HOSTCC against /usr/lib/libelf.a, tools/libelf; tools/build
+     * merges its objects with HOSTLD -r and HOSTAR, tld's) */
+    argf(&mk, "HOSTLD=%s/ld", bin);
+    argf(&mk, "HOSTAR=%s/ar", bin);
     argf(&mk, "KCFLAGS=-include%s/tcc-canary.h", share);
     argf(&mk, "LD=%s/ld", bin);
     argf(&mk, "NM=%s/nm", bin);

@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 13:18:28 +0200
+Subject: [PATCH] libtcc: -MT names the target of the dependency file, several
+ accumulate, as with gcc (Kbuild's tools/build passes -Wp,-MT,<object>)
+
+---
+ libtcc.c   | 15 +++++++++++++++
+ tcc.h      |  1 +
+ tcctools.c |  2 +-
+ 3 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index a70adc7..0306e7b 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -939,6 +939,7 @@ LIBTCCAPI void tcc_delete(TCCState *s1)
+     tcc_free(s1->mapfile);
+     tcc_free(s1->outfile);
+     tcc_free(s1->deps_outfile);
++    tcc_free(s1->deps_target);
+ #if defined TCC_TARGET_MACHO
+     tcc_free(s1->install_name);
+ #endif
+@@ -1611,6 +1612,7 @@ enum {
+     TCC_OPTION_MM,
+     TCC_OPTION_MMD,
+     TCC_OPTION_MP,
++    TCC_OPTION_MT,
+     TCC_OPTION_x,
+     TCC_OPTION_ar,
+     TCC_OPTION_impdef,
+@@ -1695,6 +1697,7 @@ static const TCCOption tcc_options[] = {
+     { "MMD", TCC_OPTION_MMD, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
+     { "MF", TCC_OPTION_MF, TCC_OPTION_HAS_ARG },
+     { "MP", TCC_OPTION_MP, 0},
++    { "MT", TCC_OPTION_MT, TCC_OPTION_HAS_ARG },
+     { "x", TCC_OPTION_x, TCC_OPTION_HAS_ARG },
+     /* tcctools */
+     { "ar", TCC_OPTION_ar, 0},
+@@ -2268,6 +2271,18 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+         case TCC_OPTION_MP:
+             s->gen_phony_deps = 1;
+             break;
++        case TCC_OPTION_MT:
++            /* the target of the dependency rule instead of the output file;
++               several -MT accumulate, as with gcc (Kbuild's tools/build passes
++               "-Wp,-MD,<file> -Wp,-MT,<object>") */
++            if (s->deps_target) {
++                char *t = s->deps_target;
++                s->deps_target = tcc_malloc(strlen(t) + strlen(optarg) + 2);
++                sprintf(s->deps_target, "%s %s", t, optarg);
++                tcc_free(t);
++            } else
++                tcc_set_str(&s->deps_target, optarg);
++            break;
+ 
+         case TCC_OPTION_dumpmachine:
+             printf("%s\n", dumpmachine_str);
+diff --git a/tcc.h b/tcc.h
+index 5a26328..452d182 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1061,6 +1061,7 @@ struct TCCState {
+     int nb_libraries; /* number of libs thereof */
+     char *outfile; /* output filename */
+     char *deps_outfile; /* option -MF */
++    char *deps_target; /* option -MT: the target(s) named in the dependency file */
+     int argc;
+     char **argv;
+     /* -Wl options */
+diff --git a/tcctools.c b/tcctools.c
+index 46f15d1..0db4b33 100644
+--- a/tcctools.c
++++ b/tcctools.c
+@@ -630,7 +630,7 @@ ST_FUNC int gen_makedeps(TCCState *s1, const char *target, const char *filename)
+     next:;
+     }
+ 
+-    fprintf(depout, "%s:", target);
++    fprintf(depout, "%s:", s1->deps_target ? s1->deps_target : target);
+     for (i = 0; i < num_targets; ++i)
+         fprintf(depout, " \\\n  %s", escaped_targets[i]);
+     fprintf(depout, "\n");

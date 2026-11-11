@@ -7,23 +7,26 @@ carries what is needed to do that again, in here, without gcc, binutils, flex or
 
   /usr/src/linux-*.tar.gz    the kernel source pruned to what this configuration builds
                              (every file the host build read, all Makefiles and Kconfig
-                             files, Kbuild's scripts, the headers, arch/x86), with the
-                             project's kernel patches applied
+                             files, Kbuild's scripts, the headers, arch/x86, objtool and
+                             what builds it); the vanilla tree, no kernel patch
   /usr/src/tinycc.tar.gz     tcc with the project's patches
   /usr/src/tld.tar.gz        the linker suite (ld, nm, objcopy, readelf, ar, strip)
+  /usr/src/libelf.tar.gz     the libelf subset objtool links against (/usr/lib/libelf.a,
+                             /usr/include/{libelf,gelf}.h are built from it)
   /usr/src/make-*.tar.gz     GNU make
   /usr/bin/tcc, i386-tcc     the compiler (static, musl) and the i386 cross compiler that
                              tcc -m16 runs for the kernel's real-mode code (the i386 image
                              has only tcc: it is that compiler itself)
   /usr/bin/tld (ld nm objcopy readelf ar strip), /usr/bin/make
-  /usr/bin/tcc-kcc, tcc-hostcc, objtool-stub    the Kbuild CC / HOSTCC / OBJTOOL wrappers
+  /usr/bin/tcc-kcc, tcc-hostcc    the Kbuild CC / HOSTCC wrappers (objtool is built by Kbuild
+                             itself, with tcc-hostcc, from the kernel tree)
   /usr/bin/flex, bison       copy the pre-generated Kconfig lexer and parser from
                              /usr/share/tinycc-os-kernel/kconfig
   The commands below, flex, bison, the Kbuild wrappers and /init itself are C scripts: their first line is
   "#!/usr/bin/tcc -run", so tcc compiles them in memory and runs them (cat /usr/bin/send-file).
   There is no shell script in this system.
   /usr/share/tinycc-os-kernel/{minimal,tcc}.config    the Kconfig fragments
-  /usr/share/tinycc-os-kernel/patches                 the tcc and kernel patch series
+  /usr/share/tinycc-os-kernel/patches                 the tcc patch series (and the userland's)
 
 Commands:
 

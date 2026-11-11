@@ -15,7 +15,7 @@ with them; the result boots as "generation 2" (see "Self-hosting" below). Other 
 target (the 32-bit x86 kernel) works since 2026-10-23, see "Targets" below.
 
 This repository contains all of our work and only our work: the pinned source versions,
-the compiler patches, the kernel patches, the build recipes and the documentation. The
+the compiler patches, the build recipes and the documentation (no kernel patch is needed since 2026-11-11). The
 compiler work and the OS work live together because every change is part of one effort. The kernel, tcc, musl and busybox sources are
 downloaded from their git repositories at exact commits and patched locally, so the
 scripts and patches never break when upstream moves.
@@ -171,11 +171,11 @@ gcc, binutils, flex or bison:
 
 | In the guest | What |
 |------|------|
-| `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 431 files with the drivers) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 137 patches, the linker suite, GNU make |
+| `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 142 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
-| `/usr/bin/tcc-kcc`, `tcc-hostcc`, `objtool-stub`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
+| `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
 | `/usr/bin/build-kernel`, `build-toolchain`, `send-file` | the commands (`userland/selfhost/`), see `/usr/share/tinycc-os-kernel/README`. Like `/init`, `flex` and `bison`, they are C scripts: a `#!/usr/bin/tcc -run` line, and tcc compiles and runs them in memory. The image has no shell scripts |
 
 ```bash
@@ -233,10 +233,10 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 133 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below) |
-| `patches/linux/` | 1 kernel patch in `upstreamable/` |
-| `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `objtool-stub.c`, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
+| `patches/tinycc/` | 142 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
+| `tools/libelf/` | the libelf subset the kernel's objtool needs (24 functions, ELF32 and ELF64), so that Kbuild builds the real objtool with tcc on the host and in the guest; `test.sh` compares it with a gcc/elfutils objtool |
 | `userland/` | the libc-free `init.c` (the smoke-test image), `busybox-init.c` (the `/init` of the busybox image, a C script run by `tcc -run`), cpio manifests, `hello.c`; `selfhost/`: `build-kernel.c`, `build-toolchain.c`, `send-file.c`, the `flex.c`/`bison.c` stand-ins (C scripts, installed under their command names) and the guest README |
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
 | `docs/PORT-NOTES.md` | how the port works, wrapper rules, open items, how to debug |
@@ -301,9 +301,10 @@ directories only sort them by kind:
   loop), is now `kernels/linux/tcc-canary.h`, given to every kernel compile through
   Kbuild's `KCFLAGS=-include` instead of a change to the tree (the ones that needed
   inlining went with tcc fix 120, the two that needed `__int128` with fix 125).
-* **linux/upstreamable** (1): one toolchain-capability option, `OBJTOOL=` for an
-  external objtool (objtool needs libelf, which the self-hosting guest has not); a
-  candidate for mainline.  Seventeen more of both kinds went away with tcc fixes 119
+* **linux**: none since 2026-11-11, the tree is vanilla. The last one, `OBJTOOL=` for an
+  external objtool (upstreamable; objtool needs libelf, which the self-hosting guest had
+  not), went with `tools/libelf`, the libelf subset that lets Kbuild build the real objtool
+  with tcc (tcc fixes 131 to 133 came from that build). Seventeen before it went away with tcc fixes 119
   (constant propagation through locals), 120 (the inliner), 121 (i386 division by a
   constant without the libgcc helpers), 122 (the VEX/EVEX encodings of the AVX crypto
   assembly, which the `CONFIG_AS_AVX*` probes had gated), 125 (`__int128` on x86_64),
@@ -315,9 +316,9 @@ directories only sort them by kind:
 Every tcc patch compiles on its own (the series was built commit by commit) and the tip
 passes `make test`, on the glibc host and inside both musl guests, including the project's
 own regression tests; asm encodings were byte-compared with GNU as and semantics with gcc
-as the oracle. The kernel patches are checkpatch-clean except for the deliberately missing
-`Signed-off-by` (the human submitter adds it; they carry `Assisted-by: LLM` as
-Documentation/process/coding-assistants.rst asks). Series developed with AI assistance
+as the oracle. (The kernel patches, while the tree needed any, were checkpatch-clean except
+for the deliberately missing `Signed-off-by`, and carried `Assisted-by: LLM` as
+Documentation/process/coding-assistants.rst asks.) Series developed with AI assistance
 (Claude Code); the details of every fix are in `docs/FIX-LOG.md`.
 
 ### Changing something
@@ -337,7 +338,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 
 | Arch | Status |
 |------|--------|
-| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc; objtool is a stub (see `docs/PORT-NOTES.md`); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 13 checks); self-hosting (the kernel rebuilds itself inside the guest) |
+| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc, objtool among them since 2026-11-11 (against `tools/libelf`; a stub before); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 13 checks); self-hosting (the kernel rebuilds itself inside the guest) |
 | i386 | works (2026-10-23; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2788 tcc invocations from a clean tree with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
@@ -394,7 +395,7 @@ The original parts of this repository (the scripts, `tools/tld`, `kernels/`, `us
 `boot/`, the documentation, the `series` files) are under the
 [BSD-2-Clause](LICENSE) license, so that they can be used by GPL and by BSD projects
 alike. The patches are derivative works of the component they modify and carry its
-license: `patches/linux/` is GPL-2.0-only, `patches/tinycc/` is LGPL-2.1-or-later,
+license: `patches/tinycc/` is LGPL-2.1-or-later (a kernel patch would be GPL-2.0-only; none is needed),
 `patches/ncurses/` is X11 (texts in `LICENSES/`, notes in `patches/<component>/LICENSE`). A future component gets the same
 treatment: `patches/freebsd/` would be BSD-2-Clause, `patches/openbsd/` ISC, `patches/hurd/`
 GPL-2.0-or-later.

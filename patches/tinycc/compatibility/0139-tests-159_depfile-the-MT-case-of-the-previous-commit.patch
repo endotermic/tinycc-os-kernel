@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 13:18:28 +0200
+Subject: [PATCH] tests: 159_depfile, the -MT case of the previous commit
+
+---
+ tests/tests2/159_depfile.c      | 3 ++-
+ tests/tests2/159_depfile.expect | 2 ++
+ tests/tests2/Makefile           | 5 +++--
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/tests/tests2/159_depfile.c b/tests/tests2/159_depfile.c
+index 424a12b..ad5f482 100644
+--- a/tests/tests2/159_depfile.c
++++ b/tests/tests2/159_depfile.c
+@@ -1,5 +1,6 @@
+ /* -Wp,-MMD,<file> (Kbuild's spelling, fix 3) and -MD with -E (fix 68) write
+-   the dependency file; tinycc-os-kernel project.  The Makefile prints the
++   the dependency file, -MT names its targets (fix 131: tools/build passes
++   -Wp,-MT,<object>); tinycc-os-kernel project.  The Makefile prints the
+    files. */
+ int main(void)
+ {
+diff --git a/tests/tests2/159_depfile.expect b/tests/tests2/159_depfile.expect
+index 06e65c2..4ac713a 100644
+--- a/tests/tests2/159_depfile.expect
++++ b/tests/tests2/159_depfile.expect
+@@ -2,3 +2,5 @@
+   159_depfile.c
+ 159_depfile.i: \
+   159_depfile.c
++obj/159_depfile.o 159_depfile.o: \
++  159_depfile.c
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 6097098..bce393c 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -200,10 +200,11 @@ endif
+ 	$(TCC) $*-main.o -Wl,--start-group $*-a.a $*-b.a -Wl,--end-group -o $*.exe && ./$*.exe )
+ 158_link_group.test: GEN = $(T1)
+ 
+-# dependency files from -Wp,-MMD,<file> and from -E -MMD
++# dependency files from -Wp,-MMD,<file>, from -E -MMD, and with -MT targets
+ 159_depfile.test: T1 = ( \
+ 	$(TCC) -c $1 -o $*.o -Wp,-MMD,$*.d && cat $*.d && \
+-	$(TCC) -E $1 -MMD -o $*.i && cat $*.d && rm -f $*.d $*.i )
++	$(TCC) -E $1 -MMD -o $*.i && cat $*.d && \
++	$(TCC) -c $1 -o $*.o -Wp,-MD,$*.d -Wp,-MT,obj/$*.o -MT $*.o && cat $*.d && rm -f $*.d $*.i )
+ 159_depfile.test: GEN = $(T1)
+ 
+ # -S writes the asm statements as text

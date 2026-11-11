@@ -42,7 +42,7 @@ test_host() {
     mkdir -p "$W/bin"
     cp -a "$stage"/usr/bin/. "$W/bin/"
     # the Kbuild wrappers: the binaries the kernel step compiled from the same sources
-    for w in tcc-kcc tcc-hostcc objtool-stub; do
+    for w in tcc-kcc tcc-hostcc; do
         [ -x "$B/kcc/$w" ] || die "no $B/kcc/$w: scripts/build.sh kernel"
         cp "$B/kcc/$w" "$W/bin/$w"
     done

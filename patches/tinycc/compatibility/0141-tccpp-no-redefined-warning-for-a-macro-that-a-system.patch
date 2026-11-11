@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 13:34:26 +0200
+Subject: [PATCH] tccpp: no "redefined" warning for a macro that a system
+ header redefines, as with gcc (musl's <limits.h> after the UINT_MAX of the
+ kernel's tools/include/linux/kernel.h, under -Werror)
+
+---
+ tccpp.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index dc079d6..7f79d1e 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -1260,6 +1260,19 @@ static int macro_is_equal(const int *a, const int *b)
+     return !(*a || *b);
+ }
+ 
++/* the current file was found through the system include paths (-isystem, the
++   compiler's and the C library's directories) or, with "file.h", next to such
++   a file: gcc gives no warnings there */
++static int in_system_header(void)
++{
++    BufferedFile *bf = file;
++    int i = bf ? bf->include_next_index : 0;
++
++    while (i == 1 && (bf = bf->prev))
++        i = bf->include_next_index;
++    return i - 2 >= tcc_state->nb_include_paths;
++}
++
+ /* defines handling */
+ ST_INLN void define_push(int v, int macro_type, int *str, Sym *first_arg)
+ {
+@@ -1271,7 +1284,10 @@ ST_INLN void define_push(int v, int macro_type, int *str, Sym *first_arg)
+     s->next = first_arg;
+     table_ident[v - TOK_IDENT]->sym_define = s;
+ 
+-    if (o && !macro_is_equal(o->d, s->d))
++    /* (a system header that redefines a macro of the program is not warned
++       about, as with gcc: musl's <limits.h> after the UINT_MAX of the Linux
++       kernel's tools/include/linux/kernel.h, under -Werror) */
++    if (o && !macro_is_equal(o->d, s->d) && !in_system_header())
+ 	tcc_warning("%s redefined", get_tok_str(v, NULL));
+ }
+ 

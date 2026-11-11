@@ -13,6 +13,7 @@
 #   tcc-test    run tinycc's own test suite (must print ALL TESTS PASSED)
 #   tcc-archive install the host tcc into a staging tree and pack it as out/<arch>/tcc-*.tar.gz
 #   tld         tools/tld (ld, nm, objcopy, readelf, ar, strip replacement) compiled by the host tcc
+#   libelf      tools/libelf (the libelf subset the kernel's objtool needs) compiled by the host tcc
 #   kernel      Linux: tinyconfig + kernels/linux/*.config, CC=tcc-kcc (kernels/linux/tcc-kcc.c), LD=tld
 #   musl        musl libc, static, compiled by tcc (no src/complex: tcc has no _Complex)
 #   busybox     static busybox compiled and linked by tcc against that musl
@@ -61,7 +62,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs
+#   all         host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -217,18 +218,32 @@ step_tld() {
     echo "   $("$TLD/ld" -v), $(ls -l "$TLD/tld" | awk '{print $5}') bytes"
 }
 
+# the libelf subset the kernel's objtool needs (tools/libelf): headers, libelf.a and a
+# pkg-config stand-in that answers for it, so that Kbuild builds the real objtool with
+# HOSTCC=tcc-hostcc and no host libelf
+step_libelf() {
+    [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
+    LIBELF=$B/libelf
+    msg "libelf: tools/libelf (the libelf subset objtool needs) compiled by the host tcc -> $LIBELF"
+    rm -rf "$LIBELF"
+    make -s -C "$ROOT/tools/libelf" CC="$TCC -B$TCCSRC -I$TCCSRC/include" AR="$TCC -ar" PREFIX="$LIBELF" \
+        || die "libelf build failed"
+    echo "   libelf.a $(ls -l "$LIBELF/lib/libelf.a" | awk '{print $5}') bytes; pkg-config: $("$LIBELF/pkg-config" libelf --cflags --libs)"
+}
+
 step_kernel() {
     need_src linux
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
     [ -x "$TCCSRC/i386-tcc" ] || die "no $TCCSRC/i386-tcc (the host-tcc step builds it): the real-mode code needs tcc -m16"
     KFRAGS="minimal.config drivers.config $ARCH.config tcc.config"
     TLD=$B/tld; [ -x "$TLD/ld" ] || die "no $TLD/ld: run the tld step first"
+    LIBELF=$B/libelf; [ -x "$LIBELF/pkg-config" ] || die "no $LIBELF/pkg-config: run the libelf step first"
     KB=$B/linux; mkdir -p "$KB"
     msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,drivers,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
     # the Kbuild wrappers are C programs (kernels/linux/*.c; the guest runs the same sources
     # as tcc -run scripts): compiled here by the host tcc for this build
     KCC=$B/kcc; mkdir -p "$KCC"
-    for w in tcc-kcc tcc-hostcc objtool-stub; do
+    for w in tcc-kcc tcc-hostcc; do
         "$TCC" -B"$TCCSRC" -I"$TCCSRC/include" -O2 -o "$KCC/$w" "$ROOT/kernels/linux/$w.c" || die "$w build failed"
     done
     KCC_LOG=$LOGS/kcc.log
@@ -236,8 +251,10 @@ step_kernel() {
     # TCC and KCC_LOG are given to this make only (not exported: GNU make re-exports a
     # variable that came from the environment with its own value, which would break the
     # musl-tcc wrapper during the tcc builds)
-    # HOSTCC: the host tools (fixdep, kconfig, modpost, sorttable, relocs, vdso2c, ...) are
-    # compiled by tcc too; objtool needs libelf and is replaced by objtool-stub (kernels/linux/objtool-stub.c)
+    # HOSTCC: the host tools (fixdep, kconfig, modpost, sorttable, relocs, vdso2c, objtool, ...)
+    # are compiled by tcc too; objtool links against tools/libelf (HOSTPKG_CONFIG, the
+    # stand-in of the libelf step, says where it is) and tools/build merges its objects with
+    # HOSTLD -r and HOSTAR, which are tld's
     # the binutils are tld's: LD/NM/OBJCOPY/READELF/AR/STRIP (no objdump is needed)
     # KBUILD_BUILD_VERSION=1: the build number counts the generations (uname -v "#1"); a kernel
     # built inside the guest by userland/selfhost/build-kernel is #2, and so on
@@ -246,7 +263,7 @@ step_kernel() {
     # KCFLAGS: kernels/linux/tcc-canary.h defines the seqlock canary __scoped_seqlock_bug() as
     # the empty stub the kernel uses for GCC 8 (tcc cannot prove the call dead), so the tree
     # needs no patch for it; build-kernel passes the same flag in the guest
-    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc OBJTOOL=$KCC/objtool-stub LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1 KCFLAGS=-include$ROOT/kernels/linux/tcc-canary.h"
+    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc HOSTPKG_CONFIG=$LIBELF/pkg-config HOSTLD=$TLD/ld HOSTAR=$TLD/ar LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1 KCFLAGS=-include$ROOT/kernels/linux/tcc-canary.h"
     if [ ! -f "$KB/.config" ]; then
         $MK -s tinyconfig >"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "tinyconfig failed"
     fi
@@ -1014,7 +1031,9 @@ step_guest_make() {
 # generated files, which no dependency list records), every Kconfig file (Kconfig sources them
 # all), Kbuild's own scripts (without the tools this build never runs) and all Makefiles under
 # scripts/ (Kbuild descends into scripts/dtc even when it builds nothing), the generic and the
-# uapi headers, the arch's headers, boot code, syscall tables and tools, and the configs.
+# uapi headers, the arch's headers, boot code, syscall tables and tools, the configs, and
+# objtool with what it is built from (tools/build, tools/lib/subcmd, tools/scripts, tools/lib,
+# tools/arch/x86: Kbuild builds it in the guest, HOSTCC=tcc-hostcc against /usr/lib/libelf.a).
 # scripts/selfhost-test.sh host proves the list: it builds the kernel from the tarball.
 kernel_source_list() (
     cd "$LINUX"
@@ -1031,7 +1050,9 @@ kernel_source_list() (
         git ls-files Kbuild Makefile COPYING scripts include/linux include/asm-generic include/uapi \
             include/vdso include/generated arch/x86/include arch/x86/boot arch/x86/realmode arch/x86/entry \
             arch/x86/tools arch/x86/configs arch/x86/lib arch/x86/kernel/cpu/mkcapflags.sh kernel/configs \
-            kernel/time/timeconst.bc init usr tools/include tools/arch/x86/include arch/um/scripts/Makefile.rules \
+            kernel/time/timeconst.bc init usr tools/include tools/arch/x86 tools/Makefile tools/scripts tools/build \
+            tools/lib/subcmd tools/objtool tools/lib/string.c tools/lib/ctype.c tools/lib/str_error_r.c tools/lib/rbtree.c \
+            arch/um/scripts/Makefile.rules \
             | grep -vE '^scripts/(dtc|coccinelle|gdb|sbom|gendwarfksyms|gcc-plugins|clang-tools|selinux|package|tracing|genksyms|ksymoops|kconfig/tests|rust|atomic|dummy-tools|kunit|ipe|include|lib)/'
         # Kbuild descends into scripts/dtc (and others) even when they build nothing: their Makefiles
         git ls-files scripts | grep -E '/(Makefile[^/]*|Kbuild[^/]*)$'
@@ -1075,6 +1096,8 @@ step_selfhost() {
     git -C "$TCCSRC" archive --format=tar.gz --prefix=tinycc/ -o "$STAGE/usr/src/tinycc.tar.gz" HEAD
     tar czf "$STAGE/usr/src/tld.tar.gz" -C "$ROOT/tools" --owner=0 --group=0 --numeric-owner \
         tld/Makefile tld/README.md tld/test.sh $(cd "$ROOT/tools" && ls tld/*.c tld/*.h)
+    tar czf "$STAGE/usr/src/libelf.tar.gz" -C "$ROOT/tools" --owner=0 --group=0 --numeric-owner \
+        libelf/Makefile libelf/README.md libelf/test.sh $(cd "$ROOT/tools" && ls libelf/*.c libelf/*.h)
     cp "$SRC/.downloads/make-$(lock_ref make).tar.gz" "$STAGE/usr/src/"
     echo "   $(ls "$STAGE/usr/src" | tr '\n' ' ')"
     # 3. the toolchain: tld (static musl, compiled by the host tcc) with its tool names, GNU
@@ -1082,9 +1105,17 @@ step_selfhost() {
     "$MUSL_TCC" -std=gnu99 -O2 -o "$STAGE/usr/bin/tld" "$ROOT"/tools/tld/*.c || die "tld (musl) build failed"
     for t in ld nm objcopy readelf ar strip; do ln -sf tld "$STAGE/usr/bin/$t"; done
     cp "$B/make/make" "$STAGE/usr/bin/make"
+    # libelf (tools/libelf; static musl, compiled by the host tcc) in /usr/lib and /usr/include:
+    # objtool, which Kbuild builds in the guest with HOSTCC=tcc-hostcc, links against it (-lelf,
+    # the fallback of tools/objtool/Makefile when there is no pkg-config)
+    mkdir -p "$STAGE/usr/lib" "$STAGE/usr/include"
+    "$MUSL_TCC" -std=gnu99 -O2 -I"$ROOT/tools/libelf" -c -o "$SH/libelf.o" "$ROOT/tools/libelf/libelf.c" || die "libelf (musl) build failed"
+    # (the target compiler's ar: the host tcc's refuses objects of the other word size)
+    rm -f "$STAGE/usr/lib/libelf.a" && "$TCC_TARGET" -ar rcs "$STAGE/usr/lib/libelf.a" "$SH/libelf.o" || die "libelf.a (musl) failed"
+    cp "$ROOT/tools/libelf/libelf.h" "$ROOT/tools/libelf/gelf.h" "$STAGE/usr/include/"
     # the Kbuild wrappers and the commands are C scripts ("#!/usr/bin/tcc -run"), installed
     # under their command names
-    for w in tcc-kcc tcc-hostcc objtool-stub; do cp "$ROOT/kernels/linux/$w.c" "$STAGE/usr/bin/$w"; done
+    for w in tcc-kcc tcc-hostcc; do cp "$ROOT/kernels/linux/$w.c" "$STAGE/usr/bin/$w"; done
     for c in build-kernel build-toolchain send-file flex bison; do cp "$ROOT/userland/selfhost/$c.c" "$STAGE/usr/bin/$c"; done
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
@@ -1202,7 +1233,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1222,7 +1253,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; "step_$(echo $s | tr - _)";;
     esac

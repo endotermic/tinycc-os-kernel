@@ -136,3 +136,8 @@ features/0134-i386-code-size-jumps-relaxed-to-rel8-at-the-end-of-t.patch
 features/0135-tests-171_codesize-the-cases-of-the-previous-commit.patch
 features/0136-i386-code-size-relaxation-in-functions-with-inline-a.patch
 features/0137-tests-172_reload_relax-the-cases-of-the-previous-com.patch
+compatibility/0138-libtcc-MT-names-the-target-of-the-dependency-file-se.patch
+compatibility/0139-tests-159_depfile-the-MT-case-of-the-previous-commit.patch
+compatibility/0140-include-limits.h-each-limit-guarded-on-its-own-for-a.patch
+compatibility/0141-tccpp-no-redefined-warning-for-a-macro-that-a-system.patch
+compatibility/0142-tests-173_sysheader_redef-the-case-of-the-previous-c.patch

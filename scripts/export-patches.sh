@@ -20,6 +20,7 @@ old=$([ -f "$pdir/series" ] && series_files "$pdir/series" || true)
 mkdir -p "$pdir"
 i=0; new_series=
 for p in "$tmp"/*.patch; do
+    [ -f "$p" ] || continue          # no commits: an empty series
     i=$((i + 1))
     entry=$(echo "$old" | sed -n "${i}p")
     cat=${entry%%/*}; [ -n "$entry" ] || cat=$cat_new

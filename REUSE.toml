@@ -14,12 +14,6 @@ SPDX-License-Identifier = "BSD-2-Clause"
 
 # Patches are derivative works of the component they modify and carry its license.
 [[annotations]]
-path = ["patches/linux/**/*.patch"]
-precedence = "override"
-SPDX-FileCopyrightText = ["The Linux kernel authors", "2026 Nikolajs Agafonovs"]
-SPDX-License-Identifier = "GPL-2.0-only"
-
-[[annotations]]
 path = ["patches/tinycc/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["The Tiny C Compiler authors", "2026 Nikolajs Agafonovs"]

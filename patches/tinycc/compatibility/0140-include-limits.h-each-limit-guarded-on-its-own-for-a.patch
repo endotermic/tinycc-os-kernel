@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 13:18:28 +0200
+Subject: [PATCH] include/limits.h: each limit guarded on its own, for a
+ program that defines some of them before including it
+ (tools/include/linux/kernel.h's UINT_MAX in the kernel's objtool)
+
+---
+ include/limits.h | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/include/limits.h b/include/limits.h
+index 2ab6cee..b1c1020 100644
+--- a/include/limits.h
++++ b/include/limits.h
+@@ -9,7 +9,9 @@
+    next one), and the C library's file adds the POSIX limits.
+ 
+    The C library's file comes first and the ISO limits are filled in
+-   afterwards, only where it left them out: glibc does (with __GNUC__,
++   afterwards, each only where it is not defined yet (a program may have
++   defined some itself before including this file, as the Linux kernel's
++   tools/include/linux/kernel.h does with UINT_MAX): glibc does (with __GNUC__,
+    and it skips its own #include_next because _GCC_LIMITS_H_ is already
+    defined), musl defines them all itself, with other spellings, which
+    would otherwise be "redefined" warnings in every program including
+@@ -45,32 +47,55 @@
+ #endif
+ #ifndef SHRT_MAX
+ #define SHRT_MAX 32767
++#endif
++#ifndef SHRT_MIN
+ #define SHRT_MIN (-32768)
++#endif
++#ifndef USHRT_MAX
+ #define USHRT_MAX 65535
+ #endif
+ #ifndef INT_MAX
+ #define INT_MAX 2147483647
++#endif
++#ifndef INT_MIN
+ #define INT_MIN (-INT_MAX - 1)
++#endif
++#ifndef UINT_MAX
+ #define UINT_MAX 4294967295U
+ #endif
+ #ifndef LONG_MAX
+ #if __SIZEOF_LONG__ == 8
+ #define LONG_MAX 9223372036854775807L
+-#define ULONG_MAX 18446744073709551615UL
+ #else
+ #define LONG_MAX 2147483647L
++#endif
++#endif
++#ifndef ULONG_MAX
++#if __SIZEOF_LONG__ == 8
++#define ULONG_MAX 18446744073709551615UL
++#else
+ #define ULONG_MAX 4294967295UL
+ #endif
++#endif
++#ifndef LONG_MIN
+ #define LONG_MIN (-LONG_MAX - 1L)
+ #endif
+ #ifndef LLONG_MAX
+ #define LLONG_MAX 9223372036854775807LL
++#endif
++#ifndef LLONG_MIN
+ #define LLONG_MIN (-LLONG_MAX - 1LL)
++#endif
++#ifndef ULLONG_MAX
+ #define ULLONG_MAX 18446744073709551615ULL
+ #endif
+ #ifndef LONG_LONG_MAX
+ #define LONG_LONG_MAX LLONG_MAX
++#endif
++#ifndef LONG_LONG_MIN
+ #define LONG_LONG_MIN LLONG_MIN
++#endif
++#ifndef ULONG_LONG_MAX
+ #define ULONG_LONG_MAX ULLONG_MAX
+ #endif
+ #ifndef MB_LEN_MAX

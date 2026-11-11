@@ -71,16 +71,19 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 128 | tinycc 0134 |
 | | | | | 129 | tinycc 0132 |
 | | | | | 130 | tinycc 0136 |
+| | | | | 131 | tinycc 0138 |
+| | | | | 132 | tinycc 0140 |
+| | | | | 133 | tinycc 0141 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
-K8 = 0007, K9 = 0008, K10 = 0009, K11 = 0010, K12 = 0011 (dropped 2026-11-10: fix 130), K13 = 0012, K14 = 0013,
+K8 = 0007, K9 = 0008, K10 = 0009 (dropped 2026-11-11: tools/libelf, the real objtool built by tcc), K11 = 0010, K12 = 0011 (dropped 2026-11-10: fix 130), K13 = 0012, K14 = 0013,
 K15 = 0014, K16 = 0015, K17 = 0016, K18 = 0017, K19 = 0018, K20 = 0019.
 
 Fixes 57-70 and K10-K12 (2026-10-22) made the kernel build independent of gcc and
@@ -136,7 +139,8 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/170_label_const.c` | all (the asm output case on i386, x86_64) | 129 |
 | `tests/tests2/171_codesize.c` | all (the regparm and relaxation cases on i386) | 128 |
 | `tests/tests2/172_reload_relax.c` | all (the relaxation and reload cases on i386; the 16-bit addresses by `tests/m16-check.sh`) | 130 |
-| `tests/tests2/159_depfile.c` | all | 3, 68 |
+| `tests/tests2/173_sysheader_redef.c` (+ `173_sysheader/`) | all | 133 |
+| `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
 | `tests/asmtest.S` (`make -C tests asmtest`: needs gcc and objdump, not part of `make test`) | x86_64 host (the `__i386__` part checked with `as --32`) | 19, 23, 24, 28, 31, 50, 51, 55, 56, 57, 59, 63, 67, 68, 70, 71, 73, 75, 77, 79, 80, 81, 91, 98, 99 |
@@ -2637,3 +2641,50 @@ C2. 2026-10-26, configuration: `CONFIG_SND_OSSEMUL=y` is needed for `SND_PCM_OSS
     13/13 on both, the i386 kernel booted with `vga=normal`, and the i386 guest's `--auto=test`
     run (tcc rebuilt by the guest's tcc, itself built by the new compiler) ALL TESTS PASSED,
     test3 included; details in PORT-NOTES (the vanilla-kernel section, 2026-11-10).
+
+--- Fixes 131 to 133 (2026-11-11) came from building the real objtool with tcc (tools/libelf, see
+PORT-NOTES "The vanilla kernel"): the last kernel patch, 0009 (K10, the `OBJTOOL=` variable for a
+stub), left the series that day; patches/linux/ is gone and the tree is vanilla. ---
+
+131. 2026-11-11, COMMITTED (patches/tinycc/compatibility/0138, test 0139 = the -MT case of
+    tests2/159_depfile), `libtcc.c` (TCC_OPTION_MT), `tcc.h`, `tcctools.c` (gen_makedeps()).
+    Problem: the kernel's tools/build (which builds objtool, fixdep and libsubcmd) compiles with
+    `-Wp,-MD,<depfile> -Wp,-MT,<object>`; tcc had -MD/-MMD/-MF/-MP but no -MT, so every file of
+    objtool stopped with "invalid option -- '-MT'" once Kbuild built the real objtool instead of
+    getting `OBJTOOL=objtool-stub`. Fix: `-MT target` (also `-MTtarget`, and through `-Wp,`,
+    whose comma split gives the separate form) names the target of the dependency rule instead
+    of the output file; several accumulate separated by spaces, as with gcc. Verification:
+    159_depfile's new case (`-Wp,-MD,x.d -Wp,-MT,obj/x.o -MT x.o` writes `obj/x.o x.o: \ x.c`),
+    `make test`, the objtool build by tcc-hostcc (132 below).
+
+132. 2026-11-11, COMMITTED (patches/tinycc/compatibility/0140), `include/limits.h` (fix 61's
+    file). Problem: the file defined the ISO limits in groups behind one guard each (`#ifndef
+    INT_MAX` covering INT_MIN and UINT_MAX too, `#ifndef SHRT_MAX` covering SHRT_MIN and
+    USHRT_MAX, the LONG and LLONG groups the same); the kernel's tools/include/linux/kernel.h
+    defines UINT_MAX itself before <limits.h> is included (tools/include/linux/bitops.h
+    includes it after kernel.h), so objtool's compile with `-Werror` stopped at "UINT_MAX
+    redefined". Fix: every limit behind its own `#ifndef`. Verification: the objtool build
+    (every objtool source includes that chain; 36 host compiles by tcc-hostcc: objtool, its
+    arch/x86 part, libsubcmd, fixdep, linked by `tld -r` and `tld ar` through tools/build),
+    `make test`; `tools/libelf/test.sh` then shows the tcc-built objtool giving byte-identical
+    files, exit codes and diagnostics to a gcc/elfutils objtool on all 1573 objects Kbuild runs
+    it on (164 of them with the same warnings: `missing __noreturn`, `unreachable instruction`,
+    UACCESS; none fatal, `OBJTOOL_WERROR` is off), and the kernel's `.static_call_sites` are
+    recorded for the first time (99 sites in vmlinux), so static_call_init() patches the
+    inline static calls at boot instead of leaving the trampolines.
+
+133. 2026-11-11, COMMITTED (patches/tinycc/compatibility/0141, test 0142 =
+    tests2/173_sysheader_redef), `tccpp.c` (in_system_header(), define_push()). Problem: found
+    by the guest's build of objtool, after 132 had settled the host's: there the C library is
+    musl, whose <limits.h> defines `UINT_MAX` (0xffffffffU) without a guard, after
+    tools/include/linux/kernel.h's `(~0U)`; tcc warned "UINT_MAX redefined" and objtool's
+    `-Werror` made it fatal ("/usr/include/limits.h:27: error: UINT_MAX redefined"), where gcc
+    says nothing because it gives no warnings inside system headers. Fix: the "redefined"
+    warning is not given when the redefining `#define` is in a file found through the system
+    include paths (-isystem, the compiler's and the C library's directories) or, for
+    `"file.h"`, next to such a file -- the test the dependency output already made for
+    -MMD. A redefinition in the program's own files (also one reached through -I) warns as
+    before. Verification: 173_sysheader_redef (a header under -isystem and one it includes
+    by `"..."` redefine two macros of the program, compiled with -Werror; the same headers
+    through -I give both warnings), `make test`, and the guest's generation-2 kernel build
+    (PORT-NOTES, the vanilla-kernel section, 2026-11-11).

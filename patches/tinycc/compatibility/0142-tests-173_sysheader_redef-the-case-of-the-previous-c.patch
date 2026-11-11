@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 13:34:26 +0200
+Subject: [PATCH] tests: 173_sysheader_redef, the case of the previous commit
+
+---
+ tests/tests2/173_sysheader/173_limit.h  |  3 +++
+ tests/tests2/173_sysheader/173_limit2.h |  1 +
+ tests/tests2/173_sysheader_redef.c      | 17 +++++++++++++++++
+ tests/tests2/173_sysheader_redef.expect |  1 +
+ tests/tests2/Makefile                   |  3 +++
+ 5 files changed, 25 insertions(+)
+ create mode 100644 tests/tests2/173_sysheader/173_limit.h
+ create mode 100644 tests/tests2/173_sysheader/173_limit2.h
+ create mode 100644 tests/tests2/173_sysheader_redef.c
+ create mode 100644 tests/tests2/173_sysheader_redef.expect
+
+diff --git a/tests/tests2/173_sysheader/173_limit.h b/tests/tests2/173_sysheader/173_limit.h
+new file mode 100644
+index 0000000..22d8581
+--- /dev/null
++++ b/tests/tests2/173_sysheader/173_limit.h
+@@ -0,0 +1,3 @@
++#define LIMIT 0xffffffffU
++#define FROM_SYSTEM_HEADER 1
++#include "173_limit2.h"
+diff --git a/tests/tests2/173_sysheader/173_limit2.h b/tests/tests2/173_sysheader/173_limit2.h
+new file mode 100644
+index 0000000..580fe09
+--- /dev/null
++++ b/tests/tests2/173_sysheader/173_limit2.h
+@@ -0,0 +1 @@
++#define LIMIT2 2
+diff --git a/tests/tests2/173_sysheader_redef.c b/tests/tests2/173_sysheader_redef.c
+new file mode 100644
+index 0000000..47bafb3
+--- /dev/null
++++ b/tests/tests2/173_sysheader_redef.c
+@@ -0,0 +1,17 @@
++/* A macro redefined by a system header (one found through -isystem or the
++   compiler's and the C library's own directories, or a "file.h" next to
++   such a header) gives no "redefined" warning, as with gcc: the Linux
++   kernel's tools/include/linux/kernel.h defines UINT_MAX before musl's
++   <limits.h> does, and objtool is built with -Werror (fix 133);
++   tinycc-os-kernel project.  The Makefile adds -isystem and -Werror. */
++#include <stdio.h>
++
++#define LIMIT (~0U)
++#define LIMIT2 (1 + 1)
++#include <173_limit.h>
++
++int main(void)
++{
++    printf("%x %d %d\n", LIMIT, LIMIT2, FROM_SYSTEM_HEADER);
++    return 0;
++}
+diff --git a/tests/tests2/173_sysheader_redef.expect b/tests/tests2/173_sysheader_redef.expect
+new file mode 100644
+index 0000000..b263a4b
+--- /dev/null
++++ b/tests/tests2/173_sysheader_redef.expect
+@@ -0,0 +1 @@
++ffffffff 2 1
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index bce393c..52564dd 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -207,6 +207,9 @@ endif
+ 	$(TCC) -c $1 -o $*.o -Wp,-MD,$*.d -Wp,-MT,obj/$*.o -MT $*.o && cat $*.d && rm -f $*.d $*.i )
+ 159_depfile.test: GEN = $(T1)
+ 
++# a system header (-isystem) may redefine a macro of the program without a warning
++173_sysheader_redef.test: FLAGS += -isystem $(SRC)/173_sysheader -Werror
++
+ # -S writes the asm statements as text
+ 160_asm_offsets.test: T1 = ( $(TCC) -S $1 -o $*.s && cat $*.s && rm -f $*.s )
+ 160_asm_offsets.test: GEN = $(T1)

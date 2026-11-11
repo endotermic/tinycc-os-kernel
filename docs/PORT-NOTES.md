@@ -13,7 +13,7 @@ produces the asm-offsets text with `-S`; the host tools (fixdep, kconfig, modpos
 sorttable, relocs, vdso2c, mkpiggy, build) are compiled by tcc too; `tools/tld` (our own
 ld, nm, objcopy, readelf, ar; 4500 lines of C compiled by tcc) does every link and binary
 conversion, including the `-pie` decompressor, the `--emit-relocs` realmode blob and the
-`-shared` vDSO with its version script; objtool is a stub (it needs libelf). The build log
+`-shared` vDSO with its version script; objtool itself is built by tcc against `tools/libelf` (since 2026-11-11; a stub before). The build log
 shows 1546 tcc and 0 gcc invocations, and the result boots in QEMU (2026-10-22: the
 libc-free smoke image and the busybox shell). The one thing gcc still does is build tcc
 itself on the host (tcc's own Makefile), which the guest build already does with tcc.
@@ -39,11 +39,11 @@ Remaining noise in the kernel build: objtool warnings (`unreachable instruction`
 `kernels/linux/tcc.config`) and empty orphan `.init.text`/`.init.data` sections in the
 decompressor objects (tcc creates a section as soon as a declaration carries the attribute).
 
-## How tcc is presented to Kbuild: `kernels/linux/tcc-kcc.c`, `tcc-hostcc.c`, `objtool-stub.c`, `tld`
+## How tcc is presented to Kbuild: `kernels/linux/tcc-kcc.c`, `tcc-hostcc.c`, `tld`, `libelf`
 
-The three wrappers are C programs (since 2026-10-26; sh scripts before): `scripts/build.sh
+The two wrappers are C programs (since 2026-10-26; sh scripts before): `scripts/build.sh
 kernel` compiles them with the host tcc into `build/<arch>/kcc/` and passes those binaries as
-CC, HOSTCC and OBJTOOL; the self-hosting image carries the same sources under the command
+CC and HOSTCC; the self-hosting image carries the same sources under the command
 names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
 
 * tcc gets `-B<tccdir> -I<tccdir>/include -D__GNUC__=15 -D__GNUC_MINOR__=3
@@ -64,8 +64,18 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   `__GNUC__`; a modest version keeps glibc's headers off newer gcc extensions), with
   `-U__REDIRECT*` (glibc redefines them), `-D__USER_LABEL_PREFIX__=` and `-D__NO_INLINE__`
   (glibc's gnu89 extern inlines would be duplicate definitions).
-* `OBJTOOL=objtool-stub` (`kernels/linux/objtool-stub.c`, kernel patch 0009): objtool needs libelf; with this
-  config it only validates and records static-call sites, and the kernel works without them.
+* objtool (`CONFIG_OBJTOOL=y`, forced by `HAVE_STATIC_CALL_INLINE` on x86_64) is the real one
+  since 2026-11-11: Kbuild's `prepare` builds `tools/objtool` with HOSTCC=tcc-hostcc against
+  `tools/libelf` (the libelf subset it uses, 24 functions in ~900 lines; `scripts/build.sh
+  libelf` builds it into `build/<arch>/libelf/` and `HOSTPKG_CONFIG=build/<arch>/libelf/pkg-config`
+  tells tools/objtool/Makefile where it is), `HOSTLD`/`HOSTAR` are tld's for the `ld -r` merges
+  of tools/build, and Kbuild runs it on every object with `--hacks=jump_label --hacks=noinstr
+  --static-call --uaccess`. In the guest it is built the same way against `/usr/lib/libelf.a`
+  (no pkg-config there: the Makefile's `-lelf` fallback). tcc fixes 131 (`-MT`), 132
+  (limits.h) and 133 (no "redefined" warning in system headers) came from that build. Before, `OBJTOOL=objtool-stub` with kernel patch 0009 (an
+  `OBJTOOL=` variable) stood in: no validation, no static-call sites recorded.
+  `tools/libelf/test.sh`: the tcc-built objtool and a gcc/elfutils one give byte-identical
+  results on every object of the tree.
 * `LD NM OBJCOPY READELF AR STRIP` are `build/<arch>/tld/*` (`scripts/build.sh tld`
   compiles `tools/tld/*.c` with the host tcc). `ld -v` prints "GNU ld (tld) 2.47" for
   scripts/ld-version.sh and the `ld-option` probes. tld's own test suite
@@ -82,7 +92,7 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   retpoline/IBT. Kconfig is re-probed when `CC_VERSION_TEXT` changes; `build.sh` runs
   `olddefconfig` every time.
 
-## Kernel-side changes (`patches/linux/`)
+## Kernel-side changes (none since 2026-11-11: `patches/linux/` is gone, the tree is vanilla)
 
 * workarounds: none since 2026-11-06. The seqlock canaries as stubs (0005: one of the
   two, `__scoped_seqlock_bug()`, needs the optimizer to prove a state kept in a struct across
@@ -114,9 +124,10 @@ names as `#!/usr/bin/tcc -run` scripts, like every script of the guest.
   seemed; 0005 (K5, K6) left on 2026-11-06 for the `tcc-canary.h` header above, and 0006
   (K7) the same day with tcc fix 129 (a constant local kept across a label that a later goto
   reaches), and 0011 (K12) on 2026-11-10 with tcc fix 130 (the setup fits the 32 KB with its
-  video mode code); 1 remains (0009), upstreamable.
+  video mode code), and 0009 (K10) on 2026-11-11 with `tools/libelf` (the real objtool built
+  by tcc, so no `OBJTOOL=` variable is needed): none remains.
 * upstreamable, toolchain capability (2026-10-22): `OBJTOOL=` names an external objtool
-  (0009); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
+  (0009; dropped 2026-11-11, the real objtool being built by tcc against `tools/libelf`); `CONFIG_AS_AVX2`/`CONFIG_AS_AVX512` probes gate the AVX SHA-256 files and the
   AVX-512 BLAKE2s function (0010; dropped 2026-11-04 once fix 122 gave tcc VEX and EVEX); `X86_BOOT_VIDEO_MODES` made the
   BIOS video mode setting of the real-mode setup optional (0011; tcc's 16-bit code was twice
   gcc -Os's and the setup must stay under 32 KB: 39 488 bytes with it, 27 328 without;
@@ -164,9 +175,10 @@ for gcc.
 
 ## Open items
 
-1. Quality: objtool is a stub now (the real one needs libelf), so its validation is gone:
-   the earlier warnings (code after `__builtin_unreachable`/`ud2`, `missing __noreturn`,
-   UACCESS) are no longer reported; modpost mismatches from non-inlined `__init`-only
+1. Quality: objtool's warnings (the real objtool runs again since 2026-11-11): code after
+   `__builtin_unreachable`/`ud2` ("unreachable instruction"), `missing __noreturn`, UACCESS
+   ("redundant UACCESS disable" in `.altinstr_replacement`, calls with UACCESS enabled); 164
+   objects, none fatal; modpost mismatches from non-inlined `__init`-only
    helpers; empty `.init.*` sections created by declarations with a section attribute
    (tccgen should create the section only for definitions).
 2. Assembler: VEX/EVEX since fix 122 (2026-11-04) for the AVX, AVX2, BMI1/2 and AVX-512VL
@@ -176,7 +188,7 @@ for gcc.
    equal, a few bytes bigger: the kernel .S objects differ from GNU as's in exactly that);
    `.altmacro` is accepted but its `%expr`/`<...>` forms are not implemented; `-m16` code is
    about 1.7 times the size of gcc -Os's (no register allocation; it was twice, the reason
-   for kernel patch 0011 until fix 130); the real objtool could not be built without libelf.
+   for kernel patch 0011 until fix 130).
 3. tld: no `.eh_frame_hdr` generation, no GOT/PLT/dynamic relocations/TLS (the kernel needs
    none), `.strtab` not tail-merged, `readelf` only `-r`; see `../tools/tld/README.md`.
 4. tcc polish: `__builtin_popcount*` still calls libtcc1; `_Pragma("pack")` only warns; the
@@ -364,8 +376,11 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   Makefile under it (Kbuild descends into scripts/dtc even with CONFIG_DTC=n);
   `include/{linux,asm-generic,uapi,vdso}`, `arch/x86/{include,boot,realmode,entry,tools,
   configs,lib}`, `arch/um/scripts/Makefile.rules` (fs/hostfs includes it), `init/`, `usr/`,
-  `kernel/configs/`, `tools/include`, `tools/arch/x86/include`. The kernel patches (4 since fix 125) are
-  applied (the tree is `src/linux` on branch `patched`); `patches/` is shipped too.
+  `kernel/configs/`, `tools/include`, `tools/arch/x86`, and objtool with what builds it
+  (`tools/objtool`, `tools/build`, `tools/lib/subcmd`, `tools/scripts`, `tools/lib/*.c`; since
+  2026-11-11, when Kbuild started building the real objtool in the guest). The tree is vanilla
+  (no kernel patch since 2026-11-11: `src/linux` branch `patched` equals `base`); `patches/` is
+  shipped too.
   `scripts/selfhost-test.sh host` proves the list by building the tarball on the host with the
   image's toolchain: 49 s on 8 cores, 229 MB of build directory, a bzImage of the same
   1 473 024 bytes as the reference. Missing-file errors found that way: `scripts/dtc/Makefile`,
@@ -379,7 +394,9 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   the directory of its own argv[0], so the two live side by side), `/usr/bin/tld` with the
   `ld nm objcopy readelf ar strip` links, `/usr/bin/make` (step guest-make: GNU make 4.4.1
   configured `--disable-nls --without-guile --disable-load`, builds with tcc in a second),
-  the Kbuild wrappers `tcc-kcc`, `tcc-hostcc`, `objtool-stub` (the `kernels/linux/*.c` sources
+  `/usr/lib/libelf.a` with `/usr/include/{libelf,gelf}.h` (`tools/libelf`, static musl:
+  objtool, which Kbuild builds in the guest, links against it),
+  the Kbuild wrappers `tcc-kcc`, `tcc-hostcc` (the `kernels/linux/*.c` sources
   as tcc -run scripts; the wrappers pass `-B` only when the tcc is an in-tree one, detected by
   `include/tccdefs.h` next to it),
   `flex` and `bison` stand-ins that copy the lexer and parser generated on the host into
@@ -395,7 +412,7 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
   The busybox image therefore needs `/usr/bin/tcc` (step guest-tcc) to boot at all.
 * `build-kernel`: mounts a tmpfs on /build (85% of RAM), unpacks the tree, `tinyconfig` +
   `merge_config.sh` of the fragments + `olddefconfig`, then the same make line as
-  `scripts/build.sh step_kernel` (CC=tcc-kcc HOSTCC=tcc-hostcc OBJTOOL=objtool-stub
+  `scripts/build.sh step_kernel` (CC=tcc-kcc HOSTCC=tcc-hostcc HOSTLD/HOSTAR=tld
   LD/NM/OBJCOPY/READELF/AR/STRIP=tld LEX=flex YACC=bison) with `-j nproc`,
   `KBUILD_BUILD_VERSION=<running kernel's build number + 1>`, `KBUILD_BUILD_USER=tcc`,
   `KBUILD_BUILD_HOST=tinycc-os-guest`; reports time, invocation counts, memory. It prefers
@@ -905,7 +922,7 @@ header outside the tree, see the end of this section), 0006 (believed interproce
 constant through the parameter of a function with one caller; fix 120 had taken that half,
 and the reference left came from the constant lost at the `retry:` label of
 copy_fpstate_to_sigframe(): tcc fix 129, 2026-11-06, see the end of this section), 0009 (objtool is built on the host with libelf; the self-hosting
-guest has none: a build recipe matter, not tcc's), 0011 (the limit is setup.ld's `_end <= 0x8000`, the 4.4 KB .bss included: with the video mode
+guest has none: a build recipe matter, not tcc's -- settled on 2026-11-11 by `tools/libelf`, see the end of this section), 0011 (the limit is setup.ld's `_end <= 0x8000`, the 4.4 KB .bss included: with the video mode
 code the setup's `_end` is 0x9a70 by the 133-patch compiler and 0x84b0 by the 135-patch one with
 tcc fix 128's code-size pass, 1 200 bytes over, gcc -Os's being 0x4e80; what is left is tcc's
 stack-resident locals, 710 loads and 589 stores through %ebp at 5 bytes each in 26 KB of text,
@@ -914,7 +931,7 @@ which only a register allocator removes; the option is a reasonable kernel knob 
 section).
 
 objtool, which Kbuild runs on every object of this configuration (CONFIG_OBJTOOL=y through
-HAVE_STATIC_CALL_INLINE; the project replaces it by `objtool-stub`), was built from the pinned
+HAVE_STATIC_CALL_INLINE; the project replaced it by `objtool-stub` until 2026-11-11), was built from the pinned
 tree with the host gcc and run on all 1566 tcc-built x86_64 objects of drivers.config with the
 configuration's flags, `--hacks=jump_label --hacks=noinstr --static-call --uaccess`: every
 object was accepted (exit 0), with 212 warnings in 110 objects: "unreachable instruction" (the
@@ -1217,6 +1234,49 @@ guest (`./run.sh --arch i386 --selfhost --auto=test`, the image repacked with th
 source and a guest tcc rebuilt by the new compiler) rebuilt tcc, i386-tcc and tld and passed
 tcc's suite, test3 and 172_reload_relax included (144 tests2 cases).
 
+Patch 0009 left on 2026-11-11, the last one: the tree is vanilla, `patches/linux/` is gone. Not
+a compiler feature but a build recipe, as foreseen: `tools/libelf` (one C99 file of ~900 lines,
+BSD-2-Clause) implements the 24 libelf functions objtool calls -- `elf_begin`/`elf_getscn`/
+`elf_newscn`/`elf_getdata`/`elf_newdata`/`elf_strptr`/`elf_update` and the `gelf_*` header,
+symbol and relocation accessors -- with elfutils' semantics where objtool depends on them,
+measured against elfutils with a probe program first: new sections numbered from 1, data
+blocks laid out at their `d_align` with `d_off` set by `elf_update`, a section's size and
+alignment taken from its blocks (a caller's `sh_size` is overridden, which objtool's
+over-allocated symbol table relies on), `elf_nextscn(elf, NULL)` being section 1, a data
+block with a NULL buffer for `SHT_NOBITS` and empty sections. A pkg-config stand-in
+(`tools/libelf/pkg-config.c`) answers `$(HOSTPKG_CONFIG) libelf` for the host build; the
+guest gets `/usr/lib/libelf.a` and the headers (static musl) and tools/objtool/Makefile's
+`-lelf` fallback finds them. Kbuild then builds the real `tools/objtool` itself in `prepare`,
+with `HOSTCC=tcc-hostcc` (36 compiles: objtool, its arch/x86 part with the awk-generated
+inat tables, libsubcmd, fixdep) and `HOSTLD`/`HOSTAR` = tld for tools/build's `ld -r` merges
+and `ar rcs`. Three tcc fixes fell out (docs/FIX-LOG.md): 131, `-MT`, which tools/build passes as
+`-Wp,-MT,<object>`; 132, `include/limits.h` guarding each limit on its own
+(tools/include/linux/kernel.h predefines `UINT_MAX`); and 133, from the guest's build, where
+musl's <limits.h> redefines that `UINT_MAX`: no "redefined" warning inside a system header, as
+with gcc (objtool is compiled with `-Werror`). `tools/libelf/test.sh` compiles every
+object Kbuild runs objtool on afresh (the compile command of its `.cmd` file) and runs the
+tcc-built objtool and a gcc/elfutils one on it: on 2026-11-11 all 1573 objects came out
+byte-identical with the same exit codes and diagnostics (164 objects warn: `missing
+__noreturn`, `unreachable instruction`, UACCESS; non-fatal). What changes in the kernel:
+objtool's validation is back in the build log, and `.static_call_sites` is recorded (99 sites
+in vmlinux), so `static_call_init()` patches the inline static calls (x86_pmu's, the
+preemption ones) at boot instead of leaving the calls through the trampolines. Kbuild's
+pruned tree for the guest gained `tools/objtool`, `tools/build`, `tools/lib/subcmd`,
+`tools/scripts`, `tools/lib/*.c` and `tools/arch/x86` (10 620 files, 189 more).
+Verified on x86_64 that day with the 142-patch compiler: the host build (2102 tcc and 0 gcc
+invocations on a configured tree, 1m24s at -j6, bzImage 7 431 680; 516 objtool warning lines,
+none fatal), `scripts/devices-test.sh` 13/13 on that kernel (static calls patched at boot),
+tcc's `make test`, `scripts/selfhost-test.sh host` (the pruned tree builds objtool and the
+same bzImage: 2462 tcc, 70 host-tool compiles) and `selfhost-test.sh all`: the guest built
+objtool with its musl tcc against `/usr/lib/libelf.a` and then generation 2 (2461 tcc, 0 gcc,
+3m33s on 8 CPUs), which boots. The first guest run failed twice, usefully: on the image's
+stale 135-patch tcc (no `-MT`; the guest-tcc step must be rerun after a tcc change), then on
+musl's unguarded `UINT_MAX` (fix 133). i386, where `CONFIG_OBJTOOL` does not exist (the
+new make variables are inert there), was rebuilt and checked the same way: 2061 tcc and 0 gcc
+invocations, bzImage 6 574 080, devices-test 13/13, generation 2 built in the 32-bit guest in
+2m56s (2406 tcc, 30 host-tool compiles) and booted. The guest's libelf.a is archived with the
+target compiler's `-ar`: the x86_64 host tcc's refuses ELF32 members.
+
 ## Debugging recipes
 
 ```bash
@@ -1251,7 +1311,10 @@ objects of a broken intermediate compiler). Rebuilding tcc while a kernel build 
 that build inconsistent. For an i386 code-generator change, also rebuild the static i386
 tcc (`scripts/build.sh --arch i386 guest-tcc`, after `rm -rf build/i386/tcc-guest`) and
 compile tcc.c and tcctest.c with it through three generations on the host: what the
-gcc-built i386-tcc gets right, a tcc compiled by it may not.
+gcc-built i386-tcc gets right, a tcc compiled by it may not. The self-hosting image carries
+its own static tcc (`build/<arch>/tcc-guest`), which only the guest-tcc step rebuilds: `rm -rf
+build/<arch>/tcc-guest && scripts/build.sh guest-tcc selfhost` before a guest run that needs
+the change (2026-11-11: the guest's objtool build stopped on a 135-patch guest tcc without `-MT`).
 
 ## Methodology notes
 

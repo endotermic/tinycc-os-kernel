@@ -23,10 +23,11 @@ the component; today only `linux/`:
   because tcc does not inline `__init`-only `static inline` helpers).
 * `tcc-kcc.c`: the `CC=` wrapper that presents tcc to Kbuild (GCC identity macros,
   `-U__OPTIMIZE__`, `-Wunsupported` under `-Werror`, the `-dumpmachine`/`-Wa,--version`/
-  `-print-file-name` answers; nothing goes to gcc). `tcc-hostcc.c` is HOSTCC, `objtool-stub.c`
-  OBJTOOL. All three are C programs: `scripts/build.sh kernel` compiles them with the host tcc
-  into `build/<arch>/kcc/`, and the self-hosting image carries the sources as `tcc -run`
-  scripts (`/usr/bin/tcc-kcc` ...), the only form of script that system has.
+  `-print-file-name` answers; nothing goes to gcc). `tcc-hostcc.c` is HOSTCC (it also builds
+  objtool, which links against `tools/libelf`). Both are C programs: `scripts/build.sh kernel`
+  compiles them with the host tcc into `build/<arch>/kcc/`, and the self-hosting image carries
+  the sources as `tcc -run` scripts (`/usr/bin/tcc-kcc` ...), the only form of script that
+  system has.
 
 Adding a kernel: create `kernels/<name>/` with its configuration and wrapper, a
 `patches/<name>/` series, an entry in `sources.lock`, and a `step_kernel` variant in
