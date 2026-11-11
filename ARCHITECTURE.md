@@ -1,13 +1,13 @@
 # Architecture
 
-From `install.sh` to the busybox prompt in QEMU, the system is a pipeline of
+From `./build.sh` to the busybox prompt in QEMU, the system is a pipeline of
 five stages. Each stage hands one artifact to the next: pinned sources, a
 patched tree, a kernel plus initramfs images, a running QEMU, and finally a
 shell inside the guest. Nothing in the chain uses gcc or binutils except the
 very first step, which builds the host tcc.
 
 ```
-install.sh
+./build.sh
    │  options / menus, host prerequisite check
    ├─► scripts/fetch.sh      sources.lock ──► src/<component>  (branch base)
    ├─► scripts/patch.sh      patches/<component>/series ──► branch patched
@@ -24,9 +24,9 @@ run.sh ────────────────────────�
 guest: kernel → /init (#!/usr/bin/tcc -run) → busybox sh
 ```
 
-## 1. Orchestration: `install.sh`
+## 1. Orchestration: `./build.sh`
 
-`install.sh` is the user-facing selector. It asks, or takes as options, what to
+`./build.sh` is the user-facing selector. It asks, or takes as options, what to
 build (tcc only, or the distro), the architecture (`x86_64` or `i386`), the
 output (initrd, plus an ISO), and whether to add the self-hosting image. It then
 checks the host for every tool the chosen build needs (`need_*` helpers in
@@ -209,7 +209,7 @@ in the loop: every script of the built system is a C program.
 
 | Path | Role |
 |------|------|
-| `install.sh`, `run.sh` | entry points |
+| `./build.sh`, `run.sh` | entry points |
 | `scripts/` | `fetch.sh`, `patch.sh`, `build.sh`, `lib.sh` (shared helpers, host check), `export-patches.sh`, `recv-file.sh`, `selfhost-test.sh`, `devices-test.sh` |
 | `sources.lock`, `patches/` | pinned upstreams and the patch series |
 | `kernels/linux/` | kernel config fragments and the Kbuild wrapper sources |

@@ -113,9 +113,9 @@ describe() { # describe ARCH FORM
 howto() { # howto ARCH FORM: what builds the missing files
     ao=; [ "$1" = x86_64 ] || ao=" --arch $1"
     case $2 in
-        iso) echo "./install.sh$ao --output iso  (or scripts/build.sh$ao iso)";;
-        selfhost) echo "./install.sh$ao --selfhost  (or scripts/build.sh$ao selfhost)";;
-        *) echo "./install.sh$ao  (or scripts/build.sh$ao all)";;
+        iso) echo "./build.sh$ao --output iso  (or scripts/build.sh$ao iso)";;
+        selfhost) echo "./build.sh$ao --selfhost  (or scripts/build.sh$ao selfhost)";;
+        *) echo "./build.sh$ao  (or scripts/build.sh$ao all)";;
     esac
 }
 if [ -n "$list" ]; then

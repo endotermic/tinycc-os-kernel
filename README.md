@@ -33,14 +33,14 @@ pieces with the `apt install` line, before doing anything.
 About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 
 ```bash
-./install.sh                      # asks what to build (tcc only, or the distro), target and output
-./install.sh --build tcc          # only the patched tcc: out/x86_64/tcc-<version>-x86_64-linux.tar.gz
-./install.sh --build distro --arch x86_64 --output iso --test   # unattended, with tcc's test suite
-./install.sh --build distro --output iso --selfhost             # + the self-hosting image and its ISO entries
-./install.sh --arch i386                                        # the 32-bit kernel and userland (out/i386)
+./build.sh                        # asks what to build (tcc only, or the distro), target and output
+./build.sh --build tcc            # only the patched tcc: out/x86_64/tcc-<version>-x86_64-linux.tar.gz
+./build.sh --build distro --arch x86_64 --output iso --test     # unattended, with tcc's test suite
+./build.sh --build distro --output iso --selfhost               # + the self-hosting image and its ISO entries
+./build.sh --arch i386                                          # the 32-bit kernel and userland (out/i386)
 ./run.sh --arch i386                                            # boots it in qemu-system-i386 (chosen by itself when only i386 is built)
-./install.sh --clean --arch i386                                # removes build/i386 and out/i386 (src/ stays)
-./install.sh --clean-all --dry-run                              # lists what a clean of every architecture would free
+./build.sh --clean --arch i386                                  # removes build/i386 and out/i386 (src/ stays)
+./build.sh --clean-all --dry-run                                # lists what a clean of every architecture would free
 ./run.sh                          # boots out/x86_64 in QEMU to a busybox shell; 'exit' ends QEMU
 ./run.sh --arch i386              # the 32-bit system; without --arch, a menu of what is built (on a terminal)
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
@@ -62,13 +62,13 @@ A build tree survives moving or renaming the repository: the steps re-run `confi
 musl, the guest tcc and GNU make when their `config.mak`/`config.status` record another path,
 and Kbuild recompiles what its dependency files point at.
 
-Cleaning up: `./install.sh --clean [--arch ARCH]` (= `scripts/build.sh clean`) removes the build
+Cleaning up: `./build.sh --clean [--arch ARCH]` (= `scripts/build.sh clean`) removes the build
 trees, logs and results of one architecture, `build/<arch>/` and `out/<arch>/`; `--clean-all`
 (`clean-all`) those of every architecture. Both print what goes with its size, and `--dry-run`
 (`-n`, or `DRY_RUN=1`; build.sh takes the same spellings) prints that and removes nothing.
 build.sh checks its whole command line before it runs a step, so a mistyped step or option
 after `clean` aborts with nothing removed. The fetched sources in `src/` stay, so the next
-`install.sh` or `scripts/build.sh all` rebuilds without downloading (the host tcc is built
+`./build.sh` or `scripts/build.sh all` rebuilds without downloading (the host tcc is built
 in-tree in `src/tinycc` and stays too). `scripts/build.sh clean-src` removes the source trees
 and the downloaded tarball as well, but refuses while a tree has uncommitted changes, a stash,
 or more commits on top of `base` than its series lists: fixes are committed in `src/<name>` and
@@ -164,7 +164,7 @@ for TCG).
 
 ## Self-hosting
 
-`scripts/build.sh selfhost` (or `install.sh --selfhost`; `--arch i386` for the 32-bit system) makes
+`scripts/build.sh selfhost` (or `./build.sh --selfhost`; `--arch i386` for the 32-bit system) makes
 `out/<arch>/initramfs-selfhost.cpio`:
 the busybox image plus everything needed to rebuild the system inside the guest, without
 gcc, binutils, flex or bison:
@@ -232,7 +232,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
-| `install.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
+| `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
 | `patches/tinycc/` | 142 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
@@ -241,7 +241,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
 | `docs/PORT-NOTES.md` | how the port works, wrapper rules, open items, how to debug |
 | `docs/FIX-LOG.md` | the per-fix log (problem, fix, verification) with the fix-to-patch map |
-| `src/`, `build/`, `out/` | sources, build trees and results (not committed; `install.sh --clean` removes `build/<arch>` and `out/<arch>`, `scripts/build.sh clean-src` the sources, see [Quick start](#quick-start)) |
+| `src/`, `build/`, `out/` | sources, build trees and results (not committed; `./build.sh --clean` removes `build/<arch>` and `out/<arch>`, `scripts/build.sh clean-src` the sources, see [Quick start](#quick-start)) |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | BSD-2-Clause for the original parts, the upstream licenses for the patches; the path-to-license map (see [License](#license)) |
 
 ## Patches
@@ -342,7 +342,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 | i386 | works (2026-10-23; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2788 tcc invocations from a clean tree with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 
-`install.sh --arch` accepts all three and explains what is missing for arm64. The scripts
+`./build.sh --arch` accepts all three and explains what is missing for arm64. The scripts
 take `ARCH` everywhere (`scripts/build.sh`, `run.sh`, `boot/mkiso.sh`: build trees in
 `build/<arch>/`, results in `out/<arch>/`), so adding a target is wiring, not restructuring:
 i386 cost one case in `build.sh` (the kernel's `ARCH=i386`, `i386-tcc` as the target

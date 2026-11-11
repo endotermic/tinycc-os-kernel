@@ -4,8 +4,8 @@
 # (+ ISO) for one architecture.  Every step is skipped when its result exists.
 #
 # Usage: scripts/build.sh [--arch ARCH] [-n|--dry-run] [step...]        default: all
-#   --arch ARCH   x86_64 (default) or i386, as install.sh and run.sh take it (arm64 is not
-#                 implemented, see install.sh); the ARCH variable does the same
+#   --arch ARCH   x86_64 (default) or i386, as ./build.sh and run.sh take it (arm64 is not
+#                 implemented, see ./build.sh); the ARCH variable does the same
 #   -n, --dry-run the clean steps print what would go and remove nothing (DRY_RUN=1 does the same)
 #   -h, --help    this text
 # Steps:
@@ -100,7 +100,7 @@ JOBS=${JOBS:-$(nproc)}
 case $ARCH in
     x86_64) KARCH=x86;   KIMG=arch/x86/boot/bzImage; TCC_TARGET=tcc;      LIBTCC1=libtcc1.a;      TCC_CPU=x86_64; CROSS_I386=1;;
     i386)   KARCH=i386;  KIMG=arch/x86/boot/bzImage; TCC_TARGET=i386-tcc; LIBTCC1=i386-libtcc1.a; TCC_CPU=i386;   CROSS_I386=;;
-    *) die "--arch $ARCH is not implemented (x86_64, i386; see ./install.sh --help)";;
+    *) die "--arch $ARCH is not implemented (x86_64, i386; see ./build.sh --help)";;
 esac
 B=$BUILD/$ARCH; LOGS=$B/logs; O=$OUT/$ARCH
 # the source copies under build/ must not see this repository's own .git (tcc's and

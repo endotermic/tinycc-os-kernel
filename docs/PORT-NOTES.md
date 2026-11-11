@@ -277,7 +277,7 @@ emulates no Wi-Fi or Bluetooth hardware; mac80211_hwsim and vhci stand in for th
 
 ## The i386 target
 
-`--arch i386` (2026-10-23; `install.sh`, `run.sh`, `scripts/build.sh` all take it) builds the 32-bit
+`--arch i386` (2026-10-23; `./build.sh`, `run.sh`, `scripts/build.sh` all take it) builds the 32-bit
 kernel from the same sources, patches and fragments: `scripts/build.sh` gives the kernel
 `ARCH=i386` (which forces `CONFIG_64BIT=n`; `kernels/linux/i386.config` only switches highmem
 off), runs the `i386-tcc` cross compiler as the target compiler through `tcc-kcc` (`KCC_TCC`;
@@ -362,7 +362,7 @@ generation is involved; the same boot with a gcc-built setup shows it as well.
 ## Self-hosting
 
 The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-selfhost.cpio`,
-30 MB; `install.sh --selfhost`; on the ISO as menu entries 4 and 5) is the busybox image plus:
+30 MB; `./build.sh --selfhost`; on the ISO as menu entries 4 and 5) is the busybox image plus:
 
 * `/usr/src/linux-7.3.0.tar.gz`: the kernel source pruned to this configuration, 16 MB
   compressed, 8602 files, 92 MB unpacked (the full tree is 96 000 files, 1.8 GB). The list
@@ -543,8 +543,8 @@ The self-hosting image (`scripts/build.sh selfhost` -> `out/<arch>/initramfs-sel
 
 * The whole system rebuilt by the 131-patch compiler, and the hang it showed (2026-11-04,
   evening): after fixes 119 to 125 (constant propagation, the inliner, the i386 division, the
-  VEX/EVEX assembler, `__int128`) only the kernels had been rebuilt, so `install.sh --clean`
-  + `install.sh --arch X --output iso --selfhost` redid everything on both architectures:
+  VEX/EVEX assembler, `__int128`) only the kernels had been rebuilt, so `./build.sh --clean`
+  + `./build.sh --arch X --output iso --selfhost` redid everything on both architectures:
   kernel (x86_64 2838 tcc and 0 gcc invocations from a clean tree, bzImage 7 431 680 bytes;
   i386 2788 and 0, 6 852 608), musl, busybox (its `devmem` has an `unsigned __int128` path
   that tcc compiled for the first time), ncurses, nnn, LibreSSL (no `__int128` in 4.4.0; the
@@ -652,7 +652,7 @@ ISO boots its default entry with `rootfstype=ramfs` into the greeter. Not verifi
 ## The terminal emulator: mlterm (2026-10-30)
 
 mlterm 3.9.5 is the guest's terminal emulator, built by `scripts/build.sh mlterm` (between jwm
-and links; in `all` and install.sh) from the release tarball pinned in `sources.lock` (the
+and links; in `all` and ./build.sh) from the release tarball pinned in `sources.lock` (the
 GitHub release carries only the signature, the tarball is on SourceForge). It was chosen over
 st (no scrollback or scrollbar without patches), xvt (Latin-1 only), rxvt/mrxvt (dead,
 autoconf), xterm (the whole Xt/Xaw stack, 90 000 lines) and rxvt-unicode (C++): plain C,
@@ -718,7 +718,7 @@ entries were not booted again (the kernel and initramfs are the ones tested dire
 
 xfiles (phillbush, `master` c47a0d9 of 2025-04-06; MIT, icons CC0) is the guest's graphical
 file manager, built by `scripts/build.sh xfiles` (between mlterm and links; in `all` and
-install.sh). It was chosen over xfm, ROX-Filer, emelFM2, PCManFM, SpaceFM and Xfe: C99 against
+./build.sh). It was chosen over xfm, ROX-Filer, emelFM2, PCManFM, SpaceFM and Xfe: C99 against
 Xlib and Xft only, a POSIX Makefile, UTF-8 names, XDND drag and drop, thumbnails and XEmbed.
 xfiles itself only draws the icon grid; every action goes through two helper programs it
 runs, `xfilesctl` and `xfilesthumb`, which this repository provides as C scripts (`tcc -run`,
@@ -831,7 +831,7 @@ final images of both architectures (compressed, 256 MB): Ctrl-Alt-F from JWM ope
 home directory with the session's environment set, the right-click menu takes Down and Escape,
 xmenu exits without a segfault in dmesg, and on i386 the test directory showed the same icons,
 thumbnails and names, Ctrl-L + `su` entered `sub/`. The ISOs were rebuilt (40 MB i386; 142 MB
-x86_64, which carries the self-hosting image). Both ISOs from `install.sh --output iso`
+x86_64, which carries the self-hosting image). Both ISOs from `./build.sh --output iso`
 were then booted headless on their default entry: xdm's greeter with the helper text, ada
 logs in, JWM with links, Ctrl-Alt-T's mlterm fetched a JPEG into the home, Ctrl-Alt-F opened
 xfiles on it with the thumbnail, the right-click menu came up with the entry under the
@@ -1170,7 +1170,7 @@ The setup with the video mode code is 1 200 bytes over the limit with the pass, 
 stays; the fresh rebuild of both architectures that followed is recorded below.
 
 The fresh run of 2026-11-06 evening (build/logs/fresh-*.log): `scripts/build.sh clean` and
-`install.sh --output all --selfhost` for each architecture with the 135-patch compiler, from
+`./build.sh --output all --selfhost` for each architecture with the 135-patch compiler, from
 sources fetched again (src/ had held only tinycc, linux and make since 2026-11-04; the first
 attempt died on a connection reset from xorg.freedesktop.org, the second fetch went through).
 x86_64: 2838 tcc and 0 gcc invocations, bzImage 7 423 488 bytes, setup.bin 19 219, the ISO and

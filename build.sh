@@ -1,11 +1,11 @@
 #!/bin/sh
 # SPDX-License-Identifier: BSD-2-Clause
-# install.sh - fetch the pinned sources, apply the patches, build and put the results in
+# build.sh - fetch the pinned sources, apply the patches, build and put the results in
 # out/<arch>/.  Without arguments on a terminal it asks what to build, the target and the
 # output; the same choices are available as options for unattended use.
 #
-# Usage: ./install.sh [--build tcc|distro] [--arch ARCH] [--output initrd|iso|all] [--selfhost] [--jobs N] [--run] [--test]
-#        ./install.sh --clean [--arch ARCH] [--dry-run]  |  ./install.sh --clean-all [--dry-run]
+# Usage: ./build.sh [--build tcc|distro] [--arch ARCH] [--output initrd|iso|all] [--selfhost] [--jobs N] [--run] [--test]
+#        ./build.sh --clean [--arch ARCH] [--dry-run]  |  ./build.sh --clean-all [--dry-run]
 #   --build   tcc: only the patched Tiny C Compiler, installed into a staging tree and packed
 #                  as out/<arch>/tcc-<version>-<arch>-linux.tar.gz (extract with tar xzf ... -C /)
 #             distro: the kernel and the userland built with that compiler (default)
