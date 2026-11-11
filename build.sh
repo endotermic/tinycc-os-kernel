@@ -18,6 +18,8 @@
 #   --jobs    parallel jobs (default: JOBS from the environment, else nproc)
 #   --test    run tinycc's test suite after building it
 #   --run     boot the result in QEMU when done (./run.sh; distro only)
+#   On a terminal the bottom row shows the overall progress (steps weighted by their times on
+#   the last run, build/<arch>/step-times); PROGRESS=0 turns it and the per-step bars off.
 #   --clean   remove the build trees, logs and results of --arch (build/<arch>/, out/<arch>/) and
 #             exit; --clean-all: those of every architecture (build/, out/).  Both print what goes
 #             with its size; --dry-run (-n) prints that and removes nothing.  The fetched sources (src/,
@@ -97,11 +99,13 @@ need_done
 export ARCH=$arch JOBS=$jobs
 if [ "$build" = tcc ]; then
     msg "tinycc-os-kernel: the patched tcc only ($arch), $jobs jobs"
-    "$ROOT/scripts/fetch.sh" tinycc
-    "$ROOT/scripts/patch.sh" tinycc
+    overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} tcc-archive
+    overall_step fetch; "$ROOT/scripts/fetch.sh" tinycc
+    overall_step patch; "$ROOT/scripts/patch.sh" tinycc
     "$ROOT/scripts/build.sh" host-tcc
     [ -z "$test" ] || "$ROOT/scripts/build.sh" tcc-test
     "$ROOT/scripts/build.sh" tcc-archive
+    overall_end 0; trap - EXIT INT TERM HUP
     echo
     msg "done: $OUT/$arch"
     ls -l "$OUT/$arch"/*.tar.gz | awk '{print "   " $5 "\t" $9}'
@@ -109,13 +113,17 @@ if [ "$build" = tcc ]; then
     exit 0
 fi
 msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs"
-"$ROOT/scripts/fetch.sh"
-"$ROOT/scripts/patch.sh"
+steps="tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs"
+iso=; case $output in iso|all) iso=iso;; esac
+overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} $steps ${selfhost:+selfhost} $iso
+overall_step fetch; "$ROOT/scripts/fetch.sh"
+overall_step patch; "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" host-tcc
 [ -z "$test" ] || "$ROOT/scripts/build.sh" tcc-test
-"$ROOT/scripts/build.sh" tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs
+"$ROOT/scripts/build.sh" $steps
 [ -z "$selfhost" ] || "$ROOT/scripts/build.sh" selfhost
-case $output in iso|all) "$ROOT/scripts/build.sh" iso;; esac
+[ -z "$iso" ] || "$ROOT/scripts/build.sh" iso
+overall_end 0; trap - EXIT INT TERM HUP
 echo
 msg "done: $OUT/$arch"
 ls -l "$OUT/$arch" | awk 'NR > 1 {print "   " $5 "\t" $9}'

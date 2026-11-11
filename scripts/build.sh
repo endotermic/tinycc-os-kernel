@@ -1253,8 +1253,8 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
-        *) prepare; "step_$(echo $s | tr - _)";;
+        *) prepare; overall_step "$s"; "step_$(echo $s | tr - _)";;
     esac
 done

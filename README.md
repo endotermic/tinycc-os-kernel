@@ -56,8 +56,12 @@ scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel 
 Downloads and builds draw progress bars on a terminal (git's transfer percentages; one
 step per compiled file for the builds). The totals for the kernel and busybox bars are
 estimates on the first run and are corrected from the real count afterwards (`make -n`
-cannot tell for those two). Without a terminal, milestone lines are printed instead;
-`PROGRESS=0` turns the bars off. Full build output is in `build/<arch>/logs/`.
+cannot tell for those two). `./build.sh` also pins an overall bar to the bottom row of the
+terminal: the whole run's percentage, the step it is in (`7/26 kernel`), the elapsed time and
+an estimate of what is left. Each step weighs what it took on the last successful run
+(`build/<arch>/step-times`), or a fresh-build estimate before there is one. Without a terminal,
+milestone lines are printed instead and there is no overall bar; `PROGRESS=0` turns all bars
+off. Full build output is in `build/<arch>/logs/`.
 A build tree survives moving or renaming the repository: the steps re-run `configure` for
 musl, the guest tcc and GNU make when their `config.mak`/`config.status` record another path,
 and Kbuild recompiles what its dependency files point at.

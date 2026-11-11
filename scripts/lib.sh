@@ -165,3 +165,97 @@ git_progress() {
 # make_total MAKE-ARGS...: the number of steps "make -n" would run (for the bar's total); 0 if
 # make -n cannot tell (Kbuild and busybox do not descend into directories under -n)
 make_total() { make -n "$@" 2>/dev/null | grep -cE "${PROGRESS_STEP_RE:-^  [A-Z]+ | -c | -o }" || true; }
+
+# ---- the overall progress bar ----------------------------------------------------------
+# build.sh (the top level) pins one line to the bottom of the terminal: the whole run's
+# progress over its steps, the step it is in, the elapsed time and an estimate of what is left.
+# The terminal's scroll region keeps everything else (messages, the per-step bars above) in
+# the rows above it; a background drawer redraws it every second.  Each step weighs what it
+# took on the last run (TIMES-FILE, written when a run succeeds), or the estimate below for a
+# fresh build when it has no record.  Only on a terminal (stdout and stderr) with PROGRESS not
+# 0; elsewhere every overall_* function does nothing.
+#   overall_begin TIMES-FILE STEP...   the plan, in order; sets the traps that end the bar
+#   overall_step STEP                  STEP starts (scripts/build.sh calls it for its steps)
+#   overall_end STATUS                 removes the bar; on 0 records the step times
+OVERALL_ESTIMATES='fetch 120 patch 20 host-tcc 40 tcc-test 150 tcc-archive 5 tld 5 libelf 3
+kernel 420 musl 45 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
+tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
+overall_tty() { pb_tty && [ -t 1 ] && have stty && stty size </dev/tty >/dev/null 2>&1; }
+overall_step() { [ -z "${OVERALL_STATE:-}" ] || echo "S $1 $(date +%s)" >> "$OVERALL_STATE"; }
+overall_begin() {
+    OVERALL_STATE=; OVERALL_PID=
+    overall_tty || { shift; return 0; }
+    _times=$1; shift
+    OVERALL_TIMES=$_times OVERALL_STATE=$(mktemp); export OVERALL_STATE
+    for _s; do
+        _w=; [ ! -f "$_times" ] || _w=$(awk -v s="$_s" '$1 == s { w = $2 } END { print w }' "$_times")
+        [ -n "$_w" ] || _w=$(echo $OVERALL_ESTIMATES | awk -v s="$_s" '{ for (i = 1; i < NF; i += 2) if ($i == s) print $(i + 1) }')
+        _w=${_w:-30}; [ "$_w" -ge 1 ] 2>/dev/null || _w=1; echo "$_s $_w"
+    done > "$OVERALL_STATE.plan"
+    echo "B - $(date +%s)" > "$OVERALL_STATE"
+    trap 'overall_end $?' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP
+    # a free bottom row: a newline (scrolls when the cursor is on the last row), then the
+    # cursor back up; the drawer sets the scroll region (and again after a resize)
+    printf '\n\033[1A' >&2
+    overall_draw_loop "$$" &
+    OVERALL_PID=$!
+}
+# overall_line ROWS COLS LASTPCT: the bar's text from the plan and the state file; prints
+# "PCT TEXT" (PCT never goes down: LASTPCT is the previous value)
+overall_line() {
+    awk -v now="$(date +%s)" -v cols="$2" -v lastpct="$3" -v plan="$OVERALL_STATE.plan" '
+    function t(s) { s = int(s + 0.5); return s >= 3600 ? sprintf("%dh%02dm", s / 3600, s % 3600 / 60) : sprintf("%dm%02ds", s / 60, s % 60) }
+    BEGIN { while ((getline l < plan) > 0) { split(l, p, " "); n++; name[n] = p[1]; w[n] = p[2]; total += p[2]; idx[p[1]] = n } }
+    $1 == "B" { t0 = $3 }
+    $1 == "S" && ($2 in idx) { cur = idx[$2]; ts = $3 }
+    END {
+        donew = 0; for (i = 1; i < cur; i++) donew += w[i]
+        el = cur ? now - ts : 0; fr = cur && w[cur] > 0 ? el / w[cur] : 0; if (fr > 0.95) fr = 0.95
+        pct = total > 0 ? int(100 * (donew + (cur ? w[cur] * fr : 0)) / total) : 0
+        if (pct < lastpct) pct = lastpct; if (pct > 99) pct = 99
+        left = 0; for (i = cur + 1; i <= n; i++) left += w[i]; if (cur) left += (w[cur] > el ? w[cur] - el : w[cur] * 0.05)
+        info = sprintf("%3d%%  %d/%d %s  %s", pct, cur, n, cur ? name[cur] : "starting", t(now - t0))
+        if (cur) info = info sprintf(", ~%s left", t(left))
+        bw = cols - length(info) - 13; if (bw > 40) bw = 40
+        s = ""; if (bw >= 10) { f = int(bw * pct / 100); for (i = 0; i < bw; i++) s = s (i < f ? "#" : "."); s = "[" s "] " }
+        line = " overall " s info; if (length(line) > cols - 1) line = substr(line, 1, cols - 1)
+        print pct " " line
+    }' "$OVERALL_STATE"
+}
+overall_draw_loop() {
+    trap - EXIT INT TERM HUP; _parent=$1 _rows0=0 _pct=0
+    while kill -0 "$_parent" 2>/dev/null && [ -f "$OVERALL_STATE" ]; do
+        set -- $(stty size </dev/tty 2>/dev/null); _rows=${1:-0} _cols=${2:-80}
+        if [ "$_rows" -ge 3 ]; then
+            [ "$_rows" = "$_rows0" ] || { printf '\0337\033[1;%dr\0338' $((_rows - 1)) >&2; _rows0=$_rows; }
+            _l=$(overall_line "$_rows" "$_cols" "$_pct"); _pct=${_l%% *}
+            printf '\0337\033[%d;1H\033[2K\033[7m%s\033[0m\0338' "$_rows" "${_l#* }" >&2
+        fi
+        sleep 1
+    done
+}
+overall_end() {
+    [ -n "${OVERALL_STATE:-}" ] || return 0
+    _st=$1
+    kill "$OVERALL_PID" 2>/dev/null || true; wait "$OVERALL_PID" 2>/dev/null || true
+    set -- $(stty size </dev/tty 2>/dev/null)
+    printf '\0337\033[r\0338' >&2
+    [ -z "${1:-}" ] || printf '\0337\033[%d;1H\033[2K\0338' "$1" >&2
+    _now=$(date +%s)
+    # the steps' times: each lasts until the next one starts (the last until now)
+    awk -v now="$_now" '$1 == "S" { if (p != "") d[p] += $3 - t; p = $2; t = $3 } END { if (p != "") d[p] += now - t; for (s in d) print s, d[s] }' \
+        "$OVERALL_STATE" > "$OVERALL_STATE.times"
+    _el=$(awk -v now="$_now" '$1 == "B" { print now - $3 }' "$OVERALL_STATE")
+    _cur=$(awk '$1 == "S" { s = $2 } END { print s }' "$OVERALL_STATE")
+    if [ "$_st" = 0 ]; then
+        mkdir -p "$(dirname "$OVERALL_TIMES")"
+        # merge: this run's steps replace their old records, the others stay
+        { cat "$OVERALL_STATE.times"; [ ! -f "$OVERALL_TIMES" ] || awk 'NR == FNR { s[$1]; next } !($1 in s)' "$OVERALL_STATE.times" "$OVERALL_TIMES"; } \
+            > "$OVERALL_TIMES.new" && mv "$OVERALL_TIMES.new" "$OVERALL_TIMES"
+        printf '== overall: %d steps in %dm%02ds\n' "$(wc -l < "$OVERALL_STATE.plan")" $((_el / 60)) $((_el % 60))
+    else
+        printf '== overall: stopped in step %s after %dm%02ds (exit %s)\n' "${_cur:-?}" $((_el / 60)) $((_el % 60)) "$_st" >&2
+    fi
+    rm -f "$OVERALL_STATE" "$OVERALL_STATE.plan" "$OVERALL_STATE.times"
+    OVERALL_STATE=
+}
