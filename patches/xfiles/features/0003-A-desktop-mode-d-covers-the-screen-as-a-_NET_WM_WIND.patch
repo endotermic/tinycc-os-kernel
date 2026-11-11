@@ -1,0 +1,308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 16:52:16 +0200
+Subject: [PATCH] A desktop mode: -d covers the screen as a
+ _NET_WM_WINDOW_TYPE_DESKTOP window on ~/Desktop
+
+The window fills the screen and is marked as the desktop, so the window
+manager keeps it below the other windows, without a frame, on every
+virtual desktop.  Directories open in a new window (through the opener)
+instead of in place; after 1.5 s without input (and no button held, so
+never inside a click, a double click or a drag) the main loop returns
+and xfiles re-reads the directory when its ctime has changed, which
+shows the files other windows put there.  XFILES_DESKTOP=1 in the
+environment tells the control script.
+---
+ widget.c | 58 +++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ widget.h |  3 ++-
+ xfiles.1 | 24 ++++++++++++++++++++++-
+ xfiles.c | 43 ++++++++++++++++++++++++++++++++++++-----
+ 4 files changed, 118 insertions(+), 10 deletions(-)
+
+diff --git a/widget.c b/widget.c
+index 445a31e..8ba4a6f 100644
+--- a/widget.c
++++ b/widget.c
+@@ -45,6 +45,7 @@
+ 	X(_NET_WM_WINDOW_TYPE, NULL)            \
+ 	X(_NET_WM_WINDOW_TYPE_DND, NULL)        \
+ 	X(_NET_WM_WINDOW_TYPE_NORMAL, NULL)     \
++	X(_NET_WM_WINDOW_TYPE_DESKTOP, NULL)    \
+ 	X(_NET_WM_WINDOW_OPACITY, NULL)         \
+ 	X(_XEMBED, NULL)                        \
+ 	X(_CONTROL_STATUS, NULL)                \
+@@ -318,6 +319,7 @@ struct Widget {
+ 	 * Statusbar describing highlighted item.
+ 	 */
+ 	Bool status_enable;
++	Bool desktop;           /* -d: the window is the desktop (full screen, below all) */
+ };
+ 
+ struct Options {
+@@ -2858,9 +2860,46 @@ dragmode(Widget *widget, Time timestamp, int index, int *selitems, int *nitems)
+ 	}
+ }
+ 
++/*
++ * The main loop's next event.  On the desktop it also returns TimeoutNotify
++ * once the user has been idle for DESKTOP_IDLE milliseconds with no mouse
++ * button held, so that xfiles can re-read the folder (files that other
++ * windows put there); never in the middle of a click, a double click or a
++ * drag.
++ */
++#define DESKTOP_IDLE 1500
++static int
++mainevent(Widget *widget, XEvent *ev, struct timespec *lastev)
++{
++	struct timespec now;
++	Window rootw, childw;
++	int rx, ry, wx, wy, type;
++	unsigned int mask;
++	long idle;
++
++	for (;;) {
++		type = nextevent(widget, ev, widget->desktop ? 500 : 0);
++		if (type != TimeoutNotify) {
++			(void)clock_gettime(CLOCK_MONOTONIC, lastev);
++			return type;
++		}
++		if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
++			continue;
++		idle = (now.tv_sec - lastev->tv_sec) * 1000 + (now.tv_nsec - lastev->tv_nsec) / 1000000;
++		if (idle < DESKTOP_IDLE)
++			continue;
++		if (XQueryPointer(widget->display, widget->window, &rootw, &childw, &rx, &ry, &wx, &wy, &mask) &&
++		    (mask & (Button1Mask | Button2Mask | Button3Mask)))
++			continue;
++		*lastev = now;
++		return TimeoutNotify;
++	}
++}
++
+ static WidgetEvent
+ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
+ {
++	struct timespec lastev;
+ 	XEvent ev;
+ 	Time lasttime = 0;
+ 	int clickx = 0;
+@@ -2869,7 +2908,10 @@ mainmode(Widget *widget, int *selitems, int *nitems, char **text)
+ 	WidgetEvent event;
+ 	struct ctrldnd_drop drop;
+ 
+-	for (;;) switch (nextevent(widget, &ev, 0)) {
++	(void)clock_gettime(CLOCK_MONOTONIC, &lastev);
++	for (;;) switch (mainevent(widget, &ev, &lastev)) {
++	case TimeoutNotify:
++		return WIDGET_NONE;     /* the desktop's idle tick: xfiles re-reads the folder */
+ 	case CloseNotify:
+ 		return WIDGET_CLOSE;
+ 	case PropertyNotify:
+@@ -3093,6 +3135,15 @@ initwindow(Widget *widget, struct Options *options)
+ 	char buf[16]; /* 16: enough for digits in 32-bit number + final '\0' */
+ 
+ 	sizehints = getgeometry(widget, &geometry);
++	if (widget->desktop) {
++		/* the desktop covers the whole screen; the window manager keeps it below */
++		geometry = (XRectangle){
++			.x = 0, .y = 0,
++			.width = DisplayWidth(widget->display, widget->screen),
++			.height = DisplayHeight(widget->display, widget->screen),
++		};
++		sizehints = USPosition | USSize;
++	}
+ 	widget->winw = geometry.width,
+ 	widget->winh = geometry.height,
+ 	widget->window = createwindow(
+@@ -3162,7 +3213,7 @@ initwindow(Widget *widget, struct Options *options)
+ 		XA_ATOM,
+ 		32,
+ 		PropModeReplace,
+-		(unsigned char *)&atoms[_NET_WM_WINDOW_TYPE_NORMAL],
++		(unsigned char *)&atoms[widget->desktop ? _NET_WM_WINDOW_TYPE_DESKTOP : _NET_WM_WINDOW_TYPE_NORMAL],
+ 		1
+ 	);
+ 	(void)XChangeProperty(
+@@ -3442,7 +3493,7 @@ widget_free(Widget *widget)
+ }
+ 
+ Widget *
+-widget_create(const char *class, const char *name, int argc, char *argv[], const char *resources[])
++widget_create(const char *class, const char *name, int argc, char *argv[], const char *resources[], int desktop)
+ {
+ 	Widget *widget;
+ 	size_t i;
+@@ -3482,6 +3533,7 @@ widget_create(const char *class, const char *name, int argc, char *argv[], const
+ 		.highlight = -1,
+ 		.itemw = ITEM_WIDTH,
+ 		.cliresources = resources,
++		.desktop = desktop,
+ 	};
+ 	for (i = 0; i < LEN(initsteps); i++) {
+ 		if ((*initsteps[i])(widget, &options) == RETURN_FAILURE) {
+diff --git a/widget.h b/widget.h
+index 530814f..b344a14 100644
+--- a/widget.h
++++ b/widget.h
+@@ -36,7 +36,8 @@ Widget *widget_create(
+ 	const char *name,
+ 	int argc,
+ 	char *argv[],
+-	const char *resources[]
++	const char *resources[],
++	int desktop
+ );
+ 
+ int widget_set(
+diff --git a/xfiles.1 b/xfiles.1
+index 07510ac..ba5ab3e 100644
+--- a/xfiles.1
++++ b/xfiles.1
+@@ -8,7 +8,7 @@
+ .Nd X11 file manager
+ .Sh SYNOPSIS
+ .Nm xfiles
+-.Op Fl a
++.Op Fl ad
+ .Op Fl N Ar name
+ .Op Fl X Ar resources
+ .Op Ar directory
+@@ -29,6 +29,28 @@ The options are as follows:
+ .Bl -tag -width Ds
+ .It Fl a
+ Include directory entries whose name begin with a dot.
++.It Fl d
++Run as the desktop: the window covers the whole screen and is marked
++.Ic _NET_WM_WINDOW_TYPE_DESKTOP ,
++so that the window manager keeps it below the other windows, without a frame,
++on every virtual desktop.
++Its directory defaults to
++.Pa ~/Desktop ,
++which is created when missing, and its resource name (see
++.Fl N )
++to
++.Ic xfiles-desktop ,
++so that resources such as
++.Ic xfiles-desktop.background
++can set the desktop apart from the windows.
++It shows no entry for the parent directory.
++Directories open in a new window (through the opener) instead of in place,
++the directory is re-read when it changes (checked after a short idle time),
++and the environment variable
++.Ev XFILES_DESKTOP
++is set to 1 for the programs it runs, so that
++.Nm xfilesctl
++can offer the session's entries in its menu.
+ .It Fl N Ar name
+ Specify the
+ .Ic res_name
+diff --git a/xfiles.c b/xfiles.c
+index 9ffe1ca..0116a2e 100644
+--- a/xfiles.c
++++ b/xfiles.c
+@@ -83,6 +83,7 @@ struct FM {
+ };
+ 
+ static int hide = 1;
++static int desktop = 0;          /* -d: the window is the desktop */
+ 
+ static struct {
+ 	char u;
+@@ -100,7 +101,8 @@ static struct {
+ static void
+ usage(void)
+ {
+-	(void)fprintf(stderr, "usage: xfiles [-a] [-N name] [-X resources] [path]\n");
++	(void)fprintf(stderr, "usage: xfiles [-a] [-N name] [-X resources] [path]\n"
++	                      "       xfiles -d [-a] [-N name] [-X resources] [path]\n");
+ 	exit(1);
+ }
+ 
+@@ -120,7 +122,7 @@ direntselect(const struct dirent *dp)
+ 	if (strcmp(dp->d_name, ".") == 0)
+ 		return false;
+ 	if (strcmp(dp->d_name, "..") == 0)
+-		return true;
++		return !desktop;        /* the desktop has no way up */
+ 	if (hide && dp->d_name[0] == '.')
+ 		return false;
+ 	return true;
+@@ -1018,6 +1020,7 @@ main(int argc, char *argv[])
+ 	struct Cwd *cwd;
+ 	int ch, nitems;
+ 	int saveargc, force_refresh;
++	int named = 0;
+ 	int nresources = 0;
+ 	int exitval = EXIT_SUCCESS;
+ 	const char *resources[MAX_RESOURCES];
+@@ -1057,13 +1060,17 @@ main(int argc, char *argv[])
+ 	fm.ngrps = getgroups(NGROUPS_MAX, fm.grps);
+ 	if ((fm.opener = getenv("OPENER")) == NULL)
+ 		fm.opener = DEF_OPENER;
+-	while ((ch = getopt(argc, argv, "aN:X:")) != -1) {
++	while ((ch = getopt(argc, argv, "adN:X:")) != -1) {
+ 		switch (ch) {
+ 		case 'a':
+ 			hide = 0;
+ 			break;
++		case 'd':
++			desktop = 1;
++			break;
+ 		case 'N':
+ 			name = optarg;
++			named = 1;
+ 			break;
+ 		case 'X':
+ 			if (nresources < MAX_RESOURCES - 1)
+@@ -1081,8 +1088,27 @@ main(int argc, char *argv[])
+ 		usage();
+ 	else if (argc == 1)
+ 		path = *argv;
++	if (desktop) {
++		/*
++		 * -d: the desktop, by default ~/Desktop (made when missing).
++		 * XFILES_DESKTOP tells the control script, whose menu on
++		 * the background then has the session's entries.
++		 */
++		if (path == NULL && home != NULL) {
++			static char deskpath[PATH_MAX];
++			(void)snprintf(deskpath, sizeof(deskpath), "%s/Desktop", home);
++			if (mkdir(deskpath, 0755) == -1 && errno != EEXIST)
++				warn("%s", deskpath);
++			path = deskpath;
++		}
++		if (setenv("XFILES_DESKTOP", "1", 1) == -1)
++			warn("setenv");
++		/* its own resource name, for resources that differ from a window's */
++		if (!named)
++			name = "xfiles-desktop";
++	}
+ 	initthumbnailer(&fm);
+-	if ((fm.widget = widget_create(APPCLASS, name, saveargc, saveargv, resources)) == NULL)
++	if ((fm.widget = widget_create(APPCLASS, name, saveargc, saveargv, resources, desktop)) == NULL)
+ 		exit(EXIT_FAILURE);
+ 	fm.widgetfd = widget_fd(fm.widget);
+ #if __OpenBSD__
+@@ -1135,7 +1161,7 @@ main(int argc, char *argv[])
+ 				break;
+ 			if (fm.selitems[0] < 0 || fm.selitems[0] >= fm.nentries)
+ 				break;
+-			if (isdir(&fm.entries[fm.selitems[0]])) {
++			if (isdir(&fm.entries[fm.selitems[0]]) && !desktop) {
+ 				if (changedir(&fm, fm.entries[fm.selitems[0]].fullname, false) == RETURN_FAILURE) {
+ 					exitval = EXIT_FAILURE;
+ 					goto done;
+@@ -1211,6 +1237,13 @@ main(int argc, char *argv[])
+ 				goto done;
+ 			}
+ 			break;
++		case WIDGET_NONE:
++			/* the desktop's idle tick: re-read the folder if it changed */
++			if (desktop && changedir(&fm, fm.cwd->path, false) == RETURN_FAILURE) {
++				exitval = EXIT_FAILURE;
++				goto done;
++			}
++			break;
+ 		default:
+ 			break;
+ 		}

@@ -5,8 +5,11 @@
   (startx) and of xdm's sessions.  JWM reads ~/.jwmrc first and this file when a user has
   none.  Fonts are Xft names resolved by fontconfig (/etc/fonts, /usr/share/fonts/TTF: the
   DejaVu faces); the icons are XPM files in /usr/share/jwm (userland/jwm/icons/); PNG, JPEG
-  and XBM icons load too.  The menu opens on any mouse button on the desktop, on the tray's
-  Menu button and on Alt-F1: the mlterm terminal (also Ctrl-Alt-T; its settings are in
+  and XBM icons load too.  The desktop is the file manager: JWM starts "xfiles -d", whose
+  window covers the screen below every other window and shows ~/Desktop (patches/xfiles;
+  its right-click menu on the background has the session's entries: terminal, file manager,
+  browser, Restart JWM, Log out).  JWM's own menu opens on the tray's Menu button and on
+  Alt-F1 (and on a click on the bare root window when the desktop is not running): the mlterm terminal (also Ctrl-Alt-T; its settings are in
   /etc/mlterm/main), the xfiles file manager (also Ctrl-Alt-F; its resources are in
   /etc/X11/Xresources), the links browser, Restart, and Exit, which ends the session (back
   to the greeter under xdm, back to the text console under startx).  Edit and choose Restart
@@ -24,6 +27,10 @@
         <Restart label="Restart JWM" icon="restart"/>
         <Exit label="Log out" confirm="true" icon="exit"/>
     </RootMenu>
+
+    <!-- The desktop: xfiles on ~/Desktop (made when missing); started once, not again on
+         Restart. -->
+    <StartupCommand>xfiles -d</StartupCommand>
 
     <!-- The tray along the bottom: the menu button, the pager of the two desktops, the
          task list and a clock. -->

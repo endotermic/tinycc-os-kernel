@@ -7,6 +7,9 @@
  * script run by tcc, like every script of this system.  Called by xfiles as:
  *
  *   xfilesctl menu [FILE...]        right click: the selected files, or none on the background
+ *                                   (on the desktop, xfiles -d with XFILES_DESKTOP=1: the
+ *                                   session's entries too: terminal, file manager, browser,
+ *                                   Restart JWM, Log out; the background has no JWM menu)
  *   xfilesctl drop-ask FILE...      files dropped here with no modifier (the current directory
  *                                   is the target): ask copy / move / link
  *   xfilesctl drop-copy FILE...     dropped with Control: copy them here
@@ -39,7 +42,8 @@
  * that already exist in the target get a _1, _2, ... suffix before the extension.  The
  * paste buffer is the file $XDG_CACHE_HOME/xfiles/clipboard ($HOME/.cache/xfiles/clipboard):
  * the first line "copy" or "move", then the paths.
- * Env: WINDOWID (set by xfiles), HOME, XDG_CACHE_HOME, TERMINAL (mlterm), DISPLAY.
+ * Env: WINDOWID (set by xfiles), XFILES_DESKTOP (set by xfiles -d), HOME, XDG_CACHE_HOME,
+ * TERMINAL (mlterm), DISPLAY.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -737,6 +741,14 @@ static void new_window(void)
     detach(argv);
 }
 
+/* the desktop's session entries: a program detached, or the running JWM told to restart
+ * or to end the session (jwm -restart / -exit send it a client message) */
+static void run2(char *a, char *b, char *c)
+{
+    char *argv[4] = { a, b, c, NULL };
+    detach(argv);
+}
+
 /* ---- the menus ------------------------------------------------------------------------ */
 
 static void context_menu(int n, char **files)
@@ -759,6 +771,22 @@ static void context_menu(int n, char **files)
                  "Terminal here\tCtrl-T\tterm\n"
                  "Properties...\tCtrl-I\tprops\n",
                  has_clip ? "Paste here\tCtrl-V\tpaste\n" : "");
+    } else if (getenv("XFILES_DESKTOP")) {
+        asprintf(&items,
+                 "Terminal\tCtrl-T\tterm\n"
+                 "File manager\tfilemgr\n"
+                 "Web browser\tweb\n"
+                 "\n"
+                 "%s"
+                 "New folder...\tCtrl-N\tnewdir\n"
+                 "Select all\tCtrl-A\tselall\n"
+                 "Show / hide dot files\tCtrl-H\thidden\n"
+                 "Reload\tF5\treload\n"
+                 "Properties of the desktop folder...\tCtrl-I\tprops\n"
+                 "\n"
+                 "Restart JWM\tjwmrestart\n"
+                 "Log out...\tlogout\n",
+                 has_clip ? "Paste\tCtrl-V\tpaste\n" : "");
     } else {
         asprintf(&items,
                  "Terminal here\tCtrl-T\tterm\n"
@@ -819,6 +847,10 @@ static void context_menu(int n, char **files)
     else if (strcmp(choice, "up") == 0) goto_dir("..");
     else if (strcmp(choice, "home") == 0) goto_dir(getenv("HOME") ? getenv("HOME") : "/");
     else if (strcmp(choice, "reload") == 0) goto_dir(".");
+    else if (strcmp(choice, "filemgr") == 0) run2("xfiles", getenv("HOME") ? getenv("HOME") : "/", NULL);
+    else if (strcmp(choice, "web") == 0) run2("links", "-g", NULL);
+    else if (strcmp(choice, "jwmrestart") == 0) run2("jwm", "-restart", NULL);
+    else if (strcmp(choice, "logout") == 0 && confirm("End the session?", "Log out")) run2("jwm", "-exit", NULL);
     free(choice);
 }
 

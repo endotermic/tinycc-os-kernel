@@ -1,3 +1,5 @@
 # patches/xfiles: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
 features/0001-Select-all-with-Control-A-toggle-hidden-entries-with.patch
 upstreamable/0002-control-font-do-not-destroy-the-patterns-the-XftFont.patch
+features/0003-A-desktop-mode-d-covers-the-screen-as-a-_NET_WM_WIND.patch
+upstreamable/0004-The-background-colour-on-servers-without-a-32-bit-vi.patch

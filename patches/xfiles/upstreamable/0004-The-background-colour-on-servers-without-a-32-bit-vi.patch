@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 11 Nov 2026 17:07:03 +0200
+Subject: [PATCH] The background colour on servers without a 32-bit visual
+
+The canvas, the icon and status bar layers and the label picture are
+cleared to transparent, and commitdraw() puts the background colour under
+everything with OverReverse.  On a server without a 32-bit visual (TinyX)
+these pictures have no alpha channel: transparent reads as opaque black
+and the colour never shows, so the window stayed black whatever the
+background resource said.  clearpict() clears them to the background
+colour there instead (and to transparent, as before, on a 32-bit visual).
+---
+ widget.c | 91 ++++++++++++++++++++++++--------------------------------
+ 1 file changed, 39 insertions(+), 52 deletions(-)
+
+diff --git a/widget.c b/widget.c
+index 8ba4a6f..aff1b4f 100644
+--- a/widget.c
++++ b/widget.c
+@@ -362,6 +362,29 @@ getitemstatus(Widget *widget, int index)
+ 	return widget->items[widget->highlight].status;
+ }
+ 
++/*
++ * Clear a colour picture (the canvas, the icon and status bar layers, the
++ * label): to transparent on a 32-bit visual, where the background colour
++ * is put under everything when the canvas is committed; to the background
++ * colour on a visual without alpha (a server with no 32-bit visual, such
++ * as TinyX), where "transparent" reads as opaque black and the background
++ * colour would never show.
++ */
++static void
++clearpict(Widget *widget, Picture pict, int x, int y, unsigned int w, unsigned int h)
++{
++	XRenderColor bg = widget->colors[SELECT_NOT][COLOR_BG].chans;
++
++	bg.alpha = 0xFFFF;
++	XRenderFillRectangle(
++		widget->display,
++		widget->depth == 32 ? PictOpClear : PictOpSrc,
++		pict,
++		widget->depth == 32 ? &(XRenderColor){ 0 } : &bg,
++		x, y, w, h
++	);
++}
++
+ static void
+ resetlayer(Widget *widget, enum Layer layer, int width, int height)
+ {
+@@ -385,13 +408,16 @@ resetlayer(Widget *widget, enum Layer layer, int width, int height)
+ 		0,
+ 		NULL
+ 	);
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[layer].pict,
+-		&(XRenderColor){ 0 },
+-		0, 0, widget->w, widget->h
+-	);
++	if (isalpha)
++		XRenderFillRectangle(
++			widget->display,
++			PictOpClear,
++			widget->layers[layer].pict,
++			&(XRenderColor){ 0 },
++			0, 0, widget->w, widget->h
++		);
++	else
++		clearpict(widget, widget->layers[layer].pict, 0, 0, widget->w, widget->h);
+ }
+ 
+ static void
+@@ -524,13 +550,7 @@ drawstatusbar(Widget *widget)
+ 	widget->redraw = True;
+ 
+ 	/* clear previous content */
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[LAYER_STATUSBAR].pict,
+-		&(XRenderColor){ 0 },
+-		0, 0, widget->winw, STATUSBAR_HEIGHT(widget)
+-	);
++	clearpict(widget, widget->layers[LAYER_STATUSBAR].pict, 0, 0, widget->winw, STATUSBAR_HEIGHT(widget));
+ 
+ 	/* draw item counter */
+ 	(void)snprintf(
+@@ -589,15 +609,7 @@ drawstatusbar(Widget *widget)
+ 	}
+ 
+ 	/* clear content below right side of statusbar */
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[LAYER_STATUSBAR].pict,
+-		&(XRenderColor){ 0 },
+-		widget->winw - rightwid, 0,
+-		rightwid,
+-		STATUSBAR_HEIGHT(widget)
+-	);
++	clearpict(widget, widget->layers[LAYER_STATUSBAR].pict, widget->winw - rightwid, 0, rightwid, STATUSBAR_HEIGHT(widget));
+ 
+ 	/* draw percentage */
+ 	ctrlfnt_draw(
+@@ -796,13 +808,7 @@ isbreakable(char c)
+ static void
+ drawname(Widget *widget, Picture color, int x, const char *text, int len)
+ {
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->namepict,
+-		&(XRenderColor){ 0 },
+-		0, 0, LABELWIDTH, widget->fonth
+-	);
++	clearpict(widget, widget->namepict, 0, 0, LABELWIDTH, widget->fonth);
+ 	ctrlfnt_draw(
+ 		widget->fontset,
+ 		widget->namepict,
+@@ -1044,14 +1050,7 @@ drawitem(Widget *widget, int index)
+ 	y = (i / widget->ncols) % widget->nrows;
+ 	x *= widget->itemw;
+ 	y *= widget->itemh;
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[LAYER_ICONS].pict,
+-		&(XRenderColor){ 0 },
+-		x, y,
+-		widget->itemw, widget->itemh
+-	);
++	clearpict(widget, widget->layers[LAYER_ICONS].pict, x, y, widget->itemw, widget->itemh);
+ 	XRenderFillRectangle(
+ 		widget->display,
+ 		PictOpClear,
+@@ -1088,13 +1087,7 @@ drawitems(Widget *widget)
+ {
+ 	int i, n;
+ 
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[LAYER_ICONS].pict,
+-		&(XRenderColor){ 0 },
+-		0, 0, widget->pixw, widget->pixh
+-	);
++	clearpict(widget, widget->layers[LAYER_ICONS].pict, 0, 0, widget->pixw, widget->pixh);
+ 	XRenderFillRectangle(
+ 		widget->display,
+ 		PictOpClear,
+@@ -1119,13 +1112,7 @@ commitdraw(Widget *widget)
+ 	};
+ 
+ 	etlock(&widget->lock);
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		widget->layers[LAYER_CANVAS].pict,
+-		&(XRenderColor){ 0 },
+-		0, 0, widget->winw, widget->winh
+-	);
++	clearpict(widget, widget->layers[LAYER_CANVAS].pict, 0, 0, widget->winw, widget->winh);
+ 	XRenderComposite(
+ 		widget->display,
+ 		PictOpOver,

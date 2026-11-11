@@ -26,6 +26,9 @@ XFiles.foreground:              #e0e0e0
 XFiles.activeBackground:        #2a6fb0
 XFiles.activeForeground:        #ffffff
 XFiles.geometry:                760x520
+! the desktop (xfiles -d, started by JWM: its resource name is xfiles-desktop): the
+! colour of JWM's desktop background (userland/jwm/system.jwmrc)
+xfiles-desktop.background:      #1e3a52
 XFiles.fileIcons:                       \n\
 	~/=folder-home                  \n\
 	~/.cache/=folder-gear           \n\

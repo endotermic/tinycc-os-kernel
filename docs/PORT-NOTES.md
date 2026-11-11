@@ -812,6 +812,39 @@ well as a tarball).
   runs `exec:xfiles` (`userland/jwm/system.jwmrc`, `icons/file-manager.xpm`); the banner
   and xdm's helper text name it. The accounts need nothing special: xfiles opens the
   session's home.
+* **The desktop (2026-11-11).** xfiles has no desktop mode upstream; patch 0003 adds
+  `-d [DIR]`: the window covers the screen and carries `_NET_WM_WINDOW_TYPE_DESKTOP`, which
+  JWM keeps in its desktop layer (no border, sticky, out of the task list and the pager,
+  focused by a click only); the directory is `~/Desktop` (made when missing), with no `..`
+  entry; folders open through the opener in a new window instead of in place; the resource
+  name is `xfiles-desktop` (`xfiles-desktop.background: #1e3a52` in `/etc/X11/Xresources`,
+  JWM's background colour) and `XFILES_DESKTOP=1` is in the environment of what it runs.
+  xfiles watches no directory (no inotify): it re-reads one when an action of its own
+  returns and the ctime changed. For the desktop the main loop now also returns after
+  1.5 s without input and with no button held (`mainevent()`, so a click, a double click or
+  a drag is never cut), and xfiles then calls `changedir()` on the same directory, which
+  costs a `stat` when nothing changed. `xfilesctl menu` with no file on the desktop has the
+  session's entries (Terminal, File manager, Web browser, Restart JWM = `jwm -restart`,
+  Log out... = a confirmation, then `jwm -exit`), since the background no longer reaches
+  JWM's root menu; that stays on the tray's Menu button and Alt-F1. JWM starts it with
+  `<StartupCommand>xfiles -d</StartupCommand>` (run once, not on Restart), so startx and
+  xdm sessions both get it. Patch 0004 fixes what made every xfiles window black: the
+  canvas, the icon and status bar layers and the label are cleared to transparent and
+  the background colour goes under them at the end (OverReverse), but TinyX has no 32-bit
+  visual, the pictures have no alpha channel and transparent reads as opaque black;
+  `clearpict()` clears them to the background colour there (and to transparent, as
+  before, on a 32-bit visual), so `XFiles.background: #1e1e1e` shows for the first time.
+  Verified on i386 (headless QEMU, QMP screendumps, keys through `send-key` and the
+  pointer moved in 3-pixel relative steps, measured on the screendumps, since X
+  accelerates and the tablet's absolute positions reach it as relative motion): with
+  `--startx` the desktop came up blue on an empty `~/Desktop`; a folder and a text file made
+  from mlterm appeared (with the text thumbnail) within two seconds while the terminal was
+  still open; a double click on the folder opened `~/Desktop/Projects - XFiles` in a framed
+  window over the desktop; the right-click menu on the background listed the session's
+  entries, and Log out... with its confirmation ended the session (back to the console's
+  shell); with `--xdm`, ada's session runs `xfiles -d` and has `/home/ada/Desktop`. In these
+  headless runs the pointer only started to follow QMP's motion events about a minute after
+  X came up; the keys worked at once.
 
 Verified on x86_64 (headless QEMU, QMP screendumps, the keys and the PS/2 mouse through
 `input-send-event`, commands over the serial console): a test directory with Latin, Cyrillic
