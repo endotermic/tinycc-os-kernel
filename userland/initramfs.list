@@ -28,8 +28,9 @@ dir   /etc          0755 0 0
 dir   /mnt          0755 0 0
 dir   /usr/share    0755 0 0
 dir   /usr/share/udhcpc 0755 0 0
-# setuid root (CONFIG_FEATURE_SUID: only su, login and passwd keep the privilege, the
-# other applets drop it): su gives the user a root shell, login switches to the user
+# setuid root (CONFIG_FEATURE_SUID: only su, login and passwd keep the privilege, and
+# halt, poweroff and reboot through /etc/busybox.conf below; the other applets drop it): su
+# gives the user a root shell, login switches to the user
 file  /bin/busybox  ${BUSYBOX} 4755 0 0
 slink /bin/sh       busybox 0777 0 0
 file  /init         ${BUSYBOX_INIT} 0755 0 0
@@ -41,6 +42,8 @@ file  /usr/bin/devices-test ${DEVICES_TEST} 0755 0 0
 file  /etc/passwd  ${ETC}/passwd 0644 0 0
 file  /etc/group   ${ETC}/group 0644 0 0
 file  /etc/shadow  ${ETC}/shadow 0600 0 0
+# the setuid rules of busybox (halt, poweroff, reboot for every user; JWM menu entries)
+file  /etc/busybox.conf ${ETC}/busybox.conf 0644 0 0
 dir   /home        0755 0 0
 dir   /home/ada    0755 1000 1000
 dir   /home/grace  0755 1001 1001

@@ -23,6 +23,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/mount.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
@@ -500,6 +501,63 @@ static void power_off(void)
         pause();
 }
 
+/*
+ * halt, poweroff and reboot (busybox: without -f they signal PID 1, as busybox init
+ * expects: SIGUSR1, SIGUSR2, SIGTERM).  JWM's menu has "Shut down" and "Reboot" (poweroff
+ * and reboot as the session's user: /etc/busybox.conf lets every user run them setuid
+ * root).  The handler ends every other process (SIGTERM, then SIGKILL after a second),
+ * syncs and calls reboot(2).  The kernel has no ACPI, so it cannot power the machine off
+ * (RB_POWER_OFF only halts it); under a hypervisor (QEMU: the "hypervisor" CPU flag)
+ * poweroff resets instead, and QEMU, started with -no-reboot, exits.
+ */
+static int under_hypervisor;
+
+static void say(const char *s)
+{
+    write(1, s, strlen(s));
+}
+
+static void on_shutdown_signal(int sig)
+{
+    int how = sig == SIGTERM ? RB_AUTOBOOT : sig == SIGUSR2 ? RB_POWER_OFF : RB_HALT_SYSTEM;
+    say(sig == SIGTERM ? "\n*** reboot requested: stopping every process\n"
+        : sig == SIGUSR2 ? "\n*** poweroff requested: stopping every process\n"
+        : "\n*** halt requested: stopping every process\n");
+    kill(-1, SIGTERM);
+    sleep(1);
+    kill(-1, SIGKILL);
+    /* reap them all (every process is a child of PID 1 by now) before printing: the death
+     * of the console shell hangs the console up, which drops what is still unsent; at
+     * most 2 s, for a process stuck in the kernel */
+    for (int i = 0; i < 40 && waitpid(-1, NULL, WNOHANG) >= 0; i++)
+        usleep(50000);
+    if (how == RB_POWER_OFF && under_hypervisor) {
+        say("*** no ACPI power-off: resetting instead (QEMU -no-reboot exits)\n");
+        how = RB_AUTOBOOT;
+    } else
+        say(how == RB_AUTOBOOT ? "*** rebooting\n" : "*** halting: the machine can be switched off\n");
+    tcdrain(1);
+    usleep(200000);
+    sync();
+    reboot(how);
+    for (;;)
+        pause();
+}
+
+static void catch_shutdown_signals(void)
+{
+    struct sigaction sa;
+    char *s = read_file("/proc/cpuinfo", NULL);
+    under_hypervisor = s && strstr(s, " hypervisor");
+    free(s);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_shutdown_signal;
+    sigfillset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+}
+
 /* send FILE to the host if it exists; its status (0 when it does not exist) */
 static int send_if_exists(const char *file)
 {
@@ -529,6 +587,7 @@ int main(void)
      * opener detached from the terminal, as for a GUI program, and vi cannot run there) */
     setenv("NNN_OPTS", "c", 0);
     chdir("/root");
+    catch_shutdown_signals();
     network_up();
     /* A shell on the screen (tty1, keyboard) too, when there is one and /dev/console is
      * another device (the last "console=" of the command line, listed last in

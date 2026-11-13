@@ -125,7 +125,10 @@ other programs, a right-click menu in xmenu, prompts in dmenu embedded in the wi
 Ctrl-L, F2 and Ctrl-N, copy/cut/paste, delete, rename, properties, Latin, Cyrillic and CJK
 names through DejaVu and Unifont; also on Ctrl-Alt-F; its control script, thumbnailer and
 the `xdg-open` opener are C scripts run by tcc), starts links,
-restarts JWM or logs out, and the greeter returns. The
+restarts JWM or logs out, and the greeter returns; Reboot and Shut down at its end
+(2026-11-13) let any user end the system: busybox `reboot` and `poweroff`, allowed by
+`/etc/busybox.conf`, signal `/init`, which stops every process and resets (no ACPI, so no
+real power-off; under QEMU's `-no-reboot` both end QEMU). The
 second entry is the graphical mode without a login
 (`tcc.startx`: the TinyX X server on the framebuffer with JWM and the links browser in
 graphics mode; the third entry is the text console, where `startx [URL]` opens the same,

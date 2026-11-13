@@ -634,9 +634,9 @@ What needed care:
   may come and go. Without `/usr/bin/jwm` in the image both fall back to links alone, the
   size of the screen, as before. `/etc/system.jwmrc` (`userland/jwm/system.jwmrc`): the
   menu on any mouse button over the desktop, the tray's Menu button and Alt-F1 (links,
-  links on the host's http.server, Restart, Log out), a tray along the bottom with pager
-  (two desktops), task list and clock, Xft fonts `Sans-11` (DejaVu Sans through
-  fontconfig's aliases), five hand-drawn 16x16 XPM icons (`userland/jwm/icons/`, generated
+  links on the host's http.server, Restart, Log out, Reboot, Shut down), a tray along the
+  bottom with pager (two desktops), task list and clock, Xft fonts `Sans-11` (DejaVu Sans through
+  fontconfig's aliases), seven hand-drawn 16x16 XPM icons (`userland/jwm/icons/`, generated
   pixel art under the repository's license), click-to-focus.
 
 Verified on x86_64 (headless QEMU, QMP screendumps, the keys through `send-key`, commands

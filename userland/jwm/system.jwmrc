@@ -11,9 +11,12 @@
   browser, Restart JWM, Log out).  JWM's own menu opens on the tray's Menu button and on
   Alt-F1 (and on a click on the bare root window when the desktop is not running): the mlterm terminal (also Ctrl-Alt-T; its settings are in
   /etc/mlterm/main), the xfiles file manager (also Ctrl-Alt-F; its resources are in
-  /etc/X11/Xresources), the links browser, Restart, and Exit, which ends the session (back
-  to the greeter under xdm, back to the text console under startx).  Edit and choose Restart
-  to reload.
+  /etc/X11/Xresources), the links browser, Restart, Exit, which ends the session (back
+  to the greeter under xdm, back to the text console under startx), then Reboot and Shut
+  down, without a confirmation (JWM has none for programs): busybox reboot and poweroff,
+  which every user may run (/etc/busybox.conf); they signal /init
+  (userland/busybox-init.c), and under QEMU (-no-reboot) both make QEMU exit.  Edit and
+  choose Restart to reload.
 -->
 <JWM>
 
@@ -26,6 +29,9 @@
         <Separator/>
         <Restart label="Restart JWM" icon="restart"/>
         <Exit label="Log out" confirm="true" icon="exit"/>
+        <Separator/>
+        <Program icon="restart" label="Reboot">reboot</Program>
+        <Program icon="shutdown" label="Shut down">poweroff</Program>
     </RootMenu>
 
     <!-- The desktop: xfiles on ~/Desktop (made when missing); started once, not again on

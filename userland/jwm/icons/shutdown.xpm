@@ -1,0 +1,24 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* shutdown.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons): the power symbol */
+static char *shutdown_xpm[] = {
+"16 16 2 1",
+".	c None",
+"r	c #d03030",
+"................",
+".......rr.......",
+"...r...rr...r...",
+"..rr...rr...rr..",
+".rr....rr....rr.",
+".r.....rr.....r.",
+"rr.....rr.....rr",
+"r......rr......r",
+"r..............r",
+"r..............r",
+"rr............rr",
+".r............r.",
+".rr..........rr.",
+"..rrr......rrr..",
+"....rrrrrrrr....",
+"................"
+};
