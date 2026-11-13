@@ -177,6 +177,8 @@ make_total() { make -n "$@" 2>/dev/null | grep -cE "${PROGRESS_STEP_RE:-^  [A-Z]
 #   overall_begin TIMES-FILE STEP...   the plan, in order; sets the traps that end the bar
 #   overall_step STEP                  STEP starts (scripts/build.sh calls it for its steps)
 #   overall_end STATUS                 removes the bar; on 0 records the step times
+# A parallel run (build.sh --parallel) adds a "P" line to the state file and an "E STEP" mark
+# when each step ends: several steps are then running at once.
 OVERALL_ESTIMATES='fetch 120 patch 20 host-tcc 40 tcc-test 150 tcc-archive 5 tld 5 libelf 3
 kernel 420 musl 45 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
 tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
@@ -208,7 +210,28 @@ overall_line() {
     BEGIN { while ((getline l < plan) > 0) { split(l, p, " "); n++; name[n] = p[1]; w[n] = p[2]; total += p[2]; idx[p[1]] = n } }
     $1 == "B" { t0 = $3 }
     $1 == "S" && ($2 in idx) { cur = idx[$2]; ts = $3 }
+    $1 == "P" { par = 1 }
+    $1 == "S" && ($2 in idx) && !($2 in st) { st[$2] = $3 }
+    $1 == "E" && ($2 in idx) { en[$2] = $3 }
     END {
+        if (par) {
+            # a parallel run (scripts/parallel.sh): the steps with an E mark are done, those
+            # started without one are running; the time left from the rate so far
+            donew = 0; part = 0; nd = 0; run = ""
+            for (i = 1; i <= n; i++) {
+                if (name[i] in en) { donew += w[i]; nd++ }
+                else if (name[i] in st) {
+                    el = now - st[name[i]]; fr = w[i] > 0 ? el / w[i] : 0; if (fr > 0.95) fr = 0.95
+                    part += w[i] * fr; run = run (run == "" ? "" : " ") name[i]
+                }
+            }
+            pct = total > 0 ? int(100 * (donew + part) / total) : 0
+            if (pct < lastpct) pct = lastpct; if (pct > 99) pct = 99
+            gone = now - t0
+            info = sprintf("%3d%%  %d/%d done  %s", pct, nd, n, t(gone))
+            if (donew + part > 0 && gone >= 10) info = info sprintf(", ~%s left", t((total - donew - part) * gone / (donew + part)))
+            extra = "  " (run == "" ? "waiting" : run)     # after the bar width: the names may be cut
+        } else {
         donew = 0; for (i = 1; i < cur; i++) donew += w[i]
         el = cur ? now - ts : 0; fr = cur && w[cur] > 0 ? el / w[cur] : 0; if (fr > 0.95) fr = 0.95
         pct = total > 0 ? int(100 * (donew + (cur ? w[cur] * fr : 0)) / total) : 0
@@ -216,8 +239,10 @@ overall_line() {
         left = 0; for (i = cur + 1; i <= n; i++) left += w[i]; if (cur) left += (w[cur] > el ? w[cur] - el : w[cur] * 0.05)
         info = sprintf("%3d%%  %d/%d %s  %s", pct, cur, n, cur ? name[cur] : "starting", t(now - t0))
         if (cur) info = info sprintf(", ~%s left", t(left))
-        bw = cols - length(info) - 13; if (bw > 40) bw = 40
+        }
+        bw = cols - length(info) - 13 - (par ? 20 : 0); if (bw > 40) bw = 40
         s = ""; if (bw >= 10) { f = int(bw * pct / 100); for (i = 0; i < bw; i++) s = s (i < f ? "#" : "."); s = "[" s "] " }
+        info = info extra
         line = " overall " s info; if (length(line) > cols - 1) line = substr(line, 1, cols - 1)
         print pct " " line
     }' "$OVERALL_STATE"
@@ -243,10 +268,20 @@ overall_end() {
     [ -z "${1:-}" ] || printf '\0337\033[%d;1H\033[2K\0338' "$1" >&2
     _now=$(date +%s)
     # the steps' times: each lasts until the next one starts (the last until now)
-    awk -v now="$_now" '$1 == "S" { if (p != "") d[p] += $3 - t; p = $2; t = $3 } END { if (p != "") d[p] += now - t; for (s in d) print s, d[s] }' \
-        "$OVERALL_STATE" > "$OVERALL_STATE.times"
+    # (a parallel run, P: from each step's first S mark to its E mark, the plan's steps only)
+    awk -v now="$_now" -v plan="$OVERALL_STATE.plan" '
+        BEGIN { while ((getline l < plan) > 0) { split(l, q, " "); inplan[q[1]] } }
+        $1 == "P" { par = 1 }
+        $1 == "S" { if (!($2 in st)) st[$2] = $3; if (p != "") d[p] += $3 - t; p = $2; t = $3 }
+        $1 == "E" { en[$2] = $3 }
+        END {
+            if (par) { for (s in st) if (s in inplan) print s, ((s in en) ? en[s] : now) - st[s] }
+            else { if (p != "") d[p] += now - t; for (s in d) print s, d[s] }
+        }' "$OVERALL_STATE" > "$OVERALL_STATE.times"
     _el=$(awk -v now="$_now" '$1 == "B" { print now - $3 }' "$OVERALL_STATE")
-    _cur=$(awk '$1 == "S" { s = $2 } END { print s }' "$OVERALL_STATE")
+    _cur=$(awk -v plan="$OVERALL_STATE.plan" 'BEGIN { while ((getline l < plan) > 0) { split(l, q, " "); inplan[q[1]] } }
+        $1 == "P" { par = 1 } $1 == "S" { s = $2; if ($2 in inplan) st[$2] } $1 == "E" { delete st[$2] }
+        END { if (par) { s = ""; for (k in st) s = s (s == "" ? "" : "+") k } print s }' "$OVERALL_STATE")
     if [ "$_st" = 0 ]; then
         mkdir -p "$(dirname "$OVERALL_TIMES")"
         # merge: this run's steps replace their old records, the others stay

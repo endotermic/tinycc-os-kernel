@@ -38,6 +38,7 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./build.sh --build distro --arch x86_64 --output iso --test     # unattended, with tcc's test suite
 ./build.sh --build distro --output iso --selfhost               # + the self-hosting image and its ISO entries
 ./build.sh --arch i386                                          # the 32-bit kernel and userland (out/i386)
+./build.sh --build distro --serial                              # one step after the other (the default is parallel, below)
 ./run.sh --arch i386                                            # boots it in qemu-system-i386 (chosen by itself when only i386 is built)
 ./build.sh --clean --arch i386                                  # removes build/i386 and out/i386 (src/ stays)
 ./build.sh --clean-all --dry-run                                # lists what a clean of every architecture would free
@@ -246,6 +247,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `sources.lock` | the 47 upstream components with URL, ref and exact commit or tarball hash (or a single file's) |
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
+| `scripts/parallel.sh` | `build.sh` by default (`--serial` turns it off): the distro build as a GNU make -j graph; every component fetched and patched as its own job, each step started once its sources and the steps it needs are done (the kernel next to the userland), up to 4 at once (`--parallel=N`), output prefixed `[step]` |
 | `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, xfiles with xmenu, dmenu, xprop and xrdb, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
 | `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |

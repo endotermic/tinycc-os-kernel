@@ -4,7 +4,7 @@
 # out/<arch>/.  Without arguments on a terminal it asks what to build, the target and the
 # output; the same choices are available as options for unattended use.
 #
-# Usage: ./build.sh [--build tcc|distro] [--arch ARCH] [--output initrd|iso|all] [--selfhost] [--jobs N] [--run] [--test]
+# Usage: ./build.sh [--build tcc|distro] [--arch ARCH] [--output initrd|iso|all] [--selfhost] [--jobs N] [--parallel=N | --serial] [--run] [--test]
 #        ./build.sh --clean [--arch ARCH] [--dry-run]  |  ./build.sh --clean-all [--dry-run]
 #   --build   tcc: only the patched Tiny C Compiler, installed into a staging tree and packed
 #                  as out/<arch>/tcc-<version>-<arch>-linux.tar.gz (extract with tar xzf ... -C /)
@@ -16,6 +16,13 @@
 #             the sources and the toolchain to rebuild the kernel and tcc inside the guest
 #             (./run.sh --selfhost; scripts/selfhost-test.sh); downloads GNU make's tarball too
 #   --jobs    parallel jobs (default: JOBS from the environment, else nproc)
+#   --parallel=N  distro (the default, N 4): fetch, patch and build as one dependency graph
+#             (scripts/parallel.sh): every component downloads at the same time, the host tcc
+#             builds while linux is still downloading, the kernel builds next to the userland;
+#             up to N steps at once, each still with --jobs make jobs; their output is prefixed
+#             [step] and shows milestones instead of per-step bars
+#   --serial  distro: one step after the other (fetch everything, patch, then each build step),
+#             with the per-step progress bars
 #   --test    run tinycc's test suite after building it
 #   --run     boot the result in QEMU when done (./run.sh; distro only)
 #   On a terminal the bottom row shows the overall progress (steps weighted by their times on
@@ -36,13 +43,14 @@
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-build= arch= output= run= test= selfhost= clean= dry= jobs=${JOBS:-$(nproc)}
+build= arch= output= run= test= selfhost= clean= dry= parallel=4 jobs=${JOBS:-$(nproc)}
 while [ $# -gt 0 ]; do
     case $1 in
         --build) build=$2; shift 2;; --build=*) build=${1#*=}; shift;;
         --arch) arch=$2; shift 2;; --arch=*) arch=${1#*=}; shift;;
         --output) output=$2; shift 2;; --output=*) output=${1#*=}; shift;;
         --jobs) jobs=$2; shift 2;; --jobs=*) jobs=${1#*=}; shift;;
+        --parallel) parallel=4; shift;; --parallel=*) parallel=${1#*=}; shift;; --serial) parallel=; shift;;
         --run) run=1; shift;; --test) test=1; shift;; --selfhost) selfhost=1; shift;;
         --clean) clean=clean; shift;; --clean-all) clean=clean-all; shift;; --dry-run|-n) dry=1; shift;;
         -h|--help) usage;;
@@ -112,10 +120,15 @@ if [ "$build" = tcc ]; then
     echo "   install: sudo tar xzf $OUT/$arch/tcc-*.tar.gz -C /      (puts tcc under /usr/local)"
     exit 0
 fi
-msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs"
+case $parallel in ''|[1-9]|[1-9][0-9]) ;; *) die "--parallel=N needs a number from 1 to 99";; esac
+msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs${parallel:+, up to $parallel steps at once}"
 steps="tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs"
 iso=; case $output in iso|all) iso=iso;; esac
 overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} $steps ${selfhost:+selfhost} $iso
+if [ -n "$parallel" ]; then
+    [ -z "${OVERALL_STATE:-}" ] || echo "P - 0" >> "$OVERALL_STATE"
+    "$ROOT/scripts/parallel.sh" -j "$parallel" ${test:+--test} ${selfhost:+--selfhost} ${iso:+--iso}
+else
 overall_step fetch; "$ROOT/scripts/fetch.sh"
 overall_step patch; "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" host-tcc
@@ -123,6 +136,7 @@ overall_step patch; "$ROOT/scripts/patch.sh"
 "$ROOT/scripts/build.sh" $steps
 [ -z "$selfhost" ] || "$ROOT/scripts/build.sh" selfhost
 [ -z "$iso" ] || "$ROOT/scripts/build.sh" iso
+fi
 overall_end 0; trap - EXIT INT TERM HUP
 echo
 msg "done: $OUT/$arch"
