@@ -51,7 +51,16 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)
 ./run.sh --selfhost               # the self-hosting image: 1 GB, every CPU; inside: build-kernel, send-file
 scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel in the guest, boot it (#2)
+./install.sh                      # writes a built ISO to a USB flash drive: menus of the ISOs and the USB drives, dd with a progress bar, read-back check
+./install.sh --list               # the ISOs and the USB drives it would offer (model, size, partitions and labels)
 ```
+
+`./install.sh` overwrites the whole drive with the hybrid ISO by `dd` (needs sudo). It offers
+only USB/removable drives, refuses any disk under a mounted system file system, asks you to
+type the device name before writing and unmounts the drive's partitions; `--arch ARCH` or
+`--iso PATH`, `--device /dev/sdX` and `--yes` do the same unattended. `--bs 256K` writes in
+small blocks, each flushed before the next: slower, for drives that lose a block under fast
+writes (the check names where the drive differs and offers to write again).
 
 Downloads and builds draw progress bars on a terminal (git's transfer percentages; one
 step per compiled file for the builds). The totals for the kernel and busybox bars are

@@ -209,7 +209,7 @@ in the loop: every script of the built system is a C program.
 
 | Path | Role |
 |------|------|
-| `./build.sh`, `run.sh` | entry points |
+| `./build.sh`, `run.sh`, `install.sh` | entry points (install.sh: write an ISO to a USB drive) |
 | `scripts/` | `fetch.sh`, `patch.sh`, `build.sh`, `lib.sh` (shared helpers, host check), `export-patches.sh`, `recv-file.sh`, `selfhost-test.sh`, `devices-test.sh` |
 | `sources.lock`, `patches/` | pinned upstreams and the patch series |
 | `kernels/linux/` | kernel config fragments and the Kbuild wrapper sources |
