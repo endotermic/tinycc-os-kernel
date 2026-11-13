@@ -110,6 +110,12 @@ XMenu.activeBackground:         #2a6fb0
 XMenu.activeForeground:         #ffffff
 XMenu.borderColor:              #1a1a1a
 XMenu.borderWidth:              1
+! frosted glass (patches/xmenu): the menu is composed on the blurred, tinted wallpaper that
+! the wallpaper program publishes (luminance at most 0.10, so #e0e0e0 text has 5.3:1), with
+! the background colour on top at this strength (0: the glass alone); the entry under the
+! pointer stays solid #2a6fb0 (white text 5.3:1).  Without the frosted wallpaper the menu is
+! opaque, as before.
+XMenu.opacity:                  0
 XMenu.separatorColor:           #555555
 XMenu.shadowThickness:          0
 

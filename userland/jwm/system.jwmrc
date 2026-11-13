@@ -55,7 +55,15 @@
         <Clock format="%H:%M"/>
     </Tray>
 
-    <!-- Visual styles: Xft fonts (DejaVu Sans through fontconfig's aliases). -->
+    <!-- Visual styles: Xft fonts (DejaVu Sans through fontconfig's aliases).  The tray and
+         the menus are frosted glass (patches/jwm): their background is the piece of the
+         blurred, tinted wallpaper under them (_WALLPAPER_FROSTED_PMAP_ID, published by the
+         wallpaper program; luminance at most 0.10), and the Background colours below apply
+         only where there is none.  On the glass, text keeps WCAG AA contrast or better
+         (#e0e0e0: 5.3:1; white: 7:1; minimized tasks #d0d0d0 4.5:1 and in [brackets]);
+         states stay solid: the active task, the active desktop in the pager, the menu
+         entry under the pointer and the pressed Menu button.  Window frames stay opaque:
+         over another window, glass would show the wallpaper, not what is behind. -->
     <WindowStyle decorations="flat">
         <Font>Sans-11:bold</Font>
         <Width>4</Width>
@@ -83,7 +91,7 @@
             <Background>#2a6fb0</Background>
         </Active>
         <Minimized>
-            <Foreground>#a0a0a0</Foreground>
+            <Foreground>#d0d0d0</Foreground>
             <Background>#2b2b2b</Background>
         </Minimized>
         <Foreground>#e0e0e0</Foreground>

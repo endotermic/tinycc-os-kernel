@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * xdm-help - the helper text of the graphical login: a window along the top of the screen
+ * xdm-help - the helper text of the graphical login: a window along the bottom of the screen
+ * (the greeter's box sits at a third of the height, above it)
  * next to xdm's greeter, with the proof-of-concept accounts, their passwords and how the
  * system is used.  Xlib + Xft (DejaVu Sans through fontconfig, as the greeter), static, built by
  * scripts/build.sh xdm with musl-tcc; /etc/X11/xdm/Xsetup_0 starts it before the greeter
@@ -9,7 +10,7 @@
  * greeter.  Override-redirect: there is no window manager to decorate or move it.
  * Its background is the band of the frosted wallpaper that "wallpaper --greeter" publishes
  * in _WALLPAPER_FROSTED_PMAP_ID (blurred, tinted, brightness capped so that white text has
- * at least 7:1 contrast), with white text and a thin line along its lower edge, like the
+ * at least 7:1 contrast), with white text and a thin line along its upper edge, like the
  * greeter's box; without that pixmap, black text on white as before.
  */
 #include <stdio.h>
@@ -26,7 +27,8 @@ static const char *lines[] = {
     "like the kernel, musl, busybox and everything else on this screen.",
     "",
     "Proof-of-concept accounts (name / password):   ada / lovelace     grace / hopper     dennis / ritchie",
-    "Type the name, Enter, the password, Enter.  The session is the JWM window manager with the links",
+    "Type the name, Enter, the password, Enter (or click into the fields and on Log in); Power restarts or",
+    "shuts down the machine.  The session is the JWM window manager with the links",
     "web browser in graphics mode (Escape opens its menu, g asks for an address; http://10.0.2.2:8000/",
     "is the host under QEMU).  JWM's menu is on the desktop, the tray's Menu button and Alt-F1: a terminal",
     "(mlterm, also Ctrl-Alt-T), a file manager (xfiles, also Ctrl-Alt-F: right click for its menu, drag",
@@ -46,8 +48,8 @@ static int x_error(Display *d, XErrorEvent *e)
     return 0;
 }
 
-/* the band (0, 0, w, h) of the frosted wallpaper as a pixmap of its own, or None */
-static Pixmap frosted_band(Display *dpy, int screen, int w, int h)
+/* the band (0, y0, w, h) of the frosted wallpaper as a pixmap of its own, or None */
+static Pixmap frosted_band(Display *dpy, int screen, int y0, int w, int h)
 {
     Window root = RootWindow(dpy, screen), r;
     Atom prop = XInternAtom(dpy, "_WALLPAPER_FROSTED_PMAP_ID", True), type;
@@ -77,7 +79,7 @@ static Pixmap frosted_band(Display *dpy, int screen, int w, int h)
     if (!bad) {
         pix = XCreatePixmap(dpy, root, w, h, depth);
         gc = XCreateGC(dpy, pix, 0, NULL);
-        XCopyArea(dpy, src, pix, gc, 0, 0, w, h, 0, 0);
+        XCopyArea(dpy, src, pix, gc, 0, y0, w, h, 0, 0);
         XFreeGC(dpy, gc);
         XSync(dpy, False);
     }
@@ -106,7 +108,7 @@ int main(void)
     Window w;
     GC gc;
     XSetWindowAttributes attr;
-    int screen, width, height, n, lh, pad = 8;
+    int screen, width, height, n, lh, pad = 8, y0;
     unsigned long black, white;
     Pixmap band;
     if (!dpy) {
@@ -119,8 +121,8 @@ int main(void)
     white = WhitePixel(dpy, screen);
     vis = DefaultVisual(dpy, screen);
     cmap = DefaultColormap(dpy, screen);
-    font = XftFontOpenName(dpy, screen, "DejaVu Sans-9");
-    bold = XftFontOpenName(dpy, screen, "DejaVu Sans-9:bold");
+    font = XftFontOpenName(dpy, screen, "DejaVu Sans-10.5");
+    bold = XftFontOpenName(dpy, screen, "DejaVu Sans-10.5:bold");
     if (!font || !bold) {
         fprintf(stderr, "xdm-help: no DejaVu Sans font (fontconfig: /etc/fonts, /usr/share/fonts)\n");
         return 1;
@@ -130,16 +132,17 @@ int main(void)
     lh = font->ascent + font->descent + 3;
     width = DisplayWidth(dpy, screen);
     height = n * lh + 2 * pad;
-    band = frosted_band(dpy, screen, width, height);
+    y0 = DisplayHeight(dpy, screen) - height;
+    band = frosted_band(dpy, screen, y0, width, height);
     attr.override_redirect = True;
     attr.background_pixel = white;
     attr.border_pixel = black;
     if (band != None) {     /* frosted glass, no border: the line below is drawn */
         attr.background_pixmap = band;
-        w = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, width, height, 0, CopyFromParent,
+        w = XCreateWindow(dpy, RootWindow(dpy, screen), 0, y0, width, height, 0, CopyFromParent,
                           InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixmap, &attr);
     } else {
-        w = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, width - 2, height, 1, CopyFromParent,
+        w = XCreateWindow(dpy, RootWindow(dpy, screen), 0, y0 - 2, width - 2, height, 1, CopyFromParent,
                           InputOutput, CopyFromParent, CWOverrideRedirect | CWBackPixel | CWBorderPixel, &attr);
     }
     XSelectInput(dpy, w, ExposureMask);
@@ -162,7 +165,7 @@ int main(void)
                                   (const FcChar8 *)lines[i], (int)strlen(lines[i]));
             }
             if (band != None)
-                XftDrawRect(draw, &linecolor, 0, height - 1, width, 1);
+                XftDrawRect(draw, &linecolor, 0, 0, width, 1);   /* the line along its upper edge */
             XFlush(dpy);
         }
     }

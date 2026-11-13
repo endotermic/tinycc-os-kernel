@@ -974,6 +974,33 @@ at all.
   of #6cb4ff (luminance 0.43): 3.2:1 or more against the glass around the field (WCAG
   1.4.11, 2.4.13).  Verified x86_64 (start, Tab, Enter, failed login: the ring moves, no
   leftovers, the ring's pixels exactly the frame's extent; login) and i386 (identical).
+* **Frosted glass in the session** (the same day).  TinyX has no Composite extension (no
+  `composite/` in its tree), so JWM's `<Opacity>` (which only sets
+  `_NET_WM_WINDOW_OPACITY` for a compositor) does nothing; the panels cut their background
+  from the frosted wallpaper instead.  `wallpaper` now always publishes
+  `_WALLPAPER_FROSTED_PMAP_ID` (0.23 s for `wallpaper -s` under KVM, was 0.09 s).
+  patches/jwm 0003: `GetFrostedPixmap`/`DrawFrosted` (background.c), used by
+  ClearTrayDrawable, the pager, the clock, the tray window's own background and DrawMenu;
+  DrawButton fills the inactive kinds (label, menu, tray, task, minimized) from it when the
+  caller sets `frost` (taskbar, tray button, menus), so states stay solid; minimized tasks
+  in brackets on the glass (#d0d0d0, 4.5:1); the components get their screen position
+  before Create; a PropertyNotify of the atom re-lays every tray.  patches/xmenu 0006:
+  the final canvas starts from the frosted piece under the menu, the background colour on
+  top at `XMenu.opacity` (0 here), never on the selected entry.  Window frames stay opaque
+  (glass over another window would show the wallpaper).  Verified x86_64 (tray over the
+  dark and the bright photograph, JWM menu, xmenu; new wallpaper picked up) and i386
+  (tray).
+* **Greeter buttons** (patches/xdm 0006): a click in a field focuses it (PointerPress);
+  loginButtonLabel adds Log in (activeColor) under the fields' right edge (empty name: the
+  name field takes the keys, else FinishField from the last field); rebootCommand /
+  shutdownCommand add Power (an outline with an arrow) whose menu opens upwards over the box
+  (menuColor, hover in activeColor via `<Motion>`); a click runs the command with
+  `/bin/sh -c` in a detached child (the greeter is root: busybox reboot / poweroff signal
+  /init); a click outside or any key (an event handler after the translations) closes it
+  with a full redraw.  xdm-help: DejaVu Sans 10.5, at the bottom of the screen (the box sits
+  at a third of the height).  Verified x86_64 (click focus, Power menu with hover, close,
+  Log in with an empty name and with the account, Shut down from the greeter: QEMU exits in
+  2 s) and i386 (greeter identical).
 * **Verified** 2026-11-13 under QEMU (1024x768, std VGA), x86_64: the greeter, the session,
   xfiles' icons and thumbnails on the wallpaper, `wallpaper -s` and the Wallpaper menu
   (both switch the desktop and xfiles redraws), Log out -> the greeter on the default

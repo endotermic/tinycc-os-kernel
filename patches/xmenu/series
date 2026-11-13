@@ -4,3 +4,4 @@ upstreamable/0002-control-font-do-not-destroy-the-patterns-the-XftFont.patch
 upstreamable/0003-Translate-keys-with-XkbLookupKeySym-XkbKeycodeToKeys.patch
 upstreamable/0004-xkeypress-Down-and-Up-with-nothing-selected-pick-the.patch
 upstreamable/0005-Compose-the-layers-in-ARGB32-whatever-the-visual-the.patch
+features/0006-Frosted-glass-compose-the-menu-on-the-wallpaper-unde.patch

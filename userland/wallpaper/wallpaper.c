@@ -11,10 +11,10 @@
  *                               without one, the system's default
  *   wallpaper --default         the system's default, /usr/share/backgrounds/default.jpg (a
  *                               link to elementary/Pablo Garcia Saldana.jpg)
- *   wallpaper --greeter         the default, and a frosted copy of the screen (blurred,
- *                               tinted, brightness capped: frost()) in the root window's
- *                               _WALLPAPER_FROSTED_PMAP_ID, the background of the login
- *                               screen's panels (/etc/X11/xdm/Xsetup_0)
+ *   wallpaper --greeter         the same as --default (/etc/X11/xdm/Xsetup_0)
+ * Every form also publishes a frosted copy of the screen (blurred, tinted, brightness
+ * capped: frost()) in the root window's _WALLPAPER_FROSTED_PMAP_ID: the background of the
+ * translucent panels (the greeter, xdm-help, JWM's tray and menus, xmenu).
  *   wallpaper FILE              FILE, for now
  *   wallpaper -s FILE|default   FILE from now on: draws it and records it in ~/.config/wallpaper
  *                               ("default" removes the record)
@@ -557,12 +557,14 @@ static Pixmap get_pixmap_prop(Display *dpy, Window root, Atom prop)
 }
 
 /*
- * frosted: also publish a frosted copy of the screen (frost()) in the root window's
- * _WALLPAPER_FROSTED_PMAP_ID, which xdm's greeter (patches/xdm, xlogin*backgroundProperty)
- * and xdm-help cut their backgrounds from.
+ * The wallpaper, and a frosted copy of the screen (frost()) in the root window's
+ * _WALLPAPER_FROSTED_PMAP_ID, which the translucent panels cut their backgrounds from:
+ * xdm's greeter (patches/xdm, xlogin*backgroundProperty) and xdm-help on the login screen,
+ * JWM's tray and menus (patches/jwm) and xmenu (patches/xmenu) in the session.
  */
-static int set_root(const char *path, int frosted)
+static int set_root(const char *path)
 {
+    const int frosted = 1;
     Display *dpy;
     int scr, sw, sh;
     Window root;
@@ -789,7 +791,7 @@ static void usage(void)
     fprintf(stderr,
             "usage: %s                    the recorded choice (~/" CHOICE_FILE ") or the default\n"
             "       %s --default          the default picture (" DEFAULT_PICTURE ")\n"
-            "       %s --greeter          the same, and its frosted copy for the login screen\n"
+            "       %s --greeter          the same (xdm's Xsetup_0)\n"
             "       %s FILE               FILE (JPEG or PNG), filling the screen, centred\n"
             "       %s -s FILE|default    the same, and record it as the choice\n"
             "       %s -m                 a JWM menu of the pictures in " BACKGROUNDS "\n"
@@ -809,25 +811,25 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "-m"))
         return cmd_menu();
     if (argc == 2 && !strcmp(argv[1], "--default"))
-        return set_root(DEFAULT_PICTURE, 0);
+        return set_root(DEFAULT_PICTURE);
     if (argc == 2 && !strcmp(argv[1], "--greeter"))
-        return set_root(DEFAULT_PICTURE, 1);
+        return set_root(DEFAULT_PICTURE);
     if (argc == 3 && !strcmp(argv[1], "-s")) {
         if (!strcmp(argv[2], "default")) {
             save_choice(NULL);
-            return set_root(DEFAULT_PICTURE, 0);
+            return set_root(DEFAULT_PICTURE);
         }
         if (access(argv[2], R_OK))
             die("cannot read %s", argv[2]);
         file = realpath(argv[2], NULL);
-        set_root(file ? file : argv[2], 0);
+        set_root(file ? file : argv[2]);
         save_choice(file ? file : argv[2]);
         return 0;
     }
     if (argc == 2 && argv[1][0] != '-')
-        return set_root(argv[1], 0);
+        return set_root(argv[1]);
     if (argc != 1)
         usage();
     file = read_choice();
-    return set_root(file ? file : DEFAULT_PICTURE, 0);
+    return set_root(file ? file : DEFAULT_PICTURE);
 }

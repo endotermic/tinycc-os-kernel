@@ -1,0 +1,506 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 14:50:23 +0200
+Subject: [PATCH] Frosted glass for the tray and the menus
+
+When the root window has _WALLPAPER_FROSTED_PMAP_ID (a screen-sized pixmap
+of the wallpaper, blurred, tinted and capped in luminance, published by a
+wallpaper program), the tray, its components and the menus cut their
+backgrounds from it instead of filling them with their colours:
+ClearTrayDrawable, the pager, the clock and the tray window itself, and
+DrawMenu; DrawButton fills the inactive kinds (label, menu, tray, task,
+minimized task) from it, so states stay solid (the active task, the active
+desktop, the entry under the pointer, the pressed tray button).  Minimized
+tasks are shown in brackets on the glass.  The components get their screen
+position before Create (they draw there), and a change of the property
+makes every tray take its new piece.  Without the property nothing
+changes.
+---
+ src/background.c | 59 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/background.h | 19 ++++++++++++++++
+ src/button.c     | 15 +++++++++++-
+ src/button.h     |  7 ++++++
+ src/clock.c      |  6 ++++-
+ src/event.c      | 14 +++++++++++-
+ src/hint.c       |  1 +
+ src/hint.h       |  1 +
+ src/menu.c       | 19 +++++++++++++---
+ src/pager.c      | 10 +++++---
+ src/taskbar.c    | 15 ++++++++++++
+ src/tray.c       | 44 ++++++++++++++++++++++++++++++++++++
+ src/tray.h       |  6 +++++
+ src/traybutton.c |  3 +++
+ 14 files changed, 210 insertions(+), 9 deletions(-)
+
+diff --git a/src/background.c b/src/background.c
+index 09dbafd..9d818a0 100644
+--- a/src/background.c
++++ b/src/background.c
+@@ -50,6 +50,65 @@ static void LoadGradientBackground(BackgroundNode *bp);
+ static void LoadImageBackground(BackgroundNode *bp);
+ 
+ /** Initialize any data needed for background support. */
++static Pixmap frostedPixmap = None;
++static char frostedRead = 0;
++
++/** Get the frosted wallpaper (read once, after each change). */
++Pixmap GetFrostedPixmap(void)
++{
++   Atom type;
++   int format;
++   unsigned long count, after;
++   unsigned char *data = NULL;
++   Window root;
++   int x, y;
++   unsigned int width, height, border, depth;
++
++   if(frostedRead) {
++      return frostedPixmap;
++   }
++   frostedRead = 1;
++   frostedPixmap = None;
++   if(JXGetWindowProperty(display, rootWindow,
++                          atoms[ATOM_WALLPAPER_FROSTED_PMAP_ID], 0, 1, False,
++                          XA_PIXMAP, &type, &format, &count, &after,
++                          &data) == Success
++      && type == XA_PIXMAP && format == 32 && count == 1 && data) {
++      frostedPixmap = *(Pixmap*)data;
++   }
++   if(data) {
++      JXFree(data);
++   }
++   /* The pixmap belongs to another client and may be gone (the error
++    * handler only logs). */
++   if(frostedPixmap != None
++      && (!JXGetGeometry(display, frostedPixmap, &root, &x, &y, &width,
++                         &height, &border, &depth)
++          || depth != rootDepth)) {
++      frostedPixmap = None;
++   }
++   return frostedPixmap;
++}
++
++/** Forget the frosted wallpaper. */
++void InvalidateFrostedPixmap(void)
++{
++   frostedRead = 0;
++   frostedPixmap = None;
++}
++
++/** Copy a piece of the frosted wallpaper to a drawable. */
++char DrawFrosted(Drawable d, int sx, int sy, int x, int y,
++                 int width, int height)
++{
++   const Pixmap p = GetFrostedPixmap();
++   if(p == None || width <= 0 || height <= 0) {
++      return 0;
++   }
++   JXCopyArea(display, p, d, rootGC, sx, sy, width, height, x, y);
++   return 1;
++}
++
+ void InitializeBackgrounds(void)
+ {
+    backgrounds = NULL;
+diff --git a/src/background.h b/src/background.h
+index 580822d..8164acb 100644
+--- a/src/background.h
++++ b/src/background.h
+@@ -29,5 +29,24 @@ void SetBackground(int desktop, const char *type, const char *value);
+  */
+ void LoadBackground(int desktop);
+ 
++/** The frosted copy of the wallpaper, a screen-sized pixmap that the
++ * wallpaper program publishes in the root window's
++ * _WALLPAPER_FROSTED_PMAP_ID (blurred, tinted, its luminance capped so that
++ * light text keeps its contrast): the tray and the menus cut their
++ * backgrounds from it, so they read as frosted glass over the desktop.
++ * None when there is none.
++ */
++Pixmap GetFrostedPixmap(void);
++
++/** Forget the frosted pixmap (the property changed). */
++void InvalidateFrostedPixmap(void);
++
++/** Copy the frosted wallpaper under the screen area (sx, sy, width, height)
++ * to (x, y) of a drawable.
++ * @return 1 if done, 0 if there is no frosted wallpaper.
++ */
++char DrawFrosted(Drawable d, int sx, int sy, int x, int y,
++                 int width, int height);
++
+ #endif /* BACKGROUND_H */
+ 
+diff --git a/src/button.c b/src/button.c
+index e79b3fb..0ee0466 100644
+--- a/src/button.c
++++ b/src/button.c
+@@ -15,6 +15,7 @@
+ #include "image.h"
+ #include "misc.h"
+ #include "settings.h"
++#include "background.h"
+ 
+ /** Determine the colors to use. */
+ static void GetButtonColors(ButtonNode *bp, ColorType *fg, long *bg1, long *bg2,
+@@ -192,7 +193,16 @@ void DrawButton(ButtonNode *bp)
+    GetButtonColors(bp, &fg, &bg1, &bg2, &up, &down, &decorations, &gradient);
+ 
+    /* Draw the background. */
+-   if(bp->fill) {
++   if(bp->fill && bp->frost
++      && (bp->type == BUTTON_LABEL || bp->type == BUTTON_MENU
++          || bp->type == BUTTON_TRAY || bp->type == BUTTON_TASK
++          || bp->type == BUTTON_TASK_MINIMIZED)
++      && DrawFrosted(drawable, bp->frostx + x, bp->frosty + y,
++                     x, y, width, height)) {
++
++      /* Frosted glass: the inactive kinds show the wallpaper. */
++
++   } else if(bp->fill) {
+ 
+       /* Draw the button background. */
+       JXSetForeground(display, gc, bg1);
+@@ -321,5 +331,8 @@ void ResetButton(ButtonNode *bp, Drawable d)
+    bp->text = NULL;
+    bp->fill = 1;
+    bp->border = 0;
++   bp->frost = 0;
++   bp->frostx = 0;
++   bp->frosty = 0;
+ 
+ }
+diff --git a/src/button.h b/src/button.h
+index 2a0a44c..3693a08 100644
+--- a/src/button.h
++++ b/src/button.h
+@@ -53,6 +53,13 @@ typedef struct {
+    struct IconNode *icon;     /**< Icon used in the button. */
+    const char *text;          /**< Text used in the button. */
+ 
++   /** On frosted glass (the tray, the menus): the inactive kinds (label,
++    * menu, tray, task, minimized task) are filled with the frosted
++    * wallpaper instead of their colour; frostx, frosty: the screen
++    * position of the drawable's origin. */
++   char frost;
++   int frostx, frosty;
++
+ } ButtonNode;
+ 
+ /** Draw a button.
+diff --git a/src/clock.c b/src/clock.c
+index 4ef87d4..08e40db 100644
+--- a/src/clock.c
++++ b/src/clock.c
+@@ -19,6 +19,7 @@
+ #include "popup.h"
+ #include "misc.h"
+ #include "settings.h"
++#include "background.h"
+ #include "event.h"
+ #include "action.h"
+ 
+@@ -264,7 +265,10 @@ void DrawClock(ClockType *clk, const TimeType *now)
+ 
+    /* Clear the area. */
+    cp = clk->cp;
+-   if(colors[COLOR_CLOCK_BG1] == colors[COLOR_CLOCK_BG2]) {
++   if(DrawFrosted(cp->pixmap, cp->screenx, cp->screeny,
++                  0, 0, cp->width, cp->height)) {
++      /* frosted glass */
++   } else if(colors[COLOR_CLOCK_BG1] == colors[COLOR_CLOCK_BG2]) {
+       JXSetForeground(display, rootGC, colors[COLOR_CLOCK_BG1]);
+       JXFillRectangle(display, cp->pixmap, rootGC, 0, 0,
+                       cp->width, cp->height);
+diff --git a/src/event.c b/src/event.c
+index c9d5f0c..04335a5 100644
+--- a/src/event.c
++++ b/src/event.c
+@@ -9,6 +9,8 @@
+ 
+ #include "jwm.h"
+ #include "event.h"
++#include "hint.h"
++#include "background.h"
+ 
+ #include "client.h"
+ #include "clientlist.h"
+@@ -986,7 +988,17 @@ char HandleExpose(const XExposeEvent *event)
+ /** Handle a property notify event. */
+ char HandlePropertyNotify(const XPropertyEvent *event)
+ {
+-   ClientNode *np = FindClientByWindow(event->window);
++   ClientNode *np;
++
++   /* A new frosted wallpaper: the trays take their new piece of glass (the
++    * menus cut theirs each time they are drawn). */
++   if(event->window == rootWindow
++      && event->atom == atoms[ATOM_WALLPAPER_FROSTED_PMAP_ID]) {
++      InvalidateFrostedPixmap();
++      UpdateTrayBackgrounds();
++      return 1;
++   }
++   np = FindClientByWindow(event->window);
+    if(np) {
+       char changed = 0;
+       switch(event->atom) {
+diff --git a/src/hint.c b/src/hint.c
+index b1a58f4..943d0b9 100644
+--- a/src/hint.c
++++ b/src/hint.c
+@@ -77,6 +77,7 @@ static const AtomNode atomList[] = {
+    { &atoms[ATOM_COMPOUND_TEXT],             "COMPOUND_TEXT"               },
+    { &atoms[ATOM_UTF8_STRING],               "UTF8_STRING"                 },
+    { &atoms[ATOM_XROOTPMAP_ID],              "_XROOTPMAP_ID"               },
++   { &atoms[ATOM_WALLPAPER_FROSTED_PMAP_ID], "_WALLPAPER_FROSTED_PMAP_ID"  },
+    { &atoms[ATOM_MANAGER],                   &managerProperty[0]           },
+ 
+    { &atoms[ATOM_WM_STATE],                  "WM_STATE"                    },
+diff --git a/src/hint.h b/src/hint.h
+index 19872c3..62c90d9 100644
+--- a/src/hint.h
++++ b/src/hint.h
+@@ -19,6 +19,7 @@ typedef enum {
+    ATOM_COMPOUND_TEXT,
+    ATOM_UTF8_STRING,
+    ATOM_XROOTPMAP_ID,
++   ATOM_WALLPAPER_FROSTED_PMAP_ID,
+    ATOM_MANAGER,
+ 
+    /* Standard atoms */
+diff --git a/src/menu.c b/src/menu.c
+index badcd15..e9b10c6 100644
+--- a/src/menu.c
++++ b/src/menu.c
+@@ -9,6 +9,7 @@
+ 
+ #include "jwm.h"
+ #include "menu.h"
++#include "background.h"
+ #include "font.h"
+ #include "client.h"
+ #include "icon.h"
+@@ -602,9 +603,15 @@ void DrawMenu(Menu *menu)
+    MenuItem *np;
+    int x;
+ 
+-   JXSetForeground(display, rootGC, colors[COLOR_MENU_BG]);
+-   JXFillRectangle(display, menu->pixmap, rootGC, 0, 0,
+-                   menu->width, menu->height);
++   /* The frosted wallpaper under the menu, else the menu colour.  (Over a
++    * window the menu still shows the wallpaper: a menu is short-lived and
++    * its blur and tint keep the text legible whatever it covers.) */
++   if(!DrawFrosted(menu->pixmap, menu->x, menu->y, 0, 0,
++                   menu->width, menu->height)) {
++      JXSetForeground(display, rootGC, colors[COLOR_MENU_BG]);
++      JXFillRectangle(display, menu->pixmap, rootGC, 0, 0,
++                      menu->width, menu->height);
++   }
+ 
+    if(settings.menuDecorations == DECO_MOTIF) {
+       JXSetForeground(display, rootGC, colors[COLOR_MENU_UP]);
+@@ -845,6 +852,9 @@ void DrawMenuItem(Menu *menu, MenuItem *item, int index)
+    if(!item) {
+       if(index == -1 && menu->label) {
+          ResetButton(&button, menu->pixmap);
++         button.frost = 1;
++         button.frostx = menu->x;
++         button.frosty = menu->y;
+          button.x = MENU_BORDER_SIZE;
+          button.y = MENU_BORDER_SIZE;
+          button.width = menu->width - MENU_BORDER_SIZE * 2;
+@@ -863,6 +873,9 @@ void DrawMenuItem(Menu *menu, MenuItem *item, int index)
+       ColorType fg;
+ 
+       ResetButton(&button, menu->pixmap);
++      button.frost = 1;
++      button.frostx = menu->x;
++      button.frosty = menu->y;
+       if(menu->currentIndex == index) {
+          button.type = BUTTON_MENU_ACTIVE;
+          fg = COLOR_MENU_ACTIVE_FG;
+diff --git a/src/pager.c b/src/pager.c
+index a53fdf4..669f3c3 100644
+--- a/src/pager.c
++++ b/src/pager.c
+@@ -21,6 +21,7 @@
+ #include "popup.h"
+ #include "font.h"
+ #include "settings.h"
++#include "background.h"
+ 
+ /** Structure to represent a pager tray component. */
+ typedef struct PagerType {
+@@ -516,9 +517,12 @@ void DrawPager(const PagerType *pp)
+    deskWidth = pp->deskWidth;
+    deskHeight = pp->deskHeight;
+ 
+-   /* Draw the background. */
+-   JXSetForeground(display, rootGC, colors[COLOR_PAGER_BG]);
+-   JXFillRectangle(display, buffer, rootGC, 0, 0, width, height);
++   /* Draw the background (the frosted wallpaper, else the colour). */
++   if(!DrawFrosted(buffer, pp->cp->screenx, pp->cp->screeny,
++                   0, 0, width, height)) {
++      JXSetForeground(display, rootGC, colors[COLOR_PAGER_BG]);
++      JXFillRectangle(display, buffer, rootGC, 0, 0, width, height);
++   }
+ 
+    /* Highlight the current desktop. */
+    JXSetForeground(display, rootGC, colors[COLOR_PAGER_ACTIVE_BG]);
+diff --git a/src/taskbar.c b/src/taskbar.c
+index 188f9b5..33de3e6 100644
+--- a/src/taskbar.c
++++ b/src/taskbar.c
+@@ -9,6 +9,7 @@
+ 
+ #include "jwm.h"
+ #include "taskbar.h"
++#include "background.h"
+ #include "tray.h"
+ #include "timing.h"
+ #include "main.h"
+@@ -807,6 +808,9 @@ void Render(const TaskBarType *bp)
+    }
+ 
+    ResetButton(&button, bp->cp->pixmap);
++   button.frost = 1;
++   button.frostx = bp->cp->screenx;
++   button.frosty = bp->cp->screeny;
+    button.border = settings.taskListDecorations == DECO_MOTIF;
+    button.font = FONT_TASKLIST;
+    button.height = bp->itemHeight;
+@@ -868,6 +872,17 @@ void Render(const TaskBarType *bp)
+          } else {
+             button.text = tp->clients->client->name;
+          }
++         /* On frosted glass a minimized entry is told apart by brackets
++          * as well as by its colour (which must keep its contrast on the
++          * glass, so it cannot be much dimmer than the others), as in the
++          * window menus. */
++         if(button.type == BUTTON_TASK_MINIMIZED && button.text
++            && !displayName && GetFrostedPixmap() != None) {
++            const size_t len = strlen(button.text) + 3;
++            displayName = Allocate(len);
++            snprintf(displayName, len, "[%s]", button.text);
++            button.text = displayName;
++         }
+       }
+       DrawButton(&button);
+ 
+diff --git a/src/tray.c b/src/tray.c
+index 0b5b273..1668c6f 100644
+--- a/src/tray.c
++++ b/src/tray.c
+@@ -22,6 +22,7 @@
+ #include "client.h"
+ #include "misc.h"
+ #include "hint.h"
++#include "background.h"
+ 
+ #define DEFAULT_TRAY_WIDTH 32
+ #define DEFAULT_TRAY_HEIGHT 32
+@@ -112,12 +113,20 @@ void StartupTray(void)
+       }
+ 
+       SetDefaultCursor(tp->window);
++      SetTrayBackground(tp);
+ 
+       /* Create and layout items on the tray. */
+       xoffset = TRAY_BORDER_SIZE;
+       yoffset = TRAY_BORDER_SIZE;
+       for(cp = tp->components; cp; cp = cp->next) {
+ 
++         /* The place first: Create draws, on the frosted wallpaper under
++          * the component. */
++         cp->x = xoffset;
++         cp->y = yoffset;
++         cp->screenx = tp->x + xoffset;
++         cp->screeny = tp->y + yoffset;
++
+          if(cp->Create) {
+             if(tp->layout == LAYOUT_HORIZONTAL) {
+                height = tp->height - TRAY_BORDER_SIZE * 2;
+@@ -984,6 +993,7 @@ void ResizeTray(TrayType *tp)
+ 
+    JXMoveResizeWindow(display, tp->window, tp->x, tp->y,
+                       tp->width, tp->height);
++   SetTrayBackground(tp);
+ 
+    RequireTaskUpdate();
+    DrawSpecificTray(tp);
+@@ -993,10 +1003,44 @@ void ResizeTray(TrayType *tp)
+    }
+ }
+ 
++/** The tray window's own background (its border and the gaps between the
++ * components): the frosted wallpaper under it, else the tray colour. */
++void SetTrayBackground(TrayType *tp)
++{
++   Pixmap p;
++
++   if(tp->window == None) {
++      return;
++   }
++   if(GetFrostedPixmap() == None) {
++      JXSetWindowBackground(display, tp->window, colors[COLOR_TRAY_BG2]);
++   } else {
++      p = JXCreatePixmap(display, tp->window, tp->width, tp->height,
++                         rootDepth);
++      DrawFrosted(p, tp->x, tp->y, 0, 0, tp->width, tp->height);
++      JXSetWindowBackgroundPixmap(display, tp->window, p);
++      JXFreePixmap(display, p);
++   }
++   JXClearWindow(display, tp->window);
++}
++
++/** The wallpaper changed: every tray takes its new piece of glass (the
++ * components redraw on the resize). */
++void UpdateTrayBackgrounds(void)
++{
++   TrayType *tp;
++   for(tp = trays; tp; tp = tp->next) {
++      ResizeTray(tp);
++   }
++}
++
+ /** Draw the tray background on a drawable. */
+ void ClearTrayDrawable(const TrayComponentType *cp)
+ {
+    const Drawable d = cp->pixmap != None ? cp->pixmap : cp->window;
++   if(DrawFrosted(d, cp->screenx, cp->screeny, 0, 0, cp->width, cp->height)) {
++      return;
++   }
+    if(colors[COLOR_TRAY_BG1] == colors[COLOR_TRAY_BG2]) {
+       JXSetForeground(display, rootGC, colors[COLOR_TRAY_BG1]);
+       JXFillRectangle(display, d, rootGC, 0, 0, cp->width, cp->height);
+diff --git a/src/tray.h b/src/tray.h
+index fb6db76..2bcdce6 100644
+--- a/src/tray.h
++++ b/src/tray.h
+@@ -222,6 +222,12 @@ void ResizeTray(TrayType *tp);
+ /** Draw the tray background on a drawable. */
+ void ClearTrayDrawable(const TrayComponentType *cp);
+ 
++/** Set a tray window's background (the frosted wallpaper or the colour). */
++void SetTrayBackground(TrayType *tp);
++
++/** Give every tray its new piece of the frosted wallpaper. */
++void UpdateTrayBackgrounds(void);
++
+ /** Get a linked list of trays.
+  * @return The trays.
+  */
+diff --git a/src/traybutton.c b/src/traybutton.c
+index 6629c5f..687633d 100644
+--- a/src/traybutton.c
++++ b/src/traybutton.c
+@@ -284,6 +284,9 @@ void Draw(TrayComponentType *cp)
+ 
+    ClearTrayDrawable(cp);
+    ResetButton(&button, cp->pixmap);
++   button.frost = 1;
++   button.frostx = cp->screenx;
++   button.frosty = cp->screeny;
+    if(cp->grabbed) {
+       button.type = BUTTON_TRAY_ACTIVE;
+    } else {

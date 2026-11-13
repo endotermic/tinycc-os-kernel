@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 14:50:23 +0200
+Subject: [PATCH] Frosted glass: compose the menu on the wallpaper under it
+
+When the root window has _WALLPAPER_FROSTED_PMAP_ID (the frosted wallpaper
+a wallpaper program publishes), the final canvas starts from the piece of
+it under the menu, and the background colour goes on top at the opacity
+resource's strength (it applies only there, and never to the selected
+entry, which stays solid).  A pixmap that is gone is caught; without one
+the menu is opaque as before.
+---
+ xmenu.c | 114 ++++++++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 102 insertions(+), 12 deletions(-)
+
+diff --git a/xmenu.c b/xmenu.c
+index 2ba2387..c0ab0ad 100644
+--- a/xmenu.c
++++ b/xmenu.c
+@@ -218,6 +218,7 @@ typedef struct Widget {
+ 	XRenderPictFormat *xformat;
+ 	XRenderPictFormat *alphaformat;
+ 	XRenderPictFormat *argbformat;  /* the layers are drawn in ARGB whatever the visual */
++	Picture frostpict;              /* the frosted wallpaper (_WALLPAPER_FROSTED_PMAP_ID), or None */
+ 	ctrlfnt *fontset;
+ 	Cursor cursor;
+ 	Menu *menus;
+@@ -970,6 +971,7 @@ initvisual(Widget *widget)
+ 	);
+ 	if (widget->argbformat == NULL)
+ 		widget->argbformat = widget->xformat;
++	loadfrost(widget);
+ 	widget->window = createwindow(widget, NULL, 0, True);
+ 	if (widget->window == None) {
+ 		warnx("could not create window");
+@@ -1294,6 +1296,98 @@ grabkeyboard(Widget *widget)
+ 	return RETURN_FAILURE;
+ }
+ 
++static int frosterror;
++
++static int
++frosterrorhandler(Display *display, XErrorEvent *error)
++{
++	(void)display;
++	(void)error;
++	frosterror = 1;
++	return 0;
++}
++
++/*
++ * The frosted wallpaper: a screen-sized pixmap (blurred, tinted, its
++ * luminance capped) that the wallpaper program publishes in the root
++ * window's _WALLPAPER_FROSTED_PMAP_ID.  The menus are composed on the
++ * piece of it under them, so they read as frosted glass, with the normal
++ * background colour on top at the "opacity" resource's strength; the
++ * selected entry stays solid.  The pixmap belongs to another client and may
++ * be gone: errors are caught here, and then the menus are opaque.
++ */
++static void
++loadfrost(Widget *widget)
++{
++	Atom prop, type;
++	int format, x, y, (*old)(Display *, XErrorEvent *);
++	unsigned long n, after;
++	unsigned char *data = NULL;
++	unsigned int w, h, bw, depth;
++	Window root;
++	Pixmap pix = None;
++
++	widget->frostpict = None;
++	prop = XInternAtom(widget->display, "_WALLPAPER_FROSTED_PMAP_ID", True);
++	if (prop == None)
++		return;
++	if (XGetWindowProperty(
++		widget->display, RootWindow(widget->display, widget->screen), prop,
++		0, 1, False, XA_PIXMAP, &type, &format, &n, &after, &data
++	) == Success && type == XA_PIXMAP && format == 32 && n == 1)
++		pix = *(Pixmap *)data;
++	if (data != NULL)
++		XFree(data);
++	if (pix == None)
++		return;
++	XSync(widget->display, False);
++	frosterror = 0;
++	old = XSetErrorHandler(frosterrorhandler);
++	if (!XGetGeometry(widget->display, pix, &root, &x, &y, &w, &h, &bw, &depth) ||
++	    depth != (unsigned int)widget->depth)
++		frosterror = 1;
++	if (!frosterror) {
++		widget->frostpict = XRenderCreatePicture(
++			widget->display, pix, widget->xformat, 0, NULL
++		);
++		XSync(widget->display, False);
++	}
++	(void)XSetErrorHandler(old);
++	if (frosterror)
++		widget->frostpict = None;
++}
++
++/* the final canvas: the frosted wallpaper under the menu, else cleared */
++static void
++clearfinal(Widget *widget, Menu *menu)
++{
++	if (widget->frostpict != None) {
++		XRenderComposite(
++			widget->display,
++			PictOpSrc,
++			widget->frostpict,
++			None,
++			menu->canvas[CANVAS_FINAL].picture,
++			menu->geometry.x + widget->borderwid,
++			menu->geometry.y + widget->borderwid,
++			0, 0,
++			0, 0,
++			menu->geometry.width,
++			menu->geometry.height
++		);
++		return;
++	}
++	XRenderFillRectangle(
++		widget->display,
++		PictOpClear,
++		menu->canvas[CANVAS_FINAL].picture,
++		&(XRenderColor){ 0 },
++		0, 0,
++		menu->geometry.width,
++		menu->geometry.height
++	);
++}
++
+ static void
+ drawshadows(Widget *widget, Picture picture, XRectangle *geometry)
+ {
+@@ -1706,11 +1800,13 @@ drawmenu(Widget *widget, Menu *menu)
+ 	}
+ 	for (i = 0; i < CANVAS_FINAL; i++) {
+ 		drawshadows(widget, canvas[i][LAYER_BG].picture, &menu->geometry);
++		/* the opacity applies on the frosted glass only, and never to
++		 * the selected entry, which stays solid */
+ 		XRenderComposite(
+ 			widget->display,
+ 			PictOpSrc,
+ 			widget->colors[i][COLOR_BG].pict,
+-			widget->opacity.pict,
++			(widget->frostpict != None && i == CANVAS_NORMAL) ? widget->opacity.pict : None,
+ 			canvas[i][LAYER_BG].picture,
+ 			0, 0,
+ 			0, 0,
+@@ -1948,10 +2044,12 @@ next:
+ 			menu->geometry.height
+ 		);
+ 	}
+-	/* the unselected menu into the final canvas (the window's depth) */
++	/* the unselected menu into the final canvas (the window's depth), on
++	 * the frosted wallpaper when there is one */
++	clearfinal(widget, menu);
+ 	XRenderComposite(
+ 		widget->display,
+-		PictOpSrc,
++		PictOpOver,
+ 		menu->canvas[CANVAS_NORMAL].picture,
+ 		None,
+ 		menu->canvas[CANVAS_FINAL].picture,
+@@ -1987,15 +2085,7 @@ commitdraw(Widget *widget, Menu *menu, int ypos)
+ 	else
+ 		height = widget->itemh;
+ 	menu->selposition = ypos;
+-	XRenderFillRectangle(
+-		widget->display,
+-		PictOpClear,
+-		menu->canvas[CANVAS_FINAL].picture,
+-		&(XRenderColor){ 0 },
+-		0, 0,
+-		menu->geometry.width,
+-		menu->geometry.height
+-	);
++	clearfinal(widget, menu);
+ 	XRenderComposite(
+ 		widget->display,
+ 		PictOpOver,

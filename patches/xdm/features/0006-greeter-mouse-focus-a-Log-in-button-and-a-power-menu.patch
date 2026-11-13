@@ -1,0 +1,527 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 14:50:23 +0200
+Subject: [PATCH] greeter: mouse focus, a Log in button and a power menu
+
+A click in an input field gives it the keys.  loginButtonLabel adds a
+Log in button (activeColor) under the right edge of the fields: with no
+name yet it gives the name field the keys, else it submits like Enter in
+the last field.  rebootCommand and shutdownCommand add a Power button on
+the left that opens a menu of rebootLabel and shutdownLabel upwards over
+the box (menuColor, the entry under the pointer in activeColor); a click
+runs the command through the shell, detached; a click outside the menu
+or any key closes it.  The box grows by the row of buttons, and clearing
+the failure message leaves them alone.
+---
+ greeter/Login.c  | 357 ++++++++++++++++++++++++++++++++++++++++++++++-
+ greeter/Login.h  |   8 ++
+ greeter/LoginP.h |  16 +++
+ 3 files changed, 379 insertions(+), 2 deletions(-)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index 7ffe23a..fb92ac4 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -66,6 +66,8 @@ from The Open Group.
+ #include <ctype.h>
+ #include <time.h>
+ #include <string.h>
++#include <unistd.h>
++#include <sys/types.h>
+ 
+ #include "dm.h"
+ #include "dm_error.h"
+@@ -105,6 +107,9 @@ from The Open Group.
+ #endif
+ 
+ static void RedrawFail (LoginWidget w);
++static void FinishField (Widget, XEvent *, String *, Cardinal *);
++static void XorCursor (LoginWidget w);
++static void RemoveFail (LoginWidget w);
+ static void ResetLogin (LoginWidget w);
+ static void failTimeout (XtPointer client_data, XtIntervalId * id);
+ static void EraseCursor (LoginWidget w);
+@@ -163,6 +168,22 @@ static XtResource resources[] = {
+ 	offset(focuspixel), XtRString,	XtDefaultForeground},
+     {XtNfocusWidth, XtCFrameWidth, XtRInt, sizeof(int),
+         offset(focuswidth), XtRImmediate, (XtPointer) 0},
++    {XtNactiveColor, XtCForeground, XtRPixel, sizeof (Pixel),
++	offset(activepixel), XtRString,	XtDefaultForeground},
++    {XtNmenuColor, XtCForeground, XtRPixel, sizeof (Pixel),
++	offset(menupixel), XtRString,	XtDefaultBackground},
++    {XtNloginButtonLabel, XtCString, XtRString, sizeof(char *),
++	offset(loginButtonLabel), XtRImmediate, (XtPointer) NULL},
++    {XtNpowerLabel, XtCString, XtRString, sizeof(char *),
++	offset(powerLabel), XtRString, (XtPointer) "Power"},
++    {XtNrebootLabel, XtCString, XtRString, sizeof(char *),
++	offset(rebootLabel), XtRString, (XtPointer) "Restart"},
++    {XtNshutdownLabel, XtCString, XtRString, sizeof(char *),
++	offset(shutdownLabel), XtRString, (XtPointer) "Shut down"},
++    {XtNrebootCommand, XtCString, XtRString, sizeof(char *),
++	offset(rebootCommand), XtRImmediate, (XtPointer) NULL},
++    {XtNshutdownCommand, XtCString, XtRString, sizeof(char *),
++	offset(shutdownCommand), XtRImmediate, (XtPointer) NULL},
+     {XtNbackgroundProperty, XtCBackgroundProperty, XtRString, sizeof(char *),
+ 	offset(backgroundProperty), XtRImmediate, (XtPointer) NULL},
+     {XtNframeWidth, XtCFrameWidth, XtRInt, sizeof(int),
+@@ -354,6 +375,17 @@ XmuXftTextWidth(Display *dpy, XftFont *font, FcChar8 *string, int len);
+ #define FAIL_W(w)	max(ERROR_W(w, w->login.failMsg), \
+ 			    ERROR_W(w, w->login.passwdChangeMsg))
+ 
++/* the row of buttons (see LoginButtonRect) */
++#define HAS_LOGIN_BUTTON(w)	((w)->login.loginButtonLabel && (w)->login.loginButtonLabel[0])
++#define HAS_REBOOT(w)	((w)->login.rebootCommand && (w)->login.rebootCommand[0])
++#define HAS_SHUTDOWN(w)	((w)->login.shutdownCommand && (w)->login.shutdownCommand[0])
++#define HAS_POWER(w)	(HAS_REBOOT(w) || HAS_SHUTDOWN(w))
++#define HAS_BUTTONS(w)	(HAS_LOGIN_BUTTON(w) || HAS_POWER(w))
++#define BUTTON_H(w)	(Y_INC(w) * 3 / 2 + 4)
++#define BUTTON_ROW_Y(w)	(FAIL_Y(w) + F_DESCENT(fail) + Y_INC(w) / 2)
++#define FIELD_RIGHT(w)	(PROMPT_W(w) - w->login.inframeswidth - 3 - LOGO_W(w))
++#define ARROW_W(w)	(Y_INC(w) / 2)
++
+ #define PAD_X(w)	(2 * (PROMPT_X(w) + max (GREET_X_INC(w), FAIL_X_INC(w))))
+ 
+ #define PAD_Y(w)	(max (max (Y_INC(w), GREET_Y_INC(w)),\
+@@ -559,10 +591,13 @@ ClearFailArea (LoginWidget w)
+ {
+     int y = PROMPT_Y(w,LAST_PROMPT) + PROMPT_Y_INC(w);
+     int f = w->login.outframewidth;
++    int bottom = w->core.height - f;
+ 
+-    if (y < (int) w->core.height - f)
++    if (HAS_BUTTONS(w))     /* the buttons stay */
++	bottom = BUTTON_ROW_Y(w);
++    if (y < bottom)
+ 	XClearArea (XtDisplay (w), XtWindow (w), f, y,
+-		    w->core.width - 2 * f, w->core.height - f - y, False);
++		    w->core.width - 2 * f, bottom - y, False);
+ }
+ 
+ static void
+@@ -793,6 +828,306 @@ DrawFocus (LoginWidget w)
+     }
+ }
+ 
++
++/*
++ * The buttons along the bottom of the box (loginButtonLabel, and the power
++ * menu when rebootCommand or shutdownCommand is set): Log in on the right,
++ * under the right edge of the input fields, filled with activeColor; Power
++ * on the left, under the prompts, an outline with a down arrow, which opens
++ * a menu of Restart and Shut down upwards over the box.  The mouse also
++ * moves the focus between the input fields (PointerPress).
++ */
++
++static void
++LoginButtonRect (LoginWidget w, XRectangle *r)
++{
++    const char *l = w->login.loginButtonLabel;
++    r->width = TEXT_WIDTH (prompt, l, strlen (l)) + 2 * Y_INC(w);
++    r->height = BUTTON_H(w);
++    r->x = FIELD_RIGHT(w) - r->width;
++    r->y = BUTTON_ROW_Y(w);
++}
++
++static void
++PowerButtonRect (LoginWidget w, XRectangle *r)
++{
++    const char *l = w->login.powerLabel ? w->login.powerLabel : "";
++    r->width = TEXT_WIDTH (prompt, l, strlen (l)) + 2 * Y_INC(w) + ARROW_W(w) + 4;
++    r->height = BUTTON_H(w);
++    r->x = PROMPT_X(w);
++    r->y = BUTTON_ROW_Y(w);
++}
++
++/* the power menu's entries: 0 Restart, 1 Shut down, those with a command */
++static int
++PowerEntries (LoginWidget w, const char **labels, const char **commands)
++{
++    int n = 0;
++    if (HAS_REBOOT(w)) {
++	labels[n] = w->login.rebootLabel ? w->login.rebootLabel : "";
++	commands[n++] = w->login.rebootCommand;
++    }
++    if (HAS_SHUTDOWN(w)) {
++	labels[n] = w->login.shutdownLabel ? w->login.shutdownLabel : "";
++	commands[n++] = w->login.shutdownCommand;
++    }
++    return n;
++}
++
++static void
++PowerMenuRect (LoginWidget w, XRectangle *r, int *itemh)
++{
++    const char *labels[2], *commands[2];
++    XRectangle b;
++    int i, n = PowerEntries (w, labels, commands), width;
++
++    PowerButtonRect (w, &b);
++    *itemh = BUTTON_H(w);
++    r->width = b.width;
++    for (i = 0; i < n; i++) {
++	width = TEXT_WIDTH (prompt, labels[i], strlen (labels[i])) + 2 * Y_INC(w);
++	if (width > r->width)
++	    r->width = width;
++    }
++    r->height = n * *itemh + 2;
++    r->x = b.x;
++    r->y = b.y - 4 - r->height;
++}
++
++static Boolean
++InRect (const XRectangle *r, int x, int y)
++{
++    return x >= r->x && y >= r->y && x < r->x + r->width && y < r->y + r->height;
++}
++
++/* a label centred in a rectangle, in the prompt face and colour */
++static void
++DrawCentred (LoginWidget w, const XRectangle *r, const char *text, int dx)
++{
++    int len = strlen (text);
++    int x = r->x + (r->width - dx - TEXT_WIDTH (prompt, text, len)) / 2;
++    int y = r->y + (r->height + F_ASCENT(prompt) - F_DESCENT(prompt)) / 2;
++    DRAW_STRING (prompt, x, y, text, len);
++}
++
++static void
++DrawButtons (LoginWidget w)
++{
++    XRectangle r;
++
++    if (HAS_LOGIN_BUTTON(w)) {
++	LoginButtonRect (w, &r);
++	XFillRectangle (XtDisplay (w), XtWindow (w), w->login.activeGC,
++			r.x, r.y, r.width, r.height);
++	DrawCentred (w, &r, w->login.loginButtonLabel, 0);
++    }
++    if (HAS_POWER(w)) {
++	XPoint arrow[3];
++	int a = ARROW_W(w), ax, ay;
++
++	PowerButtonRect (w, &r);
++	XDrawRectangle (XtDisplay (w), XtWindow (w), w->login.hiGC,
++			r.x, r.y, r.width - 1, r.height - 1);
++	DrawCentred (w, &r, w->login.powerLabel ? w->login.powerLabel : "", a + 4);
++	ax = r.x + r.width - Y_INC(w) / 2 - a;
++	ay = r.y + (r.height - a / 2) / 2;
++	arrow[0].x = ax;	 arrow[0].y = ay;
++	arrow[1].x = ax + a;	 arrow[1].y = ay;
++	arrow[2].x = ax + a / 2; arrow[2].y = ay + a / 2;
++	XFillPolygon (XtDisplay (w), XtWindow (w), w->login.hiGC, arrow, 3,
++		      Convex, CoordModeOrigin);
++    }
++}
++
++static void
++DrawPowerMenu (LoginWidget w)
++{
++    const char *labels[2], *commands[2];
++    XRectangle r, item;
++    int i, n, itemh;
++
++    if (!w->login.powerOpen)
++	return;
++    n = PowerEntries (w, labels, commands);
++    PowerMenuRect (w, &r, &itemh);
++    XFillRectangle (XtDisplay (w), XtWindow (w), w->login.menuGC,
++		    r.x, r.y, r.width, r.height);
++    XDrawRectangle (XtDisplay (w), XtWindow (w), w->login.hiGC,
++		    r.x, r.y, r.width - 1, r.height - 1);
++    for (i = 0; i < n; i++) {
++	item.x = r.x + 1;
++	item.y = r.y + 1 + i * itemh;
++	item.width = r.width - 2;
++	item.height = itemh;
++	if (i == w->login.powerHover)
++	    XFillRectangle (XtDisplay (w), XtWindow (w), w->login.activeGC,
++			    item.x, item.y, item.width, item.height);
++	DrawCentred (w, &item, labels[i], 0);
++    }
++}
++
++static void draw_it (LoginWidget w);
++
++/* everything again (the menu covered part of the box) */
++static void
++RedrawAll (LoginWidget w)
++{
++    XClearArea (XtDisplay (w), XtWindow (w), 0, 0, 0, 0, False);
++    draw_it (w);
++}
++
++static void
++ClosePowerMenu (LoginWidget w)
++{
++    if (!w->login.powerOpen)
++	return;
++    w->login.powerOpen = False;
++    w->login.powerHover = -1;
++    RedrawAll (w);
++}
++
++/* run a power command: detached, through the shell (the greeter is root) */
++static void
++RunPowerCommand (const char *command)
++{
++    pid_t pid = fork ();
++    if (pid == 0) {
++	setsid ();
++	execl ("/bin/sh", "sh", "-c", command, (char *) NULL);
++	_exit (127);
++    }
++}
++
++/* Log in: with no name yet, the name field takes the keys; else the same
++   as Enter in the last input field (the password) */
++static void
++LoginButtonPressed (LoginWidget w, XEvent *event)
++{
++    int p;
++
++    if (w->login.state != PROMPTING)
++	return;
++    for (p = LAST_PROMPT; p >= 0; p--)
++	if (PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_ON ||
++	    PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_OFF)
++	    break;
++    if (p < 0)
++	return;
++    XorCursor (w);
++    if (PROMPT_STATE(w, 0) == LOGIN_PROMPT_ECHO_ON && VALUE_TEXT(w, 0)[0] == '\0') {
++	w->login.activePrompt = 0;
++	DrawFocus (w);
++	XorCursor (w);
++	return;
++    }
++    w->login.activePrompt = p;
++    DrawFocus (w);
++    XorCursor (w);
++    FinishField ((Widget) w, event, NULL, NULL);    /* its cursor toggles too */
++}
++
++/*ARGSUSED*/
++static void
++PointerPress (Widget gw, XEvent *event, String *params, Cardinal *num_params)
++{
++    LoginWidget w = (LoginWidget) gw;
++    XRectangle r;
++    int x = event->xbutton.x, y = event->xbutton.y, p, itemh;
++
++    if (event->type != ButtonPress || event->xbutton.button != Button1)
++	return;
++    if (w->login.powerOpen) {
++	const char *labels[2], *commands[2];
++	int n = PowerEntries (w, labels, commands);
++
++	PowerMenuRect (w, &r, &itemh);
++	if (InRect (&r, x, y)) {
++	    int i = (y - r.y - 1) / itemh;
++	    if (i >= 0 && i < n) {
++		ClosePowerMenu (w);
++		RunPowerCommand (commands[i]);
++		return;
++	    }
++	}
++	ClosePowerMenu (w);
++	return;
++    }
++    if (HAS_POWER(w)) {
++	PowerButtonRect (w, &r);
++	if (InRect (&r, x, y)) {
++	    RemoveFail (w);
++	    w->login.powerOpen = True;
++	    w->login.powerHover = -1;
++	    DrawPowerMenu (w);
++	    return;
++	}
++    }
++    if (HAS_LOGIN_BUTTON(w)) {
++	LoginButtonRect (w, &r);
++	if (InRect (&r, x, y)) {
++	    RemoveFail (w);
++	    LoginButtonPressed (w, event);
++	    return;
++	}
++    }
++    /* a click in an input field gives it the keys */
++    if (w->login.state != PROMPTING)
++	return;
++    for (p = 0; p < NUM_PROMPTS; p++) {
++	r.x = VALUE_X(w,p) - w->login.inframeswidth - 3;
++	r.y = PROMPT_Y(w,p) - w->login.inframeswidth - 1 - TEXT_Y_INC(w);
++	r.width = PROMPT_W(w) - VALUE_X(w,p) - LOGO_W(w);
++	r.height = PROMPT_H(w) + w->login.inframeswidth + 2;
++	if (InRect (&r, x, y) &&
++	    (PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_ON ||
++	     PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_OFF)) {
++	    if (p != w->login.activePrompt) {
++		XorCursor (w);
++		w->login.activePrompt = p;
++		DrawFocus (w);
++		XorCursor (w);
++	    }
++	    return;
++	}
++    }
++}
++
++/*ARGSUSED*/
++static void
++PointerMotion (Widget gw, XEvent *event, String *params, Cardinal *num_params)
++{
++    LoginWidget w = (LoginWidget) gw;
++    XRectangle r;
++    int itemh, hover = -1;
++    const char *labels[2], *commands[2];
++    int n;
++
++    if (!w->login.powerOpen || event->type != MotionNotify)
++	return;
++    n = PowerEntries (w, labels, commands);
++    PowerMenuRect (w, &r, &itemh);
++    if (InRect (&r, event->xmotion.x, event->xmotion.y)) {
++	hover = (event->xmotion.y - r.y - 1) / itemh;
++	if (hover >= n)
++	    hover = -1;
++    }
++    if (hover != w->login.powerHover) {
++	w->login.powerHover = hover;
++	DrawPowerMenu (w);
++    }
++}
++
++/* a key while the power menu is open closes it (the key itself has been
++   handled by the translations already, under the menu) */
++/*ARGSUSED*/
++static void
++KeyClosesPowerMenu (Widget gw, XtPointer closure, XEvent *event, Boolean *cont)
++{
++    LoginWidget w = (LoginWidget) gw;
++    if (event->type == KeyPress && w->login.powerOpen)
++	ClosePowerMenu (w);
++}
++
+ static void
+ draw_it (LoginWidget w)
+ {
+@@ -900,6 +1235,8 @@ draw_it (LoginWidget w)
+     }
+     RedrawFail (w);
+     DrawFocus (w);
++    DrawButtons (w);
++    DrawPowerMenu (w);
+     XorCursor (w);
+     XSetInputFocus (XtDisplay (w), XtWindow (w),
+ 		    RevertToPointerRoot, CurrentTime);
+@@ -1796,6 +2133,14 @@ static void Initialize (
+     valuemask = GCForeground | GCBackground;
+     w->login.focusGC = XtGetGC(gnew, valuemask, &myXGCV);
+ 
++    myXGCV.foreground = w->login.activepixel;
++    w->login.activeGC = XtGetGC(gnew, valuemask, &myXGCV);
++    myXGCV.foreground = w->login.menupixel;
++    w->login.menuGC = XtGetGC(gnew, valuemask, &myXGCV);
++    w->login.powerOpen = False;
++    w->login.powerHover = -1;
++    XtAddEventHandler (gnew, KeyPressMask, False, KeyClosesPowerMenu, NULL);
++
+     myXGCV.foreground = w->login.shdpixel;
+     myXGCV.background = w->core.background_pixel;
+     valuemask = GCForeground | GCBackground;
+@@ -1951,6 +2296,8 @@ SkipXpmLoad:
+ 
+ #ifndef XPM
+ 	w->core.height = fy + pady;	/* for stupid compilers */
++	if (HAS_BUTTONS(w))     /* the row of buttons below the message */
++	    w->core.height = BUTTON_ROW_Y(w) + BUTTON_H(w) + Y_INC(w);
+ #else
+ /*	w->core.height = fy + pady;	* for stupid compilers */
+ 
+@@ -2087,6 +2434,8 @@ static void Destroy (Widget gw)
+ #endif
+     XtReleaseGC(gw, w->login.hiGC);
+     XtReleaseGC(gw, w->login.focusGC);
++    XtReleaseGC(gw, w->login.activeGC);
++    XtReleaseGC(gw, w->login.menuGC);
+     XtReleaseGC(gw, w->login.shdGC);
+     XtReleaseGC(gw, w->login.inpGC);
+ 
+@@ -2229,6 +2578,8 @@ char defaultLoginTranslations [] =
+ #endif
+ "<Key>Return:	finish-field() \n"
+ "<Key>Tab:	tab-field() \n"
++"<Btn1Down>:	pointer-press() \n"
++"<Motion>:	pointer-motion() \n"
+ "<KeyPress>:	insert-char()"
+ ;
+ 
+@@ -2244,6 +2595,8 @@ XtActionsRec loginActionsTable [] = {
+   {"erase-line",		EraseLine},
+   {"finish-field", 		FinishField},
+   {"tab-field", 		TabField},
++  {"pointer-press",		PointerPress},
++  {"pointer-motion",		PointerMotion},
+   {"abort-session",		AbortSession},
+   {"abort-display",		AbortDisplay},
+   {"restart-session",		RestartSession},
+diff --git a/greeter/Login.h b/greeter/Login.h
+index 6142388..64b7975 100644
+--- a/greeter/Login.h
++++ b/greeter/Login.h
+@@ -119,6 +119,14 @@ from The Open Group.
+ # define XtNbackgroundProperty	"backgroundProperty"
+ # define XtNfocusColor		"focusColor"
+ # define XtNfocusWidth		"focusWidth"
++# define XtNloginButtonLabel	"loginButtonLabel"
++# define XtNpowerLabel		"powerLabel"
++# define XtNrebootLabel		"rebootLabel"
++# define XtNshutdownLabel	"shutdownLabel"
++# define XtNrebootCommand	"rebootCommand"
++# define XtNshutdownCommand	"shutdownCommand"
++# define XtNactiveColor		"activeColor"
++# define XtNmenuColor		"menuColor"
+ # define XtCBackgroundProperty	"BackgroundProperty"
+ 
+ # ifdef DANCING
+diff --git a/greeter/LoginP.h b/greeter/LoginP.h
+index 9d3945f..4927eb6 100644
+--- a/greeter/LoginP.h
++++ b/greeter/LoginP.h
+@@ -97,6 +97,8 @@ typedef struct {
+ 	Pixel		shdpixel;	/* shadow frame pixel */
+ 	Pixel		inppixel;	/* input field bg pixel */
+ 	Pixel		focuspixel;	/* focus outline pixel */
++	Pixel		activepixel;	/* the Log in button, a chosen menu entry */
++	Pixel		menupixel;	/* the power menu's background */
+ 	GC		textGC;		/* pointer to GraphicsContext */
+ 	GC		bgGC;		/* pointer to GraphicsContext */
+ 	GC		xorGC;		/* pointer to GraphicsContext */
+@@ -107,6 +109,8 @@ typedef struct {
+ # endif
+ 	GC		hiGC;		/* for hilight part of frame */
+ 	GC		focusGC;	/* for the focus outline */
++	GC		activeGC;	/* the Log in button, the entry under the pointer */
++	GC		menuGC;		/* the power menu's background */
+ 	GC		shdGC;		/* for shaded part of frame */
+ 	GC		inpGC;		/* for input field of frame */
+ 	char		*greeting;	/* greeting */
+@@ -153,6 +157,18 @@ typedef struct {
+ 	int		sepwidth;	/* width of separator line */
+ 	int		focuswidth;	/* width of the focus outline, 0: none */
+ 
++	/* buttons along the bottom of the box: Log in (loginButtonLabel), and
++	   a power menu (powerLabel) with Restart and Shut down, each shown
++	   when its command is set; the menu opens upwards over the box */
++	char	       *loginButtonLabel;
++	char	       *powerLabel;
++	char	       *rebootLabel;
++	char	       *shutdownLabel;
++	char	       *rebootCommand;
++	char	       *shutdownCommand;
++	Boolean		powerOpen;	/* the power menu is open */
++	int		powerHover;	/* its entry under the pointer, -1: none */
++
+ 	/* the background cut from a screen-sized pixmap that a root window
+ 	   property names (a frosted copy of the wallpaper) */
+ 	char	       *backgroundProperty;

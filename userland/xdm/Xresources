@@ -17,6 +17,12 @@
 !    a 2-pixel ring on the inner side of its edges (over the frame: the box keeps its size)
 !    that moves with Tab and Enter: #6cb4ff (luminance 0.43) is 3.2:1 or more against the
 !    glass around the field and stands out from the light field (WCAG 1.4.11 / 2.4.13).
+!  - the mouse works as well as the keys (patches/xdm): a click in a field gives it the keys;
+!    Log in (solid #2a6fb0, white text 5.3:1) submits like Enter, or puts the keys in the
+!    name field while it is empty; Power (an outline: a secondary action) opens a menu of
+!    Restart and Shut down upwards, solid #222c36 with the entry under the pointer in
+!    #2a6fb0; a click outside it or any key closes it.  The commands run as root: busybox
+!    reboot and poweroff, which signal /init.
 ! Without the frosted pixmap the box is the solid dark background colour, with the same
 ! contrasts.  The helper text with the accounts is a window of its own (xdm-help,
 ! Xsetup_0), on the same glass.
@@ -24,7 +30,7 @@ xlogin*backgroundProperty: _WALLPAPER_FROSTED_PMAP_ID
 xlogin*greeting:        Log in to tinycc-os-kernel
 xlogin*namePrompt:      name:\040
 xlogin*passwdPrompt:    password:\040
-xlogin*fail:            wrong name or password: see the text above
+xlogin*fail:            wrong name or password: see the text below
 xlogin*face:            DejaVu Sans-12
 xlogin*greetFace:       DejaVu Sans-15:bold
 xlogin*promptFace:      DejaVu Sans-12
@@ -39,6 +45,14 @@ xlogin*hiColor:         #8fa3b8
 xlogin*shdColor:        #8fa3b8
 xlogin*focusColor:      #6cb4ff
 xlogin*focusWidth:      2
+xlogin*loginButtonLabel: Log in
+xlogin*powerLabel:      Power
+xlogin*rebootLabel:     Restart
+xlogin*shutdownLabel:   Shut down
+xlogin*rebootCommand:   /bin/busybox reboot
+xlogin*shutdownCommand: /bin/busybox poweroff
+xlogin*activeColor:     #2a6fb0
+xlogin*menuColor:       #222c36
 xlogin*borderWidth:     0
 xlogin*frameWidth:      1
 xlogin*innerFramesWidth: 1
