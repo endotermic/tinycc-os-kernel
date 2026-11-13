@@ -1,0 +1,343 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 13:22:54 +0200
+Subject: [PATCH] The desktop's wallpaper: icons drawn on the root window's
+ background pixmap
+
+The desktop window covered the root window with the background colour,
+so a wallpaper never showed.  xfiles -d now reads the root window's
+_XROOTPMAP_ID (the Esetroot convention: the program that sets the
+background publishes its pixmap there) and draws the icons on that
+picture: on a 32-bit visual under everything with OverReverse, where the
+layers stay transparent; on a server without one (TinyX), where the
+layers are opaque, each cleared area of the icon layer, the label pixmap
+and the canvas gets the piece of wallpaper it covers on the screen (the
+icon layer is redrawn when the scroll offset it was cut for changes).
+Labels get a one-pixel dark shadow there, legible on light pictures.  A
+change of the property reloads it; a pixmap that is gone is caught and
+leaves the colour background, and one smaller than the screen repeats
+(JWM's 1x1 for a colour).
+---
+ widget.c | 215 ++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 205 insertions(+), 10 deletions(-)
+
+diff --git a/widget.c b/widget.c
+index aff1b4f..b59642b 100644
+--- a/widget.c
++++ b/widget.c
+@@ -50,7 +50,8 @@
+ 	X(_XEMBED, NULL)                        \
+ 	X(_CONTROL_STATUS, NULL)                \
+ 	X(_CONTROL_CWD, NULL)                   \
+-	X(_CONTROL_GOTO, NULL)
++	X(_CONTROL_GOTO, NULL)                  \
++	X(_XROOTPMAP_ID, NULL)
+ 
+ #define RESOURCES                                             \
+ 	/*            CLASS               NAME             */ \
+@@ -208,6 +209,18 @@ struct Widget {
+ 	Pixmap namepix;                 /* temporary pixmap for the labels */
+ 	Pixmap namepict;
+ 
++	/*
++	 * The desktop's wallpaper: the root window's background pixmap
++	 * (_XROOTPMAP_ID), drawn under the icons; None when there is none
++	 * or this is not the desktop.  wallydiff: the scroll offset the
++	 * icon layer was drawn for (its background is cut from the wallpaper
++	 * at the place it shows on the screen).  shadowpict: the labels'
++	 * shadow colour on the wallpaper.
++	 */
++	Picture wallpict;
++	Picture shadowpict;
++	int wallydiff;
++
+ 	struct clipboard {
+ 		unsigned char *buf;
+ 		size_t size;
+@@ -385,6 +398,126 @@ clearpict(Widget *widget, Picture pict, int x, int y, unsigned int w, unsigned i
+ 	);
+ }
+ 
++/*
++ * The desktop's wallpaper under a part of a picture: (x, y, w, h) of pict
++ * gets the wallpaper at (wx, wy) of the window (the desktop's window is at
++ * the screen's origin, so that is the place on the root window).  On a
++ * 32-bit visual the layers stay transparent and commitdraw() puts the
++ * wallpaper under everything; elsewhere the layers are opaque and carry
++ * their piece of it.  Without a wallpaper: clearpict().
++ */
++static void
++clearwall(Widget *widget, Picture pict, int x, int y, unsigned int w, unsigned int h, int wx, int wy)
++{
++	if (widget->wallpict == None || widget->depth == 32) {
++		clearpict(widget, pict, x, y, w, h);
++		return;
++	}
++	XRenderComposite(
++		widget->display,
++		PictOpSrc,
++		widget->wallpict,
++		None,
++		pict,
++		wx, wy,
++		0, 0,
++		x, y,
++		w, h
++	);
++}
++
++/* the icon layer's point (x, y) shows at the window's (x + x0, y - ydiff + MARGIN) */
++static void
++clearicons(Widget *widget, int x, int y, unsigned int w, unsigned int h)
++{
++	clearwall(
++		widget, widget->layers[LAYER_ICONS].pict, x, y, w, h,
++		x + widget->x0, y - widget->ydiff + MARGIN
++	);
++}
++
++static int wallerror;
++
++static int
++wallerror_handler(Display *display, XErrorEvent *error)
++{
++	(void)display;
++	(void)error;
++	wallerror = 1;
++	return 0;
++}
++
++/*
++ * (Re)read the wallpaper of the desktop from the root window's
++ * _XROOTPMAP_ID property (set by the program that draws the root window's
++ * background: the wallpaper program, or JWM for its colour and image
++ * backgrounds); a pixmap smaller than the screen (JWM's 1x1 for a colour)
++ * repeats.  The pixmap belongs to another client and may be gone already:
++ * errors are caught here, and then the desktop has no wallpaper.
++ */
++static void
++loadwallpaper(Widget *widget)
++{
++	XRenderPictFormat *format;
++	Atom type;
++	int fmt, (*handler)(Display *, XErrorEvent *);
++	unsigned long n, after;
++	unsigned char *data = NULL;
++	Pixmap pix = None;
++	Window root;
++	int x, y;
++	unsigned int w, h, border, depth;
++
++	if (widget->wallpict != None)
++		XRenderFreePicture(widget->display, widget->wallpict);
++	widget->wallpict = None;
++	if (!widget->desktop)
++		return;
++	if (XGetWindowProperty(
++		widget->display, widget->root, atoms[_XROOTPMAP_ID],
++		0, 1, False, XA_PIXMAP, &type, &fmt, &n, &after, &data
++	) == Success && type == XA_PIXMAP && fmt == 32 && n == 1)
++		pix = *(Pixmap *)data;
++	if (data != NULL)
++		XFree(data);
++	if (pix == None)
++		return;
++	format = XRenderFindVisualFormat(
++		widget->display,
++		DefaultVisual(widget->display, widget->screen)
++	);
++	if (format == NULL)
++		return;
++	XSync(widget->display, False);
++	wallerror = 0;
++	handler = XSetErrorHandler(wallerror_handler);
++	if (!XGetGeometry(widget->display, pix, &root, &x, &y, &w, &h, &border, &depth) ||
++	    depth != (unsigned int)DefaultDepth(widget->display, widget->screen))
++		wallerror = 1;
++	if (!wallerror) {
++		widget->wallpict = XRenderCreatePicture(
++			widget->display, pix, format, CPRepeat,
++			&(XRenderPictureAttributes){ .repeat = RepeatNormal }
++		);
++		XSync(widget->display, False);
++	}
++	(void)XSetErrorHandler(handler);
++	if (wallerror)
++		widget->wallpict = None;        /* a failed creation leaves no picture */
++	if (widget->wallpict != None && widget->shadowpict == None) {
++		Pixmap spix = XCreatePixmap(widget->display, widget->window, 1, 1, widget->depth);
++		widget->shadowpict = XRenderCreatePicture(
++			widget->display, spix, widget->format, CPRepeat,
++			&(XRenderPictureAttributes){ .repeat = RepeatNormal }
++		);
++		XRenderFillRectangle(
++			widget->display, PictOpSrc, widget->shadowpict,
++			&(XRenderColor){ .alpha = 0xFFFF }, 0, 0, 1, 1
++		);
++		XFreePixmap(widget->display, spix);
++	}
++}
++
+ static void
+ resetlayer(Widget *widget, enum Layer layer, int width, int height)
+ {
+@@ -805,10 +938,32 @@ isbreakable(char c)
+ 	return c == '.' || c == '-' || c == '_';
+ }
+ 
++/*
++ * The label line in the name pixmap, which is then copied to (dx, dy) of
++ * the icon layer: on the desktop's wallpaper, the label's background is the
++ * piece of wallpaper it will cover, and the text has a dark shadow (one
++ * pixel to the right and down) that keeps it legible on a light picture.
++ */
+ static void
+-drawname(Widget *widget, Picture color, int x, const char *text, int len)
++drawname(Widget *widget, Picture color, int x, const char *text, int len, int dx, int dy)
+ {
+-	clearpict(widget, widget->namepict, 0, 0, LABELWIDTH, widget->fonth);
++	clearwall(
++		widget, widget->namepict, 0, 0, LABELWIDTH, widget->fonth,
++		dx + widget->x0, dy - widget->ydiff + MARGIN
++	);
++	if (widget->wallpict != None && widget->shadowpict != None) ctrlfnt_draw(
++		widget->fontset,
++		widget->namepict,
++		widget->shadowpict,
++		(XRectangle){
++			.x = x + 1,
++			.y = 1,
++			.width = LABELWIDTH,
++			.height = widget->fonth,
++		},
++		text,
++		len
++	);
+ 	ctrlfnt_draw(
+ 		widget->fontset,
+ 		widget->namepict,
+@@ -951,7 +1106,8 @@ drawlabel(Widget *widget, int index, int x, int y)
+ 			widget,
+ 			color,
+ 			max(LABELWIDTH / 2 - textw / 2, 0),
+-			text, textlen
++			text, textlen,
++			textx, y + widget->itemh - (NLINES - i + 0.5) * widget->fonth
+ 		);
+ 		textw = min(textw, LABELWIDTH);
+ 		widget->linelen[index] = max(widget->linelen[index], textw);
+@@ -973,7 +1129,9 @@ drawlabel(Widget *widget, int index, int x, int y)
+ 			widget,
+ 			color,
+ 			0,
+-			ELLIPSIS, strlen(ELLIPSIS)
++			ELLIPSIS, strlen(ELLIPSIS),
++			textx + textw - extensionw - widget->ellipsisw,
++			y + widget->itemh - (NLINES + 1 - widget->nlines[index] + 0.5) * widget->fonth
+ 		);
+ 		XCopyArea(
+ 			widget->display,
+@@ -986,7 +1144,11 @@ drawlabel(Widget *widget, int index, int x, int y)
+ 		);
+ 
+ 		/* draw extension */
+-		drawname(widget, color, 0, extension, extensionlen);
++		drawname(
++			widget, color, 0, extension, extensionlen,
++			textx + textw - extensionw,
++			y + widget->itemh - (NLINES + 1 - widget->nlines[index] + 0.5) * widget->fonth
++		);
+ 		XCopyArea(
+ 			widget->display,
+ 			widget->namepix, widget->layers[LAYER_ICONS].pix,
+@@ -1050,7 +1212,7 @@ drawitem(Widget *widget, int index)
+ 	y = (i / widget->ncols) % widget->nrows;
+ 	x *= widget->itemw;
+ 	y *= widget->itemh;
+-	clearpict(widget, widget->layers[LAYER_ICONS].pict, x, y, widget->itemw, widget->itemh);
++	clearicons(widget, x, y, widget->itemw, widget->itemh);
+ 	XRenderFillRectangle(
+ 		widget->display,
+ 		PictOpClear,
+@@ -1087,7 +1249,8 @@ drawitems(Widget *widget)
+ {
+ 	int i, n;
+ 
+-	clearpict(widget, widget->layers[LAYER_ICONS].pict, 0, 0, widget->pixw, widget->pixh);
++	widget->wallydiff = widget->ydiff;
++	clearicons(widget, 0, 0, widget->pixw, widget->pixh);
+ 	XRenderFillRectangle(
+ 		widget->display,
+ 		PictOpClear,
+@@ -1111,8 +1274,11 @@ commitdraw(Widget *widget)
+ 		.alpha = widget->opacity,
+ 	};
+ 
++	/* the icon layer's wallpaper is cut for one scroll position */
++	if (widget->wallpict != None && widget->depth != 32 && widget->wallydiff != widget->ydiff)
++		drawitems(widget);
+ 	etlock(&widget->lock);
+-	clearpict(widget, widget->layers[LAYER_CANVAS].pict, 0, 0, widget->winw, widget->winh);
++	clearwall(widget, widget->layers[LAYER_CANVAS].pict, 0, 0, widget->winw, widget->winh, 0, 0);
+ 	XRenderComposite(
+ 		widget->display,
+ 		PictOpOver,
+@@ -1159,7 +1325,17 @@ commitdraw(Widget *widget)
+ 			widget->winw, STATUSBAR_HEIGHT(widget)
+ 		);
+ 	}
+-	XRenderFillRectangle(
++	if (widget->wallpict != None && widget->depth == 32) XRenderComposite(
++		widget->display,
++		PictOpOverReverse,
++		widget->wallpict,
++		None,
++		widget->layers[LAYER_CANVAS].pict,
++		0, 0,
++		0, 0,
++		0, 0,
++		widget->winw, widget->winh
++	); else XRenderFillRectangle(
+ 		widget->display,
+ 		PictOpOverReverse,
+ 		widget->layers[LAYER_CANVAS].pict,
+@@ -2560,6 +2736,15 @@ close:
+ 	case PropertyNotify:
+ 		if (ev->xproperty.state != PropertyNewValue)
+ 			return False;
++		if (ev->xproperty.window == widget->root &&
++		    ev->xproperty.atom == atoms[_XROOTPMAP_ID] &&
++		    widget->desktop) {
++			/* a new wallpaper (the old pixmap may be gone) */
++			loadwallpaper(widget);
++			drawitems(widget);
++			widget->redraw = True;
++			break;
++		}
+ 		if (ev->xproperty.window == widget->root &&
+ 		    ev->xproperty.atom == XA_RESOURCE_MANAGER) {
+ 			char *str;
+@@ -3389,6 +3574,12 @@ initmisc(Widget *widget, struct Options *options)
+ 	 */
+ 	(void)XSelectInput(widget->display, widget->root, PropertyChangeMask);
+ 
++	/*
++	 * The desktop's wallpaper, read after the selection above so that a
++	 * wallpaper set meanwhile is not missed (PropertyNotify reloads it).
++	 */
++	loadwallpaper(widget);
++
+ 	/*
+ 	 * No need to check for errors here:
+ 	 * If cursor is None, XDefineCursor(3) fallback to default cursor.
+@@ -3465,6 +3656,10 @@ widget_free(Widget *widget)
+ 		XFreePixmap(widget->display, widget->namepix);
+ 	if (widget->namepict != None)
+ 		XRenderFreePicture(widget->display, widget->namepict);
++	if (widget->wallpict != None)
++		XRenderFreePicture(widget->display, widget->wallpict);
++	if (widget->shadowpict != None)
++		XRenderFreePicture(widget->display, widget->shadowpict);
+ 	if (widget->scroller != None)
+ 		XDestroyWindow(widget->display, widget->scroller);
+ 	if (widget->window != None)

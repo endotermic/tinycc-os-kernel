@@ -1561,6 +1561,36 @@ C22. 2026-11-03, COMMITTED (patches/xmenu/upstreamable/0005), xmenu `xmenu.c` (i
     and drawmenu composes the unselected menu into it before setting it. Not a tcc matter.
     Verification: the menu's grey background, the blue highlight following the pointer and the
     Down key, a click choosing the entry under the pointer, on both architectures.
+C23. 2026-11-13, COMMITTED (patches/xfiles/features/0005), xfiles `widget.c`: the desktop
+    (`xfiles -d`) hid the wallpaper: its full-screen window is filled with the background
+    colour, and on TinyX (no 32-bit visual, patch 0004) its layers are opaque, so nothing of
+    the root window shows through. The desktop now reads the root window's `_XROOTPMAP_ID`
+    and draws its icons on that picture (on TinyX each cleared area of the icon layer, the
+    label pixmap and the canvas gets the piece of wallpaper under it; on a 32-bit visual the
+    wallpaper goes under everything); a `PropertyNotify` reloads it. Not a tcc matter.
+    Verification: icons, thumbnails and shadowed labels on the photograph, a new wallpaper
+    picked up at once (x86_64, QEMU screendumps).
+C24. 2026-11-13, build recipe (not a patch), `scripts/build.sh` step `wallpapers`: file names
+    with spaces ("Pablo Garcia Saldana.jpg") cannot go into the initramfs: gen_init_cpio reads
+    its manifest with `sscanf("%s")`, and dir2list.sh's lines are split at the spaces. The
+    step stages them with '_' for ' ', and `wallpaper -m` shows the labels with spaces. Not a
+    tcc matter.
+C25. 2026-11-13, COMMITTED (patches/xdm/upstreamable/0002), xdm `greeter/Login.c`: a new resource
+    `backgroundProperty` (a root window PIXMAP property; the greeter's background becomes the
+    part of that screen-sized pixmap under its window) for the frosted login box, and the
+    failure message erased with XClearArea when the background is a pixmap (the non-Xft
+    greeter erased it by drawing the text again in the background colour, which left the
+    letters' shape on the picture). Not a tcc matter. Verification: QEMU screendumps of the
+    greeter before, during and after a failed login (x86_64, i386).
+C26. 2026-11-13, COMMITTED (patches/xdm/upstreamable/0003), xdm `greeter/Login.c` (realizeCursor): with
+    Xft and DejaVu Sans the text cursor's foot was drawn on the input field's lower frame line,
+    and erasing the cursor with the field colour left a gap per character typed; its height is
+    limited to the field's interior. Not a tcc matter.
+C27. 2026-11-13, COMMITTED (patches/xdm/upstreamable/0004), xdm `greeter/Login.c` (VALUE_X): the
+    password field started one space right of the name field (SetPrompt pads prompts to two
+    trailing spaces, VALUE_X measured against the unpadded defaults); both start after the
+    wider of the current prompts. Not a tcc matter. Verification for both: QEMU screendumps
+    (field frames intact after typing; both fields' left edges at the same x), x86_64 and i386.
 
 ## The device drivers (2026-10-26)
 

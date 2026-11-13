@@ -1,0 +1,28 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* wallpaper.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons): a framed landscape */
+static char *wallpaper_xpm[] = {
+"16 16 6 1",
+".	c None",
+"f	c #3a3a3a",
+"s	c #7fb3e0",
+"y	c #f0d050",
+"g	c #3f8f3f",
+"w	c #e8e8e8",
+"................",
+"ffffffffffffffff",
+"fssssssssssssssf",
+"fssssssssssyyssf",
+"fsssssssssyyyysf",
+"fssssssssssyyssf",
+"fsssssswsssssssf",
+"fssssswwwssssssf",
+"fsssssgggsssgssf",
+"fssssgggggsgggsf",
+"fsssgggggggggggf",
+"fssggggggggggggf",
+"fggggggggggggggf",
+"fggggggggggggggf",
+"ffffffffffffffff",
+"................"
+};

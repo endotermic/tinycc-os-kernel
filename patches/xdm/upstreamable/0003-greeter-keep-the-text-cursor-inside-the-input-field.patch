@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 13:54:18 +0200
+Subject: [PATCH] greeter: keep the text cursor inside the input field
+
+The cursor is drawn from y - ascent down to y - ascent + height, with
+height the text font's ascent + descent, while the input field's interior
+ends PROMPT_H (5/4 of the line height, rounded down) below its top.  With
+a font whose descent is a larger share of its height, such as DejaVu Sans
+through Xft, the cursor's foot landed on the field's lower frame line, and
+erasing the cursor (with the field's colour) cut gaps into the frame, one
+per character typed.  The cursor's height is limited to the interior.
+---
+ greeter/Login.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index 8d46f5d..408c26f 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -474,6 +474,13 @@ realizeCursor (LoginWidget w, GC gc)
+     y = PROMPT_Y (w, w->login.activePrompt);
+     height = (F_ASCENT(text) + F_DESCENT(text));
+     width = 1;
++    /* the I-beam (its foot is drawn at y - ascent + height) stays inside the
++       input field, whose interior ends at y + PROMPT_H - ascent - descent -
++       inframeswidth: with a font whose descent is a larger share of its
++       height (DejaVu Sans through Xft) the foot was on the field's frame, and
++       erasing the cursor left gaps in the frame */
++    if (height > PROMPT_H(w) - F_DESCENT(text) - w->login.inframeswidth)
++	height = PROMPT_H(w) - F_DESCENT(text) - w->login.inframeswidth;
+ 
+     switch (PROMPT_STATE(w, w->login.activePrompt)) {
+     case LOGIN_PROMPT_NOT_SHOWN:

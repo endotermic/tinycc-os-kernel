@@ -1,0 +1,15 @@
+/usr/share/backgrounds/elementary - the wallpapers of the graphical mode
+
+Photographs from elementary OS's wallpaper collection, taken from the "Elementary OS"
+directory of https://github.com/LinuxKits/Distro-wallpapers (commit 6fee171, pinned in the
+tinycc-os-kernel repository's sources.lock).  They are photographs published on Unsplash
+(https://unsplash.com); each file is named after its photographer or its subject, with '_'
+for ' '.  The originals are 3000 to 6000 pixels wide; the build shrank them to just cover
+1920x1200 (scripts/build.sh, step wallpapers), without cutting anything off.  The terms are
+those of the original publications (the Unsplash License; elementary OS distributes them in
+https://github.com/elementary/wallpapers).
+
+default.jpg (one level up) is the default wallpaper of xdm's login screen and of the
+desktop: Pablo_Garcia_Saldana.jpg.  "wallpaper FILE" shows another picture, "wallpaper -s
+FILE" makes it the user's choice (~/.config/wallpaper), and JWM's menu has a Wallpaper
+submenu with these files.

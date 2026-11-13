@@ -122,7 +122,7 @@ if [ "$build" = tcc ]; then
 fi
 case $parallel in ''|[1-9]|[1-9][0-9]) ;; *) die "--parallel=N needs a number from 1 to 99";; esac
 msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs${parallel:+, up to $parallel steps at once}"
-steps="tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs"
+steps="tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles wallpapers links guest-tcc initramfs"
 iso=; case $output in iso|all) iso=iso;; esac
 overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} $steps ${selfhost:+selfhost} $iso
 if [ -n "$parallel" ]; then

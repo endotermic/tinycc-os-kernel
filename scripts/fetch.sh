@@ -6,6 +6,9 @@
 # A component pinned as a release tarball (sha256:<digest> in sources.lock; GNU make, whose git
 # tree needs autotools and gnulib) is downloaded (curl or wget) into src/.downloads/, verified,
 # unpacked into src/<component> and committed there as branch 'base'.
+# A component with a "#sparse NAME DIRECTORY" line (the wallpapers: one directory of a 2 GB
+# repository) is fetched without file contents (a partial clone, --filter=blob:none, from the
+# remote 'origin', which later fetches the contents it needs) and checks out that directory alone.
 # Usage: scripts/fetch.sh [component...]
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -74,12 +77,26 @@ for name; do
         msg "$name: already at $commit ($(git -C "$dir" rev-parse --abbrev-ref HEAD))"
         continue
     fi
-    msg "$name: fetching $commit ($ref)"
+    sparse=$(lock_sparse "$name")
+    msg "$name: fetching $commit ($ref)${sparse:+, the directory \"$sparse\" alone}"
     mkdir -p "$dir"
     [ -d "$dir/.git" ] || git -C "$dir" init -q
     got=
     FETCH_ERR=$dir/.git/fetch-error.log; : >"$FETCH_ERR"
     for url in $(lock_urls "$name"); do
+        if [ -n "$sparse" ]; then
+            # the commit and its trees, no blobs; checkout fetches the blobs of the directory
+            git -C "$dir" remote remove origin 2>/dev/null || true
+            git -C "$dir" remote add origin "$url"
+            git -C "$dir" config remote.origin.promisor true
+            git -C "$dir" config remote.origin.partialclonefilter blob:none
+            git -C "$dir" sparse-checkout set --no-cone "/$sparse/"
+            if git_progress "$name" git -C "$dir" fetch --depth 1 --filter=blob:none origin "$commit"; then
+                got=$url; break
+            fi
+            echo "   $url: cannot fetch $commit, trying the next URL" >&2
+            continue
+        fi
         # 1. the commit itself (GitHub, repo.or.cz and cgit >= 1.2 allow this),
         # 2. the tag/branch it came from, accepted only if it still is that commit
         if git_progress "$name" git -C "$dir" fetch --depth 1 "$url" "$commit"; then

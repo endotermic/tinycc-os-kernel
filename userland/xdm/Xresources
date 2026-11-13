@@ -1,28 +1,43 @@
 ! SPDX-License-Identifier: BSD-2-Clause
-! /etc/X11/xdm/Xresources - the greeter's look: the server's built-in 'fixed' font for
-! everything (the image has no other fonts), black on white, no logo, no shape extension.
-! The helper text with the accounts is a window of its own (xdm-help, Xsetup_0).
+! /etc/X11/xdm/Xresources - the greeter's look: Xft text in DejaVu Sans (fontconfig names,
+! the faces in /usr/share/fonts/TTF; anti-aliased, as in JWM and the desktop), no logo, no
+! shape extension; the box's height follows from the fonts (no height resource).  The box is a
+! pane of frosted glass over the wallpaper (backgroundProperty, patches/xdm: the part of
+! the frosted copy that "wallpaper --greeter" publishes, blurred and tinted, its luminance
+! capped at 0.10), following the usual rules for translucent forms:
+!  - text on the glass is white or near white: at least 7:1 against any part of it (WCAG
+!    AAA), the error message (light red) at least 4.65:1 (AA); the blur keeps the photo's
+!    detail from competing with the letters, the cap keeps a bright photo from washing
+!    them out;
+!  - the input fields are not translucent: opaque, light, with dark text (about 17:1), so
+!    what is typed (and the cursor) never depends on the picture, and their outline stands
+!    out from the glass;
+!  - a thin light outline and separator instead of a heavy bevel and a black border.
+! Without the frosted pixmap the box is the solid dark background colour, with the same
+! contrasts.  The helper text with the accounts is a window of its own (xdm-help,
+! Xsetup_0), on the same glass.
+xlogin*backgroundProperty: _WALLPAPER_FROSTED_PMAP_ID
 xlogin*greeting:        Log in to tinycc-os-kernel
 xlogin*namePrompt:      name:\040
 xlogin*passwdPrompt:    password:\040
 xlogin*fail:            wrong name or password: see the text above
-xlogin*font:            fixed
-xlogin*greetFont:       fixed
-xlogin*promptFont:      fixed
-xlogin*failFont:        fixed
-xlogin*foreground:      black
-xlogin*background:      white
-xlogin*greetColor:      black
-xlogin*promptColor:     black
-xlogin*failColor:       black
-xlogin*hiColor:         black
-xlogin*shdColor:        black
-xlogin*borderWidth:     2
-xlogin*frameWidth:      3
+xlogin*face:            DejaVu Sans-12
+xlogin*greetFace:       DejaVu Sans-15:bold
+xlogin*promptFace:      DejaVu Sans-12
+xlogin*failFace:        DejaVu Sans-11:bold
+xlogin*background:      #1c2630
+xlogin*greetColor:      #ffffff
+xlogin*promptColor:     #ffffff
+xlogin*failColor:       #ffc4c4
+xlogin*foreground:      #1a1a1a
+xlogin*inpColor:        #f5f5f5
+xlogin*hiColor:         #8fa3b8
+xlogin*shdColor:        #8fa3b8
+xlogin*borderWidth:     0
+xlogin*frameWidth:      1
 xlogin*innerFramesWidth: 1
 xlogin*sepWidth:        1
 xlogin*useShape:        false
 xlogin*echoPasswd:      true
 xlogin*echoPasswdChar:  *
 xlogin.Login.width:     560
-xlogin.Login.height:    170

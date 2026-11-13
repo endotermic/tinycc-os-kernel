@@ -879,6 +879,96 @@ attribute after a function-pointer declarator stayed on the variable; the earlie
 never ran the SHA-NI path). With the three fixes both loops pass again: generation-2 kernels
 built inside the i386 and the x86_64 guest (300 s each) boot.
 
+## The wallpapers (2026-11-13)
+
+The login screen and the desktop show a photograph: the 15 JPEGs of the "Elementary OS"
+directory of LinuxKits/Distro-wallpapers (commit 6fee171; elementary OS's collection, Unsplash
+photographs), Pablo Garcia Saldana's by default.  The picture must fill the screen without
+being stretched or skewed, centred, the overhang cut off ("cover"), which neither JWM nor
+xdm can do: JWM's `<Background type="image">` stretches, `type="scale"` fits with borders
+in the top-left corner (`LoadNamedIcon(..., preserveAspect)`), and xdm has no background
+at all.
+
+* **Fetching one directory.**  The repository is 2 GB.  `sources.lock` pins the commit and a
+  `#sparse wallpapers Elementary OS` line names the directory: `fetch.sh` makes a partial
+  clone (`remote.origin.promisor`, `--filter=blob:none --depth 1`, `sparse-checkout set
+  --no-cone`), so the fetch brings the trees only (80 kB) and the checkout the 16 files of
+  that directory (65 MB, 5 s).  `lock_sparse` in `scripts/lib.sh`.
+* **`userland/wallpaper/wallpaper.c`** (static, musl, tcc; Xlib, libjpeg, libpng): decodes
+  the picture (JPEG at the smallest libjpeg scale M/8 that still covers the screen, PNG
+  through `png_image`), scales it by max(W/w, H/h) with a separable filter (area average
+  when shrinking, bilinear when enlarging; fixed point, 14-bit weights) computing only the
+  centred W x H window, and puts it into a root-depth pixmap that becomes the root window's
+  background and the value of `_XROOTPMAP_ID` and `ESETROOT_PMAP_ID`, kept with
+  `RetainPermanent`; the previous one's client is killed when the two properties agree (the
+  Esetroot convention; JWM sets only `_XROOTPMAP_ID`, so JWM is never the victim).  `-s
+  FILE|default` records the choice in `~/.config/wallpaper`, `-m` prints the JWM menu of
+  `/usr/share/backgrounds/*/` (the current choice marked `*`), `--default` ignores the
+  choice.  JWM runs it as `<Background type="command">wallpaper</Background>` and as
+  `<Dynamic label="Wallpaper">exec:wallpaper -m</Dynamic>` in the root menu; xdm's
+  `Xsetup_0` runs `wallpaper --default` and waits, so the greeter appears on it; the server
+  reset after a session frees the retained pixmap and `Xsetup_0` draws it again.
+* **Shrinking at build time.**  The originals are 3000-6000 pixels wide (6016x4016 the
+  largest; a progressive one needs 150 MB to decode): far too big for an image that lives
+  in RAM.  The wallpapers step runs the guest's own `wallpaper --cover 1920x1200` on the
+  host (a static binary; the i386 one runs on the x86_64 host) and writes baseline JPEGs of
+  quality 90 that just cover 1920x1200 (`WALLPAPER_SIZE`): 47 MB -> 5.3 MB; the duplicate
+  PNG of Nattu Adnan is left out.  Their names get '_' for ' ' because gen_init_cpio splits
+  its manifest lines at spaces; `-m` shows them with spaces again.  Compared with PIL's box
+  filter the result differs by about 1/255 on average.
+* **The desktop window covered the wallpaper.**  `xfiles -d` fills the screen with its
+  background colour.  patches/xfiles 0005: on the desktop it reads `_XROOTPMAP_ID` (a
+  `PropertyNotify` reloads it; a vanished pixmap is caught with a temporary error handler,
+  since xfiles' own handler exits) and draws the icons on it.  On a 32-bit visual the layers
+  are transparent and the wallpaper goes under everything with OverReverse; on TinyX (no
+  32-bit visual, the layers opaque since patch 0004) every cleared area of the icon layer,
+  the label pixmap and the canvas gets the piece of wallpaper it covers on the screen, and
+  the icon layer is redrawn when the scroll offset it was cut for changes.  Labels have a
+  1-pixel black shadow.
+* **The login screen's panels as frosted glass** (the same day, asked for as "best
+  practices of transparency of forms").  TinyX has no compositing and no 32-bit visual, so
+  the translucency is precomputed: `wallpaper --greeter` (Xsetup_0) also writes a frosted
+  copy of the screen into a second retained pixmap, `_WALLPAPER_FROSTED_PMAP_ID`: three box
+  blurs per direction (radius 1/48 of the smaller side: 16 px at 768), a 35 % tint of
+  #101822 mixed in linear light, and the relative luminance capped at 0.10.  The cap is the
+  guarantee: white text has (1.05)/(0.15) = 7:1 on any photograph (WCAG AAA), the error
+  colour #ffc4c4 (L 0.647) 4.65:1 (AA).  patches/xdm 0002 (`backgroundProperty`, upstreamable):
+  at its first exposure the greeter copies the part of that pixmap under its window into a
+  pixmap of its own and makes it the window's background; the failure message is erased by
+  XClearArea (drawing it in the background colour would leave its shape).  The input fields
+  stay opaque (#f5f5f5, typed text #1a1a1a, about 17:1), because what is typed must never
+  depend on the picture; frames are 1 px #8fa3b8 instead of the bevel and the black border.
+  xdm-help cuts its band from the same pixmap (white text, a 1 px line below).  A session's
+  `wallpaper` deletes the property (the frosted pixmap goes with the old wallpaper's client).
+  Measured on screendumps: panel luminance max 0.101 with the default photograph and 0.101
+  with the brightest one (Rob Bye, wallpaper up to 0.90 next to it); typing, the error
+  message and its removal after the timeout leave no traces; i386 greeter pixel-identical
+  to x86_64.
+* **Xft text on the login screen** (the same day).  xdm is configured `--with-xft` (its
+  greeter's Xft path is upstream: faces and XftColor resources); the font stack it needs
+  moved from `step_jwm` into `xft_stack` in `scripts/build.sh`, which the xdm step calls first
+  and the jwm step again (a no-op then).  A tree configured without Xft is rebuilt (the
+  greeter's objects depend on config.h, no dependency tracking).  Resources: DejaVu Sans 12,
+  the greeting 15 bold, the error 11 bold; no height resource (the box grows with the font).
+  xdm-help draws with Xft too (DejaVu Sans 9, the title and the accounts bold; the window is
+  cleared before each redraw, since anti-aliased edges blend with what is under them).
+  tcc compiled it all unchanged.  Two upstream greeter bugs showed up with the new font and
+  are patches/xdm 0003 and 0004: the text cursor's foot landed on the input field's lower
+  frame (the field's interior is 5/4 of the line height, rounded down; DejaVu's descent is
+  a larger share of its height than `fixed`'s), and erasing it cut a gap into the frame per
+  character typed; and the password field started one space right of the name field
+  (SetPrompt pads each prompt to two trailing spaces, VALUE_X compared it with the unpadded
+  defaults); both fields now start after the wider of the current prompts.  Costs: xdm
+  2.6 -> 5.0 MB, xdm-help 1.7 -> 4.3 MB (x86_64, static FreeType + fontconfig each; i386
+  3.7 and 3.2 MB), initramfs.cpio.gz +1.5 MB; the greeter appears 2 s after xdm starts under
+  KVM (fontconfig scans the fonts, no cache).  Verified x86_64 (typing, failed login, login)
+  and i386 (screendump identical to x86_64).
+* **Verified** 2026-11-13 under QEMU (1024x768, std VGA), x86_64: the greeter, the session,
+  xfiles' icons and thumbnails on the wallpaper, `wallpaper -s` and the Wallpaper menu
+  (both switch the desktop and xfiles redraws), Log out -> the greeter on the default
+  again; i386: the greeter.  Screendumps compared with PIL's cover-crop of the original:
+  mean difference < 1.3/255 when centred, about 17/255 for a left-aligned crop.
+
 ## The vanilla kernel: what the remaining patches need from tcc (2026-11-03)
 
 The question was whether tcc could be patched so that an unpatched kernel tree builds. The

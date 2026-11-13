@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 13:40:27 +0200
+Subject: [PATCH] greeter: backgroundProperty, a background cut from a root
+ window pixmap
+
+A new resource, backgroundProperty, names a root window property of type
+PIXMAP holding a screen-sized pixmap (such as a blurred and tinted copy
+of the wallpaper).  At the first exposure, when the window has its place
+on the screen, the part of that pixmap under the window becomes the
+window's background, so the login box reads as a pane of frosted glass
+over the picture.  A pixmap that is gone or of another depth is caught
+and the background colour stays.  The failure message is then erased by
+clearing its area instead of drawing it again in the background colour,
+which would leave its shape on the picture.
+---
+ greeter/Login.c  | 110 ++++++++++++++++++++++++++++++++++++++++++++++-
+ greeter/Login.h  |   2 +
+ greeter/LoginP.h |   6 +++
+ 3 files changed, 117 insertions(+), 1 deletion(-)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index e9fe8bb..8d46f5d 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -81,6 +81,7 @@ from The Open Group.
+ #endif /* XPM */
+ 
+ #include <X11/cursorfont.h>
++#include <X11/Xatom.h>
+ 
+ #ifdef USE_XINERAMA
+ # include <X11/extensions/Xinerama.h>
+@@ -158,6 +159,8 @@ static XtResource resources[] = {
+ 	offset(shdpixel), XtRString,	XtDefaultForeground},
+     {XtNinpColor, XtCForeground, XtRPixel, sizeof (Pixel),
+ 	offset(inppixel), XtRString,	XtDefaultBackground},
++    {XtNbackgroundProperty, XtCBackgroundProperty, XtRString, sizeof(char *),
++	offset(backgroundProperty), XtRImmediate, (XtPointer) NULL},
+     {XtNframeWidth, XtCFrameWidth, XtRInt, sizeof(int),
+         offset(outframewidth), XtRImmediate, (XtPointer) 1},
+     {XtNinnerFramesWidth, XtCFrameWidth, XtRInt, sizeof(int),
+@@ -527,9 +530,30 @@ realizeCursor (LoginWidget w, GC gc)
+     XFlush (XtDisplay(w));
+ }
+ 
++/*
++ * The area below the input fields where the failure message goes, cleared
++ * to the window's background (with a background pixmap, text drawn in the
++ * background colour would leave its shape behind).
++ */
++static void
++ClearFailArea (LoginWidget w)
++{
++    int y = PROMPT_Y(w,LAST_PROMPT) + PROMPT_Y_INC(w);
++    int f = w->login.outframewidth;
++
++    if (y < (int) w->core.height - f)
++	XClearArea (XtDisplay (w), XtWindow (w), f, y,
++		    w->core.width - 2 * f, w->core.height - f - y, False);
++}
++
+ static void
+ EraseFail (LoginWidget w)
+ {
++    if (w->login.backgroundPixmap != None) {
++	w->login.failUp = 0;
++	ClearFailArea (w);
++	return;
++    }
+ #ifdef USE_XFT
+     w->login.failUp = 0;
+     RedrawFail(w);
+@@ -1680,6 +1704,9 @@ static void Initialize (
+ #endif
+     int 	rv = 0;
+ 
++    w->login.backgroundPixmap = None;
++    w->login.backgroundTried = False;
++
+     myXGCV.foreground = w->login.hipixel;
+     myXGCV.background = w->core.background_pixel;
+     valuemask = GCForeground | GCBackground;
+@@ -1964,6 +1991,8 @@ static void Destroy (Widget gw)
+     }
+ #endif
+ 
++    if (w->login.backgroundPixmap != None)
++	XFreePixmap(XtDisplay(w), w->login.backgroundPixmap);
+     XtReleaseGC(gw, w->login.textGC);
+     XtReleaseGC(gw, w->login.bgGC);
+     XtReleaseGC(gw, w->login.xorGC);
+@@ -1988,13 +2017,92 @@ static void Destroy (Widget gw)
+ #endif /* XPM */
+ }
+ 
++static int backgroundError;
++
++static int
++BackgroundErrorHandler (Display *dpy, XErrorEvent *error)
++{
++    backgroundError = 1;
++    return 0;
++}
++
++/*
++ * backgroundProperty: the root window property (type PIXMAP) of a
++ * screen-sized pixmap, such as the frosted copy of the wallpaper that
++ * "wallpaper --greeter" publishes in _WALLPAPER_FROSTED_PMAP_ID.  The
++ * window's background becomes the part of it under the window, so the box
++ * looks like a pane of frosted glass over the picture.  Done at the first
++ * exposure, when the window has its place on the screen; without the
++ * property (or with a pixmap that is gone) the background colour stays.
++ */
++static void
++SetBackgroundFromProperty (LoginWidget w)
++{
++    Display *dpy = XtDisplay (w);
++    Window root = DefaultRootWindow (dpy), child, r;
++    Atom prop, type;
++    int format, x, y, gx, gy;
++    unsigned int gw, gh, bw, depth;
++    unsigned long n, after;
++    unsigned char *data = NULL;
++    Pixmap src = None, pix;
++    GC gc;
++    int (*old)(Display *, XErrorEvent *);
++
++    w->login.backgroundTried = True;
++    if (w->login.backgroundProperty == NULL || !w->login.backgroundProperty[0])
++	return;
++    prop = XInternAtom (dpy, w->login.backgroundProperty, True);
++    if (prop == None)
++	return;
++    if (XGetWindowProperty (dpy, root, prop, 0, 1, False, XA_PIXMAP, &type,
++			    &format, &n, &after, &data) == Success &&
++	type == XA_PIXMAP && format == 32 && n == 1)
++	src = *(Pixmap *) data;
++    if (data)
++	XFree (data);
++    if (src == None)
++	return;
++    XTranslateCoordinates (dpy, XtWindow (w), root, 0, 0, &x, &y, &child);
++    XSync (dpy, False);
++    backgroundError = 0;
++    old = XSetErrorHandler (BackgroundErrorHandler);
++    if (!XGetGeometry (dpy, src, &r, &gx, &gy, &gw, &gh, &bw, &depth) ||
++	depth != w->core.depth)
++	backgroundError = 1;
++    pix = None;
++    if (!backgroundError) {
++	pix = XCreatePixmap (dpy, XtWindow (w), w->core.width,
++			     w->core.height, w->core.depth);
++	gc = XCreateGC (dpy, pix, 0, NULL);
++	XSetForeground (dpy, gc, w->core.background_pixel);
++	XFillRectangle (dpy, pix, gc, 0, 0, w->core.width, w->core.height);
++	XCopyArea (dpy, src, pix, gc, x, y, w->core.width, w->core.height, 0, 0);
++	XFreeGC (dpy, gc);
++	XSync (dpy, False);
++    }
++    XSetErrorHandler (old);
++    if (backgroundError) {
++	if (pix != None)
++	    XFreePixmap (dpy, pix);
++	return;
++    }
++    w->login.backgroundPixmap = pix;
++    XSetWindowBackgroundPixmap (dpy, XtWindow (w), pix);
++    XClearWindow (dpy, XtWindow (w));
++}
++
+ /* ARGSUSED */
+ static void Redisplay(
+      Widget gw,
+      XEvent *event,
+      Region region)
+ {
+-    draw_it ((LoginWidget) gw);
++    LoginWidget w = (LoginWidget) gw;
++
++    if (!w->login.backgroundTried)
++	SetBackgroundFromProperty (w);
++    draw_it (w);
+ }
+ 
+ /*ARGSUSED*/
+diff --git a/greeter/Login.h b/greeter/Login.h
+index c9a69a9..a4e3c88 100644
+--- a/greeter/Login.h
++++ b/greeter/Login.h
+@@ -116,6 +116,8 @@ from The Open Group.
+ # define XtCFrameWidth		"FrameWidth"
+ # define XtNinnerFramesWidth	"innerFramesWidth"
+ # define XtNsepWidth		"sepWidth"
++# define XtNbackgroundProperty	"backgroundProperty"
++# define XtCBackgroundProperty	"BackgroundProperty"
+ 
+ # ifdef DANCING
+ /* caolan begin */
+diff --git a/greeter/LoginP.h b/greeter/LoginP.h
+index bbd06ad..7ea75d4 100644
+--- a/greeter/LoginP.h
++++ b/greeter/LoginP.h
+@@ -150,6 +150,12 @@ typedef struct {
+ 	int		inframeswidth;	/* inner frames thickness */
+ 	int		sepwidth;	/* width of separator line */
+ 
++	/* the background cut from a screen-sized pixmap that a root window
++	   property names (a frosted copy of the wallpaper) */
++	char	       *backgroundProperty;
++	Pixmap		backgroundPixmap;
++	Boolean		backgroundTried;
++
+ # ifdef XPM
+         char *logoFileName;
+         unsigned int logoWidth, logoHeight, logoPadding, logoBorderWidth;

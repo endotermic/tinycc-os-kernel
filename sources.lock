@@ -72,3 +72,10 @@ xrdb      sha256:db2d774a35ae2f7e7ac61cc2de0dcae27fc2aa14399c35721f8300e63ea7354
 # (its 69-unifont.conf is in the default set): file names in any script in the file manager.
 # A single file, not a tarball (fetch.sh copies it as src/unifont/unifont-18.0.01.pcf.gz).
 unifont   sha256:3f7702429c948f05b979800b65c7e1383614d924591627aeae5d38d20101c69f  18.0.01 https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.pcf.gz
+# The wallpapers (2026-11-13): the elementary OS photographs of LinuxKits/Distro-wallpapers
+# (Unsplash photographs, named after their photographers).  The repository is 2 GB, so
+# fetch.sh fetches the commit without file contents (a partial clone, --filter=blob:none) and
+# checks out only the directory a "#sparse <component> <directory>" line names (65 MB).
+# step_wallpapers scales them down for the image (userland/wallpaper/).
+wallpapers 6fee171a13deff8cd6cb3f35982f049f48cd191c  main    https://github.com/LinuxKits/Distro-wallpapers.git
+#sparse wallpapers Elementary OS

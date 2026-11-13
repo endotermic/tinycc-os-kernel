@@ -63,6 +63,9 @@ lock_field()  { awk -v n="$1" -v f="$2" '!/^#/ && $1 == n { print $f; exit }' "$
 lock_commit() { lock_field "$1" 2; }
 lock_ref()    { lock_field "$1" 3; }
 lock_urls()   { lock_field "$1" 4 | tr ',' ' '; }
+# the directory of a component that is checked out alone ("#sparse NAME DIRECTORY", which may
+# contain spaces); empty for the components that are checked out whole
+lock_sparse() { awk -v n="$1" '$1 == "#sparse" && $2 == n { sub(/^#sparse[ \t]+[^ \t]+[ \t]+/, ""); print; exit }' "$LOCK"; }
 
 # number of non-comment entries of a series file
 series_files() { sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$1"; }
@@ -181,7 +184,7 @@ make_total() { make -n "$@" 2>/dev/null | grep -cE "${PROGRESS_STEP_RE:-^  [A-Z]
 # when each step ends: several steps are then running at once.
 OVERALL_ESTIMATES='fetch 120 patch 20 host-tcc 40 tcc-test 150 tcc-archive 5 tld 5 libelf 3
 kernel 420 musl 45 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
-tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
+tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 wallpapers 15 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
 overall_tty() { pb_tty && [ -t 1 ] && have stty && stty size </dev/tty >/dev/null 2>&1; }
 overall_step() { [ -z "${OVERALL_STATE:-}" ] || echo "S $1 $(date +%s)" >> "$OVERALL_STATE"; }
 overall_begin() {

@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 13:55:35 +0200
+Subject: [PATCH] greeter: one left edge for the input fields
+
+VALUE_X placed each input field after its own prompt, measured as the
+larger of the default prompts' widths and the current prompt's.  SetPrompt
+pads the current prompt to two trailing spaces, so "password: " became
+one space wider than the default prompts and the password field started a
+space to the right of the name field.  Both fields now start after the
+wider of the two current prompts.
+---
+ greeter/Login.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index 408c26f..2fe9dde 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -331,7 +331,11 @@ XmuXftTextWidth(Display *dpy, XftFont *font, FcChar8 *string, int len);
+ 			 (n * PROMPT_SPACE_Y(w)))
+ #define PROMPT_W(w)	(w->core.width - (2 * TEXT_X_INC(w)))
+ #define PROMPT_H(w)	(5 * Y_INC(w) / 4)
+-#define VALUE_X(w,n)	(PROMPT_X(w) + CUR_PROMPT_W(w,n))
++/* every input field starts at the same x, after the wider of the current
++   prompts (SetPrompt pads each to two trailing spaces, so a prompt can be
++   wider than the default prompts that CUR_PROMPT_W compares it with) */
++#define MAX_CUR_PROMPT_W(w)	(max(CUR_PROMPT_W(w,0), CUR_PROMPT_W(w,1)))
++#define VALUE_X(w,n)	(PROMPT_X(w) + MAX_CUR_PROMPT_W(w))
+ #define CURSOR_W	5
+ #define MAX_VALUE_W(w,n) (PROMPT_W(w) - VALUE_X (w,n) - CURSOR_W - 1 - \
+ 			  (w->login.inframeswidth * 2) - LOGO_W(w))

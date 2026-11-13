@@ -32,8 +32,9 @@
 #   tinyx       TinyX's Xfbdev (Tiny Core's kdrive X server, no XKB/xinput; userland/tinyx/Makefile,
 #               no autotools), with libXdmcp (header), libfontenc, libXfont 1 (built-in fonts, no
 #               FreeType) -> /usr/bin/Xfbdev and /usr/bin/startx (userland/startx.c) in the images
-#   xdm         the graphical login: X.Org's xdm with its greeter linked in (patches/xdm), after libICE,
-#               libSM, libXext, libXt, libXmu, libXpm, libXaw; its configuration and C scripts
+#   xdm         the graphical login: X.Org's xdm with its greeter linked in (patches/xdm), Xft text, after
+#               libICE, libSM, libXext, libXt, libXmu, libXpm, libXaw and the Xft font stack (libXrender,
+#               expat, FreeType, fontconfig, libXft: xft_stack, which the jwm step uses too); its configuration and C scripts
 #               (userland/xdm/) and the helper text window xdm-help -> /usr/bin/xdm, /etc/X11/xdm in the images
 #   jwm         the window manager: JWM with every optional library it can use (libXrender, Xinerama,
 #               libXft fonts from FreeType + fontconfig + expat, libjpeg; libpng, libXpm, libXext,
@@ -50,6 +51,13 @@
 #               xfilesctl, xfilesthumb and xdg-open, /etc/X11/Xresources, the Unifont fallback
 #               font, and libpng/libjpeg/zlib with headers under /usr/lib, /usr/include for the
 #               thumbnailer, libX11's locale data (userland/xfiles/) -> /usr/bin/xfiles ... in the images
+#   wallpapers  the desktop background: the wallpaper program (userland/wallpaper/: draws a JPEG or
+#               PNG on the root window, scaled to cover the screen without distortion, centred,
+#               the overhang cut off; JWM's background command and xdm's Xsetup_0 run it), static,
+#               musl, and the elementary OS photographs of src/wallpapers shrunk by it to just
+#               cover WALLPAPER_SIZE (default 1920x1200) -> /usr/bin/wallpaper,
+#               /usr/share/backgrounds/elementary/*.jpg, /usr/share/backgrounds/default.jpg
+#               (Pablo Garcia Saldana) in the images
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
 #               startx; GIF, PNG and JPEG images), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
@@ -62,7 +70,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs
+#   all         host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles wallpapers links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -75,7 +83,8 @@
 # before the first step runs: an unknown step or option aborts with nothing done.  Every step
 # first checks that the host has what it needs and names the missing packages.
 # Env: ARCH, JOBS (parallel jobs; default nproc), SRC/BUILD/OUT (the directories, see
-#   scripts/lib.sh), DRY_RUN.
+#   scripts/lib.sh), DRY_RUN, WALLPAPER_SIZE (the wallpapers step: WIDTHxHEIGHT the
+#   photographs are shrunk to cover; default 1920x1200).
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
@@ -617,90 +626,16 @@ step_tinyx() {
     echo "   Xfbdev: $(file -b "$T/Xfbdev" | cut -d, -f1-2), $(ls -l "$T/Xfbdev" | awk '{print $5}') bytes; startx: userland/startx.c"
 }
 
-step_xdm() {
-    need_src xdm
-    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
-    [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
-    x_env
-    # the toolkit of xdm's greeter: libICE and libSM (libXt wants them; no libuuid, libSM makes
-    # its own client IDs), libXext, libXt (app-defaults and the file search path under
-    # /etc/X11 and /usr/share/X11 of the guest, not the build tree; no XKB: TinyX has none),
-    # libXmu, libXpm (xdm's configure wants it even with the pixmap logos off) and libXaw
-    # (Xaw7 only).  All plain C autotools, static, built as the X client libraries were.
-    xlib_build libICE
-    xlib_build libSM --without-libuuid
-    xlib_build libXext
-    xlib_build libXt --disable-xkb --with-appdefaultdir=/usr/share/X11/app-defaults \
-        --with-xfile-search-path='/etc/X11/%L/%T/%N%C%S:/etc/X11/%l/%T/%N%C%S:/etc/X11/%T/%N%C%S:/etc/X11/%L/%T/%N%S:/etc/X11/%l/%T/%N%S:/etc/X11/%T/%N%S:/usr/share/X11/%L/%T/%N%C%S:/usr/share/X11/%l/%T/%N%C%S:/usr/share/X11/%T/%N%C%S:/usr/share/X11/%L/%T/%N%S:/usr/share/X11/%l/%T/%N%S:/usr/share/X11/%T/%N%S'
-    xlib_build libXmu
-    # (libXpm: without gettext, which musl's libc would satisfy and whose message catalogs
-    # then want xgettext on the host; the configure cache variable is the only switch)
-    ac_cv_search_gettext=no xlib_build libXpm --disable-open-zfile --disable-stat-zfile
-    xlib_build libXaw --disable-xaw6
-    XD=$XB/xdm; STAGE=$B/xdm/stage; mkdir -p "$XD" "$B/xdm"
-    msg "xdm: $(lock_ref xdm), static, musl, CC=musl-tcc, the greeter linked in -> $STAGE/usr/bin/xdm"
-    cd "$XD"
-    # xdm itself: no PAM (the greeter checks /etc/shadow with crypt()), no XDMCP's
-    # XDM-AUTHORIZATION-1, no Xinerama, no Xft, no pixmap logos, no xdmshell; its files
-    # under /etc/X11/xdm, logs and pid in /tmp, the servers' cookies in /var/run/xdm, the
-    # random bytes of the cookies from /dev/urandom.  The greeter is a module that xdm
-    # dlopens, which a static musl program cannot: patches/xdm links it in
-    # (GREET_USER_STATIC), and the xdm binary is linked here from the objects make built,
-    # with the greeter's archive and the toolkit libraries, since the Makefile does not
-    # know the greeter as a dependency of the program.
-    configured config.status "$MUSL_TCC" "--prefix=$XP" \
-        || CC=$MUSL_TCC CFLAGS="-O2 -DGREET_USER_STATIC" CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" \
-            "$SRC/xdm/configure" --host="$ARCH-linux-musl" --prefix="$XP" --disable-shared --enable-static \
-            --disable-dependency-tracking --without-pam --without-xinerama --without-xft --disable-xpm-logos \
-            --disable-xdm-auth --disable-xdmshell --with-random-device=/dev/urandom \
-            --with-xdmconfigdir=/etc/X11/xdm --with-xdmscriptdir=/etc/X11/xdm --with-xdmlibdir=/usr/lib/X11/xdm \
-            --with-logdir=/tmp --with-piddir=/tmp --with-authdir=/var/run/xdm --with-default-vt=vt5 \
-            --with-default-session=/etc/X11/xdm/Xsession --with-appdefaultdir=/usr/share/X11/app-defaults \
-            --without-xmlto --without-fop >"$LOGS/xdm-configure.log" 2>&1 \
-        || fail "$LOGS/xdm-configure.log" "xdm configure failed"
-    : >"$LOGS/xdm.log"
-    # make -k: the Makefile's own link of xdm fails (libtool passes --export-dynamic, for the
-    # dlopen that the patch removes, and tcc rejects it); everything else, the greeter's
-    # archive included, is built, and the program is linked below from the objects
-    run_progress "xdm" "$(make_total)" "$LOGS/xdm.log" make -k -j"$JOBS" || true
-    greet=$(ls greeter/.libs/libXdmGreet.a greeter/libXdmGreet.a 2>/dev/null | head -1)
-    [ -n "$greet" ] || fail "$LOGS/xdm.log" "no libXdmGreet.a (the greeter) in $XD/greeter"
-    objs=$(ls xdm/*.o 2>/dev/null)
-    [ -n "$objs" ] || fail "$LOGS/xdm.log" "no xdm objects in $XD/xdm"
-    "$MUSL_TCC" -O2 -o "$XD/xdm-static" $objs "$greet" \
-        $("$PKG_CONFIG" --libs xaw7 xmu xt sm ice xext xdmcp x11) -lSM -lICE -lXext -lX11 -lxcb -lXau \
-        >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm link (with the greeter) failed"
-    # the helper text window of the greeter (userland/xdm/xdm-help.c, Xlib, static)
-    "$MUSL_TCC" -O2 -I"$XP/include" -o "$XD/xdm-help" "$ROOT/userland/xdm/xdm-help.c" \
-        $("$PKG_CONFIG" --libs x11) >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm-help build failed"
-    # the staging tree appended to the images (stage_lists): xdm and the helper, xdm's
-    # configuration and its C scripts under /etc/X11/xdm, the greeter's resources as the
-    # Xlogin app-defaults file (xdm would load Xresources through xrdb, which the image has not)
-    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/X11/xdm" "$STAGE/usr/share/X11/app-defaults"
-    cp "$XD/xdm-static" "$STAGE/usr/bin/xdm"; cp "$XD/xdm-help" "$STAGE/usr/bin/xdm-help"
-    cp "$ROOT/userland/xdm/xdm-config" "$ROOT/userland/xdm/Xservers" "$STAGE/etc/X11/xdm/"
-    cp "$ROOT/userland/xdm/Xresources" "$STAGE/usr/share/X11/app-defaults/Xlogin"
-    for c in Xsession Xsetup_0 Xstartup; do cp "$ROOT/userland/xdm/$c.c" "$STAGE/etc/X11/xdm/$c"; chmod 755 "$STAGE/etc/X11/xdm/$c"; done
-    echo "   xdm: $(file -b "$STAGE/usr/bin/xdm" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/xdm" | awk '{print $5}') bytes; xdm-help $(ls -l "$XD/xdm-help" | awk '{print $5}') bytes; /etc/X11/xdm: $(ls "$STAGE/etc/X11/xdm" | tr '\n' ' ')"
-}
-
-step_jwm() {
-    need_src libXrender libXinerama expat freetype fontconfig libXft jpeg dejavu-fonts jwm
-    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
-    [ -f "$XP/lib/libX11.a" ] && [ -f "$XP/lib/libpng16.a" ] || die "no libX11.a or libpng16.a in $XP: run the zlib, libpng and xlibs steps first"
-    [ -f "$XP/lib/libXpm.a" ] && [ -f "$XP/lib/libXmu.a" ] && [ -f "$XP/lib/libXext.a" ] || die "no libXpm.a, libXmu.a or libXext.a in $XP: run the xdm step first"
-    x_env
-    # Everything JWM can optionally use, static in $XP like the X client libraries (the
-    # SVG path, librsvg + cairo, is out of reach: librsvg is Rust since 2.41 and its last C
-    # release wants glib, pango and gdk-pixbuf; pango wants glib and harfbuzz, built with
-    # meson and C++.  Everything else is plain C autotools):
-    # - libXrender (XRender) and libXinerama;
-    # - the Xft font stack: expat (fontconfig's XML parser; no xmlwf, examples, tests or
-    #   docs), FreeType (zlib and libpng from $XP; no bzip2, Brotli, HarfBuzz, librsvg),
-    #   fontconfig (below) and libXft;
-    # - IJG's libjpeg (jpeg-9f; its cjpeg/djpeg land in $XP/bin and are not shipped).
+# xft_stack: the Xft font stack, static in $XP: anti-aliased text through FreeType and
+# fontconfig for xdm's greeter and xdm-help (step xdm, which runs first) and for JWM, mlterm,
+# xfiles, xmenu and dmenu; each library is built once (xlib_build skips a built one).  Sets
+# FC/FCD, fontconfig's build and DESTDIR trees: step_jwm stages its configuration from FCD.
+xft_stack() {
+    need_src libXrender expat freetype fontconfig libXft
+    # libXrender (XRender), expat (fontconfig's XML parser; no xmlwf, examples, tests or
+    # docs), FreeType (zlib and libpng from $XP; no bzip2, Brotli, HarfBuzz, librsvg),
+    # fontconfig (below) and libXft
     xlib_build libXrender
-    xlib_build libXinerama
     xlib_build expat --without-xmlwf --without-examples --without-tests --without-docbook
     xlib_build freetype --with-zlib=yes --with-png=yes --with-harfbuzz=no --with-brotli=no --with-bzip2=no \
         --with-librsvg=no --disable-freetype-config
@@ -733,6 +668,98 @@ step_jwm() {
     [ -f "$FCD$XP/lib/libfontconfig.a" ] && [ -f "$FCD/etc/fonts/fonts.conf" ] || fail "$LOGS/fontconfig.log" "fontconfig installed neither libfontconfig.a nor fonts.conf"
     cp -a "$FCD$XP/." "$XP/"
     xlib_build libXft
+}
+
+step_xdm() {
+    need_src xdm
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
+    x_env
+    # the toolkit of xdm's greeter: libICE and libSM (libXt wants them; no libuuid, libSM makes
+    # its own client IDs), libXext, libXt (app-defaults and the file search path under
+    # /etc/X11 and /usr/share/X11 of the guest, not the build tree; no XKB: TinyX has none),
+    # libXmu, libXpm (xdm's configure wants it even with the pixmap logos off) and libXaw
+    # (Xaw7 only).  All plain C autotools, static, built as the X client libraries were.
+    xlib_build libICE
+    xlib_build libSM --without-libuuid
+    xlib_build libXext
+    xlib_build libXt --disable-xkb --with-appdefaultdir=/usr/share/X11/app-defaults \
+        --with-xfile-search-path='/etc/X11/%L/%T/%N%C%S:/etc/X11/%l/%T/%N%C%S:/etc/X11/%T/%N%C%S:/etc/X11/%L/%T/%N%S:/etc/X11/%l/%T/%N%S:/etc/X11/%T/%N%S:/usr/share/X11/%L/%T/%N%C%S:/usr/share/X11/%l/%T/%N%C%S:/usr/share/X11/%T/%N%C%S:/usr/share/X11/%L/%T/%N%S:/usr/share/X11/%l/%T/%N%S:/usr/share/X11/%T/%N%S'
+    xlib_build libXmu
+    # (libXpm: without gettext, which musl's libc would satisfy and whose message catalogs
+    # then want xgettext on the host; the configure cache variable is the only switch)
+    ac_cv_search_gettext=no xlib_build libXpm --disable-open-zfile --disable-stat-zfile
+    xlib_build libXaw --disable-xaw6
+    # the greeter and xdm-help draw their text with Xft (DejaVu Sans through fontconfig,
+    # anti-aliased on the frosted background): the font stack JWM uses too, built here first
+    xft_stack
+    XD=$XB/xdm; STAGE=$B/xdm/stage; mkdir -p "$XD" "$B/xdm"
+    msg "xdm: $(lock_ref xdm), static, musl, CC=musl-tcc, the greeter linked in, Xft -> $STAGE/usr/bin/xdm"
+    # a tree configured without Xft (before 2026-11-13) is configured and built again: the
+    # greeter's objects depend on config.h's USE_XFT, and there is no dependency tracking
+    if [ -f "$XD/config.status" ] && ! grep -q -- '--with-xft' "$XD/config.status"; then
+        rm -rf "$XD"; mkdir -p "$XD"
+    fi
+    cd "$XD"
+    # xdm itself: no PAM (the greeter checks /etc/shadow with crypt()), no XDMCP's
+    # XDM-AUTHORIZATION-1, no Xinerama, Xft text, no pixmap logos, no xdmshell; its files
+    # under /etc/X11/xdm, logs and pid in /tmp, the servers' cookies in /var/run/xdm, the
+    # random bytes of the cookies from /dev/urandom.  The greeter is a module that xdm
+    # dlopens, which a static musl program cannot: patches/xdm links it in
+    # (GREET_USER_STATIC), and the xdm binary is linked here from the objects make built,
+    # with the greeter's archive and the toolkit libraries, since the Makefile does not
+    # know the greeter as a dependency of the program.
+    configured config.status "$MUSL_TCC" "--prefix=$XP" \
+        || CC=$MUSL_TCC CFLAGS="-O2 -DGREET_USER_STATIC" CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" \
+            "$SRC/xdm/configure" --host="$ARCH-linux-musl" --prefix="$XP" --disable-shared --enable-static \
+            --disable-dependency-tracking --without-pam --without-xinerama --with-xft --disable-xpm-logos \
+            --disable-xdm-auth --disable-xdmshell --with-random-device=/dev/urandom \
+            --with-xdmconfigdir=/etc/X11/xdm --with-xdmscriptdir=/etc/X11/xdm --with-xdmlibdir=/usr/lib/X11/xdm \
+            --with-logdir=/tmp --with-piddir=/tmp --with-authdir=/var/run/xdm --with-default-vt=vt5 \
+            --with-default-session=/etc/X11/xdm/Xsession --with-appdefaultdir=/usr/share/X11/app-defaults \
+            --without-xmlto --without-fop >"$LOGS/xdm-configure.log" 2>&1 \
+        || fail "$LOGS/xdm-configure.log" "xdm configure failed"
+    : >"$LOGS/xdm.log"
+    # make -k: the Makefile's own link of xdm fails (libtool passes --export-dynamic, for the
+    # dlopen that the patch removes, and tcc rejects it); everything else, the greeter's
+    # archive included, is built, and the program is linked below from the objects
+    run_progress "xdm" "$(make_total)" "$LOGS/xdm.log" make -k -j"$JOBS" || true
+    greet=$(ls greeter/.libs/libXdmGreet.a greeter/libXdmGreet.a 2>/dev/null | head -1)
+    [ -n "$greet" ] || fail "$LOGS/xdm.log" "no libXdmGreet.a (the greeter) in $XD/greeter"
+    objs=$(ls xdm/*.o 2>/dev/null)
+    [ -n "$objs" ] || fail "$LOGS/xdm.log" "no xdm objects in $XD/xdm"
+    "$MUSL_TCC" -O2 -o "$XD/xdm-static" $objs "$greet" \
+        $("$PKG_CONFIG" --libs xaw7 xmu xt sm ice xft xrender xext xdmcp x11) -lSM -lICE -lXrender -lXext -lm -lX11 -lxcb -lXau \
+        >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm link (with the greeter) failed"
+    grep -q '^#define USE_XFT 1' config.h || fail "$LOGS/xdm-configure.log" "xdm configured without Xft"
+    # the helper text window of the greeter (userland/xdm/xdm-help.c, Xlib + Xft, static)
+    "$MUSL_TCC" -O2 -I"$XP/include" -I"$XP/include/freetype2" -o "$XD/xdm-help" "$ROOT/userland/xdm/xdm-help.c" \
+        $("$PKG_CONFIG" --libs xft xrender x11) -lXrender -lm -lX11 -lxcb -lXau >>"$LOGS/xdm.log" 2>&1 || fail "$LOGS/xdm.log" "xdm-help build failed"
+    # the staging tree appended to the images (stage_lists): xdm and the helper, xdm's
+    # configuration and its C scripts under /etc/X11/xdm, the greeter's resources as the
+    # Xlogin app-defaults file (xdm would load Xresources through xrdb, which the image has not)
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/X11/xdm" "$STAGE/usr/share/X11/app-defaults"
+    cp "$XD/xdm-static" "$STAGE/usr/bin/xdm"; cp "$XD/xdm-help" "$STAGE/usr/bin/xdm-help"
+    cp "$ROOT/userland/xdm/xdm-config" "$ROOT/userland/xdm/Xservers" "$STAGE/etc/X11/xdm/"
+    cp "$ROOT/userland/xdm/Xresources" "$STAGE/usr/share/X11/app-defaults/Xlogin"
+    for c in Xsession Xsetup_0 Xstartup; do cp "$ROOT/userland/xdm/$c.c" "$STAGE/etc/X11/xdm/$c"; chmod 755 "$STAGE/etc/X11/xdm/$c"; done
+    echo "   xdm: $(file -b "$STAGE/usr/bin/xdm" | cut -d, -f1-2), $(ls -l "$STAGE/usr/bin/xdm" | awk '{print $5}') bytes; xdm-help $(ls -l "$XD/xdm-help" | awk '{print $5}') bytes; /etc/X11/xdm: $(ls "$STAGE/etc/X11/xdm" | tr '\n' ' ')"
+}
+
+step_jwm() {
+    need_src libXinerama jpeg dejavu-fonts jwm
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] && [ -f "$XP/lib/libpng16.a" ] || die "no libX11.a or libpng16.a in $XP: run the zlib, libpng and xlibs steps first"
+    [ -f "$XP/lib/libXpm.a" ] && [ -f "$XP/lib/libXmu.a" ] && [ -f "$XP/lib/libXext.a" ] || die "no libXpm.a, libXmu.a or libXext.a in $XP: run the xdm step first"
+    x_env
+    # Everything JWM can optionally use, static in $XP like the X client libraries (the
+    # SVG path, librsvg + cairo, is out of reach: librsvg is Rust since 2.41 and its last C
+    # release wants glib, pango and gdk-pixbuf; pango wants glib and harfbuzz, built with
+    # meson and C++.  Everything else is plain C autotools): the Xft font stack (xft_stack,
+    # already built by the xdm step for its greeter), libXinerama, and IJG's libjpeg
+    # (jpeg-9f; its cjpeg/djpeg land in $XP/bin and are not shipped).
+    xft_stack
+    xlib_build libXinerama
     xlib_build jpeg
     JW=$XB/jwm; STAGE=$B/jwm/stage; mkdir -p "$B/jwm"
     msg "jwm: $(lock_ref jwm), static, musl, CC=musl-tcc, Xft + XRender + Xinerama + PNG/JPEG/XPM/XBM icons -> $STAGE/usr/bin/jwm"
@@ -911,6 +938,44 @@ step_xfiles() {
     for f in xfiles xmenu dmenu xprop xrdb; do printf '   %-8s %s, %s bytes\n' "$f" "$(file -b "$STAGE/usr/bin/$f" | cut -d, -f1-2)" "$(ls -l "$STAGE/usr/bin/$f" | awk '{print $5}')"; done
     echo "   scripts: xfilesctl xfilesthumb xdg-open (userland/xfiles/); /etc/X11/Xresources; fonts: unifont.pcf.gz $(ls -l "$STAGE/usr/share/fonts/unifont/unifont.pcf.gz" | awk '{print $5}') bytes; /usr/lib: $(ls "$STAGE/usr/lib" | tr '\n' ' '); X locale data: $(ls "$STAGE/usr/share/X11/locale" | tr '\n' ' ')"
 }
+step_wallpapers() {
+    need_src wallpapers
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libX11.a" ] && [ -f "$XP/lib/libjpeg.a" ] && [ -f "$XP/lib/libpng16.a" ] || die "no libX11.a, libjpeg.a or libpng16.a in $XP: run the xlibs, libpng and jwm steps first"
+    x_env
+    WP=$B/wallpapers; STAGE=$WP/stage; WSIZE=${WALLPAPER_SIZE:-1920x1200}
+    WDIR="$SRC/wallpapers/$(lock_sparse wallpapers)"
+    [ -d "$WDIR" ] || die "no $WDIR: run scripts/fetch.sh wallpapers"
+    mkdir -p "$WP"; : >"$LOGS/wallpapers.log"
+    msg "wallpaper: userland/wallpaper/wallpaper.c, static, musl, CC=musl-tcc, Xlib + libjpeg + libpng -> $STAGE/usr/bin/wallpaper"
+    "$MUSL_TCC" -std=c99 -O2 -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700 -I"$XP/include" -o "$WP/wallpaper" "$ROOT/userland/wallpaper/wallpaper.c" \
+        -L"$XP/lib" $("$PKG_CONFIG" --libs x11) -ljpeg -lpng16 -lz -lm -lX11 -lxcb -lXau >>"$LOGS/wallpapers.log" 2>&1 \
+        || fail "$LOGS/wallpapers.log" "wallpaper build failed"
+    # the photographs are 3000 to 6000 pixels wide, 65 MB together: far too much for an
+    # image that lives in RAM.  The guest's own wallpaper program, run here on the host (a
+    # static binary; an i386 one runs on an x86_64 host), shrinks each to just cover WSIZE
+    # (one factor for both directions, nothing cut off: the screen's cover-and-centre is
+    # done in the guest) as a baseline JPEG of quality 90.  The PNG is the same photograph
+    # as the JPEG of that name, left out.  Names in the image have '_' for ' ':
+    # gen_init_cpio's manifest is split at spaces (wallpaper -m shows them as spaces).
+    rc=0; "$WP/wallpaper" --help >/dev/null 2>&1 || rc=$?
+    [ $rc = 2 ] || die "$WP/wallpaper does not run on this host (an i386 build needs a kernel with 32-bit support), needed to shrink the photographs"
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/usr/share/backgrounds/elementary"
+    cp "$WP/wallpaper" "$STAGE/usr/bin/wallpaper"
+    msg "wallpapers: $(lock_ref wallpapers) $(git -C "$SRC/wallpapers" rev-parse --short HEAD) \"$(lock_sparse wallpapers)\", shrunk to cover $WSIZE -> $STAGE/usr/share/backgrounds/elementary"
+    n=0; before=0; after=0
+    for f in "$WDIR"/*.jpg; do
+        b=$(basename "$f" | tr ' ' _)
+        out=$STAGE/usr/share/backgrounds/elementary/$b
+        dim=$("$WP/wallpaper" --cover "$WSIZE" "$f" "$out" 2>>"$LOGS/wallpapers.log") || fail "$LOGS/wallpapers.log" "wallpaper --cover failed on $f"
+        s0=$(wc -c <"$f"); s1=$(wc -c <"$out"); before=$((before + s0)); after=$((after + s1)); n=$((n + 1))
+        printf '   %-32s %6d kB -> %4d kB, %s\n' "$b" $((s0 / 1024)) $((s1 / 1024)) "$dim" | tee -a "$LOGS/wallpapers.log"
+    done
+    [ -f "$STAGE/usr/share/backgrounds/elementary/Pablo_Garcia_Saldana.jpg" ] || die "no Pablo Garcia Saldana.jpg among the wallpapers (the default)"
+    ln -s elementary/Pablo_Garcia_Saldana.jpg "$STAGE/usr/share/backgrounds/default.jpg"
+    cp "$ROOT/userland/wallpaper/README.elementary" "$STAGE/usr/share/backgrounds/elementary/README"
+    echo "   $n photographs, $((before / 1048576)) MB -> $((after / 1024)) kB; default.jpg -> elementary/Pablo_Garcia_Saldana.jpg; wallpaper $(ls -l "$STAGE/usr/bin/wallpaper" | awk '{print $5}') bytes"
+}
 step_links() {
     need_src links
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -1064,7 +1129,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "wallpapers:wallpapers" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -1233,7 +1298,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|wallpapers|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1253,7 +1318,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles wallpapers links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; overall_step "$s"; "step_$(echo $s | tr - _)";;
     esac
