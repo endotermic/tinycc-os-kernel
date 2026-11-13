@@ -18,7 +18,11 @@ Categories:
   `_CONTROL_GOTO` property) and `xfiles/upstreamable` (fontconfig patterns destroyed once),
   `xmenu/upstreamable` (a build without Imlib2, the same pattern fix, keys without XKB, Down/Up
   with nothing selected, ARGB32 layers whatever the visual),
-  `dmenu/compatibility` (bitmap fonts as glyph fallbacks)
+  `dmenu/compatibility` (bitmap fonts as glyph fallbacks),
+  `links/upstreamable` (an `<li>`/`<p>` hidden with display:none no longer hides its siblings) and
+  `links/features` (a subset of CSS: stylesheets, simple selectors, and the properties that map
+  onto what Links renders: widths, alignment, colours, bold/italic/underline, display:none; and
+  CSS fonts: font-family through fontconfig, font-size, FreeType default faces)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

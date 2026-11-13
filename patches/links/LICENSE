@@ -1,0 +1,5 @@
+The patches in this directory modify Links (http://links.twibright.com/), which is released
+under the GNU General Public License (its COPYING file, version 2; copyright Mikulas Patocka
+and the Links authors).  The patches are released under the same terms: GPL-2.0 (text in
+../../LICENSES/GPL-2.0-only.txt).  They are not part of the BSD-2-Clause license of the rest
+of this repository (see ../../REUSE.toml).

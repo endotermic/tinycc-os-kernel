@@ -14,6 +14,10 @@ ncurses  sha256:136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6
 nnn      5f1c78b2c591b12fcbdb5b84d16b7ecd28eb12dc  v5.3    https://github.com/jarun/nnn.git
 musl-fts 0bde52df588e8969879a2cae51c3a4774ec62472  v1.2.7  https://github.com/void-linux/musl-fts.git
 links    sha256:7f0d54f4f7d1f094c25c9cbd657f98bc998311122563b1d757c9aeb1d3423b9e  2.30    http://links.twibright.com/download/links-2.30.tar.gz
+# Fonts metric-compatible with Arial/Helvetica, Times New Roman and Courier New (2026-11-13):
+# fontconfig's 30-metric-aliases.conf maps those names to them, so pages that ask for them
+# keep their widths in links; SIL OFL 1.1.  The release tarball is a GitHub issue attachment.
+liberation-fonts sha256:7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0 2.1.5 https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz
 libressl sha256:7d02522ad5070b9adb32eb253ecabce181184a3750cf65abac0675ee908687c1  4.4.0   https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz,https://cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.4.0.tar.gz
 # The graphical mode (2026-10-28): TinyX (Tiny Core's kdrive Xfbdev fork of X server 1.2:
 # no XKB, no xinput, builds without autotools from userland/tinyx/Makefile), the X.Org

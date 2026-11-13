@@ -66,3 +66,9 @@ path = ["patches/dmenu/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Anselm R Garbe and the dmenu authors", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/links/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Mikulas Patocka and the Links authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "GPL-2.0-only"

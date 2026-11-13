@@ -1,0 +1,4 @@
+# patches/links: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-An-li-or-p-hidden-with-display-none-ends-where-it-wo.patch
+features/0002-A-subset-of-CSS-stylesheets-simple-selectors-and-the.patch
+features/0003-CSS-fonts-font-family-through-fontconfig-font-size-i.patch

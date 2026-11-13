@@ -1,0 +1,1385 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 20:04:10 +0200
+Subject: [PATCH] A subset of CSS: stylesheets, simple selectors and the
+ properties Links can render
+
+Links ignored CSS entirely, so pages that lay out their tables with it
+(distrowatch.com: every width, vertical-align and colour is in news.css)
+came out with side columns centred vertically, ragged columns and
+collapsed menus shown expanded.  css.c reads the stylesheets of a
+document in order (<style>, <link rel="stylesheet">, @import, @media with
+the media type and min-/max-width against the window) and style=""
+attributes, and matches rules with type, .class, #id and * compounds
+joined by descendant and child combinators (ancestors from the HTML
+stack; :link/:visited match, other pseudo-classes, attribute selectors
+and the sibling combinators drop the rule), with specificity, order and
+!important.  The result is mapped onto what Links renders:
+
+- width, height, vertical-align, text-align, background(-color): answered
+  as the attributes width, height, valign, align and bgcolor by
+  get_attr_val(), so the table code and the block elements see them and
+  the CSS value wins over the HTML attribute;
+- color, font-weight, font-style, text-decoration, font-family monospace:
+  applied to the element's text format after its handler, and to a table
+  cell's contents through css_cell_attr in format_html_part();
+- display: none: hides the element like an inline style="display:none".  A hidden block no longer
+  breaks the line it would have started (before, a hidden <div> inside
+  a list item still put the item's text on two lines);
+- display: inline/inline-block, or float, on <li>, <div>, <p>, <ul>, <ol>:
+  laid out inline, without the line break and the bullet (horizontal
+  menus made of list items); text-align on <ul>/<ol> aligns the list.
+- width on form controls, counted in cells of the fixed font links draws
+  them in: the size of a text field, the width of a select (its label is
+  cut), and a button padded to it.  Button labels no longer break at
+  their spaces, and a text field shows its value from the start (the
+  cursor used to start at the end, showing the tail of a long value).
+
+External stylesheets are additional files of the document: one that is
+not loaded yet sets need_reparse, and the document is formatted again
+when it arrives.  The state lives for one really_format_html() call.
+There is no box model (margins, padding, borders, float, position, flex).
+---
+ Makefile.am |   2 +-
+ Makefile.in |   6 +-
+ css.c       | 993 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ html.c      |  65 +++-
+ html_gr.c   |   3 +
+ html_r.c    |   5 +
+ html_tbl.c  |   7 +
+ links.h     |  12 +
+ view.c      |   3 +-
+ 9 files changed, 1078 insertions(+), 18 deletions(-)
+ create mode 100644 css.c
+
+diff --git a/Makefile.am b/Makefile.am
+index 3aba96d..7da1698 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -24,7 +24,7 @@ if JAVASCRIPT
+ links_LDADD=builtin.o context.o ipret.o javascr.o javascript.o md5.o md5hl.o ns.o pomocny.o regexp.o
+ endif
+ 
+-links_SOURCES=af_unix.c avif.c auth.c beos.c bfu.c block.c bookmark.c cache.c charsets.c compress.c connect.c cookies.c data.c default.c dip.c directfb.c dither.c dns.c doh.c dos.c drivers.c error.c file.c finger.c fn_impl.c fontconf.c font_inc.c framebuf.c freetype.c ftp.c gif.c grx.c hpux.c html.c html_gr.c html_r.c html_tbl.c http.c https.c img.c imgcache.c jpeg.c jsint.c kbd.c language.c listedit.c lru.c mailto.c main.c memory.c menu.c objreq.c os_dep.c pmshell.c png.c sched.c select.c session.c smb.c string.c suffix.c svg.c svgalib.c terminal.c tiff.c types.c url.c view.c view_gr.c vms.c webp.c x.c xbm.c beos.h bits.h cfg.h codepage.h com-defs.h config-vms.h dfb_cur.h hpux.h language.h links.h os_dep.h os_depx.h setup.h arrow.inc certs.inc codepage.inc entity.inc fbcommon.inc language.inc links_ic.inc locase.inc suffix.inc suffix_x.inc uni_7b.inc upcase.inc vpipe.inc
++links_SOURCES=af_unix.c avif.c auth.c beos.c bfu.c block.c bookmark.c cache.c charsets.c compress.c connect.c cookies.c css.c data.c default.c dip.c directfb.c dither.c dns.c doh.c dos.c drivers.c error.c file.c finger.c fn_impl.c fontconf.c font_inc.c framebuf.c freetype.c ftp.c gif.c grx.c hpux.c html.c html_gr.c html_r.c html_tbl.c http.c https.c img.c imgcache.c jpeg.c jsint.c kbd.c language.c listedit.c lru.c mailto.c main.c memory.c menu.c objreq.c os_dep.c pmshell.c png.c sched.c select.c session.c smb.c string.c suffix.c svg.c svgalib.c terminal.c tiff.c types.c url.c view.c view_gr.c vms.c webp.c x.c xbm.c beos.h bits.h cfg.h codepage.h com-defs.h config-vms.h dfb_cur.h hpux.h language.h links.h os_dep.h os_depx.h setup.h arrow.inc certs.inc codepage.inc entity.inc fbcommon.inc language.inc links_ic.inc locase.inc suffix.inc suffix_x.inc uni_7b.inc upcase.inc vpipe.inc
+ # builtin.c context.c ipret.c javascr.c javascript.c md5.c md5hl.c ns.c pomocny.c regexp.c md5.h ns.h struct.h tree.h typy.h ipret.h javascript.h builtin.h builtin_keys.h
+ 
+ dist-hook:
+diff --git a/Makefile.in b/Makefile.in
+index 4e0ada3..f2eb8e2 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -78,7 +78,7 @@ bin_PROGRAMS = links
+ @HAIKU_GR_TRUE@links_LDADD = haiku.o
+ @JAVASCRIPT_TRUE@links_LDADD = builtin.o context.o ipret.o javascr.o javascript.o md5.o md5hl.o ns.o pomocny.o regexp.o
+ 
+-links_SOURCES = af_unix.c avif.c auth.c beos.c bfu.c block.c bookmark.c cache.c charsets.c compress.c connect.c cookies.c data.c default.c dip.c directfb.c dither.c dns.c doh.c dos.c drivers.c error.c file.c finger.c fn_impl.c fontconf.c font_inc.c framebuf.c freetype.c ftp.c gif.c grx.c hpux.c html.c html_gr.c html_r.c html_tbl.c http.c https.c img.c imgcache.c jpeg.c jsint.c kbd.c language.c listedit.c lru.c mailto.c main.c memory.c menu.c objreq.c os_dep.c pmshell.c png.c sched.c select.c session.c smb.c string.c suffix.c svg.c svgalib.c terminal.c tiff.c types.c url.c view.c view_gr.c vms.c webp.c x.c xbm.c beos.h bits.h cfg.h codepage.h com-defs.h config-vms.h dfb_cur.h hpux.h language.h links.h os_dep.h os_depx.h setup.h arrow.inc certs.inc codepage.inc entity.inc fbcommon.inc language.inc links_ic.inc locase.inc suffix.inc suffix_x.inc uni_7b.inc upcase.inc vpipe.inc
++links_SOURCES = af_unix.c avif.c auth.c beos.c bfu.c block.c bookmark.c cache.c charsets.c compress.c connect.c cookies.c css.c data.c default.c dip.c directfb.c dither.c dns.c doh.c dos.c drivers.c error.c file.c finger.c fn_impl.c fontconf.c font_inc.c framebuf.c freetype.c ftp.c gif.c grx.c hpux.c html.c html_gr.c html_r.c html_tbl.c http.c https.c img.c imgcache.c jpeg.c jsint.c kbd.c language.c listedit.c lru.c mailto.c main.c memory.c menu.c objreq.c os_dep.c pmshell.c png.c sched.c select.c session.c smb.c string.c suffix.c svg.c svgalib.c terminal.c tiff.c types.c url.c view.c view_gr.c vms.c webp.c x.c xbm.c beos.h bits.h cfg.h codepage.h com-defs.h config-vms.h dfb_cur.h hpux.h language.h links.h os_dep.h os_depx.h setup.h arrow.inc certs.inc codepage.inc entity.inc fbcommon.inc language.inc links_ic.inc locase.inc suffix.inc suffix_x.inc uni_7b.inc upcase.inc vpipe.inc
+ 
+ CXXFLAGS = @CXXFLAGS@
+ 
+@@ -95,7 +95,7 @@ DEFS = @DEFS@ -I. -I$(srcdir) -I.
+ CPPFLAGS = @CPPFLAGS@
+ LDFLAGS = @LDFLAGS@
+ links_OBJECTS =  af_unix.o avif.o auth.o beos.o bfu.o block.o bookmark.o \
+-cache.o charsets.o compress.o connect.o cookies.o data.o default.o \
++cache.o charsets.o compress.o connect.o cookies.o css.o data.o default.o \
+ dip.o directfb.o dither.o dns.o doh.o dos.o drivers.o error.o file.o \
+ finger.o fn_impl.o fontconf.o font_inc.o framebuf.o freetype.o ftp.o \
+ gif.o grx.o hpux.o html.o html_gr.o html_r.o html_tbl.o http.o https.o \
+@@ -372,6 +372,8 @@ connect.o: connect.c links.h cfg.h config.h com-defs.h os_dep.h \
+ 	os_depx.h setup.h language.h codepage.h
+ cookies.o: cookies.c links.h cfg.h config.h com-defs.h os_dep.h \
+ 	os_depx.h setup.h language.h codepage.h
++css.o: css.c links.h cfg.h config.h com-defs.h os_dep.h os_depx.h \
++	setup.h language.h codepage.h
+ data.o: data.c links.h cfg.h config.h com-defs.h os_dep.h os_depx.h \
+ 	setup.h language.h codepage.h
+ default.o: default.c links.h cfg.h config.h com-defs.h os_dep.h \
+diff --git a/css.c b/css.c
+new file mode 100644
+index 0000000..304b4db
+--- /dev/null
++++ b/css.c
+@@ -0,0 +1,993 @@
++/* css.c
++ * A small subset of CSS for Links: stylesheets from <style>, <link rel="stylesheet">
++ * and @import, plus style="" attributes, matched with simple selectors (type, .class,
++ * #id, *, joined by descendant and child combinators) and mapped onto what Links
++ * already renders:
++ *
++ *   width, height, vertical-align, text-align, background(-color)
++ *	-> answered as the HTML attributes width, height, valign, align and bgcolor
++ *	   through get_attr_val(), so every place that reads those attributes (the
++ *	   table code included) sees the CSS value, which wins over the attribute;
++ *   color, font-weight, font-style, text-decoration, font-family: monospace
++ *	-> applied to the text format of the element (css_apply_format);
++ *   display: none
++ *	-> the element is hidden like an inline style="display:none" (css_display_none).
++ *
++ * There is no box model: margins, padding, borders, float, position and flex are ignored.
++ * The state lives for one really_format_html() call (css_begin ... css_end).
++ *
++ * This file is a part of the Links program, released under GPL.
++ */
++
++#include "links.h"
++
++#define CP_WIDTH	0
++#define CP_HEIGHT	1
++#define CP_VALIGN	2
++#define CP_TALIGN	3
++#define CP_BGCOLOR	4
++#define CP_BACKGROUND	5
++#define CP_COLOR	6
++#define CP_FWEIGHT	7
++#define CP_FSTYLE	8
++#define CP_TDECO	9
++#define CP_DISPLAY	10
++#define CP_FFAMILY	11
++#define CP_FLOAT	12
++#define CP_N		13
++
++static const char * const css_prop_names[CP_N] = {
++	"width", "height", "vertical-align", "text-align", "background-color", "background",
++	"color", "font-weight", "font-style", "text-decoration", "display", "font-family",
++	"float"
++};
++
++struct css_decl {
++	int prop;
++	int important;
++	unsigned char *val;
++};
++
++struct css_compound {
++	unsigned char *tag;		/* NULL = any */
++	unsigned char *id;
++	unsigned char **cls;
++	int ncls;
++	unsigned char comb;		/* combinator to the compound on the left: ' ', '>' or 0 */
++};
++
++struct css_rule {
++	struct css_compound *parts;	/* parts[n - 1] is the subject */
++	int n;
++	int spec;
++	int order;
++	struct css_decl *decls;		/* shared by the selectors of one rule block */
++	int ndecls;
++	int owns_decls;
++};
++
++#define CSS_NODE_HASH	1024
++
++struct css_node {
++	struct css_node *next;
++	unsigned char *attr;
++	unsigned char tag[12];
++	unsigned char *id;
++	unsigned char *cls;		/* the class attribute, split on spaces into NUL-separated words */
++	int clslen;
++	unsigned char *inline_buf;
++	struct css_decl *inline_decls;
++	int ninline;
++	int computed;
++	unsigned char *v[CP_N];		/* winning values, not owned */
++};
++
++int css_active = 0;
++unsigned char *css_cell_attr = NULL;
++
++static struct css_rule *css_rules = NULL;
++static int css_nrules = 0;
++static int css_order = 0;
++static unsigned char **css_texts = NULL;	/* stylesheet copies the rules point into */
++static int css_ntexts = 0;
++static struct css_node *css_nodes[CSS_NODE_HASH];
++static struct f_data *css_f = NULL;
++static int css_imports = 0;
++
++static int css_ws(unsigned char c)
++{
++	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
++}
++
++static unsigned char *css_strndup(unsigned char *s, size_t l)
++{
++	unsigned char *r = mem_alloc(l + 1);
++	memcpy(r, s, l);
++	r[l] = 0;
++	return r;
++}
++
++static unsigned char *css_trim(unsigned char *s)
++{
++	size_t l;
++	while (css_ws(*s)) s++;
++	l = strlen(cast_const_char s);
++	while (l && css_ws(s[l - 1])) s[--l] = 0;
++	return s;
++}
++
++/* removes comments in place */
++static void css_strip_comments(unsigned char *s)
++{
++	unsigned char *d = s;
++	unsigned char q = 0;
++	while (*s) {
++		if (!q && s[0] == '/' && s[1] == '*') {
++			s += 2;
++			while (*s && !(s[0] == '*' && s[1] == '/')) s++;
++			if (*s) s += 2;
++			*d++ = ' ';
++			continue;
++		}
++		if (q) {
++			if (*s == '\\' && s[1]) { *d++ = *s++; *d++ = *s++; continue; }
++			if (*s == q) q = 0;
++		} else if (*s == '"' || *s == '\'') q = *s;
++		*d++ = *s++;
++	}
++	*d = 0;
++}
++
++/* returns the position of the first top-level character c (outside strings and parentheses), or the end */
++static unsigned char *css_find(unsigned char *s, unsigned char c)
++{
++	unsigned char q = 0;
++	int par = 0;
++	for (; *s; s++) {
++		if (q) {
++			if (*s == '\\' && s[1]) s++;
++			else if (*s == q) q = 0;
++			continue;
++		}
++		if (*s == '"' || *s == '\'') q = *s;
++		else if (*s == '(') par++;
++		else if (*s == ')') { if (par) par--; }
++		else if (*s == c && !par) return s;
++	}
++	return s;
++}
++
++/* skips a {...} block starting at the '{', returns the position after the matching '}' */
++static unsigned char *css_skip_block(unsigned char *s)
++{
++	int depth = 0;
++	unsigned char q = 0;
++	for (; *s; s++) {
++		if (q) {
++			if (*s == '\\' && s[1]) s++;
++			else if (*s == q) q = 0;
++			continue;
++		}
++		if (*s == '"' || *s == '\'') q = *s;
++		else if (*s == '{') depth++;
++		else if (*s == '}') {
++			if (!--depth) return s + 1;
++		}
++	}
++	return s;
++}
++
++static int css_prop_index(unsigned char *n)
++{
++	int i;
++	if (!strcmp(cast_const_char n, "text-decoration-line")) return CP_TDECO;
++	for (i = 0; i < CP_N; i++)
++		if (!strcmp(cast_const_char n, css_prop_names[i])) return i;
++	return -1;
++}
++
++/* parses "a: b; c: d !important" in place; the values point into s */
++static void css_parse_decls(unsigned char *s, struct css_decl **decls, int *n)
++{
++	*decls = DUMMY;
++	*n = 0;
++	while (*s) {
++		unsigned char *e = css_find(s, ';');
++		unsigned char *colon, *name, *val, *imp;
++		unsigned char *p;
++		int prop;
++		int last = !*e;
++		*e = 0;
++		colon = css_find(s, ':');
++		if (!*colon) goto next;
++		*colon = 0;
++		name = css_trim(s);
++		for (p = name; *p; p++) *p = (unsigned char)locase(*p);
++		prop = css_prop_index(name);
++		if (prop < 0) goto next;
++		val = css_trim(colon + 1);
++		imp = cast_uchar strchr(cast_const_char val, '!');
++		if (imp) {
++			unsigned char *w = imp + 1;
++			while (css_ws(*w)) w++;
++			if (casecmp(w, cast_uchar "important", 9)) goto next;
++			*imp = 0;
++			val = css_trim(val);
++		}
++		for (p = val; *p; p++) if (*p >= 'A' && *p <= 'Z' && prop != CP_FFAMILY) *p = (unsigned char)locase(*p);
++		if (!*val) goto next;
++		if ((unsigned)*n > MAXINT / sizeof(struct css_decl) - 1) overalloc();
++		*decls = mem_realloc(*decls, (*n + 1) * sizeof(struct css_decl));
++		(*decls)[*n].prop = prop;
++		(*decls)[*n].important = !!imp;
++		(*decls)[*n].val = val;
++		(*n)++;
++		next:
++		if (last) break;
++		s = e + 1;
++	}
++}
++
++static int css_namechar(unsigned char c)
++{
++	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c >= 0x80;
++}
++
++static void css_free_compounds(struct css_compound *parts, int n)
++{
++	int i, j;
++	for (i = 0; i < n; i++) {
++		if (parts[i].tag) mem_free(parts[i].tag);
++		if (parts[i].id) mem_free(parts[i].id);
++		for (j = 0; j < parts[i].ncls; j++) mem_free(parts[i].cls[j]);
++		if (parts[i].cls) mem_free(parts[i].cls);
++	}
++	mem_free(parts);
++}
++
++/* parses one selector (no commas); returns 0 when it uses something unsupported */
++static int css_parse_selector(unsigned char *s, struct css_rule *r)
++{
++	struct css_compound *parts = DUMMY;
++	int n = 0;
++	int spec = 0;
++	unsigned char comb = 0;
++	struct css_compound c;
++	s = css_trim(s);
++	if (!*s) return 0;
++	while (*s) {
++		memset(&c, 0, sizeof c);
++		c.comb = comb;
++		if (*s == '*') s++;
++		else if (css_namechar(*s)) {
++			unsigned char *b = s;
++			while (css_namechar(*s)) s++;
++			c.tag = css_strndup(b, s - b);
++			spec += 1;
++		}
++		while (*s == '.' || *s == '#' || *s == ':') {
++			unsigned char k = *s++;
++			unsigned char *b;
++			if (k == ':') {
++				/* :link and :visited match links, the rest (hover, focus, structure) never apply here */
++				if (*s == ':') goto bad;
++				b = s;
++				while (css_namechar(*s)) s++;
++				if (!((s - b == 4 && !casecmp(b, cast_uchar "link", 4)) || (s - b == 7 && !casecmp(b, cast_uchar "visited", 7)))) goto bad;
++				spec += 10;
++				continue;
++			}
++			b = s;
++			while (css_namechar(*s)) s++;
++			if (s == b) goto bad;
++			if (k == '#') {
++				if (c.id) mem_free(c.id);
++				c.id = css_strndup(b, s - b);
++				spec += 100;
++			} else {
++				if ((unsigned)c.ncls > MAXINT / sizeof(unsigned char *) - 1) overalloc();
++				c.cls = mem_realloc(c.cls ? c.cls : DUMMY, (c.ncls + 1) * sizeof(unsigned char *));
++				c.cls[c.ncls++] = css_strndup(b, s - b);
++				spec += 10;
++			}
++		}
++		if ((unsigned)n > MAXINT / sizeof(struct css_compound) - 1) overalloc();
++		parts = mem_realloc(parts, (n + 1) * sizeof(struct css_compound));
++		parts[n++] = c;
++		comb = 0;
++		while (css_ws(*s)) s++, comb = ' ';
++		if (*s == '>') {
++			comb = '>';
++			s++;
++			while (css_ws(*s)) s++;
++		}
++		if (!*s) break;
++		if (!comb) goto bad_parts;	/* [attr], +, ~ and anything else we do not understand */
++	}
++	r->parts = parts;
++	r->n = n;
++	r->spec = spec;
++	return 1;
++	bad:
++	if (c.tag) mem_free(c.tag);
++	if (c.id) mem_free(c.id);
++	{
++		int j;
++		for (j = 0; j < c.ncls; j++) mem_free(c.cls[j]);
++		if (c.cls) mem_free(c.cls);
++	}
++	bad_parts:
++	css_free_compounds(parts, n);
++	return 0;
++}
++
++static void css_add_rules(unsigned char *sel, unsigned char *body)
++{
++	struct css_decl *decls;
++	int ndecls;
++	int first = 1;
++	css_parse_decls(body, &decls, &ndecls);
++	if (!ndecls) {
++		mem_free(decls);
++		return;
++	}
++	while (*sel) {
++		unsigned char *e = css_find(sel, ',');
++		int last = !*e;
++		struct css_rule r;
++		*e = 0;
++		memset(&r, 0, sizeof r);
++		if (css_parse_selector(sel, &r)) {
++			r.order = css_order++;
++			r.decls = decls;
++			r.ndecls = ndecls;
++			r.owns_decls = first;
++			first = 0;
++			if ((unsigned)css_nrules > MAXINT / sizeof(struct css_rule) - 1) overalloc();
++			css_rules = mem_realloc(css_rules ? css_rules : DUMMY, (css_nrules + 1) * sizeof(struct css_rule));
++			css_rules[css_nrules++] = r;
++		}
++		if (last) break;
++		sel = e + 1;
++	}
++	if (first) mem_free(decls);
++}
++
++static int css_viewport_px(void)
++{
++	if (!d_opt) return 1024;
++	return F ? d_opt->xw : d_opt->xw * 8;
++}
++
++/* a crude media query check: media types and (min-width|max-width: N px|em) */
++static int css_media_ok(unsigned char *m)
++{
++	unsigned char *buf, *s;
++	int ok = 0;
++	if (!m) return 1;
++	buf = stracpy(m);
++	for (s = buf; *s; s++) *s = (unsigned char)locase(*s);
++	s = buf;
++	while (1) {
++		unsigned char *e = css_find(s, ',');
++		int last = !*e;
++		unsigned char *p;
++		int this_ok = 1;
++		*e = 0;
++		p = css_trim(s);
++		if (strstr(cast_const_char p, "not ") || strstr(cast_const_char p, "print") || strstr(cast_const_char p, "speech") || strstr(cast_const_char p, "aural") || strstr(cast_const_char p, "handheld"))
++			if (!strstr(cast_const_char p, "screen")) this_ok = 0;
++		if (!strncmp(cast_const_char p, "not ", 4)) this_ok = 0;
++		for (p = cast_uchar strchr(cast_const_char p, '('); p && this_ok; p = cast_uchar strchr(cast_const_char p + 1, '(')) {
++			int mx;
++			double v;
++			char *end;
++			unsigned char *q = p + 1;
++			while (css_ws(*q)) q++;
++			if (!strncmp(cast_const_char q, "min-width", 9)) mx = 0;
++			else if (!strncmp(cast_const_char q, "max-width", 9)) mx = 1;
++			else if (!strncmp(cast_const_char q, "prefers-color-scheme", 20)) {
++				if (strstr(cast_const_char q, "dark")) this_ok = 0;
++				continue;
++			} else continue;
++			q = cast_uchar strchr(cast_const_char q, ':');
++			if (!q) continue;
++			v = strtod(cast_const_char q + 1, &end);
++			while (css_ws(*end)) end++;
++			if (!strncmp(end, "em", 2) || !strncmp(end, "rem", 3)) v *= 16;
++			if (mx ? css_viewport_px() > v : css_viewport_px() < v) this_ok = 0;
++		}
++		if (this_ok) ok = 1;
++		if (last) break;
++		s = e + 1;
++	}
++	mem_free(buf);
++	return ok;
++}
++
++static void css_import(unsigned char *url);
++
++/* parses a stylesheet in place (s must stay allocated until css_end) */
++static void css_parse_sheet(unsigned char *s, unsigned char *base)
++{
++	while (1) {
++		unsigned char *b;
++		while (css_ws(*s) || *s == ';' || *s == '}') s++;
++		if (!*s) return;
++		if (!strncmp(cast_const_char s, "<!--", 4)) { s += 4; continue; }
++		if (!strncmp(cast_const_char s, "-->", 3)) { s += 3; continue; }
++		if (*s == '@') {
++			unsigned char *semi = css_find(s, ';');
++			unsigned char *brace = css_find(s, '{');
++			if (!casecmp(s, cast_uchar "@import", 7) && semi < brace) {
++				unsigned char *u = s + 7, *ue, *url, *media;
++				while (css_ws(*u)) u++;
++				if (!casecmp(u, cast_uchar "url(", 4)) u += 4;
++				while (css_ws(*u)) u++;
++				if (*u == '"' || *u == '\'') {
++					unsigned char q = *u++;
++					ue = u;
++					while (*ue && *ue != q) ue++;
++				} else {
++					ue = u;
++					while (*ue && *ue != ')' && !css_ws(*ue) && ue < semi) ue++;
++				}
++				media = ue;
++				while (*media && *media != ')' && media < semi) media++;
++				if (*media == ')') media++;
++				else if (*media == '"' || *media == '\'') media++;
++				{
++					unsigned char *m = css_strndup(media, semi - media);
++					unsigned char *rel = css_strndup(u, ue - u);
++					if (css_media_ok(*css_trim(m) ? css_trim(m) : NULL) && *rel && (url = join_urls(base, rel))) {
++						css_import(url);
++						mem_free(url);
++					}
++					mem_free(m);
++					mem_free(rel);
++				}
++				s = *semi ? semi + 1 : semi;
++				continue;
++			}
++			if (semi < brace) {	/* @charset, @namespace */
++				s = *semi ? semi + 1 : semi;
++				continue;
++			}
++			if (!*brace) return;
++			if (!casecmp(s, cast_uchar "@media", 6)) {
++				unsigned char *inner, *end = css_skip_block(brace);
++				unsigned char save;
++				*brace = 0;
++				if (css_media_ok(s + 6)) {
++					inner = brace + 1;
++					save = end[-1];
++					if (save == '}') end[-1] = 0;
++					css_parse_sheet(inner, base);
++					if (save == '}') end[-1] = save;
++				}
++				*brace = '{';
++				s = end;
++				continue;
++			}
++			s = css_skip_block(brace);	/* @font-face, @keyframes, @supports, @page ... */
++			continue;
++		}
++		b = css_find(s, '{');
++		if (!*b) return;
++		{
++			unsigned char *end = css_find(b + 1, '}');
++			int last = !*end;
++			*b = 0;
++			*end = 0;
++			css_add_rules(s, b + 1);
++			if (last) return;
++			s = end + 1;
++		}
++	}
++}
++
++static void css_add_text(unsigned char *text, size_t len, unsigned char *base)
++{
++	unsigned char *t;
++	if (len > MAXINT - 1) return;
++	t = css_strndup(text, len);
++	/* NULs in the sheet would cut it short; replace them */
++	{
++		size_t i;
++		for (i = 0; i < len; i++) if (!t[i]) t[i] = ' ';
++	}
++	if ((unsigned)css_ntexts > MAXINT / sizeof(unsigned char *) - 1) overalloc();
++	css_texts = mem_realloc(css_texts ? css_texts : DUMMY, (css_ntexts + 1) * sizeof(unsigned char *));
++	css_texts[css_ntexts++] = t;
++	css_strip_comments(t);
++	css_parse_sheet(t, base);
++}
++
++/* an external stylesheet: requested as an additional file of the document; when it is not loaded
++   yet, the document is formatted again once it arrives (need_reparse) */
++static void css_import(unsigned char *url)
++{
++	struct additional_file *af;
++	unsigned char *start;
++	size_t len;
++	if (!css_f || !css_f->fd || !css_f->ses || !css_f->rq) return;
++	if (++css_imports > 32) return;
++	af = request_additional_file(css_f, url);
++	if (!af->rq || af->rq->state >= 0) {
++		af->need_reparse = 1;
++		return;
++	}
++	if (af->rq->state != O_OK || !af->rq->ce) return;
++	if (af->rq->ce->http_code >= 400) return;
++	if (get_file(af->rq, &start, &len)) return;
++	css_add_text(start, len, af->rq->ce->url);
++}
++
++static unsigned char *css_find_end_tag(unsigned char *s, unsigned char *eof, unsigned char *name, int nl)
++{
++	for (; eof - s > nl + 2; s++)
++		if (s[0] == '<' && s[1] == '/' && !casecmp(s + 2, name, nl)) return s;
++	return eof;
++}
++
++/* collects the stylesheets of a document in document order */
++void css_begin(struct f_data *f, unsigned char *url, unsigned char *start, unsigned char *end)
++{
++	unsigned char *s = start;
++	unsigned char *base;
++	css_end();
++	if (!d_opt || d_opt->plain) return;
++	css_f = f;
++	css_imports = 0;
++	base = stracpy(url);
++	css_active = 1;
++	while (s < end) {
++		unsigned char *name, *attr, *e;
++		int namelen;
++		if (*s != '<') { s++; continue; }
++		if (end - s > 3 && s[1] == '!' && s[2] == '-' && s[3] == '-') {
++			s = skip_comment(s, end);
++			continue;
++		}
++		if (parse_element(s, end, &name, &namelen, &attr, &e)) { s++; continue; }
++		s = e;
++		if (namelen == 6 && !casecmp(name, cast_uchar "SCRIPT", 6)) {
++			s = css_find_end_tag(s, end, cast_uchar "SCRIPT", 6);
++		} else if (namelen == 4 && !casecmp(name, cast_uchar "BASE", 4)) {
++			unsigned char *h = get_attr_val(attr, cast_uchar "href");
++			if (h) {
++				unsigned char *j = join_urls(base, h);
++				if (j) mem_free(base), base = j;
++				mem_free(h);
++			}
++		} else if (namelen == 5 && !casecmp(name, cast_uchar "STYLE", 5)) {
++			unsigned char *m = get_attr_val(attr, cast_uchar "media");
++			unsigned char *se = css_find_end_tag(s, end, cast_uchar "STYLE", 5);
++			if (css_media_ok(m)) css_add_text(s, se - s, base);
++			if (m) mem_free(m);
++			s = se;
++		} else if (namelen == 4 && !casecmp(name, cast_uchar "LINK", 4)) {
++			unsigned char *rel = get_attr_val(attr, cast_uchar "rel");
++			if (rel) {
++				unsigned char *p;
++				for (p = rel; *p; p++) *p = (unsigned char)locase(*p);
++				if (strstr(cast_const_char rel, "stylesheet") && !strstr(cast_const_char rel, "alternate")) {
++					unsigned char *m = get_attr_val(attr, cast_uchar "media");
++					unsigned char *h = get_attr_val(attr, cast_uchar "href");
++					if (h && css_media_ok(m)) {
++						unsigned char *j = join_urls(base, h);
++						if (j) {
++							css_import(j);
++							mem_free(j);
++						}
++					}
++					if (h) mem_free(h);
++					if (m) mem_free(m);
++				}
++				mem_free(rel);
++			}
++		}
++	}
++	mem_free(base);
++}
++
++static void css_free_node(struct css_node *n)
++{
++	if (n->id) mem_free(n->id);
++	if (n->cls) mem_free(n->cls);
++	if (n->inline_buf) mem_free(n->inline_buf);
++	if (n->inline_decls) mem_free(n->inline_decls);
++	mem_free(n);
++}
++
++void css_end(void)
++{
++	int i;
++	for (i = 0; i < css_nrules; i++) {
++		css_free_compounds(css_rules[i].parts, css_rules[i].n);
++		if (css_rules[i].owns_decls) mem_free(css_rules[i].decls);
++	}
++	if (css_rules) mem_free(css_rules);
++	css_rules = NULL;
++	css_nrules = 0;
++	css_order = 0;
++	for (i = 0; i < css_ntexts; i++) mem_free(css_texts[i]);
++	if (css_texts) mem_free(css_texts);
++	css_texts = NULL;
++	css_ntexts = 0;
++	for (i = 0; i < CSS_NODE_HASH; i++) {
++		while (css_nodes[i]) {
++			struct css_node *n = css_nodes[i];
++			css_nodes[i] = n->next;
++			css_free_node(n);
++		}
++	}
++	css_f = NULL;
++	css_cell_attr = NULL;
++	css_active = 0;
++}
++
++/* the tag name of the element whose attributes start at attr (inside the document being formatted) */
++static int css_tag_of(unsigned char *attr, unsigned char *tag, int max)
++{
++	unsigned char *p = attr, *q;
++	int l = 0;
++	if (!startf || attr <= startf || attr > eofff) return -1;
++	while (p > startf && p[-1] != '<') {
++		if (attr - p > 256) return -1;
++		p--;
++	}
++	if (p <= startf && (p == startf && (p == attr || p[-1] != '<'))) return -1;
++	if (*p == '/') return -1;
++	for (q = p; q < attr && ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') || (*q >= '0' && *q <= '9')); q++) {
++		if (l >= max - 1) return -1;
++		tag[l++] = (unsigned char)upcase(*q);
++	}
++	tag[l] = 0;
++	return l ? 0 : -1;
++}
++
++static struct css_node *css_node(unsigned char *attr, unsigned char *tagname, int taglen)
++{
++	unsigned h = (unsigned)(((unsigned long)attr >> 2) % CSS_NODE_HASH);
++	struct css_node *n;
++	unsigned char *a;
++	for (n = css_nodes[h]; n; n = n->next) if (n->attr == attr) return n;
++	n = mem_calloc(sizeof(struct css_node));
++	if (tagname) {
++		int i;
++		if (taglen > (int)sizeof(n->tag) - 1) taglen = sizeof(n->tag) - 1;
++		for (i = 0; i < taglen; i++) n->tag[i] = (unsigned char)upcase(tagname[i]);
++		n->tag[taglen] = 0;
++	} else if (css_tag_of(attr, n->tag, sizeof(n->tag))) {
++		mem_free(n);
++		return NULL;
++	}
++	n->attr = attr;
++	n->id = get_attr_val(attr, cast_uchar "id");
++	if ((a = get_attr_val(attr, cast_uchar "class"))) {
++		unsigned char *p;
++		int l = (int)strlen(cast_const_char a);
++		for (p = a; *p; p++) if (css_ws(*p)) *p = 0;
++		n->cls = a;
++		n->clslen = l;
++	}
++	if ((a = get_attr_val(attr, cast_uchar "style"))) {
++		n->inline_buf = a;
++		css_strip_comments(a);
++		css_parse_decls(a, &n->inline_decls, &n->ninline);
++	}
++	n->next = css_nodes[h];
++	css_nodes[h] = n;
++	return n;
++}
++
++static int css_has_class(struct css_node *n, unsigned char *c)
++{
++	int i = 0;
++	if (!n->cls) return 0;
++	while (i < n->clslen) {
++		unsigned char *w = n->cls + i;
++		int wl = (int)strlen(cast_const_char w);
++		if (wl && !strcmp(cast_const_char w, cast_const_char c)) return 1;
++		i += wl + 1;
++	}
++	return 0;
++}
++
++static int css_match_compound(struct css_compound *c, struct css_node *n)
++{
++	int i;
++	if (c->tag && casestrcmp(c->tag, n->tag)) return 0;
++	if (c->id && (!n->id || strcmp(cast_const_char c->id, cast_const_char n->id))) return 0;
++	for (i = 0; i < c->ncls; i++) if (!css_has_class(n, c->cls[i])) return 0;
++	return 1;
++}
++
++/* the ancestors are the elements on the html stack (the element itself may already be on top) */
++static int css_match_ancestors(struct css_rule *r, int k, struct list_head *from, unsigned char comb)
++{
++	struct list_head *l;
++	for (l = from; l != &html_stack; l = l->next) {
++		struct html_element *e = list_struct(l, struct html_element);
++		struct css_node *n;
++		if (!e->options || !e->namelen) continue;
++		n = css_node(e->options, e->name, e->namelen);
++		if (!n) continue;
++		if (css_match_compound(&r->parts[k], n)) {
++			if (!k) return 1;
++			if (css_match_ancestors(r, k - 1, l->next, r->parts[k].comb)) return 1;
++		}
++		if (comb == '>') return 0;
++	}
++	return 0;
++}
++
++static int css_match(struct css_rule *r, struct css_node *n)
++{
++	struct list_head *l;
++	if (!css_match_compound(&r->parts[r->n - 1], n)) return 0;
++	if (r->n == 1) return 1;
++	l = html_stack.next;
++	if (l != &html_stack && list_struct(l, struct html_element)->options == n->attr) l = l->next;
++	return css_match_ancestors(r, r->n - 2, l, r->parts[r->n - 1].comb);
++}
++
++static void css_compute(struct css_node *n)
++{
++	int rank[CP_N];
++	int i, j;
++	if (n->computed) return;
++	n->computed = 1;
++	for (i = 0; i < CP_N; i++) rank[i] = -1;
++	for (i = 0; i < css_nrules; i++) {
++		struct css_rule *r = &css_rules[i];
++		if (!css_match(r, n)) continue;
++		for (j = 0; j < r->ndecls; j++) {
++			struct css_decl *d = &r->decls[j];
++			int rk = (d->important << 30) | r->spec;
++			if (rk >= rank[d->prop]) rank[d->prop] = rk, n->v[d->prop] = d->val;
++		}
++	}
++	for (j = 0; j < n->ninline; j++) {
++		struct css_decl *d = &n->inline_decls[j];
++		int rk = (d->important << 30) | (1 << 24);
++		if (rk >= rank[d->prop]) rank[d->prop] = rk, n->v[d->prop] = d->val;
++	}
++}
++
++static struct css_node *css_get(unsigned char *attr)
++{
++	struct css_node *n;
++	if (!css_active || !attr) return NULL;
++	n = css_node(attr, NULL, 0);
++	if (n) css_compute(n);
++	return n;
++}
++
++static int css_color(unsigned char *v, struct rgb *rgb)
++{
++	unsigned char *p;
++	if (!v) return -1;
++	if (!strncmp(cast_const_char v, "rgb", 3)) {
++		int c[4] = { 0, 0, 0, 255 };
++		int i;
++		p = cast_uchar strchr(cast_const_char v, '(');
++		if (!p) return -1;
++		p++;
++		for (i = 0; i < 4; i++) {
++			char *end;
++			double d;
++			while (css_ws(*p) || *p == ',' || *p == '/') p++;
++			if (*p == ')' || !*p) break;
++			d = strtod(cast_const_char p, &end);
++			if ((unsigned char *)end == p) return -1;
++			p = (unsigned char *)end;
++			if (*p == '%') d = d * (i == 3 ? 2.55 : 2.55), p++;
++			else if (i == 3) d *= 255;
++			c[i] = d < 0 ? 0 : d > 255 ? 255 : (int)(d + 0.5);
++		}
++		if (i < 3 || c[3] < 128) return -1;
++		memset(rgb, 0, sizeof(struct rgb));
++		rgb->r = c[0];
++		rgb->g = c[1];
++		rgb->b = c[2];
++		return 0;
++	}
++	if (!strcmp(cast_const_char v, "transparent") || !strcmp(cast_const_char v, "inherit") || !strcmp(cast_const_char v, "currentcolor")) return -1;
++	return decode_color(v, rgb);
++}
++
++/* the first word of a background shorthand that is a colour */
++static unsigned char *css_bg_color(struct css_node *n, struct rgb *rgb)
++{
++	unsigned char *v = n->v[CP_BGCOLOR];
++	if (v) return !css_color(v, rgb) ? v : NULL;
++	if ((v = n->v[CP_BACKGROUND])) {
++		unsigned char *s = v;
++		while (*s) {
++			unsigned char *e, save;
++			while (css_ws(*s)) s++;
++			if (!*s) break;
++			e = s;
++			if (!strncmp(cast_const_char s, "rgb", 3)) {
++				while (*e && *e != ')') e++;
++				if (*e) e++;
++			} else if (!strncmp(cast_const_char s, "url(", 4) || !strncmp(cast_const_char s, "linear-gradient(", 16) || !strncmp(cast_const_char s, "radial-gradient(", 16)) {
++				while (*e && *e != ')') e++;
++				if (*e) e++;
++				s = e;
++				continue;
++			} else {
++				while (*e && !css_ws(*e)) e++;
++			}
++			save = *e;
++			*e = 0;
++			if (!css_color(s, rgb)) {
++				*e = save;
++				return v;
++			}
++			*e = save;
++			s = e;
++		}
++	}
++	return NULL;
++}
++
++/* "100px", "25%", "12em" -> "100", "25%", "192"; NULL for auto, calc() etc. */
++static unsigned char *css_length(unsigned char *v, int percent_ok)
++{
++	char *end;
++	double d;
++	unsigned char buf[32];
++	if (!v) return NULL;
++	d = strtod(cast_const_char v, &end);
++	if ((unsigned char *)end == v || d < 0 || d > 100000) return NULL;
++	if (*end == '%') {
++		if (!percent_ok) return NULL;
++		sprintf(cast_char buf, "%d%%", (int)(d + 0.5));
++		return stracpy(buf);
++	}
++	if (!strcmp(end, "em") || !strcmp(end, "rem")) d *= 16;
++	else if (!strcmp(end, "pt")) d = d * 4 / 3;
++	else if (strcmp(end, "px") && !(*end == 0 && d == 0)) return NULL;
++	sprintf(cast_char buf, "%d", (int)(d + 0.5));
++	return stracpy(buf);
++}
++
++static int css_tag_in(unsigned char *tag, const char *list)
++{
++	size_t l = strlen(cast_const_char tag);
++	const char *p = list;
++	while ((p = strstr(p, cast_const_char tag))) {
++		if ((p == list || p[-1] == ' ') && (p[l] == ' ' || !p[l])) return 1;
++		p++;
++	}
++	return 0;
++}
++
++/* get_attr_val() asks here first: the CSS value of the attributes that CSS can set */
++int css_attr_override(unsigned char *attr, unsigned char *name, unsigned char **result)
++{
++	struct css_node *n;
++	unsigned char *v;
++	int which;
++	struct rgb rgb;
++	switch (locase(name[0])) {
++		case 'w': which = CP_WIDTH; break;
++		case 'h': which = CP_HEIGHT; break;
++		case 'v': which = CP_VALIGN; break;
++		case 'a': which = CP_TALIGN; break;
++		case 'b': which = CP_BGCOLOR; break;
++		default: return 0;
++	}
++	if (casestrcmp(name, cast_uchar (which == CP_WIDTH ? "width" : which == CP_HEIGHT ? "height" : which == CP_VALIGN ? "valign" : which == CP_TALIGN ? "align" : "bgcolor"))) return 0;
++	if (!(n = css_get(attr))) return 0;
++	switch (which) {
++		case CP_WIDTH:
++			if (!css_tag_in(n->tag, "TABLE TD TH IMG HR COL")) return 0;
++			if (!(*result = css_length(n->v[CP_WIDTH], 1))) return 0;
++			return 1;
++		case CP_HEIGHT:
++			if (!css_tag_in(n->tag, "IMG")) return 0;
++			if (!(*result = css_length(n->v[CP_HEIGHT], 0))) return 0;
++			return 1;
++		case CP_VALIGN:
++			if (!css_tag_in(n->tag, "TD TH TR THEAD TBODY TFOOT")) return 0;
++			v = n->v[CP_VALIGN];
++			if (!v || (strcmp(cast_const_char v, "top") && strcmp(cast_const_char v, "middle") && strcmp(cast_const_char v, "bottom"))) return 0;
++			*result = stracpy(v);
++			return 1;
++		case CP_TALIGN:
++			if (!css_tag_in(n->tag, "P DIV H1 H2 H3 H4 H5 H6 TD TH TR CAPTION CENTER")) return 0;
++			v = n->v[CP_TALIGN];
++			if (!v) return 0;
++			if (!strcmp(cast_const_char v, "start")) v = cast_uchar "left";
++			if (!strcmp(cast_const_char v, "end")) v = cast_uchar "right";
++			if (!strcmp(cast_const_char v, "-webkit-center") || !strcmp(cast_const_char v, "-moz-center")) v = cast_uchar "center";
++			if (strcmp(cast_const_char v, "left") && strcmp(cast_const_char v, "right") && strcmp(cast_const_char v, "center") && strcmp(cast_const_char v, "justify")) return 0;
++			*result = stracpy(v);
++			return 1;
++		case CP_BGCOLOR:
++			if (!css_tag_in(n->tag, "BODY TABLE TR TD TH")) return 0;
++			if (!css_bg_color(n, &rgb)) return 0;
++			*result = mem_alloc(8);
++			sprintf(cast_char *result, "#%02x%02x%02x", rgb.r & 0xff, rgb.g & 0xff, rgb.b & 0xff);
++			return 1;
++	}
++	return 0;
++}
++
++int css_display_none(unsigned char *attr)
++{
++	struct css_node *n = css_get(attr);
++	return n && n->v[CP_DISPLAY] && !strcmp(cast_const_char n->v[CP_DISPLAY], "none");
++}
++
++/* the CSS width of a form control in character cells of its fixed-width font, or -1 */
++int css_field_chars(unsigned char *attr)
++{
++	struct css_node *n = css_get(attr);
++	unsigned char *l;
++	int px, cw;
++	if (!n || !n->v[CP_WIDTH] || !(l = css_length(n->v[CP_WIDTH], 0))) return -1;
++	px = atoi(cast_const_char l);
++	mem_free(l);
++	/* links draws form controls in its fixed font at font size 3, half the font size wide
++	   (10 pixels at the default 20); a text mode cell counts as 8 pixels, as for the media queries */
++	cw = F ? (d_opt->font_size + 1) / 2 : 8;
++	if (cw < 1) cw = 1;
++	return (px + cw / 2) / cw;
++}
++
++/* a block or list item laid out inline: display inline/inline-block, or floated (menus made of <li>) */
++int css_display_inline(unsigned char *attr)
++{
++	struct css_node *n = css_get(attr);
++	unsigned char *v;
++	if (!n || !css_tag_in(n->tag, "LI DIV P UL OL")) return 0;
++	if ((v = n->v[CP_DISPLAY])) {
++		if (!strcmp(cast_const_char v, "inline") || !strcmp(cast_const_char v, "inline-block") || !strcmp(cast_const_char v, "inline-flex")) return 1;
++		return 0;
++	}
++	if ((v = n->v[CP_FLOAT]) && (!strcmp(cast_const_char v, "left") || !strcmp(cast_const_char v, "right"))) return 1;
++	return 0;
++}
++
++/* applies the inherited text properties of an element to the current format */
++void css_apply_format(unsigned char *attr)
++{
++	struct css_node *n = css_get(attr);
++	unsigned char *v;
++	struct rgb rgb;
++	if (!n) return;
++	if ((v = n->v[CP_COLOR]) && d_opt->col >= 1 && !css_color(v, &rgb)) {
++		memcpy(&format_.fg, &rgb, sizeof(struct rgb));
++		if (!strcmp(cast_const_char n->tag, "A")) memcpy(&format_.clink, &rgb, sizeof(struct rgb));
++	}
++	if ((v = n->v[CP_FWEIGHT])) {
++		if (!strcmp(cast_const_char v, "bold") || !strcmp(cast_const_char v, "bolder") || atoi(cast_const_char v) >= 600) format_.attr |= AT_BOLD;
++		else if (!strcmp(cast_const_char v, "normal") || !strcmp(cast_const_char v, "lighter") || (atoi(cast_const_char v) > 0 && atoi(cast_const_char v) < 600)) format_.attr &= ~AT_BOLD;
++	}
++	if ((v = n->v[CP_FSTYLE])) {
++		if (!strncmp(cast_const_char v, "italic", 6) || !strncmp(cast_const_char v, "oblique", 7)) format_.attr |= AT_ITALIC;
++		else if (!strcmp(cast_const_char v, "normal")) format_.attr &= ~AT_ITALIC;
++	}
++	if ((v = n->v[CP_TDECO])) {
++		if (strstr(cast_const_char v, "underline")) format_.attr |= AT_UNDERLINE;
++		if (strstr(cast_const_char v, "line-through")) format_.attr |= AT_STRIKE;
++		if (!strncmp(cast_const_char v, "none", 4)) format_.attr &= ~(AT_UNDERLINE | AT_STRIKE);
++	}
++	/* lists have no align attribute to answer through; set their paragraph alignment here */
++	if ((v = n->v[CP_TALIGN]) && css_tag_in(n->tag, "UL OL") && par_format.align != AL_NO && par_format.align != AL_NO_BREAKABLE) {
++		if (!strcmp(cast_const_char v, "center")) par_format.align = AL_CENTER;
++		else if (!strcmp(cast_const_char v, "right") || !strcmp(cast_const_char v, "end")) par_format.align = AL_RIGHT;
++		else if (!strcmp(cast_const_char v, "left") || !strcmp(cast_const_char v, "start")) par_format.align = AL_LEFT;
++	}
++	if ((v = n->v[CP_FFAMILY])) {
++		unsigned char *p = stracpy(v), *q;
++		for (q = p; *q; q++) *q = (unsigned char)locase(*q);
++		if (strstr(cast_const_char p, "monospace") || strstr(cast_const_char p, "courier") || strstr(cast_const_char p, "mono,")) format_.attr |= AT_FIXED;
++		mem_free(p);
++	}
++}
+diff --git a/html.c b/html.c
+index 20e4970..707c113 100644
+--- a/html.c
++++ b/html.c
+@@ -123,6 +123,10 @@ unsigned char *get_attr_val(unsigned char *e, unsigned char *name)
+ 	unsigned char *a = DUMMY;
+ 	int l = 0;
+ 	int f;
++	if (css_active) {
++		unsigned char *r;
++		if (css_attr_override(e, name, &r)) return r;
++	}
+ 	aa:
+ 	while (WHITECHAR(*e)) e++;
+ 	if (*e == '>' || *e == '<') return NULL;
+@@ -1872,6 +1876,31 @@ static void set_max_textarea_width(int *w)
+ 	}
+ }
+ 
++/* "[ label ]" as one unbreakable word (a button used to wrap at the spaces of its label),
++   centred in the CSS width of the button when it has one */
++static void put_button_label(unsigned char *a, unsigned char *label)
++{
++	int pad = 0, i;
++	unsigned char *p;
++	if (css_active) {
++		int w = css_field_chars(a);
++		int l = cp_len(d_opt->cp, label) + 4;
++		if (w > l) pad = w - l;
++	}
++	for (i = 0; i < pad / 2; i++) put_chrs(cast_uchar "&nbsp;", 6);
++	put_chrs(cast_uchar "[&nbsp;", 7);
++	for (p = label; *p; ) {
++		unsigned char *q = p;
++		while (*q && *q != ' ' && *q != '&') q++;
++		if (q > p) put_chrs(p, (int)(q - p));	/* a run, so that multibyte characters stay whole */
++		if (*q == ' ') put_chrs(cast_uchar "&nbsp;", 6);
++		else if (*q == '&') put_chrs(cast_uchar "&amp;", 5);
++		p = *q ? q + 1 : q;
++	}
++	put_chrs(cast_uchar "&nbsp;]", 7);
++	for (i = 0; i < pad - pad / 2; i++) put_chrs(cast_uchar "&nbsp;", 6);
++}
++
+ static void html_input(unsigned char *a)
+ {
+ 	int i;
+@@ -1911,6 +1940,10 @@ static void html_input(unsigned char *a)
+ 	else if (fc->type != FC_FILE_UPLOAD) fc->default_value = get_exact_attr_val(a, cast_uchar "value");
+ 	if (fc->type == FC_CHECKBOX && !fc->default_value) fc->default_value = stracpy(cast_uchar "on");
+ 	if ((size = get_num(a, cast_uchar "size")) <= 1) size = HTML_DEFAULT_INPUT_SIZE;
++	if (css_active && (fc->type == FC_TEXT || fc->type == FC_PASSWORD)) {
++		int w = css_field_chars(a);
++		if (w > 2) size = w - 1;
++	}
+ 	size++;
+ 	if (size > HTML_MINIMAL_TEXTAREA_WIDTH) {
+ 		set_max_textarea_width(&size);
+@@ -1968,17 +2001,12 @@ static void html_input(unsigned char *a)
+ 		case FC_RESET:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
+-			put_chrs(cast_uchar "[&nbsp;", 7);
+-			if (fc->default_value) put_chrs(fc->default_value, (int)strlen(cast_const_char fc->default_value));
+-			put_chrs(cast_uchar "&nbsp;]", 7);
++			put_button_label(a, fc->default_value ? fc->default_value : cast_uchar "");
+ 			break;
+ 		case FC_BUTTON:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
+-			put_chrs(cast_uchar "[&nbsp;", 7);
+-			if (fc->default_value) put_chrs(fc->default_value, (int)strlen(cast_const_char fc->default_value));
+-			else put_chrs(cast_uchar "BUTTON", 6);
+-			put_chrs(cast_uchar "&nbsp;]", 7);
++			put_button_label(a, fc->default_value ? fc->default_value : cast_uchar "BUTTON");
+ 			break;
+ 		default:
+ 			internal_error("bad control type");
+@@ -2351,6 +2379,10 @@ static int do_html_select(unsigned char *attr, unsigned char *html, unsigned cha
+ 	format_.fontsize = 3;
+ 	mw = 0;
+ 	for (i = 0; i < order; i++) if (lbls[i] && cp_len(d_opt->cp, lbls[i]) > mw) mw = cp_len(d_opt->cp, lbls[i]);
++	if (css_active) {
++		int w = css_field_chars(attr);
++		if (w > 4 && mw > w - 2) mw = w - 2;
++	}
+ 	for (i = 0; i < mw; i++) put_chrs(cast_uchar "_", 1);
+ 	kill_html_stack_item(&html_top);
+ 	put_chrs(cast_uchar "]", 1);
+@@ -3088,14 +3120,10 @@ do {					\
+ 			if (!inv) {
+ 				int display_none = 0;
+ 				int noskip = 0;
++				int css_inline = css_active && ei->linebreak && css_display_inline(attr);
+ 	/* treat <br> literally in <pre> (fixes source code viewer on github) */
+ 				if ((par_format.align == AL_NO || par_format.align == AL_NO_BREAKABLE) && !casestrcmp(cast_uchar ei->name, cast_uchar "BR"))
+ 					line_breax = 0;
+-				ln_break(ei->linebreak);
+-				if ((a = get_attr_val(attr, cast_uchar "id"))) {
+-					special(f, SP_TAG, a);
+-					mem_free(a);
+-				}
+ 				if ((a = get_attr_val(attr, cast_uchar "style"))) {
+ 					unsigned char *d, *s;
+ 
+@@ -3113,6 +3141,13 @@ do {					\
+ 					display_none |= !casecmp(a, cast_uchar "display:none", 12) && !noskip;
+ 					mem_free(a);
+ 				}
++				if (css_active && !noskip && css_display_none(attr)) display_none = 1;
++				/* a hidden block does not break the line it would have started */
++				if (!display_none) ln_break(css_inline ? 0 : ei->linebreak);
++				if ((a = get_attr_val(attr, cast_uchar "id"))) {
++					special(f, SP_TAG, a);
++					mem_free(a);
++				}
+ 				if (html_top.invisible == INVISIBLE) {
+ 					/* an implicitly closed element hidden by display:none (<li>, <p>) ends at the next
+ 					   <li> or block, as it would when visible; it used to hide its siblings too */
+@@ -3183,9 +3218,11 @@ do {					\
+ 						html_top.name = name;
+ 						html_top.namelen = namelen;
+ 						html_top.options = attr;
+-						html_top.linebreak = ei->linebreak;
++						html_top.linebreak = css_inline ? 0 : ei->linebreak;
+ 					}
+-					if (ei->func) ei->func(attr);
++					/* display: inline (or float) on a block or list item: no break, no bullet */
++					if (ei->func && !css_inline) ei->func(attr);
++					if (css_active && ei->nopair != 1 && html_top.options == attr && !html_top.invisible) css_apply_format(attr);
+ 					if (ei->func == html_a) html_a_special(attr, html, eof);
+ 					if (ei->func != html_br) was_br = 0;
+ 					if (a) par_format = pa;
+diff --git a/html_gr.c b/html_gr.c
+index e98affe..8330728 100644
+--- a/html_gr.c
++++ b/html_gr.c
+@@ -924,7 +924,9 @@ struct g_part *g_format_html_part(unsigned char *start, unsigned char *end, int
+ 	struct form_control *fc;
+ 	struct list_head *lfc;
+ 	int lm = margin;
++	unsigned char *cell_attr = css_cell_attr;
+ 
++	css_cell_attr = NULL;
+ 	if (par_format.implicit_pre_wrap) {
+ 		int limit = d_opt->xw - G_SCROLL_BAR_WIDTH;
+ 		if (table_level) limit -= 2 * G_HTML_MARGIN * d_opt->margin;
+@@ -981,6 +983,7 @@ struct g_part *g_format_html_part(unsigned char *start, unsigned char *end, int
+ 	par_format.dd_margin = 0;
+ 	if (align == AL_NO || align == AL_NO_BREAKABLE)
+ 		format_.attr |= AT_FIXED;
++	if (cell_attr) css_apply_format(cell_attr);
+ 	p->cx = -1;
+ 	p->cx_w = 0;
+ 	g_nobreak = align != AL_NO && par_format.align != AL_NO_BREAKABLE;
+diff --git a/html_r.c b/html_r.c
+index 8b20b87..03eeeb1 100644
+--- a/html_r.c
++++ b/html_r.c
+@@ -1093,7 +1093,9 @@ struct part *format_html_part(unsigned char *start, unsigned char *end, int alig
+ 	int ef = empty_format;
+ 	struct form_control *fc;
+ 	struct list_head *lfc;
++	unsigned char *cell_attr = css_cell_attr;
+ 
++	css_cell_attr = NULL;
+ 	if (par_format.implicit_pre_wrap) {
+ 		if (width > d_opt->xw)
+ 			width = d_opt->xw;
+@@ -1152,6 +1154,7 @@ struct part *format_html_part(unsigned char *start, unsigned char *end, int alig
+ 	par_format.dd_margin = 0;
+ 	if (align == AL_NO || align == AL_NO_BREAKABLE)
+ 		format_.attr |= AT_FIXED;
++	if (cell_attr) css_apply_format(cell_attr);
+ 	p->cx = -1;
+ 	p->cy = 0;
+ 	do_format(start, end, p, head);
+@@ -1285,6 +1288,7 @@ void really_format_html(struct cache_entry *ce, unsigned char *start, unsigned c
+ 	screen->use_tag = ce->count;
+ 	startf = start;
+ 	eofff = end;
++	css_begin(screen, url, start, end);
+ 	head = init_str(), hdl = 0;
+ 	if (ce->head) add_to_str(&head, &hdl, ce->head);
+ 	scan_http_equiv(start, end, &head, &hdl, &t, d_opt->plain ? NULL : &bg, d_opt->plain || d_opt->col < 2 ? NULL : &bgcolor, &implicit_pre_wrap,
+@@ -1366,6 +1370,7 @@ void really_format_html(struct cache_entry *ce, unsigned char *start, unsigned c
+ 		init_list(html_stack);
+ 	}
+ 	sort_links(screen);
++	css_end();
+ 	current_f_data = NULL;
+ 	d_opt = &dd_opt;
+ }
+diff --git a/html_tbl.c b/html_tbl.c
+index 6ae43b3..498850c 100644
+--- a/html_tbl.c
++++ b/html_tbl.c
+@@ -107,6 +107,7 @@ struct table_cell {
+ 	int xpos, ypos, xw, yw;
+ 	int link_num;
+ 	unsigned char *tag;
++	unsigned char *attr;
+ #ifdef G
+ 	unsigned char bgcolor_str[8];
+ 	struct g_object_area *root;
+@@ -611,6 +612,7 @@ static struct table *parse_table(unsigned char *html, unsigned char *eof, unsign
+ 	get_align(t_attr, &cell->align);
+ 	get_valign(t_attr, &cell->valign);
+ 	get_bgcolor(t_attr, &cell->bgcolor);
++	cell->attr = t_attr;
+ 	if ((a = get_attr_val(t_attr, cast_uchar "id")))
+ 		cell->tag = a;
+ 	if ((a = get_attr_val(t_attr, cast_uchar "class"))) {
+@@ -707,6 +709,7 @@ static void get_cell_width(struct table *t, struct table_cell *c, int w, int a,
+ 	if (n_links) *n_links = c->link_num;
+ 	if (!F) {
+ 		struct part *p;
++		css_cell_attr = c->attr;
+ 		if (!(p = format_html_part(c->start, c->end, c->align == AL_NO || c->align == AL_NO_BREAKABLE ? c->align : AL_LEFT, t->cellpd, w, NULL, !!a, !!a, NULL, c->link_num))) return;
+ 		if (min) *min = p->x;
+ 		if (max) *max = p->xmax;
+@@ -715,6 +718,7 @@ static void get_cell_width(struct table *t, struct table_cell *c, int w, int a,
+ #ifdef G
+ 	} else {
+ 		struct g_part *gp;
++		css_cell_attr = c->attr;
+ 		if (!(gp = g_format_html_part(c->start, c->end, c->align == AL_NO || c->align == AL_NO_BREAKABLE ? c->align : AL_LEFT, 0, w, NULL, c->link_num, NULL, c->bgcolor_str, NULL))) return;
+ 		if (min) *min = gp->x;
+ 		if (max) *max = gp->xmax;
+@@ -1160,11 +1164,13 @@ static void get_table_heights(struct table *t)
+ 				}
+ 			}
+ 			if (!F) {
++				css_cell_attr = cell->attr;
+ 				if (!(p = format_html_part(cell->start, cell->end, cell->align, t->cellpd, xw, NULL, 2, 2, NULL, cell->link_num))) return;
+ 				cell->height = p->y;
+ 				mem_free(p);
+ #ifdef G
+ 			} else {
++				css_cell_attr = cell->attr;
+ 				if (!(gp = g_format_html_part(cell->start, cell->end, cell->align, 0, xw, NULL, cell->link_num, NULL /* FIX: background image */, cell->bgcolor_str, t->gp->data))) return;
+ 				/*if (gp->root->xw > xw) internal_error("vono to neumi formatovat... buuuu (%d > %d)", gp->root->xw, xw);*/
+ 				cell->root = gp->root;
+@@ -1293,6 +1299,7 @@ static void display_complicated_table(struct table *t, int x, int y, int *yy)
+ 				if (cell->tag) {
+ 					if (f) html_tag(f, cell->tag, safe_add(t->p->xp, xp), safe_add(t->p->yp, yp));
+ 				}
++				css_cell_attr = cell->attr;
+ 				p = format_html_part(cell->start, cell->end, cell->align, t->cellpd, xw, f, safe_add(t->p->xp, xp), safe_add(safe_add(t->p->yp, yp), cell->valign != VAL_MIDDLE && cell->valign != VAL_BOTTOM ? 0 : (yw - cell->height) / (cell->valign == VAL_MIDDLE ? 2 : 1)), NULL, cell->link_num);
+ 				cell->xpos = xp;
+ 				cell->ypos = yp;
+diff --git a/links.h b/links.h
+index 3a29a08..77b47c1 100644
+--- a/links.h
++++ b/links.h
+@@ -4702,6 +4702,18 @@ void html_stack_dup(void);
+ void kill_html_stack_item(struct html_element *);
+ int should_skip_script(unsigned char *);
+ unsigned char *skip_comment(unsigned char *, unsigned char *);
++
++/* css.c */
++
++extern int css_active;
++extern unsigned char *css_cell_attr;
++void css_begin(struct f_data *f, unsigned char *url, unsigned char *start, unsigned char *end);
++void css_end(void);
++int css_attr_override(unsigned char *attr, unsigned char *name, unsigned char **result);
++int css_display_none(unsigned char *attr);
++int css_display_inline(unsigned char *attr);
++int css_field_chars(unsigned char *attr);
++void css_apply_format(unsigned char *attr);
+ void parse_html(unsigned char *, unsigned char *, void (*)(void *, unsigned char *, int), void (*)(void *), void *(*)(void *, int, ...), void *, unsigned char *);
+ int get_image_map(unsigned char *, unsigned char *, unsigned char *, unsigned char *a, struct menu_item **, struct memory_list **, unsigned char *, unsigned char *, int, int, int, int gfx);
+ void scan_http_equiv(unsigned char *, unsigned char *, unsigned char **, int *, unsigned char **, unsigned char **, unsigned char **, int *, struct js_event_spec **);
+diff --git a/view.c b/view.c
+index 1401805..fbd474b 100644
+--- a/view.c
++++ b/view.c
+@@ -830,7 +830,8 @@ static void init_ctrl(struct form_control *form, struct form_state *fs)
+ 		case FC_PASSWORD:
+ 		case FC_TEXTAREA:
+ 			fs->string = stracpy(form->default_value);
+-			fs->state = (int)strlen(cast_const_char form->default_value);
++			/* the cursor at the start shows a value longer than the field from its beginning */
++			fs->state = form->type == FC_TEXTAREA ? (int)strlen(cast_const_char form->default_value) : 0;
+ 			fs->vpos = 0;
+ 			break;
+ 		case FC_FILE_UPLOAD:

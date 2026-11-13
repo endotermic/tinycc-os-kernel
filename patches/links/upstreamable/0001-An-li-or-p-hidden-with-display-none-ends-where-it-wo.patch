@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 20:04:10 +0200
+Subject: [PATCH] An <li> or <p> hidden with display:none ends where it would
+ end visible
+
+A list item or paragraph hidden with style="display:none" was pushed as an
+invisible element, but the implicit closing of <li> by the next <li> (and
+of <p> by the next block) only runs for visible elements, so the hidden
+item stayed open and swallowed the items after it: in
+<ul><li style="display:none">a<li>b</ul> the "b" was hidden too.  A new
+<li> now closes a hidden <li> at the same list level (not one in a nested
+list), and a new <li>/<p> or block closes a hidden <p>, as for visible
+elements.
+---
+ html.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/html.c b/html.c
+index a094866..20e4970 100644
+--- a/html.c
++++ b/html.c
+@@ -3113,6 +3113,26 @@ do {					\
+ 					display_none |= !casecmp(a, cast_uchar "display:none", 12) && !noskip;
+ 					mem_free(a);
+ 				}
++				if (html_top.invisible == INVISIBLE) {
++					/* an implicitly closed element hidden by display:none (<li>, <p>) ends at the next
++					   <li> or block, as it would when visible; it used to hide its siblings too */
++					struct html_element *e;
++					struct list_head *le;
++					foreach(struct html_element, e, le, html_stack) {
++						struct html_element *parent;
++						if (e->dontkill || e->list_entry.next == &html_stack) break;
++						parent = list_struct(e->list_entry.next, struct html_element);
++						if (ei->nopair == 3 && e->namelen == 2 && (!casecmp(e->name, cast_uchar "UL", 2) || !casecmp(e->name, cast_uchar "OL", 2) || !casecmp(e->name, cast_uchar "DL", 2))) break;
++						if (ei->nopair == 3 && (e->namelen == 4 && (!casecmp(e->name, cast_uchar "MENU", 4))) ) break;
++						if (!e->invisible || parent->invisible) continue;
++						if ((e->namelen == namelen && !casecmp(e->name, name, namelen) && (ei->nopair == 2 || ei->nopair == 3)) ||
++						    (e->namelen == 1 && upcase(e->name[0]) == 'P' && ei->linebreak)) {
++							while (e->list_entry.prev != &html_stack) kill_html_stack_item(list_struct(e->list_entry.prev, struct html_element));
++							kill_html_stack_item(e);
++						}
++						break;
++					}
++				}
+ 				if (display_none) {
+ 					if (ei->nopair == 1) goto set_lt;
+ 					html_stack_dup();

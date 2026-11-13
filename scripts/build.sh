@@ -984,43 +984,49 @@ step_wallpapers() {
     echo "   $n photographs, $((before / 1048576)) MB -> $((after / 1024)) kB; default.jpg -> elementary/Pablo_Garcia_Saldana.jpg; wallpaper $(ls -l "$STAGE/usr/bin/wallpaper" | awk '{print $5}') bytes"
 }
 step_links() {
-    need_src links
+    need_src links dejavu-fonts liberation-fonts
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
     LSSL=$B/libressl/install/usr
     [ -f "$LSSL/lib/libssl.a" ] || die "no $LSSL/lib/libssl.a: run the libressl step first"
     [ -f "$XP/lib/libX11.a" ] && [ -f "$XP/lib/libpng16.a" ] || die "no libX11.a or libpng16.a in $XP: run the zlib, libpng and xlibs steps first"
     LK=$B/links; STAGE=$LK/stage; mkdir -p "$LK"
-    msg "links: $(lock_ref links), text + graphics (X), static, musl, CC=musl-tcc, TLS from that LibreSSL -> $STAGE/usr/bin/links"
+    msg "links: $(lock_ref links), text + graphics (X), static, musl, CC=musl-tcc, TLS from that LibreSSL, FreeType fonts -> $STAGE/usr/bin/links"
+    # FreeType and fontconfig (the jwm step's, in $XP) through scripts/pkg-config.sh: links
+    # draws text with the fonts fontconfig finds, the CSS font-family of patches/links included
+    x_env
     cd "$LK"
     # Text mode and graphics mode with the X driver (links -g on the TinyX server: Xlib from
     # $XP; libpng, which graphics mode requires, and zlib for compressed pages from there too;
     # the static link needs libX11's own dependencies named: LIBS), TLS from the tcc-built
     # LibreSSL (--with-ssl=DIR: -IDIR/include, -LDIR/lib -lssl -lcrypto; --disable-ssl-pkgconfig
-    # keeps the host's openssl.pc out; the png and freetype pkg-config lookups are off the same
-    # way), JPEG images from the jwm step's libjpeg in $XP (--with-libjpeg, 2026-11-03: the
+    # keeps the host's openssl.pc out; the png pkg-config lookup is off the same way), JPEG images from the jwm step's libjpeg in $XP (--with-libjpeg, 2026-11-03: the
     # file manager opens images in links; GIF and PNG were in from the start), no framebuffer
-    # or svgalib driver, no freetype (links draws with its own fonts), no gpm, no libevent: a
+    # or svgalib driver, FreeType and fontconfig from $XP (2026-11-13, found through
+    # scripts/pkg-config.sh: x_env; text in the fonts fontconfig finds, the DejaVu faces staged
+    # below, instead of links' built-in bitmaps), no gpm, no libevent: a
     # static binary that needs musl alone.  Every other library is switched
     # off explicitly, so that configure cannot pick up a host library through tcc's default
     # search paths.  An out-of-tree (VPATH) build keeps src/links clean.  configure takes CC and
-    # CFLAGS from the environment only: a CC=... argument is read as a host type.  links
-    # compiles with tcc unpatched.
+    # CFLAGS from the environment only: a CC=... argument is read as a host type.  tcc
+    # compiles links unpatched; patches/links adds css.c (a subset of CSS, 2026-11-13), CSS
+    # fonts through fontconfig, and fixes hidden list items.
     # (configure keeps a config.cache; it goes before a re-run, so that nothing of an
     # earlier configuration survives into this one)
-    configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" "--x-libraries=$XP/lib" "--with-libjpeg" \
+    configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" "--x-libraries=$XP/lib" "--with-libjpeg" "--with-freetype" \
         || { rm -f config.cache; false; } \
         || CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" LIBS="-lxcb -lXau" \
             "$LINKSSRC/configure" --with-ssl="$LSSL" --disable-ssl-pkgconfig \
             --enable-graphics --with-x --x-includes="$XP/include" --x-libraries="$XP/lib" \
-            --disable-png-pkgconfig --disable-freetype-pkgconfig --without-fb --without-svgalib \
+            --disable-png-pkgconfig --without-fb --without-svgalib \
             --without-directfb --with-zlib --without-brotli --without-zstd --without-bzip2 --without-lzma \
-            --without-lzip --without-openmp --without-libevent --without-gpm --without-freetype --with-libjpeg \
+            --without-lzip --without-openmp --without-libevent --without-gpm --with-freetype --with-libjpeg \
             --without-libtiff --without-librsvg --without-libwebp --without-libavif \
             >"$LOGS/links-configure.log" 2>&1 \
         || fail "$LOGS/links-configure.log" "links configure failed"
     grep -q '^SSL support:.*OPENSSL' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without SSL"
     grep -q '^Graphics drivers:.*\bX\b' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without the X graphics driver"
     grep -q '^Image formats:.*JPEG' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without JPEG (libjpeg from the jwm step)"
+    grep -q '^Font rendering:.*FREETYPE' "$LOGS/links-configure.log" || fail "$LOGS/links-configure.log" "links configured without FreeType (fontconfig and FreeType from the jwm step)"
     : >"$LOGS/links.log"
     rm -f links                  # relink against the current LibreSSL and X libraries
     run_progress "links" "$(make_total)" "$LOGS/links.log" make -j"$JOBS" || fail "$LOGS/links.log" "links build failed"
@@ -1029,6 +1035,20 @@ step_links() {
     # name Debian gives the 2.x series
     rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin"
     cp links "$STAGE/usr/bin/links" && ln -sf links "$STAGE/usr/bin/links2"
+    # the DejaVu faces the jwm step does not stage: links' default text face is fontconfig's
+    # "serif", and CSS asks for italic and bold monospace too (fontconfig scans the directory
+    # at first use; the jwm step stages Sans, Sans Bold and Sans Mono there)
+    mkdir -p "$STAGE/usr/share/fonts/TTF"
+    for f in DejaVuSerif.ttf DejaVuSerif-Bold.ttf DejaVuSerif-Italic.ttf DejaVuSerif-BoldItalic.ttf \
+        DejaVuSans-Oblique.ttf DejaVuSans-BoldOblique.ttf DejaVuSansMono-Bold.ttf; do
+        cp "$SRC/dejavu-fonts/ttf/$f" "$STAGE/usr/share/fonts/TTF/" || fail "$LOGS/links.log" "no $f in src/dejavu-fonts"
+    done
+    # Liberation Sans, Serif and Mono (all four styles; SIL OFL 1.1, the license next to them):
+    # metric-compatible with Arial/Helvetica, Times New Roman and Courier New, to which
+    # fontconfig's 30-metric-aliases.conf maps those names, so text that asks for them keeps
+    # its widths (DejaVu, the fallback otherwise, is wider)
+    for f in "$SRC"/liberation-fonts/Liberation*.ttf; do cp "$f" "$STAGE/usr/share/fonts/TTF/"; done
+    cp "$SRC/liberation-fonts/LICENSE" "$STAGE/usr/share/fonts/TTF/LICENSE.Liberation"
     echo "   $(./links -version), text + X graphics mode, TLS (LibreSSL $(lock_ref libressl)); $(file -b links | cut -d, -f1-2), $(ls -l links | awk '{print $5}') bytes"
 }
 

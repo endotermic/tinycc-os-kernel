@@ -1,0 +1,587 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 21:58:27 +0200
+Subject: [PATCH] CSS fonts: font-family through fontconfig, font-size in
+ pixels, FreeType default faces
+
+With FreeType, links drew its normal, bold, monospaced and italic text
+with the font files named in the options and fell back to the built-in
+bitmaps (one serif face, no italic, no sans-serif) when they were empty;
+CSS font-family and font-size were ignored, so every page came out in the
+same serif at links' seven sizes.
+
+- fontconf.c: fontconfig_font_file() asks fontconfig for the file of a
+  CSS family list (in order, with the CSS generic names fontconfig lacks
+  mapped), bold and/or italic, and keeps the answers for the run.
+- freetype.c: a face left empty in the options is fontconfig's "serif"
+  or "monospace" (in the four weights and slants) instead of the bitmap;
+  faces loaded by path are loaded once and kept until freetype_done(),
+  since g_clone_style() shares the face of a style (freeing it with one
+  style left the clones with a freed face).
+- the text format's fontface (copied and compared since long, never set)
+  now carries the CSS family list; get_style_by_ta() draws with the file
+  fontconfig picks for it, except fixed-width text (form controls, <pre>,
+  monospace), which keeps the monospaced face their widths are counted in.
+- fontpx: a size in pixels next to the 1-7 fontsize; CSS font-size (px,
+  pt, pc, em, rem, %, ex, the keywords, smaller/larger) sets it, scaled by
+  the user's font size against the 16 pixels browsers start from, so the
+  font size setting still zooms; HTML sizes (headings, <font size>, sub,
+  sup, form controls) clear it.  The font shorthand sets style, weight,
+  size and family.
+---
+ css.c      | 129 ++++++++++++++++++++++++++++++++++++++++++++++-------
+ fontconf.c |  88 ++++++++++++++++++++++++++++++++++++
+ freetype.c |  52 +++++++++++++++------
+ html.c     |  14 ++++++
+ html_gr.c  |  18 +++++++-
+ links.h    |   4 ++
+ 6 files changed, 275 insertions(+), 30 deletions(-)
+
+diff --git a/css.c b/css.c
+index 304b4db..3dda022 100644
+--- a/css.c
++++ b/css.c
+@@ -34,12 +34,14 @@
+ #define CP_DISPLAY	10
+ #define CP_FFAMILY	11
+ #define CP_FLOAT	12
+-#define CP_N		13
++#define CP_FSIZE	13
++#define CP_FONT		14
++#define CP_N		15
+ 
+ static const char * const css_prop_names[CP_N] = {
+ 	"width", "height", "vertical-align", "text-align", "background-color", "background",
+ 	"color", "font-weight", "font-style", "text-decoration", "display", "font-family",
+-	"float"
++	"float", "font-size", "font"
+ };
+ 
+ struct css_decl {
+@@ -954,6 +956,61 @@ int css_display_inline(unsigned char *attr)
+ 	return 0;
+ }
+ 
++static int css_size_keyword(unsigned char *s, size_t l)
++{
++	static const char * const kw[] = { "xx-small", "x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large", "smaller", "larger", NULL };
++	int i;
++	for (i = 0; kw[i]; i++) if (strlen(kw[i]) == l && !strncmp(kw[i], cast_const_char s, l)) return 1;
++	return 0;
++}
++
++/* links' own size steps in pixels (html_gr.c get_real_font_size) */
++static int css_step_px(int size)
++{
++	static const int steps[7] = { 14, 15, 16, 19, 22, 25, 28 };
++	if (size < 1) size = 1;
++	if (size > 7) size = 7;
++	return (steps[size - 1] * d_opt->font_size) >> 4;
++}
++
++/* the size the element inherits: its parent's, in links pixels */
++static int css_parent_px(void)
++{
++	struct text_attrib *a = &format_;
++	if (html_top_->list_entry.next != &html_stack) a = &list_struct(html_top_->list_entry.next, struct html_element)->attr;
++	return a->fontpx > 0 ? a->fontpx : css_step_px(a->fontsize);
++}
++
++/* a CSS font-size in links pixels: CSS pixels are scaled by the user's font size against the
++   16 pixels browsers start from, so links' font size setting still zooms the page */
++static int css_font_px(unsigned char *v)
++{
++	double d, css;
++	char *end;
++	int parent = css_parent_px();
++	static const struct { const char *k; int px; } kw[] = {
++		{ "xx-small", 9 }, { "x-small", 10 }, { "small", 13 }, { "medium", 16 },
++		{ "large", 18 }, { "x-large", 24 }, { "xx-large", 32 }, { "xxx-large", 48 }, { NULL, 0 }
++	};
++	int i;
++	for (i = 0; kw[i].k; i++) if (!strcmp(cast_const_char v, kw[i].k)) return (kw[i].px * d_opt->font_size + 8) / 16;
++	if (!strcmp(cast_const_char v, "smaller")) return parent * 5 / 6;
++	if (!strcmp(cast_const_char v, "larger")) return parent * 6 / 5;
++	d = strtod(cast_const_char v, &end);
++	if ((unsigned char *)end == v || d <= 0) return 0;
++	if (!strcmp(end, "%")) return (int)(parent * d / 100 + 0.5);
++	if (!strcmp(end, "em")) return (int)(parent * d + 0.5);
++	if (!strcmp(end, "rem")) css = d * 16;
++	else if (!strcmp(end, "px") || !*end) css = d;
++	else if (!strcmp(end, "pt")) css = d * 4 / 3;
++	else if (!strcmp(end, "pc")) css = d * 16;
++	else if (!strcmp(end, "ex") || !strcmp(end, "ch")) return (int)(parent * d / 2 + 0.5);
++	else return 0;
++	if (css > 200) css = 200;
++	i = (int)(css * d_opt->font_size / 16 + 0.5);
++	return i < 6 ? 6 : i;
++}
++
+ /* applies the inherited text properties of an element to the current format */
+ void css_apply_format(unsigned char *attr)
+ {
+@@ -965,14 +1022,6 @@ void css_apply_format(unsigned char *attr)
+ 		memcpy(&format_.fg, &rgb, sizeof(struct rgb));
+ 		if (!strcmp(cast_const_char n->tag, "A")) memcpy(&format_.clink, &rgb, sizeof(struct rgb));
+ 	}
+-	if ((v = n->v[CP_FWEIGHT])) {
+-		if (!strcmp(cast_const_char v, "bold") || !strcmp(cast_const_char v, "bolder") || atoi(cast_const_char v) >= 600) format_.attr |= AT_BOLD;
+-		else if (!strcmp(cast_const_char v, "normal") || !strcmp(cast_const_char v, "lighter") || (atoi(cast_const_char v) > 0 && atoi(cast_const_char v) < 600)) format_.attr &= ~AT_BOLD;
+-	}
+-	if ((v = n->v[CP_FSTYLE])) {
+-		if (!strncmp(cast_const_char v, "italic", 6) || !strncmp(cast_const_char v, "oblique", 7)) format_.attr |= AT_ITALIC;
+-		else if (!strcmp(cast_const_char v, "normal")) format_.attr &= ~AT_ITALIC;
+-	}
+ 	if ((v = n->v[CP_TDECO])) {
+ 		if (strstr(cast_const_char v, "underline")) format_.attr |= AT_UNDERLINE;
+ 		if (strstr(cast_const_char v, "line-through")) format_.attr |= AT_STRIKE;
+@@ -984,10 +1033,60 @@ void css_apply_format(unsigned char *attr)
+ 		else if (!strcmp(cast_const_char v, "right") || !strcmp(cast_const_char v, "end")) par_format.align = AL_RIGHT;
+ 		else if (!strcmp(cast_const_char v, "left") || !strcmp(cast_const_char v, "start")) par_format.align = AL_LEFT;
+ 	}
+-	if ((v = n->v[CP_FFAMILY])) {
+-		unsigned char *p = stracpy(v), *q;
+-		for (q = p; *q; q++) *q = (unsigned char)locase(*q);
+-		if (strstr(cast_const_char p, "monospace") || strstr(cast_const_char p, "courier") || strstr(cast_const_char p, "mono,")) format_.attr |= AT_FIXED;
+-		mem_free(p);
++	{
++		unsigned char *weight = n->v[CP_FWEIGHT], *style = n->v[CP_FSTYLE], *size = n->v[CP_FSIZE], *family = n->v[CP_FFAMILY];
++		unsigned char *sh = NULL;
++		if (n->v[CP_FONT]) {
++			/* the font shorthand: [style] [variant] [weight] size[/line-height] family; the longhands win */
++			unsigned char *s = sh = stracpy(n->v[CP_FONT]);
++			while (*s) {
++				unsigned char *e;
++				while (css_ws(*s)) s++;
++				if (!*s) break;
++				e = s;
++				while (*e && !css_ws(*e)) e++;
++				if ((*s >= '0' && *s <= '9') || *s == '.' || css_size_keyword(s, e - s)) {
++					unsigned char *slash = s;
++					while (slash < e && *slash != '/') slash++;
++					if (!size) size = s;
++					if (*e) *e++ = 0;
++					*slash = 0;
++					while (css_ws(*e)) e++;
++					if (*e && !family) family = e;
++					break;
++				}
++				if ((e - s == 6 && !strncmp(cast_const_char s, "italic", 6)) || (e - s == 7 && !strncmp(cast_const_char s, "oblique", 7))) {
++					if (!style) style = cast_uchar "italic";
++				} else if ((e - s == 4 && !strncmp(cast_const_char s, "bold", 4)) || (e - s == 6 && !strncmp(cast_const_char s, "bolder", 6))) {
++					if (!weight) weight = cast_uchar "bold";
++				}
++				s = e;
++			}
++			/* the shorthand resets what it does not name */
++			if (!weight) weight = cast_uchar "normal";
++			if (!style) style = cast_uchar "normal";
++		}
++		if (weight) {
++			if (!strcmp(cast_const_char weight, "bold") || !strcmp(cast_const_char weight, "bolder") || atoi(cast_const_char weight) >= 600) format_.attr |= AT_BOLD;
++			else if (!strcmp(cast_const_char weight, "normal") || !strcmp(cast_const_char weight, "lighter") || (atoi(cast_const_char weight) > 0 && atoi(cast_const_char weight) < 600)) format_.attr &= ~AT_BOLD;
++		}
++		if (style) {
++			if (!strncmp(cast_const_char style, "italic", 6) || !strncmp(cast_const_char style, "oblique", 7)) format_.attr |= AT_ITALIC;
++			else if (!strcmp(cast_const_char style, "normal")) format_.attr &= ~AT_ITALIC;
++		}
++		if (size && F) {
++			int px = css_font_px(size);
++			if (px > 0) format_.fontpx = px;
++		}
++		if (family && strcmp(cast_const_char family, "inherit")) {
++			unsigned char *p = stracpy(family), *q;
++			for (q = p; *q; q++) *q = (unsigned char)locase(*q);
++			if (strstr(cast_const_char p, "monospace") || strstr(cast_const_char p, "courier") || strstr(cast_const_char p, "mono,")) format_.attr |= AT_FIXED;
++			if (F) {
++				if (format_.fontface) mem_free(format_.fontface);
++				format_.fontface = p;
++			} else mem_free(p);
++		}
++		if (sh) mem_free(sh);
+ 	}
+ }
+diff --git a/fontconf.c b/fontconf.c
+index 4a6f74f..95c3e1a 100644
+--- a/fontconf.c
++++ b/fontconf.c
+@@ -231,6 +231,94 @@ void fontconfig_free_fonts(struct list_of_fonts *fonts)
+ 	mem_free(fonts);
+ }
+ 
++struct fc_file_cache {
++	struct fc_file_cache *next;
++	int flags;
++	unsigned char *file;		/* NULL: no scalable font */
++	unsigned char families[1];
++};
++
++static struct fc_file_cache *fc_files = NULL;
++
++static void fc_add_family(FcPattern *pat, unsigned char *f, size_t l)
++{
++	unsigned char *name;
++	while (l && (*f == ' ' || *f == '\t' || *f == '"' || *f == '\'')) f++, l--;
++	while (l && (f[l - 1] == ' ' || f[l - 1] == '\t' || f[l - 1] == '"' || f[l - 1] == '\'')) l--;
++	if (!l) return;
++	name = memacpy(f, l);
++	/* CSS generic names that fontconfig does not know */
++	if (!casestrcmp(name, cast_uchar "system-ui") || !casestrcmp(name, cast_uchar "-apple-system") ||
++	    !casestrcmp(name, cast_uchar "BlinkMacSystemFont") || !casestrcmp(name, cast_uchar "ui-sans-serif"))
++		mem_free(name), name = stracpy(cast_uchar "sans-serif");
++	else if (!casestrcmp(name, cast_uchar "ui-serif")) mem_free(name), name = stracpy(cast_uchar "serif");
++	else if (!casestrcmp(name, cast_uchar "ui-monospace")) mem_free(name), name = stracpy(cast_uchar "monospace");
++	FcPatternAddString(pat, FC_FAMILY, (FcChar8 *)name);
++	mem_free(name);
++}
++
++/* The font file fontconfig picks for a CSS font-family list (comma-separated, quoted or not),
++   bold and/or italic, as "path" or "path @index" (the form freetype_setup_font() takes); NULL
++   when it has no scalable font.  The answers are kept for the rest of the run. */
++unsigned char *fontconfig_font_file(unsigned char *families, int bold, int italic)
++{
++	struct fc_file_cache *c;
++	FcPattern *pat, *match;
++	FcResult res;
++	FcChar8 *file;
++	int idx, flags = !!bold | (!!italic << 1);
++	size_t sl;
++	unsigned char *p;
++	for (c = fc_files; c; c = c->next)
++		if (c->flags == flags && !strcmp(cast_const_char c->families, cast_const_char families)) return c->file;
++	sl = strlen(cast_const_char families);
++	if (sl > MAXINT - sizeof(struct fc_file_cache)) overalloc();
++	c = mem_alloc(sizeof(struct fc_file_cache) + sl);
++	strcpy(cast_char c->families, cast_const_char families);
++	c->flags = flags;
++	c->file = NULL;
++	c->next = fc_files;
++	fc_files = c;
++	wait_for_fontconfig();
++	if (!(pat = FcPatternCreate())) return NULL;
++	for (p = families; *p; ) {
++		unsigned char *e = cast_uchar strchr(cast_const_char p, ',');
++		if (!e) e = p + strlen(cast_const_char p);
++		fc_add_family(pat, p, e - p);
++		p = *e ? e + 1 : e;
++	}
++	FcPatternAddInteger(pat, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
++	FcPatternAddInteger(pat, FC_SLANT, italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
++	FcPatternAddBool(pat, FC_SCALABLE, FcTrue);
++	FcConfigSubstitute(NULL, pat, FcMatchPattern);
++	FcDefaultSubstitute(pat);
++	match = FcFontMatch(NULL, pat, &res);
++	FcPatternDestroy(pat);
++	if (!match) return NULL;
++	if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch) {
++		unsigned char *f = init_str();
++		int fl = 0;
++		add_to_str(&f, &fl, (unsigned char *)file);
++		if (FcPatternGetInteger(match, FC_INDEX, 0, &idx) == FcResultMatch && idx > 0) {
++			add_to_str(&f, &fl, cast_uchar " @");
++			add_num_to_str(&f, &fl, idx);
++		}
++		c->file = f;
++	}
++	FcPatternDestroy(match);
++	return c->file;
++}
++
++void fontconfig_free_font_files(void)
++{
++	while (fc_files) {
++		struct fc_file_cache *c = fc_files;
++		fc_files = c->next;
++		if (c->file) mem_free(c->file);
++		mem_free(c);
++	}
++}
++
+ void add_fontconfig_version(unsigned char **s, int *l)
+ {
+ 	int fc_version;
+diff --git a/freetype.c b/freetype.c
+index de95c4c..c9d99ff 100644
+--- a/freetype.c
++++ b/freetype.c
+@@ -23,8 +23,12 @@ struct freetype_face {
+ 	FT_Face face;
+ 	float baseline;
+ 	int allocated;
++	struct freetype_face *next_loaded;
+ };
+ 
++/* the faces loaded by path (CSS fonts): kept until freetype_done(), since styles share them */
++static struct freetype_face *loaded_faces = NULL;
++
+ struct freetype_face faces[FF_SHAPES];
+ 
+ static int ft_initialized = 0;
+@@ -124,22 +128,29 @@ static void freetype_setup_font(struct freetype_face *face, unsigned char *path)
+ 
+ struct freetype_face *freetype_get_font(unsigned char *path)
+ {
+-	struct freetype_face *face = mem_calloc(sizeof(struct freetype_face));
++	struct freetype_face *face;
++	unsigned char *p;
++	for (face = loaded_faces; face; face = face->next_loaded) {
++		/* face->path has the " @index" suffix cut off; compare the requested form */
++		p = cast_uchar strrchr(cast_const_char path, '@');
++		if (!strcmp(cast_const_char face->path, cast_const_char path)) return face;
++		if (p && p > path && p[-1] == ' ' && strlen(cast_const_char face->path) == (size_t)(p - 1 - path) && !strncmp(cast_const_char face->path, cast_const_char path, p - 1 - path) && face->face->face_index == strtol(cast_const_char p + 1, NULL, 10)) return face;
++	}
++	face = mem_calloc(sizeof(struct freetype_face));
+ 	freetype_setup_font(face, path);
+ 	if (!face->path) {
+ 		mem_free(face);
+ 		return NULL;
+ 	}
+ 	face->allocated = 1;
++	face->next_loaded = loaded_faces;
++	loaded_faces = face;
+ 	return face;
+ }
+ 
+ void freetype_free_font(struct freetype_face *face)
+ {
+-	if (face->allocated) {
+-		cleanup_state(face);
+-		mem_free(face);
+-	}
++	/* the faces of freetype_get_font() live until freetype_done(): g_clone_style() shares them */
+ }
+ 
+ unsigned char *freetype_get_allocated_font_name(struct style *st)
+@@ -381,18 +392,26 @@ void freetype_init(void)
+ 	freetype_reload();
+ }
+ 
++/* a face given in the options, else fontconfig's choice for the family: the built-in bitmap
++   fonts have no italic and only one proportional face */
++static void freetype_setup_default(struct freetype_face *face, unsigned char *option, char *family, int bold, int italic)
++{
++	if (option && *option) freetype_setup_font(face, option);
++	else freetype_setup_font(face, fontconfig_font_file(cast_uchar family, bold, italic));
++}
++
+ void freetype_reload(void)
+ {
+-	freetype_setup_font(&faces[0], font_file);
+-	freetype_setup_font(&faces[FF_BOLD], font_file_b);
+-	freetype_setup_font(&faces[FF_MONOSPACED], font_file_m);
+-	freetype_setup_font(&faces[FF_MONOSPACED | FF_BOLD], font_file_m_b);
++	freetype_setup_default(&faces[0], font_file, "serif", 0, 0);
++	freetype_setup_default(&faces[FF_BOLD], font_file_b, "serif", 1, 0);
++	freetype_setup_default(&faces[FF_MONOSPACED], font_file_m, "monospace", 0, 0);
++	freetype_setup_default(&faces[FF_MONOSPACED | FF_BOLD], font_file_m_b, "monospace", 1, 0);
+ 
+ #ifdef USE_ITALIC
+-	freetype_setup_font(&faces[FF_ITALIC], font_file_i);
+-	freetype_setup_font(&faces[FF_ITALIC | FF_BOLD], font_file_i_b);
+-	freetype_setup_font(&faces[FF_ITALIC | FF_MONOSPACED], font_file_i_m);
+-	freetype_setup_font(&faces[FF_ITALIC | FF_MONOSPACED | FF_BOLD], font_file_i_m_b);
++	freetype_setup_default(&faces[FF_ITALIC], font_file_i, "serif", 0, 1);
++	freetype_setup_default(&faces[FF_ITALIC | FF_BOLD], font_file_i_b, "serif", 1, 1);
++	freetype_setup_default(&faces[FF_ITALIC | FF_MONOSPACED], font_file_i_m, "monospace", 0, 1);
++	freetype_setup_default(&faces[FF_ITALIC | FF_MONOSPACED | FF_BOLD], font_file_i_m_b, "monospace", 1, 1);
+ #endif
+ }
+ 
+@@ -403,6 +422,13 @@ void freetype_done(void)
+ 
+ 	for (i = 0; i < FF_SHAPES; i++)
+ 		freetype_setup_font(&faces[i], NULL);
++	while (loaded_faces) {
++		struct freetype_face *f = loaded_faces;
++		loaded_faces = f->next_loaded;
++		cleanup_state(f);
++		mem_free(f);
++	}
++	fontconfig_free_font_files();
+ 
+ 	if (freetype_cache)
+ 		mem_free(freetype_cache), freetype_cache = NULL;
+diff --git a/html.c b/html.c
+index 707c113..6ff9d1e 100644
+--- a/html.c
++++ b/html.c
+@@ -1046,6 +1046,7 @@ static void html_sub(unsigned char *a)
+ 	if (!F) put_chrs(cast_uchar "_", 1);
+ 	get_js_events(a);
+ 	format_.fontsize = 1;
++	format_.fontpx = 0;
+ 	format_.baseline = -1;
+ }
+ 
+@@ -1054,6 +1055,7 @@ static void html_sup(unsigned char *a)
+ 	if (!F) put_chrs(cast_uchar "^", 1);
+ 	get_js_events(a);
+ 	format_.fontsize = 1;
++	format_.fontpx = 0;
+ 	if (format_.baseline <= 0) format_.baseline = format_.fontsize;
+ }
+ 
+@@ -1073,6 +1075,7 @@ static void html_font(unsigned char *a)
+ 			if (s > 7) s = 7;
+ 			if (!p) format_.fontsize = (int)s;
+ 			else format_.fontsize += p * (int)s;
++			format_.fontpx = 0;
+ 			if (format_.fontsize < 1) format_.fontsize = 1;
+ 			if (format_.fontsize > 7) format_.fontsize = 7;
+ 		}
+@@ -1415,6 +1418,7 @@ static void html_h(int h, unsigned char *a)
+ 	if (F) {
+ 		html_linebrk(a);
+ 		format_.fontsize = 8 - h;
++		format_.fontpx = 0;
+ 		format_.attr |= AT_BOLD;
+ 		return;
+ 	}
+@@ -1971,16 +1975,19 @@ static void html_input(unsigned char *a)
+ 		case FC_FILE_UPLOAD:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
++			format_.fontpx = 0;
+ 			for (i = 0; i < fc->size; i++) put_chrs(cast_uchar "_", 1);
+ 			break;
+ 		case FC_CHECKBOX:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
++			format_.fontpx = 0;
+ 			put_chrs(cast_uchar "[&nbsp;]", 8);
+ 			break;
+ 		case FC_RADIO:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
++			format_.fontpx = 0;
+ 			put_chrs(cast_uchar "[&nbsp;]", 8);
+ 			break;
+ 		case FC_IMAGE:
+@@ -2001,11 +2008,13 @@ static void html_input(unsigned char *a)
+ 		case FC_RESET:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
++			format_.fontpx = 0;
+ 			put_button_label(a, fc->default_value ? fc->default_value : cast_uchar "");
+ 			break;
+ 		case FC_BUTTON:
+ 			format_.attr |= AT_BOLD | AT_FIXED;
+ 			format_.fontsize = 3;
++			format_.fontpx = 0;
+ 			put_button_label(a, fc->default_value ? fc->default_value : cast_uchar "BUTTON");
+ 			break;
+ 		default:
+@@ -2082,6 +2091,7 @@ static void html_option(unsigned char *a)
+ 	format_.form = fc;
+ 	format_.attr |= AT_BOLD | AT_FIXED;
+ 	format_.fontsize = 3;
++	format_.fontpx = 0;
+ 	put_chrs(cast_uchar "[ ]", 3);
+ 	kill_html_stack_item(&html_top);
+ 	put_chrs(cast_uchar " ", 1);
+@@ -2371,12 +2381,14 @@ static int do_html_select(unsigned char *attr, unsigned char *html, unsigned cha
+ 	html_stack_dup();
+ 	format_.attr |= AT_FIXED;
+ 	format_.fontsize = 3;
++	format_.fontpx = 0;
+ 	put_chrs(cast_uchar "[", 1);
+ 	html_stack_dup();
+ 	get_js_events(attr);
+ 	format_.form = fc;
+ 	format_.attr |= AT_BOLD | AT_FIXED;
+ 	format_.fontsize = 3;
++	format_.fontpx = 0;
+ 	mw = 0;
+ 	for (i = 0; i < order; i++) if (lbls[i] && cp_len(d_opt->cp, lbls[i]) > mw) mw = cp_len(d_opt->cp, lbls[i]);
+ 	if (css_active) {
+@@ -2468,6 +2480,7 @@ static void do_html_textarea(unsigned char *attr, unsigned char *html, unsigned
+ 	if (F) format_.attr &= ~AT_BOLD;
+ #endif
+ 	format_.fontsize = 3;
++	format_.fontpx = 0;
+ 	for (i = 0; i < rows; i++) {
+ 		int j;
+ 		for (j = 0; j < cols; j++) put_chrs(cast_uchar "_", 1);
+@@ -3257,6 +3270,7 @@ do {					\
+ 					foreachbackfrom(struct html_element, fx, lfx, html_stack, le)
+ 						if (fx->linebreak > lnb) lnb = fx->linebreak;
+ 					format_.fontsize = list_struct(e->list_entry.next, struct html_element)->attr.fontsize;
++					format_.fontpx = list_struct(e->list_entry.next, struct html_element)->attr.fontpx;
+ 					ln_break(lnb);
+ 					while (e->list_entry.prev != &html_stack) kill_html_stack_item(list_struct(e->list_entry.prev, struct html_element));
+ 					if (e->namelen == 4 && !casecmp(e->name, cast_uchar "SPAN", 4)) {	/* Wikipedia hack */
+diff --git a/html_gr.c b/html_gr.c
+index 8330728..085ed7c 100644
+--- a/html_gr.c
++++ b/html_gr.c
+@@ -99,10 +99,15 @@ static void separate_fg_bg(int *fgr, int *fgg, int *fgb
+ 	}
+ }
+ 
++static int ta_font_size(struct text_attrib *ta)
++{
++	return ta->fontpx > 0 ? ta->fontpx : get_real_font_size(ta->fontsize);
++}
++
+ static struct style *get_style_by_ta(struct text_attrib *ta)
+ {
+ 	int fg_r, fg_g, fg_b; /* sRGB 0-255 values */
+-	int fs = get_real_font_size(ta->fontsize);
++	int fs = ta_font_size(ta);
+ 	struct style *stl;
+ 	unsigned fflags;
+ 
+@@ -118,6 +123,15 @@ static struct style *get_style_by_ta(struct text_attrib *ta)
+ 	if (ta->attr & AT_ITALIC) fflags |= FF_ITALIC;
+ 	if (ta->attr & AT_FIXED) fflags |= FF_MONOSPACED;
+ 
++#ifdef HAVE_FREETYPE
++	/* a CSS font-family; fixed-width text (form controls, <pre>, monospace) keeps the
++	   monospaced face, which the widths of form controls are counted in */
++	if (ta->fontface && !(ta->attr & AT_FIXED)) {
++		unsigned char *file = fontconfig_font_file(ta->fontface, !!(ta->attr & AT_BOLD), !!(ta->attr & AT_ITALIC));
++		if (file) return g_get_style_font((fg_r << 16) + (fg_g << 8) + fg_b, (ta->bg.r << 16) +
++			(ta->bg.g << 8) + ta->bg.b, fs, fflags, file);
++	}
++#endif
+ 	stl = g_get_style((fg_r << 16) + (fg_g << 8) + fg_b, (ta->bg.r << 16) +
+ 			(ta->bg.g << 8) + ta->bg.b, fs, fflags);
+ 	return stl;
+@@ -376,7 +390,7 @@ static void g_line_break(void *p_)
+ 	if (!p->line || par_format.align == AL_NO || par_format.align == AL_NO_BREAKABLE) {
+ 		add_object_to_line(p, &p->line, NULL);
+ 		empty_line:
+-		flush_pending_line_to_obj(p, get_real_font_size(format_.fontsize));
++		flush_pending_line_to_obj(p, ta_font_size(&format_));
+ 	} else {
+ 		int i;
+ 		for (i = 0; i < p->line->n_entries; i++) {
+diff --git a/links.h b/links.h
+index 77b47c1..8621ad9 100644
+--- a/links.h
++++ b/links.h
+@@ -2358,6 +2358,8 @@ struct list_of_fonts {
+ 
+ void fontconfig_list_fonts(struct list_of_fonts **fonts, int *n_fonts, int monospaced);
+ void fontconfig_free_fonts(struct list_of_fonts *fonts);
++unsigned char *fontconfig_font_file(unsigned char *families, int bold, int italic);
++void fontconfig_free_font_files(void);
+ void wait_for_fontconfig(void);
+ void fontconfig_init(void);
+ 
+@@ -4583,6 +4585,7 @@ struct text_attrib_beginning {
+ 	struct rgb bg;
+ 	int fontsize;
+ 	int baseline;
++	int fontpx;
+ };
+ 
+ struct text_attrib {
+@@ -4591,6 +4594,7 @@ struct text_attrib {
+ 	struct rgb bg;
+ 	int fontsize;
+ 	int baseline;
++	int fontpx;		/* a size in pixels from CSS, overriding fontsize; 0 = none */
+ 	unsigned char *fontface;
+ 	unsigned char *link;
+ 	unsigned char *target;
