@@ -3,3 +3,4 @@ upstreamable/0001-session-GREET_USER_STATIC-links-the-greeter-in-inste.patch
 upstreamable/0002-greeter-backgroundProperty-a-background-cut-from-a-r.patch
 upstreamable/0003-greeter-keep-the-text-cursor-inside-the-input-field.patch
 upstreamable/0004-greeter-one-left-edge-for-the-input-fields.patch
+upstreamable/0005-greeter-a-focus-outline-on-the-active-input-field.patch

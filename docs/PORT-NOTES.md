@@ -963,6 +963,17 @@ at all.
   3.7 and 3.2 MB), initramfs.cpio.gz +1.5 MB; the greeter appears 2 s after xdm starts under
   KVM (fontconfig scans the fonts, no cache).  Verified x86_64 (typing, failed login, login)
   and i386 (screendump identical to x86_64).
+* **A focus outline** (patches/xdm 0005, upstreamable): resources focusWidth (default 0,
+  upstream's look) and focusColor; DrawFocus() draws a ring that wide on the inner side of
+  the edges of the field that takes the keys (over its 1-pixel frame and its outermost
+  pixel row/column, so the box keeps its size and nothing around it moves) and gives the
+  other editable fields their frame and colour back, at the end of draw_it and after every
+  change of the active prompt (TabField, FinishField, ResetLogin after a failed login).
+  The value's text and its erasing stay 3 px from the sides and a row from the top and
+  bottom; the cursor's height is limited by max(innerFramesWidth, focusWidth).  Here 2 px
+  of #6cb4ff (luminance 0.43): 3.2:1 or more against the glass around the field (WCAG
+  1.4.11, 2.4.13).  Verified x86_64 (start, Tab, Enter, failed login: the ring moves, no
+  leftovers, the ring's pixels exactly the frame's extent; login) and i386 (identical).
 * **Verified** 2026-11-13 under QEMU (1024x768, std VGA), x86_64: the greeter, the session,
   xfiles' icons and thumbnails on the wallpaper, `wallpaper -s` and the Wallpaper menu
   (both switch the desktop and xfiles redraws), Log out -> the greeter on the default

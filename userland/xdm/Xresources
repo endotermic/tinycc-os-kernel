@@ -13,6 +13,10 @@
 !    what is typed (and the cursor) never depends on the picture, and their outline stands
 !    out from the glass;
 !  - a thin light outline and separator instead of a heavy bevel and a black border.
+!  - the field that takes the keys has a focus outline (patches/xdm: focusWidth, focusColor),
+!    a 2-pixel ring on the inner side of its edges (over the frame: the box keeps its size)
+!    that moves with Tab and Enter: #6cb4ff (luminance 0.43) is 3.2:1 or more against the
+!    glass around the field and stands out from the light field (WCAG 1.4.11 / 2.4.13).
 ! Without the frosted pixmap the box is the solid dark background colour, with the same
 ! contrasts.  The helper text with the accounts is a window of its own (xdm-help,
 ! Xsetup_0), on the same glass.
@@ -33,6 +37,8 @@ xlogin*foreground:      #1a1a1a
 xlogin*inpColor:        #f5f5f5
 xlogin*hiColor:         #8fa3b8
 xlogin*shdColor:        #8fa3b8
+xlogin*focusColor:      #6cb4ff
+xlogin*focusWidth:      2
 xlogin*borderWidth:     0
 xlogin*frameWidth:      1
 xlogin*innerFramesWidth: 1

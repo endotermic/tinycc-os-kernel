@@ -1,0 +1,202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 14:06:41 +0200
+Subject: [PATCH] greeter: a focus outline on the active input field
+
+New resources focusWidth (default 0: none, as before) and focusColor.
+With a width, DrawFocus() draws a ring that many pixels wide on the inner
+side of the edges of the input field that takes the keys while the
+greeter is prompting (over the frame and the field's outer pixels, so the
+box keeps its size and nothing around it moves), and gives the other
+editable fields their frame and colour back; it runs at the end of
+draw_it and after every change of the active prompt (Tab, Enter to the
+next field, the reset after a failed login).  The text cursor's height is
+limited so that it stays clear of the ring.
+---
+ greeter/Login.c  | 74 ++++++++++++++++++++++++++++++++++++++++++++++++
+ greeter/Login.h  |  2 ++
+ greeter/LoginP.h |  3 ++
+ 3 files changed, 79 insertions(+)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index 2fe9dde..7ffe23a 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -159,6 +159,10 @@ static XtResource resources[] = {
+ 	offset(shdpixel), XtRString,	XtDefaultForeground},
+     {XtNinpColor, XtCForeground, XtRPixel, sizeof (Pixel),
+ 	offset(inppixel), XtRString,	XtDefaultBackground},
++    {XtNfocusColor, XtCForeground, XtRPixel, sizeof (Pixel),
++	offset(focuspixel), XtRString,	XtDefaultForeground},
++    {XtNfocusWidth, XtCFrameWidth, XtRInt, sizeof(int),
++        offset(focuswidth), XtRImmediate, (XtPointer) 0},
+     {XtNbackgroundProperty, XtCBackgroundProperty, XtRString, sizeof(char *),
+ 	offset(backgroundProperty), XtRImmediate, (XtPointer) NULL},
+     {XtNframeWidth, XtCFrameWidth, XtRInt, sizeof(int),
+@@ -485,6 +489,10 @@ realizeCursor (LoginWidget w, GC gc)
+        erasing the cursor left gaps in the frame */
+     if (height > PROMPT_H(w) - F_DESCENT(text) - w->login.inframeswidth)
+ 	height = PROMPT_H(w) - F_DESCENT(text) - w->login.inframeswidth;
++    /* and above the focus outline, which covers the field's outer pixels */
++    if (w->login.focuswidth > w->login.inframeswidth &&
++	height > PROMPT_H(w) - F_DESCENT(text) - w->login.focuswidth)
++	height = PROMPT_H(w) - F_DESCENT(text) - w->login.focuswidth;
+ 
+     switch (PROMPT_STATE(w, w->login.activePrompt)) {
+     case LOGIN_PROMPT_NOT_SHOWN:
+@@ -730,6 +738,61 @@ ShowChangePasswdMessage(Widget ctx)
+     ErrorMessage(ctx, w->login.passwdChangeMsg, False);
+ }
+ 
++/*
++ * The focus outline: a ring focusWidth pixels wide on the inner side of the
++ * edges of the input field that takes the keys (the active prompt, while
++ * the greeter is prompting): over the field's frame and, beyond its width,
++ * the outer pixels of the field, so that the box keeps its size and nothing
++ * around it moves.  The other editable fields get their frame and their
++ * colour back.  Called after every change of the active prompt and at the
++ * end of draw_it.  The value's text and its erasing keep 3 pixels away from
++ * the sides and one row from the top and bottom, and the cursor's height is
++ * limited (realizeCursor), so a ring of up to 2 pixels touches neither.
++ */
++static void
++DrawFocus (LoginWidget w)
++{
++    int p, i, f = w->login.focuswidth, fw = w->login.inframeswidth;
++
++    if (f <= 0)
++	return;
++    for (p = 0; p < NUM_PROMPTS; p++) {
++	int x = VALUE_X(w,p) - fw - 3;
++	int y = PROMPT_Y(w,p) - fw - 1 - TEXT_Y_INC(w);
++	int width = PROMPT_W(w) - VALUE_X(w,p) - LOGO_W(w);
++	int height = PROMPT_H(w) + fw + 2;
++	Boolean editable = PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_ON ||
++	    PROMPT_STATE(w, p) == LOGIN_PROMPT_ECHO_OFF;
++	Boolean on = editable && w->login.state == PROMPTING &&
++	    p == w->login.activePrompt;
++	XRectangle r[4] = {
++	    { x, y, width, f },                         /* top */
++	    { x, y + height - f, width, f },            /* bottom */
++	    { x, y + f, f, height - 2 * f },            /* left */
++	    { x + width - f, y + f, f, height - 2 * f } /* right */
++	};
++
++	if (!editable)
++	    continue;
++	if (on) {
++	    XFillRectangles (XtDisplay (w), XtWindow (w), w->login.focusGC, r, 4);
++	    continue;
++	}
++	/* the field's colour under the ring, then its frame as draw_it draws it */
++	XFillRectangles (XtDisplay (w), XtWindow (w), w->login.inpGC, r, 4);
++	for (i = 1; i <= fw; i++) {
++	    XDrawLine(XtDisplay (w), XtWindow (w), w->login.shdGC,
++		      x + i-1, y + i-1, x + width-i, y + i-1);
++	    XDrawLine(XtDisplay (w), XtWindow (w), w->login.shdGC,
++		      x + i-1, y + i-1, x + i-1, y + height-i);
++	    XDrawLine(XtDisplay (w), XtWindow (w), w->login.hiGC,
++		      x + width-i, y + i-1, x + width-i, y + height-i);
++	    XDrawLine(XtDisplay (w), XtWindow (w), w->login.hiGC,
++		      x + i-1, y + height-i, x + width-i, y + height-i);
++	}
++    }
++}
++
+ static void
+ draw_it (LoginWidget w)
+ {
+@@ -836,6 +899,7 @@ draw_it (LoginWidget w)
+ 	}
+     }
+     RedrawFail (w);
++    DrawFocus (w);
+     XorCursor (w);
+     XSetInputFocus (XtDisplay (w), XtWindow (w),
+ 		    RevertToPointerRoot, CurrentTime);
+@@ -1230,6 +1294,7 @@ FinishField (
+ 	Debug("FinishField #%d: %d next\n", promptNum, nextPrompt);
+     }
+ 
++    DrawFocus (ctx);
+     XorCursor (ctx);
+ }
+ 
+@@ -1260,6 +1325,7 @@ TabField(Widget ctxw, XEvent *event, String *params, Cardinal *num_params)
+ 	    break;
+ 	}
+     }
++    DrawFocus (ctx);
+     XorCursor (ctx);
+ }
+ 
+@@ -1369,6 +1435,8 @@ ResetLogin (LoginWidget w)
+     }
+     w->login.state = PROMPTING;
+     w->login.activePrompt = 0;
++    if (XtIsRealized ((Widget) w))
++	DrawFocus (w);
+ }
+ 
+ static void
+@@ -1723,6 +1791,11 @@ static void Initialize (
+     valuemask = GCForeground | GCBackground;
+     w->login.hiGC = XtGetGC(gnew, valuemask, &myXGCV);
+ 
++    myXGCV.foreground = w->login.focuspixel;
++    myXGCV.background = w->core.background_pixel;
++    valuemask = GCForeground | GCBackground;
++    w->login.focusGC = XtGetGC(gnew, valuemask, &myXGCV);
++
+     myXGCV.foreground = w->login.shdpixel;
+     myXGCV.background = w->core.background_pixel;
+     valuemask = GCForeground | GCBackground;
+@@ -2013,6 +2086,7 @@ static void Destroy (Widget gw)
+     XtReleaseGC(gw, w->login.failGC);
+ #endif
+     XtReleaseGC(gw, w->login.hiGC);
++    XtReleaseGC(gw, w->login.focusGC);
+     XtReleaseGC(gw, w->login.shdGC);
+     XtReleaseGC(gw, w->login.inpGC);
+ 
+diff --git a/greeter/Login.h b/greeter/Login.h
+index a4e3c88..6142388 100644
+--- a/greeter/Login.h
++++ b/greeter/Login.h
+@@ -117,6 +117,8 @@ from The Open Group.
+ # define XtNinnerFramesWidth	"innerFramesWidth"
+ # define XtNsepWidth		"sepWidth"
+ # define XtNbackgroundProperty	"backgroundProperty"
++# define XtNfocusColor		"focusColor"
++# define XtNfocusWidth		"focusWidth"
+ # define XtCBackgroundProperty	"BackgroundProperty"
+ 
+ # ifdef DANCING
+diff --git a/greeter/LoginP.h b/greeter/LoginP.h
+index 7ea75d4..9d3945f 100644
+--- a/greeter/LoginP.h
++++ b/greeter/LoginP.h
+@@ -96,6 +96,7 @@ typedef struct {
+ 	Pixel		hipixel;	/* frame hilite pixel */
+ 	Pixel		shdpixel;	/* shadow frame pixel */
+ 	Pixel		inppixel;	/* input field bg pixel */
++	Pixel		focuspixel;	/* focus outline pixel */
+ 	GC		textGC;		/* pointer to GraphicsContext */
+ 	GC		bgGC;		/* pointer to GraphicsContext */
+ 	GC		xorGC;		/* pointer to GraphicsContext */
+@@ -105,6 +106,7 @@ typedef struct {
+ 	GC		failGC;
+ # endif
+ 	GC		hiGC;		/* for hilight part of frame */
++	GC		focusGC;	/* for the focus outline */
+ 	GC		shdGC;		/* for shaded part of frame */
+ 	GC		inpGC;		/* for input field of frame */
+ 	char		*greeting;	/* greeting */
+@@ -149,6 +151,7 @@ typedef struct {
+ 	int		outframewidth;	/* outer frame thickness */
+ 	int		inframeswidth;	/* inner frames thickness */
+ 	int		sepwidth;	/* width of separator line */
++	int		focuswidth;	/* width of the focus outline, 0: none */
+ 
+ 	/* the background cut from a screen-sized pixmap that a root window
+ 	   property names (a frosted copy of the wallpaper) */
