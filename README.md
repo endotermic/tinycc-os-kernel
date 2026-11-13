@@ -53,12 +53,19 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 scripts/selfhost-test.sh all      # the whole loop unattended: build the kernel in the guest, boot it (#2)
 ./install.sh                      # writes a built ISO to a USB flash drive: menus of the ISOs and the USB drives, dd with a progress bar, read-back check
 ./install.sh --list               # the ISOs and the USB drives it would offer (model, size, partitions and labels)
+./install.sh --mode files         # FAT32 over the whole drive + the ISO's boot files + GRUB for BIOS and UEFI: the rest stays usable
 ```
 
-`./install.sh` overwrites the whole drive with the hybrid ISO by `dd` (needs sudo). It offers
-only USB/removable drives, refuses any disk under a mounted system file system, asks you to
-type the device name before writing and unmounts the drive's partitions; `--arch ARCH` or
-`--iso PATH`, `--device /dev/sdX` and `--yes` do the same unattended. `--bs 256K` writes in
+`./install.sh` puts an ISO on the whole drive in one of two ways (needs sudo). `--mode raw`
+(the default without a terminal) copies the hybrid ISO byte for byte with `dd`; the drive then
+holds only the read-only ISO. `--mode files` repartitions it (MBR, one FAT32 partition, label
+`TCCOS`, `--label` for another), copies the ISO's `boot/` files onto it and installs GRUB for
+BIOS (the MBR) and UEFI (`EFI/BOOT/BOOTX64.EFI`, no NVRAM entry): the same boot menu, and the
+rest of the drive is ordinary storage (keep `boot/` and `EFI/`; a new kernel or initramfs is a
+file copy). Needs fdisk, dosfstools, xorriso, grub-pc-bin and grub-efi-amd64-bin; Secure Boot
+must be off, as for the ISO. Both ways offer only USB/removable drives, refuse any disk under a mounted system file system, ask you to
+type the device name before writing and unmount the drive's partitions; `--arch ARCH` or
+`--iso PATH`, `--device /dev/sdX` and `--yes` do the same unattended. With `--mode raw`, `--bs 256K` writes in
 small blocks, each flushed before the next: slower, for drives that lose a block under fast
 writes (the check names where the drive differs and offers to write again).
 
