@@ -112,6 +112,10 @@ static pid_t start_server(const char *display)
     /* the fonts compiled into libXfont (fixed, cursor): the image carries no font files */
     argv[n++] = "-fp";
     argv[n++] = "built-ins";
+    /* a black root and an invisible root cursor until the wallpaper and JWM's arrow come,
+     * instead of the grey weave and the X-shaped pointer (-nocursor: patches/tinyx) */
+    argv[n++] = "-br";
+    argv[n++] = "-nocursor";
     if (opts && *opts) {
         opts = strdup(opts);
         for (p = strtok(opts, " "); p && n < 30; p = strtok(NULL, " "))

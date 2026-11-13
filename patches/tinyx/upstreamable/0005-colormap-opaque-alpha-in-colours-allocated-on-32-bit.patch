@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 17:50:51 +0200
+Subject: [PATCH] colormap: opaque alpha in colours allocated on 32-bit visuals
+
+TinyX kept only the non-Composite branch of ALPHAMASK, which is 0.  With
+Composite the server offers an ARGB32 visual, and colours allocated in
+it (AllocColor, the XPM loader) had alpha 0: fully transparent.  xfiles
+picks that visual and composites its icons with PictOpOver, so they
+vanished.  Restore the definition of X server 1.2.0: on a visual with 32
+planes, the bits outside the RGB masks are set.
+---
+ dix/colormap.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/dix/colormap.c b/dix/colormap.c
+index 83b4ad1..df2ed07 100644
+--- a/dix/colormap.c
++++ b/dix/colormap.c
+@@ -173,7 +173,13 @@ static void FindColorInRootCmap(ColormapPtr /* pmap */ ,
+ #define NUMRED(vis) ((vis->redMask >> vis->offsetRed) + 1)
+ #define NUMGREEN(vis) ((vis->greenMask >> vis->offsetGreen) + 1)
+ #define NUMBLUE(vis) ((vis->blueMask >> vis->offsetBlue) + 1)
++#ifdef COMPOSITE
++/* the alpha bits of a 32-bit (ARGB) visual are set in allocated pixels: opaque colours */
++#define ALPHAMASK(vis)	((vis)->nplanes < 32 ? 0 : \
++			 (CARD32) ~((vis)->redMask|(vis)->greenMask|(vis)->blueMask))
++#else
+ #define ALPHAMASK(vis)	0
++#endif
+ 
+ #define RGBMASK(vis) (vis->redMask | vis->greenMask | vis->blueMask | ALPHAMASK(vis))
+ 

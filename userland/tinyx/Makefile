@@ -4,6 +4,7 @@
 # Makefile.am files, with the configuration that autoconf would have written in
 # dix-config.h and kdrive-config.h here beside this file.  Everything is compiled with the
 # same flags; the server links against the tcc-built libXfont, libfontenc and zlib.
+# -DCOMPOSITE: the Composite extension (composite/, miext/cw/, patches/tinyx 0003).
 #   make -f userland/tinyx/Makefile SRC=src/tinyx XP=build/<arch>/x/usr CC=build/<arch>/musl-tcc O=build/<arch>/tinyx
 # scripts/build.sh tinyx runs this.
 SRC ?= ../../src/tinyx
@@ -15,7 +16,7 @@ HERE := $(dir $(lastword $(MAKEFILE_LIST)))
 VENDOR ?= tinycc-os-kernel
 
 # every directory a server source includes from (the Makefile.am AM_CFLAGS/INCS of the tree)
-INCS = -I$(HERE) -I$(SRC)/include -I$(SRC)/Xext -I$(SRC)/damageext -I$(SRC)/xfixes -I$(SRC)/mi \
+INCS = -I$(HERE) -I$(SRC)/include -I$(SRC)/Xext -I$(SRC)/damageext -I$(SRC)/composite -I$(SRC)/miext/cw -I$(SRC)/xfixes -I$(SRC)/mi \
        -I$(SRC)/miext/shadow -I$(SRC)/miext/damage -I$(SRC)/render -I$(SRC)/randr -I$(SRC)/fb \
        -I$(SRC)/kdrive/src -I$(SRC)/kdrive/linux -I$(SRC)/kdrive/fbdev -I$(XP)/include
 # HAVE_CONFIG_H too: automake defines it for every compile, and the kdrive sources include
@@ -23,7 +24,7 @@ INCS = -I$(HERE) -I$(SRC)/include -I$(SRC)/Xext -I$(SRC)/damageext -I$(SRC)/xfix
 # kdrive files saw no _XSERVER64 on x86_64, their KeySym was 8 bytes against the 4 of the
 # rest of the server, and the keyboard driver filled the keymap with every key two rows apart
 DEFS = -DHAVE_CONFIG_H -DHAVE_DIX_CONFIG_H -DHAVE_KDRIVE_CONFIG_H -D_GNU_SOURCE \
-       -DVENDOR_STRING='"$(VENDOR)"' -DVENDOR_RELEASE=10000000
+       -DCOMPOSITE -DVENDOR_STRING='"$(VENDOR)"' -DVENDOR_RELEASE=10000000
 ALL_CFLAGS = $(CFLAGS) $(DEFS) $(INCS)
 LIBS = -L$(XP)/lib -lXfont -lfontenc -lz -lm
 
@@ -51,13 +52,15 @@ RANDR = mirandr randr rrcrtc rrdispatch rrinfo rrmode rroutput rrpointer rrprope
 RENDER = animcur filter glyph miglyph miindex mipict mirect mitrap mitri picture render renderedge
 DBE = dbe midbe
 XFIXES = cursor region saveset select xfixes
+COMPOSITE = compalloc compext compinit compwindow
+CW = cw cw_ops cw_render
 KDRIVE = kcmap kdrive kinfo kinput kmap kmode kshadow
 LINUX = keyboard linux mouse
 FBDEV = fbdev fbinit
 
 SRCS = $(DIX:%=dix/%.c) $(FB:%=fb/%.c) $(MI:%=mi/%.c) $(XEXT:%=Xext/%.c) \
        miext/damage/damage.c $(SHADOW:%=miext/shadow/%.c) $(OS:%=os/%.c) $(RANDR:%=randr/%.c) \
-       $(RENDER:%=render/%.c) $(DBE:%=dbe/%.c) $(XFIXES:%=xfixes/%.c) damageext/damageext.c \
+       $(RENDER:%=render/%.c) $(DBE:%=dbe/%.c) $(XFIXES:%=xfixes/%.c) damageext/damageext.c $(COMPOSITE:%=composite/%.c) $(CW:%=miext/cw/%.c) \
        $(KDRIVE:%=kdrive/src/%.c) $(LINUX:%=kdrive/linux/%.c) $(FBDEV:%=kdrive/fbdev/%.c)
 OBJS = $(SRCS:%.c=$(O)/obj/%.o)
 

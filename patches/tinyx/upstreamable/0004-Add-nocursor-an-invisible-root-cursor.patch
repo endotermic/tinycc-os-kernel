@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 17:05:46 +0200
+Subject: [PATCH] Add -nocursor: an invisible root cursor
+
+As in later X servers: with -nocursor the root window's cursor is an
+empty 1x1 cursor instead of the X-shaped glyph of the cursor font, so a
+display manager or session that sets its own pointer shows none at all
+until then.  Together with -br the server comes up as a plain black
+screen.
+---
+ dix/globals.c    |  2 ++
+ dix/main.c       | 14 +++++++++++++-
+ include/opaque.h |  1 +
+ os/utils.c       |  3 +++
+ 4 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/dix/globals.c b/dix/globals.c
+index 82bd71b..0a940bf 100644
+--- a/dix/globals.c
++++ b/dix/globals.c
+@@ -159,6 +159,8 @@ Bool blackRoot = FALSE;
+ 
+ Bool whiteRoot = FALSE;
+ 
++Bool EnableCursor = TRUE;
++
+ ClientPtr requestingClient;     /* XXX this should be obsolete now, remove? */
+ 
+ _X_EXPORT TimeStamp currentTime;
+diff --git a/dix/main.c b/dix/main.c
+index 55a1249..aea1c7a 100644
+--- a/dix/main.c
++++ b/dix/main.c
+@@ -335,7 +335,19 @@ main(int argc, char *argv[], char *envp[])
+             ErrorF("failed to set default font path '%s'", defaultFontPath);
+         if (!SetDefaultFont(defaultTextFont))
+             FatalError("could not open default font '%s'", defaultTextFont);
+-        if (!(rootCursor = CreateRootCursor(defaultCursorFont, 0)))
++        if (!EnableCursor) {
++            /* -nocursor: an invisible 1x1 root cursor (empty mask) */
++            CursorMetricRec cm = { 1, 1, 0, 0 };
++            unsigned char *src = calloc(1, BitmapBytePad(1));
++            unsigned char *msk = calloc(1, BitmapBytePad(1));
++
++            rootCursor = (src && msk) ? AllocCursor(src, msk, &cm, 0, 0, 0, 0, 0, 0) : NullCursor;
++            if (rootCursor && !AddResource(FakeClientID(0), RT_CURSOR, (pointer) rootCursor))
++                rootCursor = NullCursor;
++            if (!rootCursor)
++                FatalError("could not create the invisible root cursor");
++        }
++        else if (!(rootCursor = CreateRootCursor(defaultCursorFont, 0)))
+             FatalError("could not open default cursor font '%s'",
+                        defaultCursorFont);
+ #ifdef DPMSExtension
+diff --git a/include/opaque.h b/include/opaque.h
+index 9743a8f..7a8341f 100644
+--- a/include/opaque.h
++++ b/include/opaque.h
+@@ -68,6 +68,7 @@ extern Bool defeatAccessControl;
+ extern long maxBigRequestSize;
+ extern Bool blackRoot;
+ extern Bool whiteRoot;
++extern Bool EnableCursor;
+ 
+ extern Bool CoreDump;
+ 
+diff --git a/os/utils.c b/os/utils.c
+index 7c98c60..2e5b561 100644
+--- a/os/utils.c
++++ b/os/utils.c
+@@ -480,6 +480,7 @@ void UseMsg(void)
+     ErrorF("-wr                    create root window with white background\n");
+     ErrorF("-x string              loads named extension at init time \n");
+     ErrorF("-maxbigreqsize         set maximal bigrequest size \n");
++    ErrorF("-nocursor              the root window's cursor is invisible\n");
+ #ifdef SMART_SCHEDULE
+     ErrorF("-dumbSched             Disable smart scheduling, enable old behavior\n");
+     ErrorF("-schedInterval int     Set scheduler interval in msec\n");
+@@ -583,6 +584,8 @@ ProcessCommandLine(int argc, char *argv[])
+ 	}
+ 	else if ( strcmp( argv[i], "-br") == 0)
+ 	    blackRoot = TRUE;
++	else if ( strcmp( argv[i], "-nocursor") == 0)
++	    EnableCursor = FALSE;
+ 	else if ( strcmp( argv[i], "c") == 0)
+ 	{
+ 	    if(++i < argc)

@@ -62,6 +62,12 @@ mlterm    sha256:7d28678aa90dade72cea4e1e5fffb5e4c343487d60ca36c88dc615134613af3
 # directory) and xrdb (loads /etc/X11/Xresources into the server at session start).
 libXfixes sha256:e69eaa321173c748ba6e2f15c7cf8da87f911d3ea1b6af4b547974aef6366bec 6.0.1  https://xorg.freedesktop.org/archive/individual/lib/libXfixes-6.0.1.tar.gz
 libXcursor sha256:74e72da27e61cc2cfd2e267c14f500ea47775850048ee0b00362a55c9b60ee9b 1.2.3 https://xorg.freedesktop.org/archive/individual/lib/libXcursor-1.2.3.tar.gz
+# The compositing manager (2026-11-13): xcompmgr (plain C, Xlib) and the two client libraries
+# it needs beyond libXfixes and libXrender.  It needs the Composite extension, which
+# patches/tinyx adds to TinyX; JWM starts it (userland/jwm/system.jwmrc, StartupCommand).
+libXcomposite sha256:fe40bcf0ae1a09070eba24088a5eb9810efe57453779ec1e20a55080c6dc2c87 0.4.6 https://xorg.freedesktop.org/archive/individual/lib/libXcomposite-0.4.6.tar.xz
+libXdamage sha256:52733c1f5262fca35f64e7d5060c6fcd81a880ba8e1e65c9621cf0727afb5d11 1.1.6 https://xorg.freedesktop.org/archive/individual/lib/libXdamage-1.1.6.tar.xz
+xcompmgr  sha256:7824f709c4f22432eaea7542ec93384e5dd48f6fcb85c12ff82d721423b0b98f 1.1.10 https://xorg.freedesktop.org/archive/individual/app/xcompmgr-1.1.10.tar.xz
 xfiles    c47a0d984caee93311cb081bd51a5a4a027c9f68  master  https://github.com/phillbush/xfiles.git
 xmenu     bd012b1eee506ab3a21467be93acfec42b1785da  master  https://github.com/phillbush/xmenu.git
 dmenu     sha256:8fbace2a0847aa80fe861066b118252dcc7b4ca0a0a8f3a93af02da8fb6cd453  5.4     https://dl.suckless.org/tools/dmenu-5.4.tar.gz

@@ -47,6 +47,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#include <X11/cursorfont.h>
 
 #include <jpeglib.h>
 #include <png.h>
@@ -610,6 +611,9 @@ static int set_root(const char *path)
 
     XSetWindowBackgroundPixmap(dpy, root, pix);
     XClearWindow(dpy, root);
+    /* the arrow on the desktop: the server starts with an invisible root cursor (-nocursor
+     * in Xservers and startx), so that no X-shaped pointer shows before the picture does */
+    XDefineCursor(dpy, root, XCreateFontCursor(dpy, XC_left_ptr));
     XChangeProperty(dpy, root, xroot, XA_PIXMAP, 32, PropModeReplace, (unsigned char *)&pix, 1);
     XChangeProperty(dpy, root, esetroot, XA_PIXMAP, 32, PropModeReplace, (unsigned char *)&pix, 1);
     frost_atom = XInternAtom(dpy, "_WALLPAPER_FROSTED_PMAP_ID", False);

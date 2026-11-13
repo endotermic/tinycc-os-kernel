@@ -1,2 +1,6 @@
 # patches/tinyx: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
 upstreamable/0001-Include-the-protocol-headers-of-xorgproto-not-the-cl.patch
+upstreamable/0002-damageext-set-the-drawable-of-a-new-Damage-object.patch
+upstreamable/0003-Add-the-Composite-extension-from-X-server-1.2.0.patch
+upstreamable/0004-Add-nocursor-an-invisible-root-cursor.patch
+upstreamable/0005-colormap-opaque-alpha-in-colours-allocated-on-32-bit.patch

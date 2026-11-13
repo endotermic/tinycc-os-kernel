@@ -43,6 +43,10 @@
          Restart. -->
     <StartupCommand>xfiles -d</StartupCommand>
 
+    <!-- The compositing manager: drop shadows (-c) and window opacity
+         (_NET_WM_WINDOW_OPACITY); TinyX has Composite through patches/tinyx. -->
+    <StartupCommand>xcompmgr -c</StartupCommand>
+
     <!-- The tray along the bottom: the menu button, the pager of the two desktops, the
          task list and a clock. -->
     <Tray x="0" y="-1" height="28" autohide="off">

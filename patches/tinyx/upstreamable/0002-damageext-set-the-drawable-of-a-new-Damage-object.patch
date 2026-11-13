@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 13 Nov 2026 16:47:46 +0200
+Subject: [PATCH] damageext: set the drawable of a new Damage object
+
+ProcDamageCreate never stored the request's drawable in the DamageExtRec,
+and DamageExtNotify copies that field into every DamageNotify event, so
+the events carried whatever malloc left there (0 here).  A compositing
+manager could not tell which window was damaged: xcompmgr looked the
+events up by drawable, found nothing, and never repainted.
+---
+ damageext/damageext.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/damageext/damageext.c b/damageext/damageext.c
+index 3c34ebc..a1bda14 100644
+--- a/damageext/damageext.c
++++ b/damageext/damageext.c
+@@ -210,6 +210,7 @@ ProcDamageCreate(ClientPtr client)
+     if (!pDamageExt)
+         return BadAlloc;
+     pDamageExt->id = stuff->damage;
++    pDamageExt->drawable = stuff->drawable;
+     pDamageExt->pDrawable = pDrawable;
+     pDamageExt->level = level;
+     pDamageExt->pClient = client;

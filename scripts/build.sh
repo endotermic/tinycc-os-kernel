@@ -857,7 +857,7 @@ step_mlterm() {
     echo "   mlterm $(lock_ref mlterm): $(file -b main/mlterm | cut -d, -f1-2), $(ls -l main/mlterm | awk '{print $5}') bytes; mlclient $(ls -l tool/mlclient/mlclient | awk '{print $5}') bytes; /etc/mlterm: $(ls "$STAGE/etc/mlterm" | tr '\n' ' ')"
 }
 step_xfiles() {
-    need_src libXfixes libXcursor xprop xrdb dmenu xmenu xfiles unifont
+    need_src libXfixes libXcursor libXcomposite libXdamage xcompmgr xprop xrdb dmenu xmenu xfiles unifont
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
     [ -f "$XP/lib/libX11.a" ] || die "no libX11.a in $XP: run the xlibs step first"
     [ -f "$XP/lib/libXpm.a" ] && [ -f "$XP/lib/libXext.a" ] && [ -f "$XP/lib/libXmu.a" ] || die "no libXpm.a, libXext.a or libXmu.a in $XP: run the xdm step first"
@@ -874,6 +874,13 @@ step_xfiles() {
     xlib_build libXcursor --with-icondir=/usr/share/icons --with-cursorpath='~/.icons:/usr/share/icons:/usr/share/pixmaps'
     xlib_build xprop
     xlib_build xrdb --with-cpp=/usr/bin/cpp
+    # xcompmgr (the compositing manager: shadows, _NET_WM_WINDOW_OPACITY) and its two libraries;
+    # it needs Composite, which patches/tinyx adds to TinyX; started by system.jwmrc (StartupCommand).  Its
+    # link line puts -lX11 before the libraries that need it, which a static link cannot
+    # resolve: LIBS (appended last) repeats the X11 stack.
+    xlib_build libXcomposite
+    xlib_build libXdamage
+    xlib_build xcompmgr LIBS="-lX11 -lxcb -lXau"
     XF=$B/xfiles; STAGE=$XF/stage; mkdir -p "$XF"
     # dmenu (the prompt that xfiles embeds through XEmbed: the address bar, new names), xmenu
     # (the pop-up menu; its icons want Imlib2, a library with its own loader plugins, which
@@ -919,7 +926,7 @@ step_xfiles() {
     # linked with, those libraries and their headers under /usr/lib and /usr/include, where
     # the guest tcc finds them (#pragma comment(lib, ...) in the script)
     rm -rf "$STAGE"; mkdir -p "$STAGE/usr/bin" "$STAGE/etc/X11" "$STAGE/usr/share/fonts/unifont" "$STAGE/usr/lib" "$STAGE/usr/include" "$STAGE/usr/share/X11/locale"
-    cp "$XF/xfiles/xfiles" "$XF/xmenu/xmenu" "$XF/dmenu/dmenu" "$XP/bin/xprop" "$XP/bin/xrdb" "$STAGE/usr/bin/"
+    cp "$XF/xfiles/xfiles" "$XF/xmenu/xmenu" "$XF/dmenu/dmenu" "$XP/bin/xprop" "$XP/bin/xrdb" "$XP/bin/xcompmgr" "$STAGE/usr/bin/"
     # libX11's locale data for the C and UTF-8 locales (the index files, the C and the
     # en_US.UTF-8 tables with its Compose file): without them XSupportsLocale() is false
     # and XOpenIM() fails, on which dmenu exits ("XOpenIM failed: could not open input
@@ -935,7 +942,7 @@ step_xfiles() {
     ln -sf libpng16.a "$STAGE/usr/lib/libpng.a"
     cp "$XP/include/png.h" "$XP/include/pngconf.h" "$XP/include/pnglibconf.h" "$XP/include/zlib.h" "$XP/include/zconf.h" \
         "$XP/include/jpeglib.h" "$XP/include/jconfig.h" "$XP/include/jmorecfg.h" "$XP/include/jerror.h" "$STAGE/usr/include/"
-    for f in xfiles xmenu dmenu xprop xrdb; do printf '   %-8s %s, %s bytes\n' "$f" "$(file -b "$STAGE/usr/bin/$f" | cut -d, -f1-2)" "$(ls -l "$STAGE/usr/bin/$f" | awk '{print $5}')"; done
+    for f in xfiles xmenu dmenu xprop xrdb xcompmgr; do printf '   %-8s %s, %s bytes\n' "$f" "$(file -b "$STAGE/usr/bin/$f" | cut -d, -f1-2)" "$(ls -l "$STAGE/usr/bin/$f" | awk '{print $5}')"; done
     echo "   scripts: xfilesctl xfilesthumb xdg-open (userland/xfiles/); /etc/X11/Xresources; fonts: unifont.pcf.gz $(ls -l "$STAGE/usr/share/fonts/unifont/unifont.pcf.gz" | awk '{print $5}') bytes; /usr/lib: $(ls "$STAGE/usr/lib" | tr '\n' ' '); X locale data: $(ls "$STAGE/usr/share/X11/locale" | tr '\n' ' ')"
 }
 step_wallpapers() {
