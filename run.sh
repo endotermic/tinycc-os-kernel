@@ -54,10 +54,12 @@
 #             emulates none of those cards, but cfg80211 loads its regulatory.db from there
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
-# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (256M for the console; 512M with --xdm,
-# --startx and --iso: the busybox image unpacks to about 97 MB of ramfs and the graphical
-# session needs the rest, 256M ran out of memory when links rescaled a photograph during a
-# window resize, 2026-11-17; 128M panicked at boot since the file manager, 2026-11-03; 1G with
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (384M for the console; 640M with --xdm,
+# --startx and --iso: the busybox image unpacks to about 100 MB of ramfs, the x86_64 kernel
+# with the GPU drivers takes 60 MB of code (2026-11-17: 256M left 59 MB available), and the
+# graphical session needs the rest, 256M ran out of memory when links rescaled a photograph
+# during a window resize, 2026-11-17; 128M panicked at boot since the file manager,
+# 2026-11-03; 1G with --firmware and with an --iso that has the firmware image, 1G with
 # --selfhost), BUILD_DISK (--selfhost: the size of the sparse build disk image
 # out/<arch>/selfhost/build.img, made fresh for every boot, default 8G; BUILD_DISK=0 or empty:
 # none, the build stays in a tmpfs in RAM), KERNEL (a bzImage to boot instead of
@@ -174,10 +176,12 @@ if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 # ramfs root holds about 97 MB that cannot be paged out, and the X server, the desktop and a
 # browser rescaling a 1920x1200 photograph on every step of a window resize need most of the
 # rest: on 256 MB the OOM killer ended links or the whole session (2026-11-17)
-if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=512M; fi
 # the firmware image (--firmware, and the ISO's busybox entries when the ISO has it) unpacks
-# to about 260 MB more of ramfs (Wi-Fi 130 MB, GPUs 130 MB)
+# to about 260 MB more of ramfs (Wi-Fi 130 MB, GPUs 130 MB), and its 104 MB packed are held
+# until the unpacking is done: 512 MB ran out of memory in populate_rootfs (2026-11-17).  This
+# is checked first: the 512 MB of the graphical mode and the ISO would otherwise win
 if [ -z "$MEM" ] && { [ -n "$firmware" ] || { [ -n "$iso" ] && [ -f "$O/firmware.cpio.gz" ]; }; }; then MEM=1G; fi
+if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=640M; fi
 if [ -n "$efi" ]; then
     # a combined image works with -bios; a split CODE image needs pflash with a VARS copy
     fw=$OVMF
@@ -194,7 +198,7 @@ if [ -n "$efi" ]; then
             set -- -drive if=pflash,format=raw,readonly=on,file="$fw" -drive if=pflash,format=raw,file="$tmpvars" "$@";;
         *)  set -- -bios "$fw" "$@";;
     esac
-    MEM=${MEM:-256M}
+    MEM=${MEM:-384M}
 fi
 # screen resolution of QEMU's VGA: the preferred mode of the VGA's EDID (bochs-drm sets it,
 # with or without --vga: the device is there headless too) and, for the ISO, the GRUB
@@ -284,4 +288,4 @@ if [ "$vga" = 1 ]; then
 else
     set -- -nographic -serial mon:stdio "$@"    # explicit, so that --selfhost's -serial file: is the second port
 fi
-$TIMEOUT $QEMU -m "${MEM:-256M}" -no-reboot "$@"
+$TIMEOUT $QEMU -m "${MEM:-384M}" -no-reboot "$@"

@@ -179,11 +179,14 @@ from the screen's shell, a tty2-tty4 login or the serial console); `./run.sh --s
 does the same for the direct boot. The root filesystem is a ramfs (`rootfstype=ramfs` on
 every kernel command line): the tmpfs the kernel would use is capped at half of the early
 memory, which the image has outgrown. The image is a gzip-compressed cpio
-(`out/<arch>/initramfs.cpio.gz`, 22 MB; it unpacks to 60 MB of ramfs, so `run.sh` gives the
-guest 256 MB: at 128 MB the kernel ran out of memory while unpacking, since the file
-manager's programs joined, 2026-11-03; the graphical boots `--xdm`, `--startx` and `--iso` get
-512 MB since 2026-11-17, and a real machine or another VM should have that much too: on 256 MB
-links rescaling a photograph during a window resize ran the memory out). The screen is a KMS display at the native resolution
+(`out/<arch>/initramfs.cpio.gz`, 42 MB; it unpacks to about 100 MB of ramfs). `run.sh`
+gives the guest 384 MB for the console, 640 MB for the graphical boots `--xdm`, `--startx`
+and `--iso`, and 1 GB when the firmware image comes along (`--firmware`, or an ISO that has
+it: its 104 MB packed and 257 MB unpacked come on top, and 512 MB ran out of memory while
+unpacking); the x86_64 kernel with the GPU drivers takes 60 MB of code itself (2026-11-17).
+A real machine or another VM should have that much too: at 128 MB the kernel ran out of
+memory while unpacking (2026-11-03), and on 256 MB links rescaling a photograph during a window
+resize ran the memory out. The screen is a KMS display at the native resolution
 (`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
 sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
