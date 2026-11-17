@@ -8,7 +8,11 @@ is in drivers.config and verified.
 
 Status as of 2026-11-17 (the audit of the i386 `.config` of that day).
 
-## Group 1: ACPI, internal storage, real-time clock — DONE on i386 (2026-11-17)
+## Group 1: ACPI, internal storage, real-time clock — DONE (2026-11-17)
+
+x86_64: clean full build (3212 tcc / 0 gcc, bzImage 8 328 704 bytes), the same QEMU check
+(ACPI, 4 CPUs, sda, nvme0n1, rtc_cmos sets the clock), devices-test 13/13, selfhost-test all
+(generation 2 built in the guest in 4m19s, boots).
 
 In drivers.config.  i386: built by tcc with no tcc change (2305 tcc / 0 gcc invocations, bzImage
 6 574 080 -> 7 360 512 bytes); in QEMU (`-device ahci` + `ide-hd`, `-device nvme`, SMP=4) the
@@ -17,7 +21,7 @@ rtc_cmos sets the clock, `/sys/class/dmi/id` is there; devices-test 13/13; selfh
 (generation 2 built in the guest in 3m44s, 2764 tcc / 0 gcc, boots).  The self-hosting run found
 that a fresh tinyconfig turns IOSCHED_BFQ on where the incrementally merged host tree had it off
 (the pruned guest source then lacked block/bfq-*.c): drivers.config pins it off.  Not tested:
-real hardware, SD readers (QEMU's `sdhci-pci` is untested), x86_64.
+real hardware, SD readers (QEMU's `sdhci-pci` is untested).
 
 | Need | Options | Without it |
 |---|---|---|
