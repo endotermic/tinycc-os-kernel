@@ -1,0 +1,7 @@
+# /etc/securetty - the terminals on which login(1) lets root log in: none.  root has no
+# password and gets no login of its own (the gettys on tty2-tty4, the serial port, xdm's
+# greeter with allowRootLogin false); su in a user's terminal is the only way to a root
+# shell (busybox su does not read this file: CONFIG_FEATURE_SU_BLANK_PW_NEEDS_SECURE_TTY
+# is off).  An empty file or one with only comments would allow every terminal
+# (libbb/securetty.c), so the list names one terminal that does not exist.
+none

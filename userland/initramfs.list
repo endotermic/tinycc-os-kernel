@@ -42,6 +42,8 @@ file  /usr/bin/devices-test ${DEVICES_TEST} 0755 0 0
 file  /etc/passwd  ${ETC}/passwd 0644 0 0
 file  /etc/group   ${ETC}/group 0644 0 0
 file  /etc/shadow  ${ETC}/shadow 0600 0 0
+# the terminals on which root may log in: none (su from a user's shell gives root)
+file  /etc/securetty ${ETC}/securetty 0644 0 0
 # the setuid rules of busybox (halt, poweroff, reboot for every user; JWM menu entries)
 file  /etc/busybox.conf ${ETC}/busybox.conf 0644 0 0
 dir   /home        0755 0 0

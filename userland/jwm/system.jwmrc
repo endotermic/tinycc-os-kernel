@@ -14,7 +14,8 @@
   /etc/X11/Xresources), the xedit text editor (also Ctrl-Alt-E), the links browser, Restart, Exit, which ends the session (back
   to the greeter under xdm, back to the text console under startx), then Reboot and Shut
   down, without a confirmation (JWM has none for programs): busybox reboot and poweroff,
-  which every user may run (/etc/busybox.conf); they signal /init
+  which every user may run (/etc/busybox.conf), named by their full path because xdm's
+  session PATH (userPath in xdm-config) once had no /sbin; they signal /init
   (userland/busybox-init.c), and under QEMU (-no-reboot) both make QEMU exit.  The
   Wallpaper submenu lists the pictures of /usr/share/backgrounds (made by "wallpaper -m"
   each time it opens); the background is drawn by the wallpaper program
@@ -36,8 +37,8 @@
         <Restart label="Restart JWM" icon="restart"/>
         <Exit label="Log out" confirm="true" icon="exit"/>
         <Separator/>
-        <Program icon="restart" label="Reboot">reboot</Program>
-        <Program icon="shutdown" label="Shut down">poweroff</Program>
+        <Program icon="restart" label="Reboot">/sbin/reboot</Program>
+        <Program icon="shutdown" label="Shut down">/sbin/poweroff</Program>
     </RootMenu>
 
     <!-- The desktop: xfiles on ~/Desktop (made when missing); started once, not again on

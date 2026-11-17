@@ -33,9 +33,9 @@ static const char *lines[] = {
     "is the host under QEMU).  JWM's menu is on the desktop, the tray's Menu button and Alt-F1: a terminal",
     "(mlterm, also Ctrl-Alt-T), a file manager (xfiles, also Ctrl-Alt-F: right click for its menu, drag",
     "and drop), the browser, Log out, which ends the session and brings this screen back, Reboot, Shut down.",
-    "root has no password and cannot log in here:",
+    "root has no password and cannot log in, here or on a text console (/etc/securetty):",
     "the text consoles (tty1, the serial port; Alt-F2..F4 when no X server runs) log in as ada,",
-    "and su gives root there.  Nothing is saved across a reboot: the system lives in the initramfs.",
+    "and su in a user's terminal gives root.  Nothing is saved across a reboot: the system lives in the initramfs.",
     NULL
 };
 

@@ -17,7 +17,9 @@ DisplayManager*startup:         /etc/X11/xdm/Xstartup
 DisplayManager._0.setup:        /etc/X11/xdm/Xsetup_0
 DisplayManager*authorize:       true
 DisplayManager*userAuthDir:     /tmp
-DisplayManager*userPath:        /usr/local/bin:/usr/bin:/bin
+! /sbin and /usr/sbin for the users too: reboot, poweroff and halt live there and every user
+! may run them (/etc/busybox.conf)
+DisplayManager*userPath:        /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 DisplayManager*systemPath:      /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 DisplayManager*systemShell:     /bin/sh
 ! root has no password; the greeter is for the three proof-of-concept accounts

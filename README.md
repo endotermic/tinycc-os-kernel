@@ -126,7 +126,7 @@ The kernel has two consoles: the serial port (what `./run.sh` shows in the termi
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
 the serial terminal, and `./run.sh --iso` does so by default (`--no-vga` for headless); a
 shell runs on both consoles, an unprivileged user's (`ada`, UID 1000, logged in by `/init`
-with `login -f`; `su` gives root, which has no password; the kernel has `CONFIG_MULTIUSER=y`
+with `login -f`; `su` gives root, which has no password and cannot log in itself: `/etc/securetty` names no terminal, so the gettys refuse it, and xdm does too; the kernel has `CONFIG_MULTIUSER=y`
 for this, which tinyconfig leaves out). The accounts of this proof of concept are `ada`,
 `grace` and `dennis` with the passwords `lovelace`, `hopper` and `ritchie` (`userland/etc/`,
 hashes in `/etc/shadow`). Builds, mounts and the self-hosting commands need root; `busybox`
