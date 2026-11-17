@@ -3,6 +3,33 @@
 Build an operating system kernel with the [Tiny C Compiler](https://repo.or.cz/tinycc.git)
 instead of GCC, and boot it with a userland that tcc compiled as well.
 
+> [!WARNING]
+> **Experimental research software. Use it at your own risk.**
+>
+> This project is an experiment in compiling a kernel and a userland with a
+> heavily patched compiler. It is not suited for any production, security-sensitive,
+> safety-critical or everyday use, and it is not meant to hold or protect data you care
+> about.
+>
+> * **Possible miscompilation.** The kernel and every program are built by a patched tcc,
+>   not by the compilers their authors test with. Code that looks correct may behave
+>   wrongly, crash or corrupt data, in ways no test here has found.
+> * **Insecure by design.** The guest has fixed accounts with published passwords, a
+>   `root` account without a password, setuid-root `busybox` and X server, and no
+>   security updates. Do not expose it to a network you do not control, and do not run it
+>   on a machine that holds anything of value.
+> * **Destructive host scripts.** `./install.sh` overwrites the whole selected drive, and
+>   the build and clean scripts delete directories. Read what a command will do and
+>   double-check the target device before you confirm. Real hardware is barely tested;
+>   QEMU is the supported way to run the system.
+> * **No support, no stability.** Interfaces, scripts, patches and pinned versions change
+>   without notice, and there is no guarantee that anything will keep working.
+>
+> The software is provided "as is", without warranty of any kind, and the authors accept
+> no liability for any damage or loss arising from its use; see the [license](#license)
+> (BSD-2-Clause for the original parts, the upstream licenses for the patches and the
+> components) for the binding terms. This notice is not legal advice.
+
 Today that is the Linux kernel on x86_64: a tinyconfig-based kernel compiled, assembled
 and linked without gcc or binutils (tcc for every C and `.S` file including the 16-bit
 boot code, `tools/tld` for the links) boots in QEMU into a static busybox shell (musl,
