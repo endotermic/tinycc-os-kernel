@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # run.sh - boot out/<arch> in QEMU on the serial console.  Extra arguments go to QEMU.
 # QEMU exits when the guest reboots (-no-reboot): 'exit' in the shell, or Ctrl-A X.
-# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--xdm] [--startx[=URL]] [--no-devices] [--nolibc] [--selfhost [--auto]] [qemu args...]
+# Usage: ./run.sh [--arch ARCH] [--iso] [--efi] [--vga|--no-vga] [--xdm] [--startx[=URL]] [--no-devices] [--firmware] [--nolibc] [--selfhost [--auto]] [qemu args...]
 #        ./run.sh --list
 #   --arch    x86_64 or i386 (also ARCH in the environment).  Without it, run.sh looks at what
 #             is in place in out/<arch>/ (the ISO, or the kernel and the initramfs image a
@@ -48,6 +48,10 @@
 #             toolchain first and uses it; --auto=test rebuilds the toolchain and runs tcc's
 #             test suite on it, no kernel: the logs come back); scripts/selfhost-test.sh
 #             drives the first two
+#   --firmware  the direct boot of the busybox image with out/<arch>/firmware.cpio.gz appended
+#             to the initrd, as the ISO's entries load it (scripts/build.sh firmware: the
+#             firmware files of the kernel's drivers in /lib/firmware, 130 MB; MEM 768M); QEMU
+#             emulates none of those cards, but cfg80211 loads its regulatory.db from there
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
 # Env: ARCH (x86_64, i386; see --arch), OUT, MEM (256M for the console; 512M with --xdm,
@@ -69,7 +73,7 @@
 # is not a tty; 0 = none)
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-iso= efi= vga= selfhost= auto= form=shell list= devices=1 startx= xdm=
+iso= efi= vga= selfhost= auto= form=shell list= devices=1 startx= xdm= firmware=
 while [ $# -gt 0 ]; do
     case $1 in
         --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;;
@@ -77,6 +81,7 @@ while [ $# -gt 0 ]; do
         --list) list=1; shift;;
         --iso) iso=1; form=iso; shift;; --efi) efi=1; shift;; --vga) vga=1; shift;; --no-vga) vga=0; shift;;
         --no-devices) devices=; shift;;
+        --firmware) firmware=1; shift;;
         --startx) startx=tcc.startx; shift;; --startx=*) startx=tcc.startx=${1#--startx=}; shift;;
         --xdm) xdm=tcc.xdm; shift;;
         --nolibc) form=nolibc; shift;;
@@ -168,6 +173,9 @@ if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 # browser rescaling a 1920x1200 photograph on every step of a window resize need most of the
 # rest: on 256 MB the OOM killer ended links or the whole session (2026-11-17)
 if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=512M; fi
+# the firmware image (--firmware, and the ISO's busybox entries when the ISO has it) unpacks
+# to about 130 MB more of ramfs
+if [ -z "$MEM" ] && { [ -n "$firmware" ] || { [ -n "$iso" ] && [ -f "$O/firmware.cpio.gz" ]; }; }; then MEM=768M; fi
 if [ -n "$efi" ]; then
     # a combined image works with -bios; a split CODE image needs pflash with a VARS copy
     fw=$OVMF
@@ -217,6 +225,14 @@ if [ -n "$iso" ]; then
     oem="${RES:+gfxpayload=${RES}x32,,${RES},,auto}${selfhost:+${RES:+ }menu=selfhost${auto:+ tcc.selfhost=$auto}}"
     [ -z "$oem" ] || set -- -smbios "type=11,value=$oem" "$@"
 else
+    if [ -n "$firmware" ]; then
+        [ "$form" = shell ] || die "--firmware goes with the busybox image (not --nolibc or --selfhost)"
+        [ -f "$O/firmware.cpio.gz" ] || die "no $O/firmware.cpio.gz: scripts/build.sh --arch $ARCH firmware"
+        # QEMU's -initrd takes one file; the kernel unpacks concatenated archives one by one
+        mkdir -p "$BUILD/$ARCH"
+        cat "$initrd" "$O/firmware.cpio.gz" > "$BUILD/$ARCH/initramfs+firmware.cpio.gz"
+        initrd=$BUILD/$ARCH/initramfs+firmware.cpio.gz
+    fi
     set -- -kernel "$KERNEL" -initrd "$initrd" -append "$cmdline" "$@"
 fi
 # CPUs and hardware virtualization: the SMP kernel uses every virtual CPU (the self-hosting

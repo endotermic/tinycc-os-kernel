@@ -92,3 +92,41 @@ xedit     sha256:733460cbf20a9d88e2a482ff1b288f51a97150cff807c7ffb98d2430546c886
 # step_wallpapers scales them down for the image (userland/wallpaper/).
 wallpapers 6fee171a13deff8cd6cb3f35982f049f48cd191c  main    https://github.com/LinuxKits/Distro-wallpapers.git
 #sparse wallpapers Elementary OS
+# Wi-Fi (2026-11-17, docs/HARDWARE.md group 2): libnl (only libnl-3 and libnl-genl-3 are built:
+# the route library's grammars need flex and bison), wpa_supplicant (the client: WPA2/WPA3 and
+# enterprise EAP, TLS from LibreSSL), hostapd (an access point: the devices-test associates
+# wpa_supplicant with it over two mac80211_hwsim radios) and iw (nl80211 from the shell).
+libnl     sha256:fc51ca7196f1a3f5fdf6ffd3864b50f4f9c02333be28be4eeca057e103c0dd18  3.12.0  https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz
+wpa_supplicant sha256:08e23937e16d0155e55cab2b51f51fbe10d80a1aa91c4e15442645059b737ef6 2.12 https://w1.fi/releases/wpa_supplicant-2.12.tar.gz
+hostapd   sha256:f43502561c28ba47ab77e18e1a973d07361c68cc8b14178e619bd5796b70eabd  2.12    https://w1.fi/releases/hostapd-2.12.tar.gz
+iw        sha256:7d182e498289ab39b257da6780d562e415377107f50358ee5b55b8cfe40b1e33  6.17    https://mirrors.edge.kernel.org/pub/software/network/iw/iw-6.17.tar.xz,https://www.kernel.org/pub/software/network/iw/iw-6.17.tar.xz
+# The firmware of the drivers in the kernel (2026-11-17): linux-firmware is several GB, so it is
+# a partial clone with only these directories and files checked out; the firmware step copies
+# what the built kernel's drivers request (modules.builtin.modinfo) into out/<arch>/firmware.cpio.gz,
+# the second initrd of the ISO, with the licences of what it took.
+linux-firmware a2dcb924f0897368b0b4f305cbf9808cdda90ce0  20261019  https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git,https://gitlab.com/kernel-firmware/linux-firmware.git
+#sparse linux-firmware /WHENCE
+#sparse linux-firmware /LICENCE.*
+#sparse linux-firmware /LICENSE.*
+#sparse linux-firmware /GPL-*
+#sparse linux-firmware intel/iwlwifi
+#sparse linux-firmware /intel/ibt-*
+#sparse linux-firmware rtw88
+#sparse linux-firmware rtw89
+#sparse linux-firmware rtl_nic
+#sparse linux-firmware rtl_bt
+#sparse linux-firmware /mediatek/WIFI_*
+#sparse linux-firmware mediatek/mt7925
+#sparse linux-firmware mediatek/mt7927
+#sparse linux-firmware mediatek/mt7928
+#sparse linux-firmware ath10k/QCA6174
+#sparse linux-firmware ath10k/QCA9377
+#sparse linux-firmware ath11k/QCA6390
+#sparse linux-firmware ath11k/WCN6855
+#sparse linux-firmware ath12k/WCN7850
+#sparse linux-firmware /brcm/brcmfmac*-pcie*
+#sparse linux-firmware cypress
+# The wireless regulatory database (2026-11-17): regulatory.db, which cfg80211 loads as
+# firmware (the channels and powers of the country the access point announces); not part of
+# linux-firmware any more.  ISC licence.
+wireless-regdb sha256:b22e0901227b820cd1c280abe681a15b773a5103a5e10dc442e94ebb34cbf58d 2026.09.03 https://mirrors.edge.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.09.03.tar.xz,https://www.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.09.03.tar.xz

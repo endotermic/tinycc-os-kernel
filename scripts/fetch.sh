@@ -6,9 +6,11 @@
 # A component pinned as a release tarball (sha256:<digest> in sources.lock; GNU make, whose git
 # tree needs autotools and gnulib) is downloaded (curl or wget) into src/.downloads/, verified,
 # unpacked into src/<component> and committed there as branch 'base'.
-# A component with a "#sparse NAME DIRECTORY" line (the wallpapers: one directory of a 2 GB
-# repository) is fetched without file contents (a partial clone, --filter=blob:none, from the
-# remote 'origin', which later fetches the contents it needs) and checks out that directory alone.
+# A component with "#sparse NAME DIRECTORY" lines (the wallpapers: one directory of a 2 GB
+# repository; linux-firmware: the files of the drivers in the kernel) is fetched without file
+# contents (a partial clone, --filter=blob:none, from the remote 'origin', which later fetches
+# the contents it needs) and checks out those directories (or "/pattern"s) alone; when the
+# lines change, the next run checks out the new set from the same commit.
 # Usage: scripts/fetch.sh [component...]
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -73,12 +75,18 @@ for name; do
     [ -n "$commit" ] || die "$name: not in sources.lock"
     dir=$SRC/$name
     case $commit in sha256:*) fetch_tarball "$name" "${commit#sha256:}" "$ref"; continue;; esac
+    sparse=$(sparse_patterns "$name")
     if [ -d "$dir/.git" ] && git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
+        if [ -n "$sparse" ] && [ "$(git -C "$dir" sparse-checkout list)" != "$sparse" ]; then
+            msg "$name: at $commit, checking out the changed sparse set"
+            echo "$sparse" | git -C "$dir" sparse-checkout set --no-cone --stdin \
+                || die "$name: sparse checkout failed"
+            continue
+        fi
         msg "$name: already at $commit ($(git -C "$dir" rev-parse --abbrev-ref HEAD))"
         continue
     fi
-    sparse=$(lock_sparse "$name")
-    msg "$name: fetching $commit ($ref)${sparse:+, the directory \"$sparse\" alone}"
+    msg "$name: fetching $commit ($ref)${sparse:+, only $(echo "$sparse" | tr '\n' ' ')}"
     mkdir -p "$dir"
     [ -d "$dir/.git" ] || git -C "$dir" init -q
     got=
@@ -90,7 +98,7 @@ for name; do
             git -C "$dir" remote add origin "$url"
             git -C "$dir" config remote.origin.promisor true
             git -C "$dir" config remote.origin.partialclonefilter blob:none
-            git -C "$dir" sparse-checkout set --no-cone "/$sparse/"
+            echo "$sparse" | git -C "$dir" sparse-checkout set --no-cone --stdin
             if git_progress "$name" git -C "$dir" fetch --depth 1 --filter=blob:none origin "$commit"; then
                 got=$url; break
             fi

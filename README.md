@@ -206,7 +206,21 @@ emulated Wi-Fi or Bluetooth hardware in QEMU; the virtual radios and controller 
 stacks. `scripts/devices-test.sh` boots the image and checks every device class unattended
 (`devices-test` in the guest: DHCP, ICMP and HTTP to the host, IPv6, the Wi-Fi interface
 up, a Bluetooth controller registered, a tone written to `/dev/dsp`, USB enumeration, a FAT
-filesystem on the stick, mouse motion sent through QMP, the screen at `RES`).
+filesystem on the stick, mouse motion sent through QMP, the screen at `RES`, and a WPA3
+association: hostapd makes an access point of one virtual radio and the `wifi` command joins
+it from the other).
+
+For real PCs and laptops (`docs/HARDWARE.md` is the roadmap, in groups): ACPI (power button,
+battery, AC, thermal zones, the CPUs of firmware without MP tables), SATA (AHCI, PIIX), NVMe and
+SD card readers, exFAT and ISO 9660, the CMOS clock, hwmon; the Wi-Fi cards of laptops since
+about 2013 (Intel iwlwifi, Realtek rtw88/rtw89, MediaTek MT7921/MT7922/MT7925, Qualcomm
+ath10k/ath11k/ath12k, Broadcom brcmfmac on PCIe) with their firmware: `scripts/build.sh firmware`
+copies the files the kernel's drivers request from linux-firmware (and `regulatory.db`) into
+`out/<arch>/firmware.cpio.gz`, which the ISO's entries load as a second initrd into
+`/lib/firmware` (`run.sh --firmware` does the same for the direct boot). In the guest,
+`su -c 'wifi scan'` lists the networks in range and `su -c 'wifi connect NAME PASSWORD'` joins
+one (WPA2 or WPA3, then DHCP); `wifi` alone shows the state, `wifi off` leaves. Only QEMU has
+run it so far: none of this has been tried on real hardware yet.
 
 The boot ends with:
 
@@ -226,8 +240,8 @@ The boot ends with:
 *** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is JWM and its desktop (Log out in JWM's menu returns to the greeter)
 ```
 
-The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
-ACPI the CPUs come from SeaBIOS's MP table, which lists one CPU per package), tmpfs, two UARTs
+The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each; the CPUs
+come from ACPI since 2026-11-17, from SeaBIOS's MP table before), tmpfs, two UARTs
 (the second is the self-hosting image's file transfer channel), a gzip-compressed image (the
 guest's busybox has no xz compressor) and runs under KVM when `/dev/kvm` is writable (`KVM=0`
 for TCG).
@@ -242,7 +256,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 142 patches, the linker suite, the libelf subset objtool links against, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 146 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -305,7 +319,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 142 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `patches/tinycc/` | 146 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `tools/libelf/` | the libelf subset the kernel's objtool needs (24 functions, ELF32 and ELF64), so that Kbuild builds the real objtool with tcc on the host and in the guest; `test.sh` compares it with a gcc/elfutils objtool |
@@ -462,6 +476,11 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | xedit | 1.2.5 (release tarball; the text editor: Athena widgets, syntax highlighting by its own Lisp interpreter; built by tcc unpatched) | 733460cb... |
 | xprop, xrdb | 1.2.8, 1.2.2 (release tarballs; X.Org's property tool, which the control script changes the window's directory with, and the resource loader the session runs on `/etc/X11/Xresources`; built by tcc unpatched) | a8394338..., db2d774a... |
 | wallpapers | LinuxKits/Distro-wallpapers `main`, 2022-09-18, the directory "Elementary OS" alone (a partial clone of a 2 GB repository: 65 MB fetched; elementary OS's wallpapers, photographs published on Unsplash under its license; the 15 JPEGs are shrunk to cover 1920x1200 by the build, 5.3 MB in the image; credits in `userland/wallpaper/README.elementary`) | 6fee171a |
+| libnl | 3.12.0 (release tarball; only libnl-3 and libnl-genl-3, static, musl, built by tcc unpatched: the netlink library of wpa_supplicant, hostapd and iw) | fc51ca71... |
+| wpa_supplicant, hostapd | 2.12, 2.12 (release tarballs; the Wi-Fi client and access point, static, musl, nl80211 through libnl, WPA2/WPA3 (SAE, OWE), 802.11r and enterprise EAP with TLS from LibreSSL, built by tcc unpatched; their build configurations are `userland/wifi/*.config`) | 08e23937..., f4350256... |
+| iw | 6.17 (release tarball; nl80211 from the shell, built by tcc unpatched) | 7d182e49... |
+| linux-firmware | 20261019, a partial clone with only the directories of the kernel's drivers checked out (the `#sparse` lines of `sources.lock`); `scripts/build.sh firmware` takes the files the drivers request into `out/<arch>/firmware.cpio.gz` (216 files, 130 MB unpacked), with the licences of linux-firmware | a2dcb924 |
+| wireless-regdb | 2026.09.03 (release tarball; `regulatory.db`, the channels and powers per country, ISC licence; part of the firmware image) | b22e0901... |
 | unifont | 18.0.01 (a single PCF file, sha256 in `sources.lock`; GNU Unifont as the fallback font for the scripts DejaVu lacks, OFL-1.1 / GPL-2.0-or-later with the font exception; `userland/xfiles/LICENSE.unifont`) | 3f770242... |
 
 ## License

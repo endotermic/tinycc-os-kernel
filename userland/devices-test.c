@@ -2,7 +2,9 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * devices-test: exercise the device drivers of kernels/linux/drivers.config inside the guest
- * and print one "devtest: <device>: ok|FAIL <details>" line per device class, then a summary.
+ * and print one "devtest: <device>: ok|FAIL <details>" line per device class, then a summary
+ * (wpa: a WPA2/WPA3 association between the two mac80211_hwsim radios, hostapd and the wifi
+ * command).
  * A C script run by tcc -run (every script of this system is one).  /init runs it when the
  * kernel command line has tcc.devtest (run.sh APPEND=..., scripts/devices-test.sh drives the
  * whole thing: it serves HTTP on the host and moves the mouse through QMP); it can be run by
@@ -188,6 +190,101 @@ static void test_wifi(void)
         rc = run((char *[]){ "ifconfig", "wlan0", "up", NULL }, 1);
     result("wifi", nphy > 0 && nwlan > 0 && rc == 0, "%d radios (%s: %s), interfaces %s, wlan0 up %s", nphy,
            phys, nwlan ? driver_of("/sys/class/net/wlan0/device") : "", wlans, rc == 0 ? "ok" : "failed");
+}
+
+/* the output of argv into buf (NUL-terminated); the exit status */
+static int capture(char *const argv[], char *buf, size_t size)
+{
+    int fd[2], st;
+    size_t n = 0;
+    ssize_t r;
+    pid_t pid;
+    buf[0] = 0;
+    if (pipe(fd) < 0)
+        return 127;
+    fflush(NULL);
+    if ((pid = fork()) < 0)
+        return 127;
+    if (pid == 0) {
+        int null = open("/dev/null", O_RDWR);
+        dup2(fd[1], 1);
+        dup2(null, 2);
+        close(fd[0]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    close(fd[1]);
+    while (n < size - 1 && ((r = read(fd[0], buf + n, size - 1 - n)) > 0 || (r < 0 && errno == EINTR)))
+        if (r > 0)
+            n += r;
+    buf[n] = 0;
+    close(fd[0]);
+    while (waitpid(pid, &st, 0) < 0)
+        if (errno != EINTR)
+            return 127;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+}
+
+/* the value of a "key=value" line of text, copied to val ("" if absent) */
+static char *kv(const char *text, const char *key, char *val, size_t size)
+{
+    const char *p = text;
+    size_t k = strlen(key), n;
+    val[0] = 0;
+    for (; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL)
+        if (strncmp(p, key, k) == 0 && p[k] == '=') {
+            n = strcspn(p + k + 1, "\n");
+            if (n >= size)
+                n = size - 1;
+            memcpy(val, p + k + 1, n);
+            val[n] = 0;
+            break;
+        }
+    return val;
+}
+
+/* WPA: hostapd makes an access point of the second hwsim radio (WPA2 and WPA3 in transition
+   mode: PSK and SAE), the wifi command joins it from wlan0 (wpa_supplicant), which prefers
+   SAE: the association completes only after SAE's elliptic-curve exchange and the 4-way
+   handshake (LibreSSL's crypto in user space, the CCMP keys in the kernel) */
+static void test_wpa(void)
+{
+    static char out[4096];
+    char st[64] = "", km[64] = "";
+    FILE *f;
+    int rc, t;
+    if (!exists("/usr/sbin/hostapd") || !exists("/sys/class/net/wlan1")) {
+        result("wpa", 0, "no %s", exists("/usr/sbin/hostapd") ? "wlan1" : "hostapd");
+        return;
+    }
+    if (!(f = fopen("/tmp/devtest-hostapd.conf", "w"))) {
+        result("wpa", 0, "cannot write the hostapd configuration");
+        return;
+    }
+    fprintf(f, "interface=wlan1\ndriver=nl80211\nctrl_interface=/var/run/hostapd\n"
+               "ssid=tcc-devtest\nhw_mode=g\nchannel=6\nieee80211n=1\n"
+               "wpa=2\nwpa_key_mgmt=WPA-PSK SAE\nrsn_pairwise=CCMP\nieee80211w=1\n"
+               "wpa_passphrase=devtest-secret\nsae_password=devtest-secret\n");
+    fclose(f);
+    mkdir("/var/run", 0755);
+    if ((rc = run((char *[]){ "hostapd", "-B", "/tmp/devtest-hostapd.conf", NULL }, 1)) != 0) {
+        result("wpa", 0, "hostapd did not start on wlan1 (exit %d)", rc);
+        return;
+    }
+    rc = run((char *[]){ "wifi", "-i", "wlan0", "connect", "--no-dhcp", "tcc-devtest", "devtest-secret", NULL }, 1);
+    for (t = 0; t < 10; t++) {
+        capture((char *[]){ "wpa_cli", "-p", "/var/run/wpa_supplicant", "-i", "wlan0", "status", NULL }, out, sizeof out);
+        kv(out, "wpa_state", st, sizeof st);
+        kv(out, "key_mgmt", km, sizeof km);
+        if (strcmp(st, "COMPLETED") == 0)
+            break;
+        sleep(1);
+    }
+    result("wpa", rc == 0 && strcmp(st, "COMPLETED") == 0 && strcmp(km, "SAE") == 0,
+           "hostapd access point on wlan1 (WPA2/WPA3), wifi connect from wlan0: exit %d, %s, key management %s",
+           rc, st[0] ? st : "no wpa_supplicant", km[0] ? km : "-");
+    run((char *[]){ "wifi", "-i", "wlan0", "off", NULL }, 1);
+    run((char *[]){ "hostapd_cli", "-p", "/var/run/hostapd", "-i", "wlan1", "terminate", NULL }, 1);
 }
 
 static void test_bluetooth(void)
@@ -413,6 +510,7 @@ int main(int argc, char **argv)
     test_video();
     test_ethernet(http_port);
     test_wifi();
+    test_wpa();
     test_bluetooth();
     test_sound();
     test_usb();

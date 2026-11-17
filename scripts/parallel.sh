@@ -130,7 +130,10 @@ xfiles: xlib-libXft xlib-libXinerama xlib-jpeg xlib-libXcursor xlib-libXpm xlib-
 xedit: xlib-libXaw @xedit
 wallpapers: xlib-libX11 xlib-jpeg libpng @wallpapers
 links: xlib-libX11 xlib-jpeg xlib-fontconfig libressl kernel-headers @links @dejavu-fonts @liberation-fonts
-initramfs: kernel busybox nnn libressl tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc
+libnl: musl kernel-headers @libnl
+wifi: libnl libressl kernel-headers @wpa_supplicant @hostapd @iw
+firmware: kernel @linux-firmware @wireless-regdb
+initramfs: kernel busybox nnn libressl tinyx xdm jwm mlterm xfiles xedit wallpapers links wifi firmware guest-tcc
 ${selfhost:+selfhost: initramfs @make}
 ${iso:+iso: initramfs ${selfhost:+selfhost}}
 "

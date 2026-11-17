@@ -69,6 +69,13 @@
 #   links       the links web browser, text mode and graphics mode (its X driver on that server:
 #               startx; GIF, PNG and JPEG images), static, musl, with TLS from that LibreSSL (http:// and https://)
 #               -> /usr/bin/links (+ links2) in the images
+#   libnl       libnl-3 and libnl-genl-3 (netlink), static, musl -> build/<arch>/libnl/install
+#   wifi        wpa_supplicant, wpa_cli, wpa_passphrase, hostapd, hostapd_cli and iw, static, musl,
+#               on that libnl and LibreSSL (WPA2/WPA3, EAP), and the guest's wifi command
+#               (userland/wifi/wifi.c) -> /usr/sbin, /usr/bin/wifi in the images
+#   firmware    the firmware files the kernel's drivers request (Wi-Fi, Bluetooth, Realtek
+#               Ethernet, regulatory.db), from linux-firmware -> out/<arch>/firmware.cpio.gz,
+#               the ISO's second initrd (loaded into /lib/firmware)
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
 #   guest-make  GNU make, static, musl, compiled by the host tcc (the guest's make for self-hosting)
 #   initramfs   the libc-free init + the two cpio images (initramfs-nolibc.cpio, initramfs.cpio.gz) -> out/<arch>/
@@ -78,7 +85,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs
+#   all         host-tcc tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links libnl wifi firmware guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -1186,6 +1193,104 @@ step_links() {
     echo "   $(./links -version), text + X graphics mode, TLS (LibreSSL $(lock_ref libressl)); $(file -b links | cut -d, -f1-2), $(ls -l links | awk '{print $5}') bytes"
 }
 
+# ---- Wi-Fi (docs/HARDWARE.md group 2) -------------------------------------------------
+NLB=$B/libnl; NLP=$NLB/install
+step_libnl() {
+    need_src libnl
+    need_khdr
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    mkdir -p "$NLB"
+    msg "libnl: $(lock_ref libnl), libnl-3 + libnl-genl-3, static, musl, CC=musl-tcc -> $NLP"
+    cd "$NLB"
+    # only the core and the generic netlink library: wpa_supplicant, hostapd and iw need no
+    # more, and the route library's grammars would need flex and bison.  The configure
+    # script insists on a pkg-config; the stand-in, given no directory, finds nothing (it
+    # looks only for the optional check library).  Compiles with tcc unpatched.
+    mkdir -p "$NLB/no-pc"
+    configured config.status "$MUSL_TCC" "--prefix=$NLP" \
+        || PKG_CONFIG=$ROOT/scripts/pkg-config.sh PKG_CONFIG_LIBDIR=$NLB/no-pc CC=$MUSL_TCC CFLAGS=-O2 \
+            "$SRC/libnl/configure" --host="$ARCH-linux-musl" --prefix="$NLP" --disable-shared --enable-static \
+            --disable-cli --disable-debug >"$LOGS/libnl-configure.log" 2>&1 \
+        || fail "$LOGS/libnl-configure.log" "libnl configure failed"
+    jmake lib/libnl-3.la lib/libnl-genl-3.la >"$LOGS/libnl.log" 2>&1 || fail "$LOGS/libnl.log" "libnl build failed"
+    rm -rf "$NLP"
+    make install-libnlinclude_netlinkHEADERS install-libnlinclude_netlink_genlHEADERS >>"$LOGS/libnl.log" 2>&1 \
+        || fail "$LOGS/libnl.log" "libnl header install failed"
+    mkdir -p "$NLP/lib/pkgconfig"
+    cp lib/.libs/libnl-3.a lib/.libs/libnl-genl-3.a "$NLP/lib/"
+    cp libnl-3.0.pc libnl-genl-3.0.pc "$NLP/lib/pkgconfig/"
+    echo "   libnl-3.a $(ls -l "$NLP/lib/libnl-3.a" | awk '{print $5}') bytes, libnl-genl-3.a $(ls -l "$NLP/lib/libnl-genl-3.a" | awk '{print $5}') bytes"
+}
+
+# wpa_supplicant (+ wpa_cli, wpa_passphrase), hostapd (+ hostapd_cli) and iw, static, musl,
+# nl80211 through that libnl, TLS and the WPA3 (SAE, OWE) crypto from LibreSSL; the build
+# configurations are userland/wifi/*.config; plus the guest's wifi command (userland/wifi/wifi.c)
+step_wifi() {
+    need_src wpa_supplicant hostapd iw
+    need_khdr
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$NLP/lib/libnl-genl-3.a" ] || die "no $NLP/lib/libnl-genl-3.a: run the libnl step first"
+    LSP=$B/libressl/install/usr
+    [ -f "$LSP/lib/libssl.a" ] || die "no $LSP/lib/libssl.a: run the libressl step first"
+    W=$B/wifi; STAGE=$W/stage; mkdir -p "$W"
+    msg "wifi: wpa_supplicant $(lock_ref wpa_supplicant), hostapd $(lock_ref hostapd), iw $(lock_ref iw), static, musl, CC=musl-tcc -> $STAGE"
+    # nl80211 needs libnl-genl before libnl (a static link resolves them in order); the
+    # Makefiles take CFLAGS from the environment (?=) and add to it, so -O2 replaces their
+    # default -O2 -g; PKG_CONFIG (the stand-in on libnl's .pc files) gives libnl's include path
+    export PKG_CONFIG=$ROOT/scripts/pkg-config.sh PKG_CONFIG_LIBDIR=$NLP/lib/pkgconfig
+    : >"$LOGS/wifi.log"
+    for c in wpa_supplicant:wpa_supplicant hostapd:hostapd; do
+        comp=${c%%:*} sub=${c#*:}
+        mkdir -p "$W/$comp"
+        git -C "$SRC/$comp" ls-files -z | rsync -a -0 --files-from=- "$SRC/$comp/" "$W/$comp/"
+        { cat "$ROOT/userland/wifi/$comp.config"
+          echo "CFLAGS += -I$LSP/include"
+          echo "LIBS += -L$LSP/lib -L$NLP/lib"
+          echo "LIBS += -lnl-3"; } > "$W/$comp/$sub/.config"
+    done
+    CFLAGS="-MMD -O2 -Wall" jmake -C "$W/wpa_supplicant/wpa_supplicant" CC="$MUSL_TCC" wpa_supplicant wpa_cli wpa_passphrase \
+        >>"$LOGS/wifi.log" 2>&1 || fail "$LOGS/wifi.log" "wpa_supplicant build failed"
+    CFLAGS="-MMD -O2 -Wall" jmake -C "$W/hostapd/hostapd" CC="$MUSL_TCC" hostapd hostapd_cli \
+        >>"$LOGS/wifi.log" 2>&1 || fail "$LOGS/wifi.log" "hostapd build failed"
+    mkdir -p "$W/iw"
+    git -C "$SRC/iw" ls-files -z | rsync -a -0 --files-from=- "$SRC/iw/" "$W/iw/"
+    CFLAGS=-O2 jmake -C "$W/iw" CC="$MUSL_TCC" >>"$LOGS/wifi.log" 2>&1 || fail "$LOGS/wifi.log" "iw build failed"
+    unset PKG_CONFIG PKG_CONFIG_LIBDIR
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/sbin" "$STAGE/usr/bin" "$STAGE/etc/wpa_supplicant"
+    for f in wpa_supplicant wpa_cli wpa_passphrase; do cp "$W/wpa_supplicant/wpa_supplicant/$f" "$STAGE/usr/sbin/"; done
+    for f in hostapd hostapd_cli; do cp "$W/hostapd/hostapd/$f" "$STAGE/usr/sbin/"; done
+    cp "$W/iw/iw" "$STAGE/usr/sbin/iw"
+    # the wifi command, a C script run by tcc (userland/wifi/wifi.c)
+    cp "$ROOT/userland/wifi/wifi.c" "$STAGE/usr/bin/wifi"; chmod 755 "$STAGE/usr/bin/wifi"
+    echo "   $("$STAGE/usr/sbin/wpa_supplicant" -v 2>/dev/null | head -1 || true); $(file -b "$STAGE/usr/sbin/wpa_supplicant" | cut -d, -f1-2); sizes: $(cd "$STAGE/usr/sbin" && ls -l | awk 'NR>1 {printf "%s %s, ", $9, $5}')"
+}
+
+# the firmware files the kernel's drivers ask for (MODULE_FIRMWARE, modules.builtin.modinfo of
+# the kernel build), from the pinned linux-firmware checkout and wireless-regdb ->
+# out/<arch>/firmware.cpio.gz, a second initrd (boot/mkiso.sh) whose /lib/firmware the kernel
+# loads them from; scripts/firmware-select.py resolves WHENCE's links, the globs and the
+# versioned names (an older API version when the newest one the driver names is not out).
+# Left out: the firmware of access-point chips (QCA988X/QCA9887, QCN9074, QCN9274), which no
+# PC or laptop carries, and SDIO/USB Broadcom parts (the kernel has the PCIe driver only).
+# The licences of linux-firmware and wireless-regdb go along.  Packed with the host's cpio:
+# gen_init_cpio's manifest cannot hold the spaces of some board-specific file names.
+FW_SKIP="ath10k/QCA988X/ ath10k/QCA9887/ ath11k/QCN9074/ ath12k/QCN9274/"
+step_firmware() {
+    need_src linux-firmware wireless-regdb
+    KB=$B/linux
+    [ -f "$KB/modules.builtin.modinfo" ] || die "no $KB/modules.builtin.modinfo: run the kernel step first"
+    FW=$B/firmware; STAGE=$FW/stage
+    msg "firmware: linux-firmware $(lock_ref linux-firmware) + wireless-regdb $(lock_ref wireless-regdb), the files the kernel's drivers request -> $O/firmware.cpio.gz"
+    rm -rf "$STAGE"; mkdir -p "$FW"
+    python3 -I "$ROOT/scripts/firmware-select.py" "$KB/modules.builtin.modinfo" "$SRC/linux-firmware" \
+        "$SRC/wireless-regdb" "$STAGE" $(for p in $FW_SKIP; do printf -- '--skip %s ' "$p"; done) \
+        || die "firmware selection failed"
+    # brcmfmac's names include its SDIO and USB parts, which the PCIe-only kernel never loads
+    grep -v -e '-sdio' -e '-usb' "$FW/missing.txt" > "$FW/missing-pcie.txt" || true
+    (cd "$STAGE" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc -R 0:0 --quiet) | gzip -6 -n > "$O/firmware.cpio.gz"
+    echo "   $(wc -l < "$FW/missing-pcie.txt") PCIe names not in linux-firmware ($FW/missing-pcie.txt: chips announced before their firmware); $(ls -l "$O/firmware.cpio.gz" | awk '{print $5}') bytes firmware.cpio.gz"
+}
+
 step_guest_tcc() {
     need_src tinycc
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -1290,7 +1395,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "xedit:text editor" "wallpapers:wallpapers" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "xedit:text editor" "wallpapers:wallpapers" "links:web browser" "wifi:Wi-Fi tools"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -1460,7 +1565,7 @@ for s; do
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
         xlib-*) case " $XLIB_NAMES " in *" ${s#xlib-} "*) set -- "$@" "$s";; *) die "unknown X library step '$s' (xlib- and one of: $XLIB_NAMES)";; esac;;
-        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|kernel-headers|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|xedit|wallpapers|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|kernel-headers|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|xedit|wallpapers|links|libnl|wifi|firmware|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1480,7 +1585,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links libnl wifi firmware guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         xlib-*) prepare; overall_step "$s"; step_xlib "${s#xlib-}";;
         *) prepare; overall_step "$s"; "step_$(echo $s | tr - _)";;

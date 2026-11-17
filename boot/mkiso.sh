@@ -28,6 +28,12 @@ cp "$O/initramfs-nolibc.cpio" "$R/boot/initramfs-nolibc.cpio"
 # the self-hosting image (scripts/build.sh selfhost) when it exists: its own menu entries
 selfhost=
 [ ! -f "$O/initramfs-selfhost.cpio" ] || { cp "$O/initramfs-selfhost.cpio" "$R/boot/"; selfhost=1; }
+# the firmware of the drivers (scripts/build.sh firmware: Wi-Fi, Bluetooth, Realtek Ethernet)
+# when it exists: a second initrd of the busybox entries, which the kernel unpacks into the
+# same root (/lib/firmware) after the first (130 MB of RAM; not on the self-hosting entries,
+# whose kernel build needs the memory)
+firmware=
+[ ! -f "$O/firmware.cpio.gz" ] || { cp "$O/firmware.cpio.gz" "$R/boot/"; firmware=1; }
 cat > "$R/boot/grub/grub.cfg" <<'CFG'
 serial --unit=0 --speed=115200
 terminal_input serial console
@@ -88,6 +94,7 @@ menuentry "self-hosting, screen first" {
     initrd /boot/initramfs-selfhost.cpio
 }
 CFG
+[ -z "$firmware" ] || sed -i -E 's#^(    initrd /boot/initramfs\.cpio\.gz)$#\1 /boot/firmware.cpio.gz#' "$R/boot/grub/grub.cfg"
 # every GRUB platform installed under /usr/lib/grub is included (i386-pc + x86_64-efi)
 grub-mkrescue -o "$ISO" "$R" >"$BUILD/$ARCH/logs/iso.log" 2>&1 || { tail -5 "$BUILD/$ARCH/logs/iso.log"; die "grub-mkrescue failed"; }
 ls -l "$ISO" | awk '{print "   " $5 "\t" $9}'
