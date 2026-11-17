@@ -2,15 +2,16 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * startx - the graphical mode: start the X server (TinyX's Xfbdev on /dev/fb0, on a free
- * virtual terminal, which it switches the screen to), the JWM window manager and the links
- * web browser in its graphics mode on it; when the window manager ends (its menu's Log out,
- * Alt-F1), stop the server, and the screen returns to the text console it came from.  In an
- * image without /usr/bin/jwm (the jwm step not built) links alone runs, the size of the
- * screen, and the session ends with it.  A C script run by tcc, like every script of this
- * system.
+ * virtual terminal, which it switches the screen to) and the JWM window manager on it (its
+ * desktop, the file manager, is where the session starts; the links web browser in its
+ * graphics mode only when startx is given arguments for it, a URL); when the window manager
+ * ends (its menu's Log out, Alt-F1), stop the server, and the screen returns to the text
+ * console it came from.  In an image without /usr/bin/jwm (the jwm step not built) links
+ * alone runs, the size of the screen, and the session ends with it.  A C script run by tcc,
+ * like every script of this system.
  *
  * Usage: startx [links arguments...]        e.g.  startx https://linux.org/
- *   no arguments: links opens with no page (its menu is on the Escape key / the top line)
+ *   no arguments: JWM and its desktop only (without JWM: links with its start page)
  * Env: DISPLAY (default :0, the server's display number), XSERVER_OPTS (extra options
  *   for Xfbdev, e.g. "vt7" or "-mouse /dev/input/mice"), XLOG (the server's output,
  *   default /tmp/Xfbdev.log); LINKS_XTERM is set to "mlterm -e" and TERMINAL to mlterm
@@ -150,12 +151,13 @@ int main(int argc, char **argv)
     char **largv;
     pid_t server, client, wm, p;
     sigset_t set, old;
-    int st, i, n, ready = 0, rc, have_wm;
+    int st, i, n, ready = 0, rc, have_wm, want_links;
     char mode[32];
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         printf("usage: startx [links arguments...]   (e.g. startx https://linux.org/)\n"
                "starts the X server (Xfbdev) on a free virtual terminal, the JWM window manager\n"
-               "and links -g on it (Log out in JWM's menu ends it; its Terminal entry and Ctrl-Alt-T open mlterm);\n"
+               "with its desktop, and links -g on it only for the given page (Log out in JWM's menu ends it;\n"
+               "its Terminal entry and Ctrl-Alt-T open mlterm, Web browser opens links);\n"
                "env: DISPLAY (:0), XSERVER_OPTS (extra Xfbdev options), XLOG (%s)\n", xlog);
         return 0;
     }
@@ -224,8 +226,11 @@ int main(int argc, char **argv)
     if (getenv("HOME") && chdir(getenv("HOME")) != 0)
         chdir("/");
     have_wm = access("/usr/bin/jwm", X_OK) == 0;
-    printf("startx: X server ready on %s (log: %s), running %slinks -g on it\n", display, xlog,
-           have_wm ? "jwm and " : "");
+    /* links at the start: alone without a window manager; under JWM only for a page asked
+     * for on the command line (since 2026-11-17 the desktop session no longer opens it) */
+    want_links = !have_wm || argc > 1;
+    printf("startx: X server ready on %s (log: %s), running %s on it\n", display, xlog,
+           have_wm ? (want_links ? "jwm and links -g" : "jwm") : "links -g");
     fflush(stdout);
     largv = calloc(argc + 6, sizeof *largv);
     n = 0;
@@ -254,7 +259,7 @@ int main(int argc, char **argv)
             _exit(127);
         }
     }
-    client = fork();
+    client = want_links ? fork() : -1;
     if (client == 0) {
         execvp(largv[0], largv);
         perror("startx: links");

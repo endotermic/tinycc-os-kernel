@@ -2,10 +2,11 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * /etc/X11/xdm/Xsession - the session that xdm runs after a login, as the user, with
- * DISPLAY, HOME, USER, PATH and XAUTHORITY set by xdm: the JWM window manager with the
- * links web browser in graphics mode started under it (as userland/startx.c runs them;
- * the mlterm terminal from JWM's menu, Ctrl-Alt-T, or links' "run in terminal"; the
- * xfiles file manager from the menu or Ctrl-Alt-F), after the X resources of
+ * DISPLAY, HOME, USER, PATH and XAUTHORITY set by xdm: the JWM window manager and its
+ * desktop (the xfiles file manager on ~/Desktop, which JWM starts); no program opens at
+ * the start since 2026-11-17 (links did before): the links web browser, the mlterm
+ * terminal (also Ctrl-Alt-T), the file manager (Ctrl-Alt-F) and the xedit text editor
+ * (Ctrl-Alt-E) are in JWM's menu, after the X resources of
  * /etc/X11/Xresources and ~/.Xresources are loaded with xrdb.
  * When the window manager ends (Log out in its menu) the session ends, xdm resets the
  * server (which closes the clients left) and shows the greeter again.  In an image
@@ -79,12 +80,6 @@ int main(void)
      * the X resources and the rest of the environment */
     session_env();
     if (access("/usr/bin/jwm", X_OK) == 0) {
-        fflush(NULL);
-        if (fork() == 0) {
-            execlp("links", "links", "-g", (char *)NULL);
-            perror("Xsession: links");
-            _exit(127);
-        }
         execl("/usr/bin/jwm", "jwm", (char *)NULL);
         perror("Xsession: jwm");
         return 1;

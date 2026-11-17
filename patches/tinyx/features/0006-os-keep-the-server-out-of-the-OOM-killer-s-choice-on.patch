@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 13:47:39 +0200
+Subject: [PATCH] os: keep the server out of the OOM killer's choice on Linux
+
+When the memory runs out the kernel kills the process with the largest
+OOM score.  The X server is usually among the largest (its pixmaps and
+the framebuffer's shadow), and its death ends every client: on a 256 MB
+machine links rescaling a 1920x1200 photograph while its window was
+resized ran the memory out, and the OOM killer chose Xfbdev about as often
+as links, so the whole session ended and xdm showed the greeter again.
+OsInit() writes -1000 to /proc/self/oom_score_adj (the server runs as root:
+setuid, or started by the display manager); the client whose allocation
+ran the memory out is killed instead.
+---
+ os/osinit.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/os/osinit.c b/os/osinit.c
+index f94d035..02d39da 100644
+--- a/os/osinit.c
++++ b/os/osinit.c
+@@ -50,6 +50,8 @@ SOFTWARE.
+ #endif
+ 
+ #include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
+ #include <X11/X.h>
+ #include "os.h"
+ #include "osdep.h"
+@@ -126,6 +128,23 @@ OsInit(void)
+ 	if (getpgrp () == 0)
+ 	    setpgid (0, 0);
+ 
++#ifdef __linux__
++	/* Out of memory, the kernel kills the process with the largest score,
++	 * usually the X server, whose death ends every client of the session;
++	 * keep it out of the OOM killer's choice (the server runs as root,
++	 * setuid or started by the display manager, so it may lower its own
++	 * score; an unprivileged server is left as it is), so that the client
++	 * whose allocation ran the memory out is the one killed instead */
++	{
++	    int fd = open("/proc/self/oom_score_adj", O_WRONLY);
++	    if (fd >= 0) {
++		if (write(fd, "-1000", 5) != 5)
++		    ;
++		close(fd);
++	    }
++	}
++#endif
++
+ #ifdef RLIMIT_DATA
+ 	if (limitDataSpace >= 0)
+ 	{

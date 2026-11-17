@@ -767,9 +767,10 @@ well as a tarball).
   are started detached, since xfiles waits for the script.
 * **The opener `xdg-open`** (xfiles' default OPENER name; no MIME database or .desktop files):
   by extension and first bytes, directories to a new xfiles, PNG/JPEG/GIF and HTML to
-  `links -g` (an image on a generated HTML page in `/tmp`, removed when the browser ends:
-  a bare image file makes links ask whether to save or display it, and "display" shows the
-  bytes), executables (ELF or `#!`) and archive listings in mlterm with `xdg-open --run`,
+  `links -g` (until 2026-11-17 on a generated HTML page in `/tmp`, from before links had
+  libjpeg, when a bare JPEG made it ask whether to save or display it; now the bare image with
+  `-html-bare-image-autoscale 1`, so the picture fits the window, see "Images fit the window"
+  below), executables (ELF or `#!`) and archive listings in mlterm with `xdg-open --run`,
   which waits for Enter before the window closes, text in xedit (since 2026-11-17; in mlterm
   with `$EDITOR` (vi) when xedit is not on PATH), the rest in `hexdump -C`; `--with COMMAND` for the menu's "Open with". links is now built
   `--with-libjpeg` (the jwm step's libjpeg; it had GIF, PNG and XBM only), so the browser
@@ -922,6 +923,42 @@ and `hello.c`, a copy of `userland/hello.c` the user may edit (`${HELLO}`, expor
 initramfs and selfhost steps). xfiles' desktop shows the folder with its link badge and the
 file with its text thumbnail; the link opens on the photographs with thumbnails. Verified on
 i386 (QEMU screendumps under `--startx`, user ada).
+
+## No browser at logon (2026-11-17)
+
+The session no longer opens links: xdm's `Xsession` execs JWM alone (its desktop, xfiles on
+`~/Desktop`, is what a login shows), and `startx` starts links under JWM only when it is given
+arguments (`startx URL`, `tcc.startx=URL`); without JWM links is still the whole session.
+links is in JWM's menu ("Web browser"). A consequence: the first links of a session is often
+an image opened from the file manager, and links shows its one-time "Welcome to links!" dialog
+over the picture. Verified on x86_64 (xdm login as ada: the desktop, no links window).
+
+## Out of memory: links, not the session (2026-11-17)
+
+Resizing links while it shows a photograph (the 1920x1200 wallpapers through xdg-open) costs
+links up to about 83 MB: it rescales the picture for every new window size. On a 256 MB machine,
+where the ramfs root alone holds about 97 MB that cannot be paged out, that ran the memory out,
+and the OOM killer ended links or the X server (the whole session, back to the greeter). Two
+changes (FIX-LOG C29): TinyX opts out of the OOM killer (patches/tinyx/features/0006: -1000 in
+/proc/self/oom_score_adj at start), so a memory shortage costs the client that caused it, not
+the session; and `run.sh` gives `--xdm`, `--startx` and `--iso` 512 MB unless MEM says
+otherwise. The graphical system wants 512 MB on a real machine or another VM as well. The test
+tool (an Xlib program resizing a named window through a size list or N random sizes) lived in
+the session scratchpad, not in the repository.
+
+## Images fit the window (2026-11-17)
+
+`xdg-open` opens PNG, JPEG and GIF files as bare images in `links -g` with links' own option
+`-html-bare-image-autoscale 1`: a document that is only an image is scaled to the window, the
+whole picture with its aspect kept, up or down, and refitted when the window is resized
+(maximised). No links patch: the option exists upstream (`porn_enable` in the source) and acts
+only on bare images, which is why the old generated HTML page (`<img>` in a page) is gone.
+links tells an image by the name's extension, so an image found by its first bytes alone
+(`/tmp/pic`) is opened through a temporary symlink `$TMPDIR/xdg-open.PID.jpg|png|gif`, which
+the waiting grandchild removes when the browser ends. Verified on x86_64 (QEMU screendumps:
+Luca_Bravo.jpg fitted at the default window size and refitted maximised; an extensionless copy
+of Julia_Craice.jpg through the link) and on the host with a stub links (the link created and
+removed).
 
 ## The wallpapers (2026-11-13)
 

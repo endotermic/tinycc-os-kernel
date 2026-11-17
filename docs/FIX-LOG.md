@@ -1600,6 +1600,16 @@ C28. 2026-11-17, COMMITTED (patches/libXaw/upstreamable/0001), libXaw `src/TextS
     xedit itself compiled with tcc unpatched. Verification: i386 QEMU screendump of /root/hello.c
     in xedit (comments, preprocessor lines, strings and format specifiers coloured), Ctrl-X
     Ctrl-S wrote the edited file.
+C29. 2026-11-17, COMMITTED (patches/tinyx/features/0006), TinyX `os/osinit.c` (OsInit): on a 256 MB
+    machine (the user's ISO boot) resizing links while it showed a 1920x1200 photograph ended links
+    or the whole session (back to xdm's greeter): the kernel's OOM killer (the user's trace: links
+    76 MB, Xfbdev 40 MB, 97 MB of unevictable ramfs root, 1 MB free). links' peak while rescaling
+    is bounded (VmHWM 82.6 MB flat over 200 random resizes at 512 MB: no leak), so this is memory,
+    not a links bug. The server now writes -1000 to /proc/self/oom_score_adj at start (it runs as
+    root), so the OOM killer takes the client; and run.sh gives the graphical boots (--xdm,
+    --startx, --iso) 512 MB by default. Not a tcc matter. Verification (x86_64, QEMU, xdm session,
+    xresize test tool): at 256 MB, Xfbdev's oom_score_adj -1000, the OOM killer killed links after
+    50 fast resizes and the session stayed; at 512 MB, 200 resizes, nothing killed.
 
 ## The device drivers (2026-10-26)
 

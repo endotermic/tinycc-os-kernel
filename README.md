@@ -74,7 +74,7 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
 ./run.sh --nolibc                 # the libc-free smoke test: banner, reboot, QEMU exits
 ./run.sh --iso                    # the ISO (GRUB menu: the graphical login by default, then startx, then the text console) with QEMU's display window; --efi: on OVMF
-./run.sh --xdm                    # direct boot into the graphical login (xdm's greeter on TinyX; the session is JWM with links -g)
+./run.sh --xdm                    # direct boot into the graphical login (xdm's greeter on TinyX; the session is JWM and its desktop)
 ./run.sh --startx                 # direct boot into the graphical mode without a login (TinyX + JWM + links -g); --startx=URL opens that page
 ./run.sh --vga                    # direct boot with the display window too (--no-vga: headless)
 ./run.sh --selfhost               # the self-hosting image: 1 GB, every CPU; inside: build-kernel, send-file
@@ -178,7 +178,9 @@ every kernel command line): the tmpfs the kernel would use is capped at half of 
 memory, which the image has outgrown. The image is a gzip-compressed cpio
 (`out/<arch>/initramfs.cpio.gz`, 22 MB; it unpacks to 60 MB of ramfs, so `run.sh` gives the
 guest 256 MB: at 128 MB the kernel ran out of memory while unpacking, since the file
-manager's programs joined, 2026-11-03). The screen is a KMS display at the native resolution
+manager's programs joined, 2026-11-03; the graphical boots `--xdm`, `--startx` and `--iso` get
+512 MB since 2026-11-17, and a real machine or another VM should have that much too: on 256 MB
+links rescaling a photograph during a window resize ran the memory out). The screen is a KMS display at the native resolution
 (`kernels/linux/drivers.config`, 2026-10-26): on QEMU's standard VGA the bochs-drm driver
 sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768, by
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
@@ -215,13 +217,13 @@ The boot ends with:
 *** tcc version 0.9.28rc e23dabe+114p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles; Text editor there or Ctrl-Alt-E opens xedit)
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and its desktop, links -g only for a URL; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles; Text editor there or Ctrl-Alt-E opens xedit)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
 *** devices-test checks every device (network, Wi-Fi, Bluetooth, sound, USB, mouse, screen)
 *** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it
-*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is JWM with links -g (Log out in JWM's menu returns to the greeter)
+*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is JWM and its desktop (Log out in JWM's menu returns to the greeter)
 ```
 
 The kernel has SMP (`run.sh` gives the guest every host CPU, up to 8, one socket each: without
@@ -299,7 +301,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `userland/jwm/`, `userland/fontconfig/` | JWM's system configuration (`/etc/system.jwmrc`) and the menu's XPM icons; `gperf.sh`, the stand-in for gperf that fontconfig's build needs |
 | `userland/wallpaper/` | `wallpaper.c`, the desktop background (a static program: a JPEG or PNG on the root window, scaled by one factor to cover the screen, centred, the overhang cut off, published in `_XROOTPMAP_ID` for xfiles' desktop; `-s` records the user's choice, `-m` prints JWM's Wallpaper menu, `--cover` shrinks the photographs at build time); the credits file of `/usr/share/backgrounds/elementary` |
 | `userland/mlterm/` | the terminal emulator's system configuration (`/etc/mlterm/main`, `key`, `aafont`: UTF-8, TERM, the Xft engine with DejaVu Sans Mono, the scrollbar on the right, the pty keys) |
-| `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind; text in xedit); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
+| `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind; text in xedit, images in links -g fitted to the window); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |

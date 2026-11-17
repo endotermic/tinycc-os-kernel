@@ -361,7 +361,7 @@ static void banner(FILE *out)
      * free virtual terminal and switches the screen to it, back when the session ends */
     if (is_exec("/usr/bin/Xfbdev") && exists("/dev/fb0")) {
         if (is_exec("/usr/bin/jwm"))
-            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it%s%s%s)\n",
+            fprintf(out, "*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and its desktop, links -g only for a URL; Log out in JWM's menu, on the desktop or Alt-F1, ends it%s%s%s)\n",
                     is_exec("/usr/bin/mlterm") ? "; Terminal in that menu or Ctrl-Alt-T opens mlterm" : "",
                     is_exec("/usr/bin/xfiles") ? "; File manager there or Ctrl-Alt-F opens xfiles" : "",
                     is_exec("/usr/bin/xedit") ? "; Text editor there or Ctrl-Alt-E opens xedit" : "");
@@ -403,7 +403,7 @@ static void banner(FILE *out)
     fprintf(out, "*** accounts: ada (lovelace), grace (hopper), dennis (ritchie); root has no password.  This shell is ada's; su gives root: builds, mounts and the self-hosting commands need it\n");
     if (is_exec("/usr/bin/xdm"))
         fprintf(out, "*** graphical login: xdm (the ISO's default; tcc.xdm on the command line, run.sh --xdm): the greeter lists the accounts, the session is %s\n",
-                is_exec("/usr/bin/jwm") ? "JWM with links -g (Log out in JWM's menu returns to the greeter)" : "links -g");
+                is_exec("/usr/bin/jwm") ? "JWM and its desktop (Log out in JWM's menu returns to the greeter)" : "links -g");
     fprintf(out, "*** 'exit' (or Ctrl-D) in the console's shell shuts the machine down\n\n");
     fflush(out);
 }

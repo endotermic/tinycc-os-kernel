@@ -17,9 +17,8 @@
  *                                          before exiting (what "--with" and the opening of
  *                                          executables run inside the terminal window)
  *   directory              a new xfiles window on it
- *   PNG, JPEG, GIF         the links browser in graphics mode, on a page that holds the image
- *                          (links -g draws images inline; a bare image file makes it ask
- *                          whether to save or display it)
+ *   PNG, JPEG, GIF         the links browser in graphics mode as the image viewer, the
+ *                          picture scaled to fit its window (html-bare-image-autoscale)
  *   HTML                   links -g
  *   executable             run in a terminal window, which stays open until Enter
  *                          (an ELF binary, or a #! script: tcc runs the C scripts of
@@ -102,44 +101,61 @@ static int spawn_cleanup(char **argv, const char *tmpfile)
 
 static int spawn(char **argv) { return spawn_cleanup(argv, NULL); }
 
-/* an image: links -g shows it inline in a page, while a bare image URL makes it ask
- * whether to save or display; the page is a temporary HTML file with the image and the
- * file's name as its title, removed when the browser ends */
+/* an image: links -g as its image viewer, the bare image scaled to fit the window (its
+ * option html-bare-image-autoscale: the whole picture, the aspect kept, refitted when the
+ * window changes size).  links tells an image by its name's extension, so an image whose
+ * name has none of them (found by its first bytes) is shown through a temporary symlink
+ * with the right one, removed when the browser ends */
+static int has_ext(const char *name, const char *ext);
+
+static const char *image_ext(const char *path)
+{
+    static const char *exts[] = { "png", "jpg", "jpeg", "jpe", "gif", NULL };
+    unsigned char b[8];
+    ssize_t n = 0;
+    int fd = open(path, O_RDONLY), i;
+    for (i = 0; exts[i]; i++)
+        if (has_ext(path, exts[i]))
+            return NULL;        /* the name will do */
+    if (fd >= 0) {
+        n = read(fd, b, sizeof b);
+        close(fd);
+    }
+    if (n >= 8 && memcmp(b, "\x89PNG\r\n\x1a\n", 8) == 0)
+        return "png";
+    if (n >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff)
+        return "jpg";
+    return "gif";
+}
+
 static int open_image(const char *path)
 {
-    char *page, *argv[64], *cmd, abs[PATH_MAX];
-    const char *tmp = getenv("TMPDIR"), *name = strrchr(path, '/');
-    FILE *f;
+    char *link = NULL, *argv[64], *cmd, abs[PATH_MAX];
+    const char *tmp = getenv("TMPDIR"), *ext;
     int n;
-    name = name ? name + 1 : path;
     if (path[0] != '/') {           /* the URL needs the absolute path */
         char cwd[PATH_MAX];
         if (getcwd(cwd, sizeof cwd) && (size_t)snprintf(abs, sizeof abs, "%s/%s", cwd, path) < sizeof abs)
             path = abs;
     }
-    if (asprintf(&page, "%s/xdg-open.%d.html", tmp && *tmp ? tmp : "/tmp", (int)getpid()) < 0)
-        return 1;
-    f = fopen(page, "w");
-    if (!f) {
-        free(page);
-        return 1;
+    if ((ext = image_ext(path)) != NULL) {
+        if (asprintf(&link, "%s/xdg-open.%d.%s", tmp && *tmp ? tmp : "/tmp", (int)getpid(), ext) < 0)
+            return 1;
+        unlink(link);
+        if (symlink(path, link) != 0) {
+            fprintf(stderr, "xdg-open: %s: %s\n", link, strerror(errno));
+            free(link);
+            return 1;
+        }
+        path = link;
     }
-    fprintf(f, "<!DOCTYPE html><html><head><title>");
-    for (; *name; name++)
-        if (*name == '<' || *name == '&') fprintf(f, "&#%d;", (unsigned char)*name); else putc(*name, f);
-    fprintf(f, "</title></head><body bgcolor=\"#1e1e1e\" text=\"#e0e0e0\"><img src=\"file://");
-    for (; *path; path++)
-        if (*path == '"' || *path == '<' || *path == '&' || *path == '%' || *path == '#' || *path == '?')
-            fprintf(f, "%%%02X", (unsigned char)*path);
-        else
-            putc(*path, f);
-    fprintf(f, "\"></body></html>\n");
-    fclose(f);
     cmd = strdup(browser);
-    n = split(cmd, argv, 60);
-    argv[n++] = page; argv[n] = NULL;
-    n = spawn_cleanup(argv, page) < 0;
-    free(page);
+    n = split(cmd, argv, 56);
+    argv[n++] = "-html-bare-image-autoscale";
+    argv[n++] = "1";
+    argv[n++] = (char *)path; argv[n] = NULL;
+    n = spawn_cleanup(argv, link) < 0;
+    free(link);
     free(cmd);
     return n;
 }

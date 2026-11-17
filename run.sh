@@ -22,13 +22,11 @@
 #   --xdm     the graphical login from the start: /init runs xdm, which starts TinyX's Xfbdev
 #             on tty5, shows its greeter (with the helper text that lists the accounts and
 #             their passwords: ada/lovelace, grace/hopper, dennis/ritchie) and runs the JWM window
-#             manager with links -g as
-#             the session of whoever logs in (kernel command line tcc.xdm; userland/xdm/).
+#             manager and its desktop (no program opened) as the session of whoever logs in (kernel command line tcc.xdm; userland/xdm/).
 #             The ISO's default menu entry is this mode, so --iso needs no --xdm
 #   --startx  the graphical mode without a login: /init runs startx as the console user
-#             (TinyX's Xfbdev, the JWM window manager and links -g on it, userland/startx.c;
-#             --startx=URL opens that
-#             page); kernel command line tcc.startx[=URL], direct boot only (the ISO has it as
+#             (TinyX's Xfbdev, the JWM window manager and its desktop, userland/startx.c;
+#             --startx=URL also opens that page in links -g); kernel command line tcc.startx[=URL], direct boot only (the ISO has it as
 #             its second entry, without a URL).  Both imply --vga when a display is available
 #   --no-devices  only the serial ports and the VGA: without the emulated devices that the
 #             drivers of kernels/linux/drivers.config handle, which are attached by default:
@@ -52,9 +50,11 @@
 #             drives the first two
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
-# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (256M: the busybox image unpacks to 60 MB of
-# ramfs and the graphical session needs the rest, 128M panicked out of memory at boot since the
-# file manager, 2026-11-03; 1G with --selfhost), KERNEL (a bzImage to boot instead of
+# Env: ARCH (x86_64, i386; see --arch), OUT, MEM (256M for the console; 512M with --xdm,
+# --startx and --iso: the busybox image unpacks to about 97 MB of ramfs and the graphical
+# session needs the rest, 256M ran out of memory when links rescaled a photograph during a
+# window resize, 2026-11-17; 128M panicked at boot since the file manager, 2026-11-03; 1G with
+# --selfhost), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
 # host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
@@ -163,6 +163,11 @@ case $ARCH in x86_64) QEMU=qemu-system-x86_64;; i386) QEMU=qemu-system-i386;; *)
 need_reset; need_qemu "$ARCH"; need_done
 if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 [ "$TIMEOUT" = 0 ] && TIMEOUT= || TIMEOUT="timeout $TIMEOUT"
+# the graphical system (the ISO's default entry is the graphical login): 512 MB.  The image's
+# ramfs root holds about 97 MB that cannot be paged out, and the X server, the desktop and a
+# browser rescaling a 1920x1200 photograph on every step of a window resize need most of the
+# rest: on 256 MB the OOM killer ended links or the whole session (2026-11-17)
+if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=512M; fi
 if [ -n "$efi" ]; then
     # a combined image works with -bios; a split CODE image needs pflash with a VARS copy
     fw=$OVMF
