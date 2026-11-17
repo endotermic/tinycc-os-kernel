@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:18:00 +0200
+Subject: [PATCH] tccgen: __builtin_constant_p in a constant expression is 0
+ for a value known only by optimization (VT_NONCONST), as gcc (the Linux
+ nouveau driver's
+ _Static_assert(__builtin_choose_expr(__builtin_constant_p(...), ...)) on a
+ local)
+
+---
+ tccgen.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index f21434a..5e62864 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -7488,6 +7488,12 @@ ST_FUNC void unary(void)
+ 	kval(vtop);
+ 	if ((vtop->r & (VT_VALMASK | VT_LVAL)) != VT_CONST
+ 	    || ((vtop->r & VT_SYM) && vtop->sym->a.addrtaken)
++	    /* in a constant expression (gcc evaluates it there at parsing
++	       time) only a constant expression counts, not a value known by
++	       optimization (VT_NONCONST, a local of known value): nouveau's
++	       _Static_assert(__builtin_choose_expr(__builtin_constant_p(
++	       !(__d & m)), !(__d & m), 1), ...) would take the non-constant arm */
++	    || (CONST_WANTED && (vtop->r & VT_NONCONST))
+ 	    )
+ 	    n = 0;
+ 	vtop--;

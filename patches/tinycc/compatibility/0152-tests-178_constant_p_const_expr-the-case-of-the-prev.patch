@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:18:00 +0200
+Subject: [PATCH] tests: 178_constant_p_const_expr, the case of the previous
+ commit
+
+---
+ tests/tests2/178_constant_p_const_expr.c      | 14 ++++++++++++++
+ tests/tests2/178_constant_p_const_expr.expect |  1 +
+ 2 files changed, 15 insertions(+)
+ create mode 100644 tests/tests2/178_constant_p_const_expr.c
+ create mode 100644 tests/tests2/178_constant_p_const_expr.expect
+
+diff --git a/tests/tests2/178_constant_p_const_expr.c b/tests/tests2/178_constant_p_const_expr.c
+new file mode 100644
+index 0000000..8d038c8
+--- /dev/null
++++ b/tests/tests2/178_constant_p_const_expr.c
+@@ -0,0 +1,14 @@
++/* __builtin_constant_p in a constant expression (the condition of __builtin_choose_expr in a
++   _Static_assert) is 0 for a value tcc only knows by optimization (a local of known value),
++   as gcc evaluates it there at parsing time; in code it stays 1 for such a value.  The Linux
++   nouveau driver's PUSH_NVIM() asserts on a u32 __d = <constant> that way. */
++#include <stdio.h>
++int main(void)
++{
++    unsigned d = 0x110;
++    int in_code = __builtin_constant_p(d & 7);
++    _Static_assert(__builtin_choose_expr(__builtin_constant_p(!(d & ~0x1fff)), !(d & ~0x1fff), 1), "m");
++    _Static_assert(__builtin_choose_expr(__builtin_constant_p(!(4 & ~7)), !(4 & ~7), 0), "c");
++    printf("%d\n", in_code);
++    return 0;
++}
+diff --git a/tests/tests2/178_constant_p_const_expr.expect b/tests/tests2/178_constant_p_const_expr.expect
+new file mode 100644
+index 0000000..d00491f
+--- /dev/null
++++ b/tests/tests2/178_constant_p_const_expr.expect
+@@ -0,0 +1 @@
++1

@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:17:52 +0200
+Subject: [PATCH] tests: 177_gnu_comma_paste, the case of the previous commit
+
+---
+ tests/tests2/177_gnu_comma_paste.c      | 22 ++++++++++++++++++++++
+ tests/tests2/177_gnu_comma_paste.expect |  4 ++++
+ 2 files changed, 26 insertions(+)
+ create mode 100644 tests/tests2/177_gnu_comma_paste.c
+ create mode 100644 tests/tests2/177_gnu_comma_paste.expect
+
+diff --git a/tests/tests2/177_gnu_comma_paste.c b/tests/tests2/177_gnu_comma_paste.c
+new file mode 100644
+index 0000000..e42d2b5
+--- /dev/null
++++ b/tests/tests2/177_gnu_comma_paste.c
+@@ -0,0 +1,22 @@
++/* GNU ", ## args": the variable argument is pasted as written, not macro-expanded (an
++   operand of ##), as gcc does; the rescan expands it where it is not pasted again.  The
++   Linux nouveau driver's NVDEF(NVOS04, FLAGS, VPR, FALSE) pastes FALSE further on. */
++#include <stdio.h>
++#define FALSE 0
++#define EMPTYM
++#define N 5
++#define STR(x) #x
++#define XSTR(x) STR(x)
++#define Q(x, a) x##a
++#define P(args...) Q(x, ##args)
++#define R(...) Q(y, ##__VA_ARGS__)
++#define pr(fmt, args...) printf(fmt, ##args)
++#define pv(fmt, ...) printf(fmt, ##__VA_ARGS__)
++int main(void)
++{
++    puts(XSTR(P(FALSE) R(FALSE) P(EMPTYM) P(1)));
++    pr("%d\n", N);
++    pv("%d %d\n", N, N + 1);
++    pr("none\n");
++    return 0;
++}
+diff --git a/tests/tests2/177_gnu_comma_paste.expect b/tests/tests2/177_gnu_comma_paste.expect
+new file mode 100644
+index 0000000..da74b33
+--- /dev/null
++++ b/tests/tests2/177_gnu_comma_paste.expect
+@@ -0,0 +1,4 @@
++xFALSE yFALSE xEMPTYM x1
++5
++5 6
++none

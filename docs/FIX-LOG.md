@@ -76,12 +76,17 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 133 | tinycc 0141 |
 | | | | | 134 | tinycc 0143 |
 | | | | | 135 | tinycc 0145 |
+| | | | | 136 | tinycc 0147 |
+| | | | | 137 | tinycc 0149 |
+| | | | | 138 | tinycc 0151 |
+| | | | | 139 | tinycc 0153 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152 and 0154 those of fixes
+136-139.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -144,6 +149,10 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/173_sysheader_redef.c` (+ `173_sysheader/`) | all | 133 |
 | `tests/tests2/174_paren_string_init.c` | all | 134 |
 | `tests/tests2/175_unused_static_data.c` | all (the link fails without the fix) | 135 |
+| `tests/tests2/176_va_opt.c` | all | 136 |
+| `tests/tests2/177_gnu_comma_paste.c` | all | 137 |
+| `tests/tests2/178_constant_p_const_expr.c` | all (a compile error without the fix) | 138 |
+| `tests/tests2/179_u64_double.c` | all (the inline sequences on x86_64 and i386) | 139 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2790,4 +2799,58 @@ fixes came out of it; the rest of the ~500 new objects compiled as they were.
     Also needed for the link, not a tcc change: CONFIG_HWMON=y (ath12k's thermal.c calls
     hwmon_device_unregister() in a function reached only through a label that dead code
     jumps to; gcc removes it, tcc keeps the code after a label).
+
+## Real hardware: the GPU drivers (2026-11-17)
+
+Group 3 of docs/HARDWARE.md put i915, xe, amdgpu (with the DC display engine), radeon and
+nouveau into kernels/linux/drivers.config: about 2 400 more compiler runs on x86_64. Four tcc
+fixes came out of them.
+
+136. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0147, test 0148 = tests2/176_va_opt),
+    `tccpp.c` (macro_arg_subst(), va_opt_arg()), `tcctok.h` (TOK___VA_OPT__). Problem: tcc had
+    no `__VA_OPT__` (C23, C++20); xe's xe_args.h defines
+    `IF_ARGS(then, else, ...) FIRST_ARG(__VA_OPT__(then,) else)` for gcc >= 10.1, and tcc
+    claims a newer gcc, so `__VA_OPT__` stayed an identifier ("implicit declaration of
+    function '__VA_OPT__'"). Fix: in the replacement list of a variadic macro, `__VA_OPT__(...)`
+    is the parenthesized content, substituted like the rest (parameters, `#`, `##`), when the
+    variable argument has tokens after macro expansion (as gcc and C++20: xe's
+    `IF_ARGS(Z, Q, DROP_FIRST_ARG(FIRST_ARG(foo)))` is Q), nothing otherwise, and a placemarker
+    when a `##` is next to it (`a ## __VA_OPT__(b)`, `__VA_OPT__(a) ## a`). Not done:
+    `#__VA_OPT__(...)`. Verification: 176_va_opt (gcc's output: commas, nested parentheses,
+    ## on either side, named variadic parameters, emptiness after expansion), `make test`.
+
+137. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0149, test 0150 =
+    tests2/177_gnu_comma_paste), `tccpp.c` (macro_arg_subst()). Problem: GNU's `, ## args`
+    substituted the variable argument macro-expanded; gcc pastes it as written (an operand of
+    `##` is never expanded) and lets the rescan expand it. nouveau's
+    `NVDEF(NVOS04, FLAGS, VPR, FALSE)` passes `X, ##A` on to `NVDEF_N()`, which pastes
+    `d##_##r##_##f##_##v`; FALSE is a macro (0), so tcc built `NVOS04_FLAGS_VPR_0`... in the
+    end `NVOS04_FLAGS_VPR_`, an undeclared function. Fix: the raw argument tokens; the old
+    `goto add_var` (the expanded copy) is gone. Verification: 177_gnu_comma_paste (gcc's
+    output; printk-style `fmt, ##args` with macros in the arguments still expands), `make test`.
+
+138. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0151, test 0152 =
+    tests2/178_constant_p_const_expr), `tccgen.c` (unary() TOK_builtin_constant_p). Problem:
+    nouveau's PUSH_NVIM() does `u32 __d = (0x0110);` and then
+    `_Static_assert(__builtin_choose_expr(__builtin_constant_p(!(__d & m)), !(__d & m), 1), ...)`;
+    fix 119 knows `__d`'s value, so `__builtin_constant_p` said 1, `__builtin_choose_expr` took
+    the arm with `__d`, and the static assertion was "constant expression expected". gcc
+    evaluates `__builtin_constant_p` in a constant expression at parsing time, where only a
+    constant expression counts. Fix: under CONST_WANTED a value marked VT_NONCONST (constant
+    only by tcc's optimization: a known local, `x & 0`) gives 0; in code it stays 1.
+    Verification: 178_constant_p_const_expr, `make test`, nouveau.
+
+139. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0153, test 0154 =
+    tests2/179_u64_double), `tccgen.c` (gen_cvt_itof1(), gen_cvt_ftoi1(), vpush_pow2d()).
+    Problem: the kernel link failed with 616 undefined `__floatundidf` and 66 `__fixunsdfdi`:
+    amdgpu's display code (dml2, DCN calculations, compiled with the FPU enabled) converts
+    `unsigned long long` to and from `double`, which tcc did through libtcc1 on x86; the
+    kernel links no runtime library, and gcc inlines both. Fix: on x86_64 and i386, inline:
+    u64 -> double as `(double)(int64)(x >> 32) * 2^32 + (double)(int64)(x & 0xffffffff)`
+    (both halves and the product exact, one rounding: correctly rounded), and double or
+    float -> u64 as `(int64)(d - c * 2^63) ^ (c << 63)` with `c = d >= 2^63`; u64 -> float
+    and long double keep the helpers (double rounding, x87). Verification: 179_u64_double
+    (23 integers around 2^31, 2^32, 2^53, 2^63 and 2^64, 17 doubles and floats, constants:
+    gcc's output on x86_64; the i386 musl build gives the same), `make test`, no helper
+    reference left in either kernel.
 

@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:18:00 +0200
+Subject: [PATCH] tccgen: unsigned long long <-> double inline on x86_64 and
+ i386, as gcc (no __floatundidf/__fixunsdfdi: the Linux kernel links no
+ runtime library; amdgpu's display code)
+
+---
+ tccgen.c | 68 ++++++++++++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 66 insertions(+), 2 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 5e62864..89ff3ee 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -3795,12 +3795,48 @@ op_err:
+ #if defined TCC_TARGET_ARM64 || defined TCC_TARGET_RISCV64 || defined TCC_TARGET_ARM
+ #define gen_cvt_itof1 gen_cvt_itof
+ #else
++#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
++/* the double constant 2^n */
++static void vpush_pow2d(int n)
++{
++    CType ct;
++    CValue cv;
++    ct.t = VT_DOUBLE;
++    ct.ref = NULL;
++    cv.d = ldexp(1.0, n);
++    vsetc(&ct, VT_CONST, &cv);
++}
++#endif
++
+ /* generic itof for unsigned long long case */
+ static void gen_cvt_itof1(int t)
+ {
+-    if ((vtop->type.t & (VT_BTYPE | VT_UNSIGNED)) == 
++    if ((vtop->type.t & (VT_BTYPE | VT_UNSIGNED)) ==
+         (VT_LLONG | VT_UNSIGNED)) {
+-
++#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
++        if (t == VT_DOUBLE) {
++            /* inline, as gcc does (the Linux kernel links no runtime library:
++               amdgpu's display code converts u64 to double): both 32-bit halves
++               convert exactly, hi * 2^32 is exact, so the one rounding of the
++               sum is the correctly rounded value of x */
++            gv(RC_INT);
++            gv_dup();                               /* x x */
++            vpush64(VT_LLONG | VT_UNSIGNED, 0xffffffffULL);
++            gen_op('&');                            /* x lo */
++            vswap();                                /* lo x */
++            vpushi(32);
++            gen_op(TOK_SHR);                        /* lo hi */
++            gen_cast_s(VT_LLONG);
++            gen_cast_s(VT_DOUBLE);
++            vpush_pow2d(32);
++            gen_op('*');                            /* lo hi*2^32 */
++            vswap();
++            gen_cast_s(VT_LLONG);
++            gen_cast_s(VT_DOUBLE);                  /* hi*2^32 lo */
++            gen_op('+');
++            return;
++        }
++#endif
+         if (t == VT_FLOAT)
+             vpush_helper_func(TOK___floatundisf);
+ #if LDOUBLE_SIZE != 8
+@@ -3829,6 +3865,34 @@ static void gen_cvt_ftoi1(int t)
+     if (t == (VT_LLONG | VT_UNSIGNED)) {
+         /* not handled natively */
+         st = vtop->type.t & VT_BTYPE;
++#if defined TCC_TARGET_X86_64 || defined TCC_TARGET_I386
++        if (st == VT_DOUBLE || st == VT_FLOAT) {
++            /* inline, as gcc does (amdgpu's display code): with c = (d >= 2^63),
++               (int64)(d - c * 2^63) ^ (c << 63); a float widens exactly first */
++            if (st == VT_FLOAT)
++                gen_cast_s(VT_DOUBLE);
++            gv(RC_FLOAT);
++            gv_dup();                               /* d d */
++            vpush_pow2d(63);
++            gen_op(TOK_GE);                         /* d c */
++            gv(RC_INT);
++            gen_cast_s(VT_LLONG);
++            gv(RC_INT);
++            gv_dup();                               /* d c c */
++            vrott(3);                               /* c d c */
++            gen_cast_s(VT_DOUBLE);
++            vpush_pow2d(63);
++            gen_op('*');
++            gen_op('-');                            /* c d-c*2^63 */
++            gen_cast_s(VT_LLONG);
++            vswap();                                /* r c */
++            vpushi(63);
++            gen_op(TOK_SHL);
++            gen_op('^');
++            vtop->type.t = VT_LLONG | VT_UNSIGNED;
++            return;
++        }
++#endif
+         if (st == VT_FLOAT)
+             vpush_helper_func(TOK___fixunssfdi);
+ #if LDOUBLE_SIZE != 8

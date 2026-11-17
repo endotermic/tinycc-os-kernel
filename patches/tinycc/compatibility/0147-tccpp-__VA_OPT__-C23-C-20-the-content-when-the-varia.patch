@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:17:52 +0200
+Subject: [PATCH] tccpp: __VA_OPT__ (C23, C++20): the content when the variable
+ argument has tokens after macro expansion, a placemarker next to ## otherwise
+ (the Linux xe driver's IF_ARGS())
+
+---
+ tccpp.c  | 69 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ tcctok.h |  1 +
+ 2 files changed, 70 insertions(+)
+
+diff --git a/tccpp.c b/tccpp.c
+index 7f79d1e..ce823fc 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3079,6 +3079,16 @@ static int macro_subst(
+ 
+ /* substitute arguments in replacement lists in macro_str by the values in
+    args (field d) and return allocated string */
++/* the variable argument of a variadic macro's arguments (the one whose type.t is set),
++   NULL for a macro without one */
++static Sym *va_opt_arg(Sym *args)
++{
++    for (; args; args = args->prev)
++        if (args->type.t)
++            return args;
++    return NULL;
++}
++
+ static int *macro_arg_subst(Sym **nested_list, const int *macro_str, Sym *args)
+ {
+     int t, t0, t1, t2, n;
+@@ -3137,6 +3147,65 @@ static int *macro_arg_subst(Sym **nested_list, const int *macro_str, Sym *args)
+             } else {
+                 expect("macro parameter after '#'");
+             }
++        } else if (t == TOK___VA_OPT__ && (s = va_opt_arg(args))) {
++            /* C23 / C++20 __VA_OPT__(content): the content, substituted like the rest of
++               the replacement list, when the variable argument has tokens; a placemarker
++               (for a neighbouring ##) when it has none.  The Linux xe driver's IF_ARGS(). */
++            const int *start, *p;
++            int depth = 0, *inner, *sub;
++            while (*macro_str == ' ')
++                ++macro_str;
++            TOK_GET(&t2, &macro_str, &cval);
++            if (t2 != '(')
++                expect("'(' after __VA_OPT__");
++            start = p = macro_str;
++            for (;;) {
++                const int *q = p;
++                TOK_GET(&t2, &p, &cval);
++                if (t2 == 0)
++                    expect("')' closing __VA_OPT__");
++                if (t2 == '(')
++                    ++depth;
++                else if (t2 == ')' && depth-- == 0) {
++                    macro_str = p;
++                    p = q;
++                    break;
++                }
++            }
++            n = p - start;
++            inner = tal_realloc(&tokstr_alloc, NULL, (n + 1) * sizeof(int));
++            memcpy(inner, start, n * sizeof(int));
++            inner[n] = 0;
++            /* the argument counts as empty when its macro expansion is (C++20, gcc):
++               xe's IF_ARGS(Z, Q, DROP_FIRST_ARG(FIRST_ARG(foo))) is Q */
++            if (!s->e) {
++                TokenString str2;
++                tok_str_new(&str2);
++                macro_subst(&str2, nested_list, s->d);
++                tok_str_add(&str2, TOK_EOF);
++                s->e = str2.str;
++            }
++            for (st = s->e, t2 = ' '; *st != TOK_EOF; ) {
++                TOK_GET(&t2, &st, &cval);
++                if (t2 != ' ' && t2 != TOK_PLCHLDR)
++                    break;
++                t2 = ' ';
++            }
++            if (t2 != ' ') {
++                sub = macro_arg_subst(nested_list, inner, args);
++                for (st = sub; *st; ) {
++                    TOK_GET(&t2, &st, &cval);
++                    tok_str_add2(&str, t2, &cval);
++                }
++                tok_str_free_str(sub);
++            } else {
++                /* nothing; a placemarker only next to a ## (macro_twosharps() removes it) */
++                for (n = 0; macro_str[n] == ' '; ++n)
++                    ;
++                if (t1 == TOK_PPJOIN || macro_str[n] == TOK_PPJOIN)
++                    tok_str_add(&str, TOK_PLCHLDR);
++            }
++            tok_str_free_str(inner);
+         } else if (t >= TOK_IDENT) {
+             s = sym_find2(args, t);
+             if (s) {
+diff --git a/tcctok.h b/tcctok.h
+index 3d85f45..e6c2cd5 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -97,6 +97,7 @@
+      DEF(TOK___TIME__, "__TIME__")
+      DEF(TOK___FUNCTION__, "__FUNCTION__")
+      DEF(TOK___VA_ARGS__, "__VA_ARGS__")
++     DEF(TOK___VA_OPT__, "__VA_OPT__")
+      DEF(TOK___COUNTER__, "__COUNTER__")
+      DEF(TOK___HAS_INCLUDE, "__has_include")
+      DEF(TOK___HAS_INCLUDE_NEXT, "__has_include_next")

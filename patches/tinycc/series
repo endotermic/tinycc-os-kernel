@@ -145,3 +145,11 @@ compatibility/0143-tccgen-an-array-initialized-from-a-parenthesized-str.patch
 compatibility/0144-tests-174_paren_string_init-the-case-of-the-previous.patch
 compatibility/0145-tccgen-unreferenced-static-const-data-is-not-emitted.patch
 compatibility/0146-tests-175_unused_static_data-the-case-of-the-previou.patch
+compatibility/0147-tccpp-__VA_OPT__-C23-C-20-the-content-when-the-varia.patch
+compatibility/0148-tests-176_va_opt-the-case-of-the-previous-commit.patch
+compatibility/0149-tccpp-GNU-args-pastes-the-variable-argument-as-writt.patch
+compatibility/0150-tests-177_gnu_comma_paste-the-case-of-the-previous-c.patch
+compatibility/0151-tccgen-__builtin_constant_p-in-a-constant-expression.patch
+compatibility/0152-tests-178_constant_p_const_expr-the-case-of-the-prev.patch
+compatibility/0153-tccgen-unsigned-long-long-double-inline-on-x86_64-an.patch
+compatibility/0154-tests-179_u64_double-the-case-of-the-previous-commit.patch

@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:17:52 +0200
+Subject: [PATCH] tests: 176_va_opt, the case of the previous commit
+
+---
+ tests/tests2/176_va_opt.c      | 37 ++++++++++++++++++++++++++++++++++
+ tests/tests2/176_va_opt.expect | 10 +++++++++
+ 2 files changed, 47 insertions(+)
+ create mode 100644 tests/tests2/176_va_opt.c
+ create mode 100644 tests/tests2/176_va_opt.expect
+
+diff --git a/tests/tests2/176_va_opt.c b/tests/tests2/176_va_opt.c
+new file mode 100644
+index 0000000..0b4e8a2
+--- /dev/null
++++ b/tests/tests2/176_va_opt.c
+@@ -0,0 +1,37 @@
++/* C23 / C++20 __VA_OPT__ (the Linux xe driver's IF_ARGS()): the content when the variable
++   argument has tokens after macro expansion, nothing (a placemarker next to ##) otherwise */
++#include <stdio.h>
++#define FIRST_ARG(a, ...) a
++#define IF_ARGS(then, else, ...) FIRST_ARG(__VA_OPT__(then,) else)
++#define F(fmt, ...) printf(fmt __VA_OPT__(,) __VA_ARGS__)
++#define CAT(a, ...) a ## __VA_OPT__(_x)
++#define CATL(a, ...) __VA_OPT__(a) ## a
++#define CALL(f, ...) f(0 __VA_OPT__(, __VA_ARGS__))
++#define NEST(...) __VA_OPT__((1 + (2)) * __VA_ARGS__)
++#define STR(...) #__VA_ARGS__
++#define XSTR(...) STR(__VA_ARGS__)
++#define EMPTY
++#define NAMED(fmt, args...) printf(fmt __VA_OPT__(,) args)
++/* emptiness after expansion */
++#define __FIRST(x, ...) x
++#define FIRST(args...) __FIRST(args)
++#define __DROP_FIRST(x, args...) args
++#define DROP_FIRST(args...) __DROP_FIRST(args)
++#define foo 1, 2
++static int sum(int a, ...) { return a; }
++int main(void)
++{
++    int v = 7, v_x = 9, vv = 4;
++    printf("%d %d\n", IF_ARGS(1, 2), IF_ARGS(1, 2, z));
++    F("plain\n");
++    F("%d %s\n", 3, "args");
++    printf("%d %d %d %d\n", CAT(v), CAT(v, y), CATL(v), CATL(v, y));
++    printf("%d %d\n", CALL(sum), CALL(sum, 5));
++    printf("%d %s\n", NEST(4), STR(NEST()));
++    NAMED("named %d\n", 11);
++    NAMED("named none\n");
++    printf("%d %d %d %d\n", IF_ARGS(1, 2, foo), IF_ARGS(1, 2, DROP_FIRST(FIRST(foo))),
++           IF_ARGS(1, 2, EMPTY), IF_ARGS(1, 2, EMPTY x));
++    printf("[%s] [%s]\n", XSTR(IF_ARGS(a, b)), XSTR(F("x" EMPTY)));
++    return 0;
++}
+diff --git a/tests/tests2/176_va_opt.expect b/tests/tests2/176_va_opt.expect
+new file mode 100644
+index 0000000..1bebd87
+--- /dev/null
++++ b/tests/tests2/176_va_opt.expect
+@@ -0,0 +1,10 @@
++2 1
++plain
++3 args
++7 9 7 4
++0 0
++12 NEST()
++named 11
++named none
++1 2 2 1
++[b] [printf("x" )]

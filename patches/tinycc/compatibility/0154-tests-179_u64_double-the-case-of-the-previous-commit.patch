@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:18:00 +0200
+Subject: [PATCH] tests: 179_u64_double, the case of the previous commit
+
+---
+ tests/tests2/179_u64_double.c      | 35 +++++++++++++++++++++++++
+ tests/tests2/179_u64_double.expect | 41 ++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+ create mode 100644 tests/tests2/179_u64_double.c
+ create mode 100644 tests/tests2/179_u64_double.expect
+
+diff --git a/tests/tests2/179_u64_double.c b/tests/tests2/179_u64_double.c
+new file mode 100644
+index 0000000..10702d9
+--- /dev/null
++++ b/tests/tests2/179_u64_double.c
+@@ -0,0 +1,35 @@
++/* unsigned long long <-> double inline on x86_64 and i386, as gcc does (no __floatundidf,
++   __fixunsdfdi: the Linux kernel links no runtime library; amdgpu's display code), with the
++   rounding and the edge cases of gcc's sequences */
++#include <stdio.h>
++#include <string.h>
++typedef unsigned long long u64;
++static u64 vals[] = { 0, 1, 2, 0x7fffffffULL, 0xffffffffULL, 0x100000000ULL, 0x1fffffffffffffULL,
++    0x20000000000001ULL, 0x20000000000003ULL, 0x7ffffffffffffc00ULL, 0x7ffffffffffffdffULL,
++    0x7fffffffffffffffULL, 0x8000000000000000ULL, 0x8000000000000001ULL, 0x8000000000000400ULL,
++    0x8000000000000401ULL, 0xfffffffffffff7ffULL, 0xfffffffffffff800ULL, 0xfffffffffffffbffULL,
++    0xfffffffffffffc00ULL, 0xffffffffffffffffULL, 0x123456789abcdef0ULL, 0xdeadbeefcafebabeULL };
++static double dv[] = { 0.0, 0.5, 1.0, 1.9, 4294967295.0, 4294967296.5, 9007199254740993.0,
++    9223372036854774784.0, 9223372036854775808.0, 9223372036854777856.0, 13835058055282163712.0,
++    18446744073709549568.0 };
++static float fv[] = { 0.0f, 3.75f, 16777217.0f, 9223372036854775808.0f, 18446742974197923840.0f };
++int main(void)
++{
++    unsigned i;
++    volatile u64 x; volatile double d; volatile float f;
++    for (i = 0; i < sizeof vals / sizeof *vals; i++) {
++        x = vals[i];
++        d = (double)x;
++        printf("%llx -> %.17g -> %llx\n", vals[i], d, (u64)d);
++    }
++    for (i = 0; i < sizeof dv / sizeof *dv; i++) {
++        d = dv[i];
++        printf("%.17g -> %llx\n", dv[i], (u64)d);
++    }
++    for (i = 0; i < sizeof fv / sizeof *fv; i++) {
++        f = fv[i];
++        printf("%.9g -> %llx\n", (double)fv[i], (u64)f);
++    }
++    printf("%.17g %llx\n", (double)0xfffffffffffff800ULL, (u64)1.8446744073709550e19);  /* constants */
++    return 0;
++}
+diff --git a/tests/tests2/179_u64_double.expect b/tests/tests2/179_u64_double.expect
+new file mode 100644
+index 0000000..7a6a079
+--- /dev/null
++++ b/tests/tests2/179_u64_double.expect
+@@ -0,0 +1,41 @@
++0 -> 0 -> 0
++1 -> 1 -> 1
++2 -> 2 -> 2
++7fffffff -> 2147483647 -> 7fffffff
++ffffffff -> 4294967295 -> ffffffff
++100000000 -> 4294967296 -> 100000000
++1fffffffffffff -> 9007199254740991 -> 1fffffffffffff
++20000000000001 -> 9007199254740992 -> 20000000000000
++20000000000003 -> 9007199254740996 -> 20000000000004
++7ffffffffffffc00 -> 9.2233720368547748e+18 -> 7ffffffffffffc00
++7ffffffffffffdff -> 9.2233720368547748e+18 -> 7ffffffffffffc00
++7fffffffffffffff -> 9.2233720368547758e+18 -> 8000000000000000
++8000000000000000 -> 9.2233720368547758e+18 -> 8000000000000000
++8000000000000001 -> 9.2233720368547758e+18 -> 8000000000000000
++8000000000000400 -> 9.2233720368547758e+18 -> 8000000000000000
++8000000000000401 -> 9.2233720368547779e+18 -> 8000000000000800
++fffffffffffff7ff -> 1.844674407370955e+19 -> fffffffffffff800
++fffffffffffff800 -> 1.844674407370955e+19 -> fffffffffffff800
++fffffffffffffbff -> 1.844674407370955e+19 -> fffffffffffff800
++fffffffffffffc00 -> 1.8446744073709552e+19 -> 0
++ffffffffffffffff -> 1.8446744073709552e+19 -> 0
++123456789abcdef0 -> 1.3117684674637903e+18 -> 123456789abcdf00
++deadbeefcafebabe -> 1.6045690984503097e+19 -> deadbeefcafeb800
++0 -> 0
++0.5 -> 0
++1 -> 1
++1.8999999999999999 -> 1
++4294967295 -> ffffffff
++4294967296.5 -> 100000000
++9007199254740992 -> 20000000000000
++9.2233720368547748e+18 -> 7ffffffffffffc00
++9.2233720368547758e+18 -> 8000000000000000
++9.2233720368547779e+18 -> 8000000000000800
++1.3835058055282164e+19 -> c000000000000000
++1.844674407370955e+19 -> fffffffffffff800
++0 -> 0
++3.75 -> 3
++16777216 -> 1000000
++9.22337204e+18 -> 8000000000000000
++1.8446743e+19 -> ffffff0000000000
++1.844674407370955e+19 fffffffffffff800

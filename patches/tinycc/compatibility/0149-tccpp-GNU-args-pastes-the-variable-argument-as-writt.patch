@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 19:17:52 +0200
+Subject: [PATCH] tccpp: GNU ', ## args' pastes the variable argument as
+ written, not macro-expanded, as gcc (the Linux nouveau driver's NVDEF(NVOS04,
+ FLAGS, VPR, FALSE))
+
+---
+ tccpp.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/tccpp.c b/tccpp.c
+index ce823fc..81dffdc 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -3224,18 +3224,20 @@ static int *macro_arg_subst(Sym **nested_list, const int *macro_str, Sym *args)
+                         if (*st == TOK_EOF) {
+                             /* suppress ',' '##' */
+                         } else {
+-                            /* suppress '##' and add variable */
++                            /* suppress '##' and add the variable as it was
++                               written: an operand of ## is not macro-expanded
++                               (gcc; nouveau's NVDEF(NVOS04, FLAGS, VPR, FALSE)
++                               pastes FALSE, which is also a macro, further on);
++                               the rescan expands it where it is not pasted */
+                             str.len++;
+                             if (c == ' ')
+                                 str.str[str.len++] = c;
+-                            goto add_var;
+                         }
+                     } else {
+                         if (*st == TOK_EOF)
+                             tok_str_add(&str, TOK_PLCHLDR);
+                     }
+                 } else {
+-            add_var:
+ 		    if (!s->e) {
+ 			/* Expand arguments tokens and store them.  In most
+ 			   cases we could also re-expand each argument if
