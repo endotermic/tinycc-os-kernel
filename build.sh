@@ -16,11 +16,13 @@
 #             the sources and the toolchain to rebuild the kernel and tcc inside the guest
 #             (./run.sh --selfhost; scripts/selfhost-test.sh); downloads GNU make's tarball too
 #   --jobs    parallel jobs (default: JOBS from the environment, else nproc)
-#   --parallel=N  distro (the default, N 4): fetch, patch and build as one dependency graph
+#   --parallel[=N]  distro (the default): fetch, patch and build as one dependency graph
 #             (scripts/parallel.sh): every component downloads at the same time, the host tcc
-#             builds while linux is still downloading, the kernel builds next to the userland;
-#             up to N steps at once, each still with --jobs make jobs; their output is prefixed
-#             [step] and shows milestones instead of per-step bars
+#             and musl build while linux is still downloading, the kernel builds next to the
+#             userland, and each library of the X stack is a step of its own; up to N jobs at
+#             once (default: --jobs), shared through one make jobserver by the steps and their
+#             own makes (a step running configure takes one, the kernel's make what is free);
+#             the output is prefixed [step] and shows milestones instead of per-step bars
 #   --serial  distro: one step after the other (fetch everything, patch, then each build step),
 #             with the per-step progress bars
 #   --test    run tinycc's test suite after building it
@@ -43,14 +45,14 @@
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
 . "$ROOT/scripts/lib.sh"
-build= arch= output= run= test= selfhost= clean= dry= parallel=4 jobs=${JOBS:-$(nproc)}
+build= arch= output= run= test= selfhost= clean= dry= parallel=0 jobs=${JOBS:-$(nproc)}
 while [ $# -gt 0 ]; do
     case $1 in
         --build) build=$2; shift 2;; --build=*) build=${1#*=}; shift;;
         --arch) arch=$2; shift 2;; --arch=*) arch=${1#*=}; shift;;
         --output) output=$2; shift 2;; --output=*) output=${1#*=}; shift;;
         --jobs) jobs=$2; shift 2;; --jobs=*) jobs=${1#*=}; shift;;
-        --parallel) parallel=4; shift;; --parallel=*) parallel=${1#*=}; shift;; --serial) parallel=; shift;;
+        --parallel) parallel=0; shift;; --parallel=*) parallel=${1#*=}; shift;; --serial) parallel=; shift;;
         --run) run=1; shift;; --test) test=1; shift;; --selfhost) selfhost=1; shift;;
         --clean) clean=clean; shift;; --clean-all) clean=clean-all; shift;; --dry-run|-n) dry=1; shift;;
         -h|--help) usage;;
@@ -120,11 +122,17 @@ if [ "$build" = tcc ]; then
     echo "   install: sudo tar xzf $OUT/$arch/tcc-*.tar.gz -C /      (puts tcc under /usr/local)"
     exit 0
 fi
-case $parallel in ''|[1-9]|[1-9][0-9]) ;; *) die "--parallel=N needs a number from 1 to 99";; esac
-msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}, $jobs jobs${parallel:+, up to $parallel steps at once}"
-steps="tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs"
+case $parallel in ''|0) ;; [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) die "--parallel=N needs a number from 1 to 999";; esac
+[ "$parallel" != 0 ] || parallel=$jobs
+msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}${parallel:+, one dependency graph with up to $parallel jobs at once}${parallel:-, $jobs jobs}"
+steps="tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs"
 iso=; case $output in iso|all) iso=iso;; esac
-overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} $steps ${selfhost:+selfhost} $iso
+if [ -n "$parallel" ]; then
+    # the bar's plan: the graph's own steps (the X libraries one by one)
+    overall_begin "$BUILD/$arch/step-times" fetch patch $("$ROOT/scripts/parallel.sh" --list ${test:+--test} ${selfhost:+--selfhost} ${iso:+--iso})
+else
+    overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} $steps ${selfhost:+selfhost} $iso
+fi
 if [ -n "$parallel" ]; then
     [ -z "${OVERALL_STATE:-}" ] || echo "P - 0" >> "$OVERALL_STATE"
     "$ROOT/scripts/parallel.sh" -j "$parallel" ${test:+--test} ${selfhost:+--selfhost} ${iso:+--iso}

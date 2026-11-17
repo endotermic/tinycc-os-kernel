@@ -183,7 +183,7 @@ make_total() { make -n "$@" 2>/dev/null | grep -cE "${PROGRESS_STEP_RE:-^  [A-Z]
 # A parallel run (build.sh --parallel) adds a "P" line to the state file and an "E STEP" mark
 # when each step ends: several steps are then running at once.
 OVERALL_ESTIMATES='fetch 120 patch 20 host-tcc 40 tcc-test 150 tcc-archive 5 tld 5 libelf 3
-kernel 420 musl 45 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
+kernel 420 musl 45 kernel-headers 5 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
 tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 xedit 10 wallpapers 15 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
 overall_tty() { pb_tty && [ -t 1 ] && have stty && stty size </dev/tty >/dev/null 2>&1; }
 overall_step() { [ -z "${OVERALL_STATE:-}" ] || echo "S $1 $(date +%s)" >> "$OVERALL_STATE"; }
@@ -195,6 +195,7 @@ overall_begin() {
     for _s; do
         _w=; [ ! -f "$_times" ] || _w=$(awk -v s="$_s" '$1 == s { w = $2 } END { print w }' "$_times")
         [ -n "$_w" ] || _w=$(echo $OVERALL_ESTIMATES | awk -v s="$_s" '{ for (i = 1; i < NF; i += 2) if ($i == s) print $(i + 1) }')
+        case $_s in xlib-*) _w=${_w:-10};; esac     # (a library of the X stack: its configure, mostly)
         _w=${_w:-30}; [ "$_w" -ge 1 ] 2>/dev/null || _w=1; echo "$_s $_w"
     done > "$OVERALL_STATE.plan"
     echo "B - $(date +%s)" > "$OVERALL_STATE"

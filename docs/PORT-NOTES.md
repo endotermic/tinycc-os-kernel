@@ -1519,6 +1519,56 @@ invocations, bzImage 6 574 080, devices-test 13/13, generation 2 built in the 32
 2m56s (2406 tcc, 30 host-tool compiles) and booted. The guest's libelf.a is archived with the
 target compiler's `-ar`: the x86_64 host tcc's refuses ELF32 members.
 
+## The parallel build: one jobserver, one step per X library (2026-11-17)
+
+Where the time went in the parallel graph of 2026-11-10: the X stack was one lane of steps in
+their serial order (xlibs, tinyx, xdm, jwm, mlterm, xfiles, xedit, wallpapers, links), about
+276 s of a 330 s critical path, while the kernel lane took 125 s. Each of its ~35 autotools
+libraries spends 4-7 s in configure (one process at a time) against about 1 s of make, since
+tcc compiles fast. Four changes:
+
+- **One step per X library.** `scripts/build.sh xlib-NAME` builds one library with its
+  options (the table `xlib_one`); `scripts/parallel.sh` gives each its real dependencies, so
+  that, for example, freetype, fontconfig and libXft build next to the libxcb, libX11, libXt
+  and libXaw chain, and links no longer waits for jwm, mlterm or xfiles. The group steps
+  (`xlibs`, `tinyx`, `xdm`, `jwm`, `xfiles`) build the same libraries in `--serial` mode; inside
+  the graph (`XLIB_GRAPH=1`) they only check `build/<arch>/x/NAME/.installed`. A few
+  dependencies exist only to keep the serial order's view of optional libraries: libXdmcp
+  after libxcb (libxcb links libXdmcp when it finds it), libXpm after libXt and libXext (its
+  sxpm program).
+- **One make jobserver.** The graph's make runs with `-jN --jobserver-style=fifo` (N = `--jobs`,
+  or `--parallel=N`). Each job passes the jobserver to its step as `JOBSERVER_FLAGS`, and the
+  step's own parallel makes run through `jrun`/`jmake`, so the kernel's, musl's and the
+  libraries' compilers all draw from the same N slots. Before, there were 4 steps with
+  `-j$JOBS` each (up to 32 compilers on 8 cores). The logged configure times of libressl
+  (39 s) and xorgproto (20 s) were contention: alone they take 5 s and 3.8 s. Installs and
+  `make -n` still run with MAKEFLAGS unset, one job, as before.
+- **A site cache for configure.** libXau's configure runs with `-C`; `xsite_write` keeps the
+  answers that are facts of the toolchain in `build/<arch>/x/config.site`, and the configure
+  scripts after libXau read it as CONFIG_SITE: X.Org's compiler-flag tests, libtool's and
+  automake's compiler checks, musl's headers and functions that exist (checked against
+  `$MUSLP/include` and `nm libc.a`, not copied blindly). That is 20-30% less configure time
+  (libX11 5.8 to 4.1 s, xorgproto 3.8 to 2.6 s). Left out: libtool's `global_symbol_*` sed
+  programs (they differ between libtool versions) and where it found nm and ld. libXau's
+  libtool records `lt_cv_path_NM=no` (no `x86_64-linux-musl-nm`), and xdm's newer libtool
+  took that as no nm at all (`NM="nm"` in its libtool script) until those entries went.
+- **musl without linux.** The Linux UAPI headers are the step `kernel-headers` (it was the
+  tail of the musl step). musl, the musl-tcc wrapper and the X libraries need none, so they
+  build while linux is still downloading. Only busybox, TinyX (`<linux/fb.h>`), ncurses,
+  LibreSSL and mlterm include them, and links' configure probes `<linux/falloc.h>`; those
+  steps wait for kernel-headers. A configure probe of a missing header was the only silent
+  way to change a result (grep of every configure log); elsewhere a missing header fails the
+  compile. The global "every component fetched and patched" gate went too: each step waits
+  for its own components.
+
+Measured on this host (8 cores, 6 GB) with the same JOBS=6, clean build trees (the sources
+present), `./build.sh --build distro --output initrd`: the scripts before these changes
+361 s, after them 214 s, kernel included. The two trees (built as `build/partold` and
+`build/partest`, names of the same length) agree in every configure result line, `config.h`,
+`libtool` script, `.pc` file, staged file (path, mode, size) and initramfs list entry. Byte
+for byte, the staged programs and libraries are identical apart from busybox's build-date
+banner, and ncurses' archives differ only in their members' timestamps.
+
 ## Debugging recipes
 
 ```bash
