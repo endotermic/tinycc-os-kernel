@@ -38,6 +38,12 @@ SPDX-FileCopyrightText = ["The Open Group", "Keith Packard", "The X.Org Foundati
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = ["patches/libXaw/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The Open Group", "The XFree86 Project", "The X.Org Foundation", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = ["patches/xdm/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["The Open Group", "Keith Packard", "The X.Org Foundation", "2026 Nikolajs Agafonovs"]

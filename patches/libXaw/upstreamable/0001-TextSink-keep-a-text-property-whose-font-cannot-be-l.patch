@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 11:54:00 +0200
+Subject: [PATCH] TextSink: keep a text property whose font cannot be loaded
+
+XawTextSinkConvertPropertyList discarded the whole property list when one
+property named a font the server does not have.  xedit's syntax
+highlighting names Courier and LucidaTypewriter fonts for every property
+(lisp/modules/syntax.lsp), so on a server with only the built-in fonts
+(fixed, cursor) every mode failed ("PROPERTY-LIST: NIL is not an integer")
+and the text was shown without any colours.  Warn, leave the property
+without a font of its own (the default property's, or the text's), and keep
+its colours and the rest of the list.
+---
+ src/TextSink.c | 19 +++++++++----------
+ 1 file changed, 9 insertions(+), 10 deletions(-)
+
+diff --git a/src/TextSink.c b/src/TextSink.c
+index 8c85492..794e240 100644
+--- a/src/TextSink.c
++++ b/src/TextSink.c
+@@ -1559,21 +1559,20 @@ XawTextSinkConvertPropertyList(String name, String spec, Screen *screen,
+ 	if ((argval = XawFindArgVal(params, "font")) != NULL &&
+ 	    argval->value) {
+ 
++	    /* A font the server does not have leaves the property without
++	     * a font of its own (the text's font is used); its colours and
++	     * other attributes still apply, and so does the rest of the list */
+ 	    if ((prop->font = XLoadQueryFont(DisplayOfScreen(screen),
+ 					     argval->value)) == NULL) {
+-		snprintf(buffer, sizeof(buffer), "Cannot load font \"%s\".",
+-			 argval->value);
++		snprintf(buffer, sizeof(buffer), "Cannot load font \"%s\", "
++			 "using the default font.", argval->value);
+ 		XtAppWarning(XtDisplayToApplicationContext
+ 			     (DisplayOfScreen(screen)), buffer);
+-		DestroyTextPropertyList(propl);
+-		if (prev)
+-		    prev->next = NULL;
+-		XawFreeParamsStruct(params);
+-		XtFree((char *)prop);
+-		return (NULL);
+ 	    }
+-	    prop->mask |= XAW_TPROP_FONT;
+-	    SetXlfdDefaults(DisplayOfScreen(screen), prop);
++	    else {
++		prop->mask |= XAW_TPROP_FONT;
++		SetXlfdDefaults(DisplayOfScreen(screen), prop);
++	    }
+ 	}
+ 	/* fontset processing here */
+ 

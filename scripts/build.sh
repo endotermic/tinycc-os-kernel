@@ -51,6 +51,9 @@
 #               xfilesctl, xfilesthumb and xdg-open, /etc/X11/Xresources, the Unifont fallback
 #               font, and libpng/libjpeg/zlib with headers under /usr/lib, /usr/include for the
 #               thumbnailer, libX11's locale data (userland/xfiles/) -> /usr/bin/xfiles ... in the images
+#   xedit       the text editor of the graphical mode: X.Org's xedit on the Athena widgets (Xaw, Xmu,
+#               Xt from the xdm step), static, musl, with its Lisp syntax-highlighting modes and
+#               its app-defaults file -> /usr/bin/xedit, /usr/lib/X11/xedit/lisp in the images
 #   wallpapers  the desktop background: the wallpaper program (userland/wallpaper/: draws a JPEG or
 #               PNG on the root window, scaled to cover the screen without distortion, centred,
 #               the overhang cut off; JWM's background command and xdm's Xsetup_0 run it), static,
@@ -70,7 +73,7 @@
 #               build-toolchain / send-file (userland/selfhost/); needs a complete kernel build
 #   iso         hybrid BIOS/UEFI GRUB ISO -> out/<arch>/ (boot/mkiso.sh; with the self-hosting
 #               image's menu entries when it exists)
-#   all         host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles wallpapers links guest-tcc initramfs
+#   all         host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
 #   clean-all   the same for every architecture: build/ and out/ as a whole
@@ -856,6 +859,37 @@ step_mlterm() {
     cp "$ROOT"/userland/mlterm/main "$ROOT"/userland/mlterm/key "$ROOT"/userland/mlterm/aafont "$STAGE/etc/mlterm/"
     echo "   mlterm $(lock_ref mlterm): $(file -b main/mlterm | cut -d, -f1-2), $(ls -l main/mlterm | awk '{print $5}') bytes; mlclient $(ls -l tool/mlclient/mlclient | awk '{print $5}') bytes; /etc/mlterm: $(ls "$STAGE/etc/mlterm" | tr '\n' ' ')"
 }
+step_xedit() {
+    need_src xedit
+    [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
+    [ -f "$XP/lib/libXaw7.a" ] && [ -f "$XP/lib/libXmu.a" ] && [ -f "$XP/lib/libXt.a" ] || die "no libXaw7.a, libXmu.a or libXt.a in $XP: run the xdm step first"
+    x_env
+    XE=$B/xedit; STAGE=$XE/stage; mkdir -p "$XE"
+    msg "xedit: $(lock_ref xedit), static, musl, CC=musl-tcc, Xaw + Xmu + Xt (core fonts) -> $STAGE/usr/bin/xedit"
+    cd "$XE"
+    # The text editor: X.Org's xedit, plain C on the Athena widgets that the xdm step built
+    # for the greeter.  Its syntax-highlighting modes are Lisp files its own interpreter loads
+    # at run time from --with-lispdir; the app-defaults file (Xedit) from /usr/share/X11/app-defaults,
+    # where xdm's Xlogin already is.  No Xprint (libXprintUtil is not in the stack).  The Xaw
+    # closure in LIBS, so that configure's probes link under tcc's single-pass linker.
+    XLIBS="$("$PKG_CONFIG" --libs xaw7 xmu xt sm ice xpm xext x11) -lSM -lICE -lXext -lm -lX11 -lxcb -lXau"
+    configured config.status "$MUSL_TCC" \
+        || CC=$MUSL_TCC CFLAGS=-O2 CPPFLAGS="-I$XP/include" LDFLAGS="-L$XP/lib" LIBS="$XLIBS" \
+            "$SRC/xedit/configure" --host="$ARCH-linux-musl" --prefix=/usr --disable-dependency-tracking \
+            --with-lispdir=/usr/lib/X11/xedit/lisp --with-appdefaultdir=/usr/share/X11/app-defaults \
+            >"$LOGS/xedit-configure.log" 2>&1 \
+        || fail "$LOGS/xedit-configure.log" "xedit configure failed"
+    : >"$LOGS/xedit.log"
+    rm -f xedit     # relink against the current X libraries
+    run_progress "xedit" "$(make_total)" "$LOGS/xedit.log" make -j"$JOBS" || fail "$LOGS/xedit.log" "xedit build failed"
+    [ -x xedit ] || fail "$LOGS/xedit.log" "no xedit binary"
+    # the staging tree appended to the images (stage_lists): xedit, its Lisp modes and its
+    # app-defaults file (make install with DESTDIR; no man pages in the image)
+    rm -rf "$STAGE"
+    make install DESTDIR="$STAGE" >>"$LOGS/xedit.log" 2>&1 || fail "$LOGS/xedit.log" "xedit install failed"
+    rm -rf "$STAGE/usr/share/man"
+    echo "   xedit $(lock_ref xedit): $(file -b xedit | cut -d, -f1-2), $(ls -l xedit | awk '{print $5}') bytes; lisp: $(find "$STAGE/usr/lib/X11/xedit/lisp" -name '*.lsp' | wc -l) files; app-defaults: $(ls "$STAGE/usr/share/X11/app-defaults" | tr '\n' ' ')"
+}
 step_xfiles() {
     need_src libXfixes libXcursor libXcomposite libXdamage xcompmgr xprop xrdb dmenu xmenu xfiles unifont
     [ -x "$MUSL_TCC" ] || die "no $MUSL_TCC: run the musl step first"
@@ -1157,7 +1191,7 @@ kernel_source_list() (
 # links verifies certificates against), appended to the busybox image's manifest; a missing
 # tree (its step was not run) is named on stderr and the image is made without that part
 stage_lists() {
-    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "wallpapers:wallpapers" "links:web browser"; do
+    for p in "nnn:file manager" "libressl:CA certificates" "tinyx:X server" "xdm:login manager" "jwm:window manager" "mlterm:terminal emulator" "xfiles:file manager" "xedit:text editor" "wallpapers:wallpapers" "links:web browser"; do
         d=$B/${p%%:*}/stage
         if [ -d "$d" ]; then "$ROOT/userland/dir2list.sh" "$d"
         else echo "   no $d (${p%%:*} step): the image has no ${p#*:}" >&2; fi
@@ -1225,7 +1259,7 @@ step_selfhost() {
     # 5. the image: the busybox image's manifest + the guest tcc tree + this tree
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc
+    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
       stage_lists
@@ -1244,7 +1278,7 @@ step_initramfs() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
-    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc
+    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
     # the busybox image's /init is a C script that /usr/bin/tcc runs (-run): it needs the guest tcc
     if [ ! -x "$BUSYBOX" ]; then
@@ -1326,7 +1360,7 @@ for s; do
     case $s in
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
-        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|wallpapers|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|xedit|wallpapers|links|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
@@ -1346,7 +1380,7 @@ done
 need_done
 for s; do
     case $s in
-        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles wallpapers links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
+        all) prepare; for t in host-tcc tld libelf kernel musl busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links guest-tcc initramfs; do overall_step "$t"; "step_$(echo $t | tr - _)"; done;;
         clean|clean-all|clean-src) "step_$(echo $s | tr - _)";;
         *) prepare; overall_step "$s"; "step_$(echo $s | tr - _)";;
     esac

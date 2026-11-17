@@ -79,7 +79,8 @@ xdm: tinyx
 jwm: xdm
 mlterm: jwm
 xfiles: mlterm
-wallpapers: xfiles
+xedit: xfiles
+wallpapers: xedit
 links: wallpapers libressl
 initramfs: kernel busybox nnn links guest-tcc
 ${selfhost:+selfhost: initramfs}

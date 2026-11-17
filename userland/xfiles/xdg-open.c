@@ -25,7 +25,10 @@
  *                          (an ELF binary, or a #! script: tcc runs the C scripts of
  *                          this system through the kernel's #! line)
  *   archive (tar, zip)     its listing (tar tvf, unzip -l) in a terminal window
- *   text                   the editor in a terminal window ($EDITOR, default vi)
+ *   text                   xedit (the graphical editor), when it is on PATH; without it
+ *                          $EDITOR (vi) in a terminal window.  Text is told by the name
+ *                          (text_exts[]: .c, .h, .txt, .md, .sh, .py, .conf, .log, ...,
+ *                          and text_names[]: Makefile, README, ...) or by the first bytes
  *   anything else          hexdump -C in a terminal window
  * Env: EDITOR (vi), BROWSER (links -g), TERMINAL (mlterm; its -e runs a command), DISPLAY.
  * The programs are started detached (a new session, stdio on /dev/null), so that the caller
@@ -164,6 +167,57 @@ static int has_ext(const char *name, const char *ext)
     return ln > le && name[ln - le - 1] == '.' && strcasecmp(name + ln - le, ext) == 0;
 }
 
+/* the names that are text whatever their first bytes (an empty file, a file with a few
+ * odd bytes); HTML is the browser's, executables run */
+static const char *text_exts[] = {
+    "txt", "text", "md", "rst", "log", "csv", "tsv",
+    "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "s", "S", "asm", "inc", "lds",
+    "sh", "py", "pl", "awk", "sed", "lsp", "lisp", "el", "scm", "lua", "tcl", "rb", "go", "rs",
+    "mk", "mak", "make", "am", "in", "m4", "ac",
+    "conf", "cfg", "ini", "rc", "jwmrc", "list", "lock", "toml", "yml", "yaml", "json", "xml",
+    "css", "js", "diff", "patch", "tex", "man", "1", "5", "8", "ad", "xbm", "xpm", "desktop",
+    NULL
+};
+static const char *text_names[] = {
+    "Makefile", "makefile", "GNUmakefile", "Kconfig", "Kbuild", "README", "LICENSE", "COPYING",
+    "INSTALL", "NEWS", "TODO", "ChangeLog", "AUTHORS", "series", "Xresources", ".profile",
+    ".bashrc", ".xinitrc", NULL
+};
+
+static int text_by_name(const char *path)
+{
+    const char *base = strrchr(path, '/');
+    int i;
+    base = base ? base + 1 : path;
+    for (i = 0; text_names[i]; i++)
+        if (strcmp(base, text_names[i]) == 0)
+            return 1;
+    for (i = 0; text_exts[i]; i++)
+        if (has_ext(base, text_exts[i]))
+            return 1;
+    return 0;
+}
+
+/* is PROG an executable file in a directory of PATH? */
+static int on_path(const char *prog)
+{
+    const char *path = getenv("PATH"), *p, *e;
+    char buf[PATH_MAX];
+    if (!path || !*path)
+        path = "/usr/bin:/bin";
+    for (p = path; *p; p = *e ? e + 1 : e) {
+        e = strchr(p, ':');
+        if (!e)
+            e = p + strlen(p);
+        if (e > p && (size_t)(e - p) + strlen(prog) + 2 <= sizeof buf) {
+            snprintf(buf, sizeof buf, "%.*s/%s", (int)(e - p), p, prog);
+            if (access(buf, X_OK) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static int is_text(const unsigned char *b, size_t n)
 {
     size_t i, bad = 0;
@@ -222,7 +276,7 @@ static enum kind classify(const char *path)
         if (strncasecmp(head, "<!DOCTYPE html", 14) == 0 || strncasecmp(head, "<html", 5) == 0)
             return K_HTML;
     }
-    if (is_text(b, n))
+    if (text_by_name(path) || is_text(b, n))
         return K_TEXT;
     return K_BINARY;
 }
@@ -255,6 +309,10 @@ static int open_one(const char *path)
         argv[0] = "unzip"; argv[1] = "-l"; argv[2] = (char *)path; argv[3] = NULL;
         return in_terminal(argv, 1) < 0;
     case K_TEXT:
+        if (on_path("xedit")) {
+            argv[0] = "xedit"; argv[1] = (char *)path; argv[2] = NULL;
+            return spawn(argv) < 0;
+        }
         cmd = strdup(editor);
         n = split(cmd, argv, 60);
         argv[n++] = (char *)path; argv[n] = NULL;
@@ -268,7 +326,7 @@ static int open_one(const char *path)
 /* --with: is the command one that needs a terminal? (an X program is run directly) */
 static int wants_terminal(const char *cmd)
 {
-    static const char *xprogs[] = { "links", "xfiles", "mlterm", "xmenu", "dmenu", "jwm", "xdg-open", "xterm", NULL };
+    static const char *xprogs[] = { "links", "xfiles", "xedit", "mlterm", "xmenu", "dmenu", "jwm", "xdg-open", "xterm", NULL };
     const char *base = strrchr(cmd, '/');
     int i;
     base = base ? base + 1 : cmd;
@@ -291,7 +349,8 @@ int main(int argc, char **argv)
                 "       xdg-open --with COMMAND FILE...  open the files with COMMAND (terminal programs in a terminal)\n"
                 "       xdg-open --run COMMAND [ARG...]  run COMMAND here, then wait for Enter\n"
                 "directories: xfiles; images and HTML: $BROWSER (links -g); executables, archives: in\n"
-                "$TERMINAL (mlterm); text: $EDITOR (vi) in the terminal; the rest: hexdump -C in it\n");
+                "$TERMINAL (mlterm); text: xedit (without it $EDITOR (vi) in the terminal); the rest:\n"
+                "hexdump -C in the terminal\n");
         return argc < 2 ? 2 : 0;
     }
     if (strcmp(argv[1], "--run") == 0) {

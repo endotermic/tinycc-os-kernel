@@ -6,7 +6,7 @@
 # without a password and the three proof-of-concept users ada, grace and dennis with the
 # passwords the login manager's helper text shows; the consoles log in as ada with login -f,
 # getty offers a login on tty2-tty4, xdm a graphical one) and their homes.  ${BUSYBOX}, ${BUSYBOX_INIT},
-# ${UDHCPC_SCRIPT}, ${DEVICES_TEST} and ${ETC} are expanded by gen_init_cpio from the
+# ${UDHCPC_SCRIPT}, ${DEVICES_TEST}, ${ETC} and ${HELLO} are expanded by gen_init_cpio from the
 # environment (scripts/build.sh exports them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
 # guest compiler tree and the staging trees of nnn, LibreSSL and links (userland/dir2list.sh)
@@ -48,6 +48,18 @@ dir   /home        0755 0 0
 dir   /home/ada    0755 1000 1000
 dir   /home/grace  0755 1001 1001
 dir   /home/dennis 0755 1002 1002
+# each account's desktop (xfiles -d shows ~/Desktop): "images", a link to the wallpapers'
+# photographs (the wallpapers step; /usr/share/backgrounds/elementary), and its own copy of
+# hello.c (${HELLO}: userland/hello.c) to compile and run with tcc or open in xedit
+dir   /home/ada/Desktop 0755 1000 1000
+slink /home/ada/Desktop/images /usr/share/backgrounds/elementary 0777 1000 1000
+file  /home/ada/Desktop/hello.c ${HELLO} 0644 1000 1000
+dir   /home/grace/Desktop 0755 1001 1001
+slink /home/grace/Desktop/images /usr/share/backgrounds/elementary 0777 1001 1001
+file  /home/grace/Desktop/hello.c ${HELLO} 0644 1001 1001
+dir   /home/dennis/Desktop 0755 1002 1002
+slink /home/dennis/Desktop/images /usr/share/backgrounds/elementary 0777 1002 1002
+file  /home/dennis/Desktop/hello.c ${HELLO} 0644 1002 1002
 # xdm's authorization directory (DisplayManager.authDir: the servers' cookie files)
 dir   /var         0755 0 0
 dir   /var/run     0755 0 0

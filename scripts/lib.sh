@@ -184,7 +184,7 @@ make_total() { make -n "$@" 2>/dev/null | grep -cE "${PROGRESS_STEP_RE:-^  [A-Z]
 # when each step ends: several steps are then running at once.
 OVERALL_ESTIMATES='fetch 120 patch 20 host-tcc 40 tcc-test 150 tcc-archive 5 tld 5 libelf 3
 kernel 420 musl 45 busybox 60 ncurses 60 nnn 5 libressl 90 zlib 10 libpng 15 xlibs 420
-tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 wallpapers 15 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
+tinyx 30 xdm 30 jwm 15 mlterm 45 xfiles 20 xedit 10 wallpapers 15 links 40 guest-tcc 20 initramfs 20 selfhost 150 iso 30'
 overall_tty() { pb_tty && [ -t 1 ] && have stty && stty size </dev/tty >/dev/null 2>&1; }
 overall_step() { [ -z "${OVERALL_STATE:-}" ] || echo "S $1 $(date +%s)" >> "$OVERALL_STATE"; }
 overall_begin() {

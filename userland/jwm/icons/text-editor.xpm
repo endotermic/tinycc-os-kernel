@@ -1,0 +1,27 @@
+/* XPM */
+/* SPDX-License-Identifier: BSD-2-Clause */
+/* text-editor.xpm - a 16x16 icon of the JWM menu (userland/jwm/icons): a page of text and a pencil */
+static char *text_editor_xpm[] = {
+"16 16 6 1",
+".	c None",
+"o	c #202020",
+"w	c #f0f0f0",
+"l	c #808080",
+"y	c #f0c040",
+"r	c #d04040",
+".ooooooooo......",
+".owwwwwwwo......",
+".owllllwwo......",
+".owwwwwwwo...or.",
+".owlllllwo..oyo.",
+".owwwwwwwo.oyo..",
+".owllllwwooyo...",
+".owwwwwwwoyo....",
+".owllllwoyo.....",
+".owwwwwwoo......",
+".owlllwwwo......",
+".owwwwwwwo......",
+".owllllwwo......",
+".owwwwwwwo......",
+".ooooooooo......",
+"................"};

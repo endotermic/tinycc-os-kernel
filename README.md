@@ -148,7 +148,9 @@ it (the wallpaper blurred and tinted, its luminance capped so that the white tex
 least 7:1 contrast on any photograph; the input fields opaque, dark on light, aligned on one
 left edge, the active one with a blue focus outline; the mouse focuses the fields, a Log in
 button submits, a Power menu restarts or shuts down the machine; anti-aliased DejaVu Sans through Xft, as on the desktop). The desktop is the file manager (`xfiles -d`, started
-by JWM, 2026-11-11): `~/Desktop` as icons on the wallpaper below every window, folders
+by JWM, 2026-11-11): `~/Desktop` as icons on the wallpaper below every window (every
+account's starts with `images`, a link to the wallpapers' photographs, and its own `hello.c`,
+2026-11-17), folders
 opening in their own window, files that other programs put there appearing within about
 two seconds, and a right-click menu on the background with the terminal, the file manager,
 the browser, Restart JWM and Log out. JWM's menu (the tray's
@@ -160,7 +162,9 @@ thumbnails of PNG, JPEG, PNM and text files, drag and drop between its windows a
 other programs, a right-click menu in xmenu, prompts in dmenu embedded in the window on
 Ctrl-L, F2 and Ctrl-N, copy/cut/paste, delete, rename, properties, Latin, Cyrillic and CJK
 names through DejaVu and Unifont; also on Ctrl-Alt-F; its control script, thumbnailer and
-the `xdg-open` opener are C scripts run by tcc), starts links,
+the `xdg-open` opener are C scripts run by tcc), opens the text editor (xedit 1.2.5, 2026-11-17:
+X.Org's Athena editor with syntax highlighting from its Lisp modes; also on Ctrl-Alt-E; the
+file manager opens text files in it and offers it first in "Open with"), starts links,
 restarts JWM or logs out, and the greeter returns; Reboot and Shut down at its end
 (2026-11-13) let any user end the system: busybox `reboot` and `poweroff`, allowed by
 `/etc/busybox.conf`, signal `/init`, which stops every process and resets (no ACPI, so no
@@ -211,7 +215,7 @@ The boot ends with:
 *** tcc version 0.9.28rc e23dabe+114p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
 *** file manager: nnn (? lists its keys, q quits, Enter opens a file in vi)
 *** web browser: links (text mode, http and https: links https://linux.org/ or http://10.0.2.2:8000/; Esc opens the menu, q quits; links -dump URL prints a page)
-*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles)
+*** graphical mode: startx [URL] (the X server Xfbdev on the framebuffer, the JWM window manager and links -g on it; Log out in JWM's menu, on the desktop or Alt-F1, ends it; Terminal in that menu or Ctrl-Alt-T opens mlterm; File manager there or Ctrl-Alt-F opens xfiles; Text editor there or Ctrl-Alt-E opens xedit)
 *** screen: framebuffer 1024x768 (bochs-drmdrmfb), tty1-tty6; logins on tty2-tty4 (Alt-F2..F4)
 *** network: eth0 10.0.2.15 (e1000), sit0, wlan0 (mac80211_hwsim), wlan1 (mac80211_hwsim); bluetooth: no controller (btusb, hci_uart, vhci)
 *** sound: HDA-Intel - HDA Intel (/dev/dsp); usb: 2 devices: QEMU USB Tablet; QEMU USB HARDDRIVE; mouse: /dev/input/mice (QEMU QEMU USB Tablet; ImExPS/2 Generic Explorer Mouse)
@@ -287,7 +291,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/fetch.sh` | shallow-clones each component at its commit into `src/<name>` (branch `base`) |
 | `scripts/patch.sh` | `git am` of `patches/<name>/series` onto branch `patched` (idempotent) |
 | `scripts/parallel.sh` | `build.sh` by default (`--serial` turns it off): the distro build as a GNU make -j graph; every component fetched and patched as its own job, each step started once its sources and the steps it needs are done (the kernel next to the userland), up to 4 at once (`--parallel=N`), output prefixed `[step]` |
-| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, xfiles with xmenu, dmenu, xprop and xrdb, the wallpapers, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
+| `scripts/build.sh` | the build steps (host tcc + i386-tcc, tld, kernel, musl, busybox, ncurses, nnn, libressl, zlib, libpng, the X libraries, TinyX, xdm, JWM with its font and image libraries, mlterm, xfiles with xmenu, dmenu, xprop and xrdb, xedit, the wallpapers, links, guest tcc + i386-tcc, guest make, initramfs, selfhost, ISO) and the clean-up steps (`clean`, `clean-all`, `clean-src`) |
 | `scripts/pkg-config.sh` | the pkg-config the X libraries' configure scripts run: reads the `.pc` files of the tcc-built tree only, never the host's |
 | `userland/xdm/` | the graphical login: xdm's configuration, server list and greeter resources, the C scripts of its setup, startup and session phases, and `xdm-help.c`, the helper text window |
 | `userland/tinyx/` | the Makefile and configuration headers that build TinyX's Xfbdev without autotools |
@@ -295,7 +299,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `userland/jwm/`, `userland/fontconfig/` | JWM's system configuration (`/etc/system.jwmrc`) and the menu's XPM icons; `gperf.sh`, the stand-in for gperf that fontconfig's build needs |
 | `userland/wallpaper/` | `wallpaper.c`, the desktop background (a static program: a JPEG or PNG on the root window, scaled by one factor to cover the screen, centred, the overhang cut off, published in `_XROOTPMAP_ID` for xfiles' desktop; `-s` records the user's choice, `-m` prints JWM's Wallpaper menu, `--cover` shrinks the photographs at build time); the credits file of `/usr/share/backgrounds/elementary` |
 | `userland/mlterm/` | the terminal emulator's system configuration (`/etc/mlterm/main`, `key`, `aafont`: UTF-8, TERM, the Xft engine with DejaVu Sans Mono, the scrollbar on the right, the pty keys) |
-| `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
+| `userland/xfiles/` | the file manager's helpers, C scripts run by tcc: `xfilesctl.c` (the menu, drops, keys, prompts, copy/move/link/delete/rename), `xfilesthumb.c` (64x64 PPM thumbnails of PNG, JPEG, PNM and text, against the staged libpng/libjpeg/zlib), `xdg-open.c` (opens a file by its kind; text in xedit); `Xresources` (`/etc/X11/Xresources`: xfiles' font, colours and icon patterns, xmenu's look), the Unifont license note |
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
@@ -441,7 +445,7 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | zlib, libpng | 1.3.1, 1.6.59 (release tarballs; static, musl, built by tcc unpatched, libpng by hand without its configure; links' graphics mode needs libpng) | 9a93b2b7..., 86a3e4b5... |
 | xorgproto, xtrans, libXau, libXdmcp, xcb-proto, libxcb, libX11 | 2025.1, 1.6.0, 1.0.12, 1.1.5, 1.17.0, 1.17.0, 1.8.14 (release tarballs; the X protocol headers and the client libraries of links' X driver, static, musl, built by tcc unpatched with `scripts/pkg-config.sh`; libXdmcp for its header only) | d6f89f65..., 936b74c6..., 2402dd93..., 31a7abc4..., 392d3c96..., 2c692874..., ebb8a585... |
 | libfontenc, libXfont | 1.1.9, 1.5.4 (release tarballs; the server's font library with its built-in fonts, no FreeType; 1 patch: libXfont's stubs weak under tcc as under GCC) | 94163053..., 59be6eab... |
-| libICE, libSM, libXext, libXt, libXmu, libXpm, libXaw | 1.1.2, 1.2.6, 1.3.7, 1.3.1, 1.3.1, 3.5.20, 1.0.16 (release tarballs; the toolkit of xdm's greeter, static, musl, built by tcc unpatched) | 1da62f73..., 166b4b50..., 6564608d..., cf221218..., 5c8f44e2..., 736704d8..., 012f90ad... |
+| libICE, libSM, libXext, libXt, libXmu, libXpm, libXaw | 1.1.2, 1.2.6, 1.3.7, 1.3.1, 1.3.1, 3.5.20, 1.0.16 (release tarballs; the toolkit of xdm's greeter and xedit, static, musl, built by tcc unpatched; libXaw 1 patch: a text property whose font is missing keeps its colours) | 1da62f73..., 166b4b50..., 6564608d..., cf221218..., 5c8f44e2..., 736704d8..., 012f90ad... |
 | xdm | 1.1.17 (release tarball; the graphical login, static, no PAM; built with Xft; 6 patches: the greeter linked in instead of dlopened, the greeter's background cut from a root window pixmap (`backgroundProperty`: the frosted wallpaper), the text cursor kept inside the input field, one left edge for the input fields, a focus outline around the active field, mouse focus with a Log in button and a power menu) | b1d1db9b... |
 | jwm | 2.4.6 (release tarball; the window manager, static, musl, with every optional library tcc can build: Xft, XRender, Xinerama, PNG, JPEG, XPM, XBM, Shape, Xmu; 3 patches: text drawn with Xft directly where Pango is absent, `__builtin_expect` under tcc, frosted glass for the tray and the menus) | b5871ec2... |
 | libXrender, libXinerama, libXft | 0.9.13, 1.1.5, 2.3.9 (release tarballs; static, musl, built by tcc unpatched) | bf264b68..., 2efa855c..., 47c157fb... |
@@ -453,6 +457,7 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | libXfixes, libXcursor | 6.0.1, 1.2.3 (release tarballs; the two X libraries xfiles needs beyond the stack above, built by tcc unpatched) | e69eaa32..., 74e72da2... |
 | xmenu | master, 2026-04-14 (the pop-up menu of xfiles' right click; 6 patches: a build without Imlib2, fontconfig patterns destroyed once, keys translated without XKB, Down/Up with nothing selected, the layers composed in ARGB32 on servers without a 32-bit visual, frosted glass) | bd012b1e |
 | dmenu | 5.4 (release tarball; the prompt xfiles embeds: the address bar, names; 1 patch: bitmap fonts as glyph fallbacks) | 8fbace2a... |
+| xedit | 1.2.5 (release tarball; the text editor: Athena widgets, syntax highlighting by its own Lisp interpreter; built by tcc unpatched) | 733460cb... |
 | xprop, xrdb | 1.2.8, 1.2.2 (release tarballs; X.Org's property tool, which the control script changes the window's directory with, and the resource loader the session runs on `/etc/X11/Xresources`; built by tcc unpatched) | a8394338..., db2d774a... |
 | wallpapers | LinuxKits/Distro-wallpapers `main`, 2022-09-18, the directory "Elementary OS" alone (a partial clone of a 2 GB repository: 65 MB fetched; elementary OS's wallpapers, photographs published on Unsplash under its license; the 15 JPEGs are shrunk to cover 1920x1200 by the build, 5.3 MB in the image; credits in `userland/wallpaper/README.elementary`) | 6fee171a |
 | unifont | 18.0.01 (a single PCF file, sha256 in `sources.lock`; GNU Unifont as the fallback font for the scripts DejaVu lacks, OFL-1.1 / GPL-2.0-or-later with the font exception; `userland/xfiles/LICENSE.unifont`) | 3f770242... |

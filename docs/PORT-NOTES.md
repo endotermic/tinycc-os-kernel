@@ -770,8 +770,8 @@ well as a tarball).
   `links -g` (an image on a generated HTML page in `/tmp`, removed when the browser ends:
   a bare image file makes links ask whether to save or display it, and "display" shows the
   bytes), executables (ELF or `#!`) and archive listings in mlterm with `xdg-open --run`,
-  which waits for Enter before the window closes, text in mlterm with `$EDITOR` (vi), the
-  rest in `hexdump -C`; `--with COMMAND` for the menu's "Open with". links is now built
+  which waits for Enter before the window closes, text in xedit (since 2026-11-17; in mlterm
+  with `$EDITOR` (vi) when xedit is not on PATH), the rest in `hexdump -C`; `--with COMMAND` for the menu's "Open with". links is now built
   `--with-libjpeg` (the jwm step's libjpeg; it had GIF, PNG and XBM only), so the browser
   shows JPEG pages too.
 * **The thumbnailer `xfilesthumb`** decodes PNG with libpng's simplified API, JPEG with
@@ -878,6 +878,50 @@ registers; and once the attribute was in effect, the combination lost its regist
 attribute after a function-pointer declarator stayed on the variable; the earlier i386 loops
 never ran the SHA-NI path). With the three fixes both loops pass again: generation-2 kernels
 built inside the i386 and the x86_64 guest (300 s each) boot.
+
+## The text editor: xedit (2026-11-17)
+
+X.Org's xedit 1.2.5 (release tarball) is the graphical mode's text editor, built by
+`scripts/build.sh xedit` (after xfiles, in `all` and the parallel graph). It needs nothing beyond
+the Athena toolkit the xdm step already builds for the greeter (libXaw, libXmu, libXt, libSM,
+libICE, libXpm, libXext), and tcc compiled it unpatched in one second (255 "discards
+qualifiers" warnings, all harmless). Static, musl, 2.9 MB on i386. `make install DESTDIR=` stages
+`/usr/bin/xedit`, the Lisp modes of its own interpreter (`/usr/lib/X11/xedit/lisp`, 20 files: C,
+sh, make, Python, Perl, HTML, Lisp, man, ...) and the app-defaults `Xedit`, `Xedit-color`. JWM's
+menu has "Text editor (xedit)" with a 16x16 icon (`userland/jwm/icons/text-editor.xpm`) and
+Ctrl-Alt-E.
+
+The syntax modes asked for Courier and LucidaTypewriter fonts, which TinyX (built-in fonts only)
+does not have, and libXaw then rejected the whole highlighting property list: patch
+`patches/libXaw/upstreamable/0001` keeps the colours with the default font (FIX-LOG C28).
+Remaining cosmetic gaps: the bitmaps `menu12` (menu check marks) and `xlogo11` (the menu
+background pattern) of X.Org's xbitmaps are not in the image ("Cannot convert string ... to type
+Pixmap"), and text uses the server's `fixed` font, without bold or italic, until core PCF fonts are
+added to the font path. Verified on i386 (QEMU screendumps: menu key, a C file highlighted, edit +
+Ctrl-X Ctrl-S); the x86_64 image of the same day also runs it (highlighting checked).
+
+The file manager opens text in xedit (2026-11-17): `xdg-open` starts xedit directly (an X
+program, no terminal) for every text file when xedit is on PATH, and falls back to `$EDITOR` (vi)
+in mlterm without it. Text is what the first bytes say (as before) or what the name says, so an
+empty or slightly binary file opens too: the extensions in `text_exts[]` (.txt, .md, .log, .c,
+.h, .cpp, .S, .sh, .py, .pl, .lsp, .mk, .conf, .ini, .json, .xml, .css, .patch, ...) and the
+names in `text_names[]` (Makefile, Kconfig, README, LICENSE, ...). HTML stays links', and an
+executable `#!` C script still runs on a double click. xfilesctl's "Open with" prompt (Ctrl-O)
+lists `xedit` first, then vi, less, hexdump -C, ... Verified on x86_64 with a scratch overlay of
+the two scripts (QEMU screendumps: an empty `/tmp/notes.txt` opened in xedit; Ctrl-O on the
+desktop's hello.c showed xedit first and opened it, highlighted), and on the host with stub
+programs (a.c, empty.txt, Makefile, odd.log to xedit, random bytes to hexdump, vi in the terminal
+without xedit).
+
+## The default desktop (2026-11-17)
+
+Every account (ada, grace, dennis) gets a `~/Desktop` in the image (`userland/initramfs.list`,
+owned by the user): `images`, a symlink to `/usr/share/backgrounds/elementary` (the 15
+photographs and their credits README; dangling in an image built without the wallpapers step),
+and `hello.c`, a copy of `userland/hello.c` the user may edit (`${HELLO}`, exported by the
+initramfs and selfhost steps). xfiles' desktop shows the folder with its link badge and the
+file with its text thumbnail; the link opens on the photographs with thumbnails. Verified on
+i386 (QEMU screendumps under `--startx`, user ada).
 
 ## The wallpapers (2026-11-13)
 

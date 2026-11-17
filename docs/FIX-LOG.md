@@ -1591,6 +1591,15 @@ C27. 2026-11-13, COMMITTED (patches/xdm/upstreamable/0004), xdm `greeter/Login.c
     trailing spaces, VALUE_X measured against the unpadded defaults); both start after the
     wider of the current prompts. Not a tcc matter. Verification for both: QEMU screendumps
     (field frames intact after typing; both fields' left edges at the same x), x86_64 and i386.
+C28. 2026-11-17, COMMITTED (patches/libXaw/upstreamable/0001), libXaw `src/TextSink.c`
+    (XawTextSinkConvertPropertyList): one property naming a font the server lacks discarded the
+    whole property list. xedit's syntax modes name Courier and LucidaTypewriter for every property
+    (lisp/modules/syntax.lsp); TinyX has only its built-in fonts, so every mode failed with
+    "PROPERTY-LIST: NIL is not an integer" and C files showed no colours. The property now keeps
+    no font of its own (warning "..., using the default font") and its colours. Not a tcc matter:
+    xedit itself compiled with tcc unpatched. Verification: i386 QEMU screendump of /root/hello.c
+    in xedit (comments, preprocessor lines, strings and format specifiers coloured), Ctrl-X
+    Ctrl-S wrote the edited file.
 
 ## The device drivers (2026-10-26)
 

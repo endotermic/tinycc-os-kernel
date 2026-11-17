@@ -694,7 +694,7 @@ static void open_with(int n, char **files)
     int i, k = 0;
     if (n == 0)
         return;
-    cmd = prompt("Open with:", "vi\nless\nhexdump -C\nlinks -g\nxfiles\ntar tvf\nunzip -l\nsh\n");
+    cmd = prompt("Open with:", "xedit\nvi\nless\nhexdump -C\nlinks -g\nxfiles\ntar tvf\nunzip -l\nsh\n");
     if (!cmd || !*cmd) {
         free(cmd);
         return;
