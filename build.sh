@@ -29,11 +29,14 @@
 #   --run     boot the result in QEMU when done (./run.sh; distro only)
 #   On a terminal the bottom row shows the overall progress (steps weighted by their times on
 #   the last run, build/<arch>/step-times); PROGRESS=0 turns it and the per-step bars off.
-#   --clean   remove the build trees, logs and results of --arch (build/<arch>/, out/<arch>/) and
-#             exit; --clean-all: those of every architecture (build/, out/).  Both print what goes
-#             with its size; --dry-run (-n) prints that and removes nothing.  The fetched sources (src/,
-#             with the host tcc built in src/tinycc) stay: scripts/build.sh clean-src removes them
-#             (only when they have no unexported work)
+#   --clean   remove everything a build made or fetched and exit: the build trees and logs
+#             (build/), the results (out/), the downloads (the git clones and tarballs in src/,
+#             with the host tcc built in src/tinycc) and tools/tld's in-tree binaries; the
+#             next build fetches everything again.  It refuses, removing nothing, while a tree
+#             in src/ has work that is not exported to patches/ yet (uncommitted changes, a
+#             stash, unexported commits).  --clean --arch ARCH: only that architecture's
+#             build/<arch>/ and out/<arch>/ (src/ stays).  --clean-all: the same as --clean.
+#             Both print what goes with its size; --dry-run (-n) prints that and removes nothing
 #   -h, --help  this text
 #
 # Target status:
@@ -77,6 +80,7 @@ ask() {
         echo "  '$a' is not one of the choices" >&2
     done
 }
+arch_given=$arch     # --clean: with --arch only that architecture, without it everything
 [ -z "$dry" ] || [ -n "$clean" ] || die "--dry-run goes with --clean or --clean-all"
 if [ -t 0 ] && [ -t 1 ] && [ -z "$clean" ]; then
     [ -n "$build" ] || ask build "What to build:" distro "tcc: only the patched Tiny C Compiler, as a tar.gz archive" "distro: the kernel and userland built with it"
@@ -94,6 +98,8 @@ case $arch in
 esac
 case $output in initrd|iso|all) ;; *) die "unknown output '$output' (initrd, iso, all)";; esac
 if [ -n "$clean" ]; then
+    # --clean alone is the whole clean (clean-all); with --arch, that architecture's trees
+    [ "$clean" = clean ] && [ -z "$arch_given" ] && clean=clean-all
     DRY_RUN=${dry:-0} ARCH=$arch exec "$ROOT/scripts/build.sh" "$clean"
 fi
 # the host check: everything the chosen build needs, named at once (scripts/lib.sh)

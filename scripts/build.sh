@@ -88,7 +88,10 @@
 #   all         host-tcc tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links libnl wifi firmware guest-tcc initramfs
 #   clean       remove build/<arch>/ and out/<arch>/ (the build trees, logs and results of ARCH);
 #               src/ stays, and with it the host tcc, which is built in-tree in src/tinycc
-#   clean-all   the same for every architecture: build/ and out/ as a whole
+#   clean-all   everything a build made or fetched: build/ and out/ as a whole (every
+#               architecture), the fetched sources (src/<name>, src/.downloads; with the same
+#               check as clean-src, made before anything is removed) and the binaries a make in
+#               tools/tld leaves there
 #   clean-src   remove the fetched component trees src/<name> and src/.downloads (scripts/fetch.sh +
 #               scripts/patch.sh recreate them: a 2 GB download); refuses while a tree has
 #               uncommitted changes, a stash, or more commits on top of 'base' than
@@ -1540,7 +1543,7 @@ rel() { case $1 in "$ROOT"/*) echo "${1#"$ROOT"/}";; *) echo "$1";; esac; }
 # (DRY_RUN=1: list only)
 remove_trees() {
     label=$1; shift
-    for p; do shift; [ ! -e "$p" ] || set -- "$@" "$p"; done     # keep the ones that exist
+    for p; do shift; [ ! -e "$p" ] && [ ! -L "$p" ] || set -- "$@" "$p"; done     # keep the ones that exist
     [ $# -gt 0 ] || { msg "$label: nothing to remove"; return 0; }
     msg "$label"
     du -sh "$@" | while IFS='	' read -r size p; do printf '   %6s  %s\n' "$size" "$(rel "$p")"; done
@@ -1555,12 +1558,12 @@ step_clean() {
     rmdir "$BUILD" "$OUT" 2>/dev/null || true      # the parents, when this was the last architecture
 }
 
-step_clean_all() {
-    remove_trees "clean-all: build trees, logs and results of every architecture (src/ stays)" "$BUILD" "$OUT"
-}
-
-step_clean_src() {
-    set --
+# the fetched component trees that may go: every src/<name> of sources.lock, after checking
+# that none holds work that exists nowhere else (uncommitted changes, a stash, commits that
+# patches/<name>/series does not list yet); dies before anything is removed
+SRC_TREES=
+src_trees_check() {
+    SRC_TREES=
     for n in $(lock_names); do
         d=$SRC/$n
         [ -e "$d" ] || continue
@@ -1575,10 +1578,35 @@ step_clean_src() {
                     || die "src/$n has $commits commits on top of 'base' but patches/$n/series lists $series: run scripts/export-patches.sh first"
             fi
         fi
-        set -- "$@" "$d"
+        SRC_TREES="$SRC_TREES $d"
     done
+}
+
+# the binaries "make -C tools/tld" leaves in the repository (scripts/build.sh builds tld into
+# build/<arch>/tld; tools/tld/test.sh and a manual make build it in place)
+TLD_INTREE="tld ld nm objcopy readelf ar strip"
+
+# everything a build made or fetched: build/ (every architecture, and the logs, bisect and
+# scratch trees beside them), out/, the fetched sources with the host tcc built in them
+# (src/, src/.downloads) and tools/tld's in-tree binaries; the sources are checked first
+# (src_trees_check), so that a refusal removes nothing
+step_clean_all() {
+    src_trees_check
+    set -- "$BUILD" "$OUT"
+    for d in $SRC_TREES; do set -- "$@" "$d"; done
+    set -- "$@" "$SRC/.downloads"
+    for t in $TLD_INTREE; do
+        [ ! -e "$ROOT/tools/tld/$t" ] && [ ! -L "$ROOT/tools/tld/$t" ] || set -- "$@" "$ROOT/tools/tld/$t"
+    done
+    remove_trees "clean-all: the build trees, results, fetched sources (src/: scripts/fetch.sh + scripts/patch.sh recreate them, about 4 GB) and in-tree binaries" "$@"
+    if [ "${DRY_RUN:-0}" = 0 ]; then rmdir "$SRC" 2>/dev/null || true; fi
+}
+
+step_clean_src() {
+    src_trees_check
+    set -- $SRC_TREES
     remove_trees "clean-src: the fetched component trees (scripts/fetch.sh + scripts/patch.sh recreate them)" "$@" "$SRC/.downloads"
-    rmdir "$SRC" 2>/dev/null || true
+    if [ "${DRY_RUN:-0}" = 0 ]; then rmdir "$SRC" 2>/dev/null || true; fi
 }
 
 # options first, then every step name is checked before any step runs (a typo after a clean

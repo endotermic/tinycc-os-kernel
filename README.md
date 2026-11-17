@@ -67,8 +67,8 @@ About 2 GB of disk (the kernel checkout is the bulk) and 10 minutes.
 ./build.sh --arch i386                                          # the 32-bit kernel and userland (out/i386)
 ./build.sh --build distro --serial                              # one step after the other (the default is parallel, below)
 ./run.sh --arch i386                                            # boots it in qemu-system-i386 (chosen by itself when only i386 is built)
-./build.sh --clean --arch i386                                  # removes build/i386 and out/i386 (src/ stays)
-./build.sh --clean-all --dry-run                                # lists what a clean of every architecture would free
+./build.sh --clean --dry-run                                    # lists what a full clean would free (build/, out/, src/)
+./build.sh --clean --arch i386                                  # removes only build/i386 and out/i386 (src/ stays)
 ./run.sh                          # boots out/x86_64 in QEMU to a busybox shell; 'exit' ends QEMU
 ./run.sh --arch i386              # the 32-bit system; without --arch, a menu of what is built (on a terminal)
 ./run.sh --list                   # what out/ holds per architecture and boot form, with the missing files
@@ -110,17 +110,20 @@ A build tree survives moving or renaming the repository: the steps re-run `confi
 musl, the guest tcc and GNU make when their `config.mak`/`config.status` record another path,
 and Kbuild recompiles what its dependency files point at.
 
-Cleaning up: `./build.sh --clean [--arch ARCH]` (= `scripts/build.sh clean`) removes the build
-trees, logs and results of one architecture, `build/<arch>/` and `out/<arch>/`; `--clean-all`
-(`clean-all`) those of every architecture. Both print what goes with its size, and `--dry-run`
-(`-n`, or `DRY_RUN=1`; build.sh takes the same spellings) prints that and removes nothing.
-build.sh checks its whole command line before it runs a step, so a mistyped step or option
-after `clean` aborts with nothing removed. The fetched sources in `src/` stay, so the next
-`./build.sh` or `scripts/build.sh all` rebuilds without downloading (the host tcc is built
-in-tree in `src/tinycc` and stays too). `scripts/build.sh clean-src` removes the source trees
-and the downloaded tarball as well, but refuses while a tree has uncommitted changes, a stash,
-or more commits on top of `base` than its series lists: fixes are committed in `src/<name>` and
-exported with `scripts/export-patches.sh`, and nothing unexported may be lost.
+Cleaning up: `./build.sh --clean` (= `scripts/build.sh clean-all`; `--clean-all` is the same)
+removes everything a build made or fetched: the build trees and logs (`build/`, every
+architecture), the results (`out/`), the downloads (the git clones and release tarballs in
+`src/`, with the host tcc built in-tree in `src/tinycc`) and the binaries a `make` in
+`tools/tld` leaves there; the next `./build.sh` fetches everything again (about 4 GB). It
+refuses, and removes nothing, while a tree in `src/` has uncommitted changes, a stash, or more
+commits on top of `base` than its series lists: fixes are committed in `src/<name>` and exported
+with `scripts/export-patches.sh`, and nothing unexported may be lost. `./build.sh --clean --arch
+ARCH` (= `scripts/build.sh clean`) removes only that architecture's `build/<arch>/` and
+`out/<arch>/` and keeps the sources, so the next build needs no download;
+`scripts/build.sh clean-src` removes only the sources (with the same check). Each prints what
+goes with its size, and `--dry-run` (`-n`, or `DRY_RUN=1`; build.sh takes the same spellings)
+prints that and removes nothing. build.sh checks its whole command line before it runs a step,
+so a mistyped step or option after `clean` aborts with nothing removed.
 
 The kernel has two consoles: the serial port (what `./run.sh` shows in the terminal) and
 the screen, tty0, with a PS/2 keyboard. `./run.sh --vga` opens QEMU's display window next to
@@ -339,7 +342,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `boot/mkiso.sh` | GRUB hybrid BIOS/UEFI ISO |
 | `docs/PORT-NOTES.md` | how the port works, wrapper rules, open items, how to debug |
 | `docs/FIX-LOG.md` | the per-fix log (problem, fix, verification) with the fix-to-patch map |
-| `src/`, `build/`, `out/` | sources, build trees and results (not committed; `./build.sh --clean` removes `build/<arch>` and `out/<arch>`, `scripts/build.sh clean-src` the sources, see [Quick start](#quick-start)) |
+| `src/`, `build/`, `out/` | sources, build trees and results (not committed; `./build.sh --clean` removes all three, `--clean --arch ARCH` only `build/<arch>` and `out/<arch>`, see [Quick start](#quick-start)) |
 | `LICENSE`, `LICENSES/`, `REUSE.toml` | BSD-2-Clause for the original parts, the upstream licenses for the patches; the path-to-license map (see [License](#license)) |
 
 ## Patches
