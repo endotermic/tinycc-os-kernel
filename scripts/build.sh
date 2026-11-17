@@ -1009,7 +1009,8 @@ step_links() {
     # search paths.  An out-of-tree (VPATH) build keeps src/links clean.  configure takes CC and
     # CFLAGS from the environment only: a CC=... argument is read as a host type.  tcc
     # compiles links unpatched; patches/links adds css.c (a subset of CSS, 2026-11-13), CSS
-    # fonts through fontconfig, and fixes hidden list items.
+    # fonts through fontconfig, fixes hidden list items, and opens DuckDuckGo's HTML search
+    # when given no URL and no WWW_HOME (Google Search needs JavaScript since 2025).
     # (configure keeps a config.cache; it goes before a re-run, so that nothing of an
     # earlier configuration survives into this one)
     configured config.status "$MUSL_TCC" "--with-ssl=$LSSL" "--x-libraries=$XP/lib" "--with-libjpeg" "--with-freetype" \

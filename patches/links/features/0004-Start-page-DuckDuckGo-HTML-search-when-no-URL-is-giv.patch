@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 11:37:14 +0200
+Subject: [PATCH] Start page: DuckDuckGo HTML search when no URL is given and
+ WWW_HOME is unset
+
+Google Search needs JavaScript since 2025 and answers browsers without it
+(whatever their User-Agent) with "update your browser" or an enable-JS
+redirect; html.duckduckgo.com serves plain HTML results to Links.  A set
+but empty WWW_HOME keeps the old blank start page.
+---
+ session.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/session.c b/session.c
+index ad2281d..8dbfa6e 100644
+--- a/session.c
++++ b/session.c
+@@ -9,6 +9,13 @@ struct list_head sessions = {&sessions, &sessions};
+ struct list_head downloads = {&downloads, &downloads};
+ 
+ /* prototypes */
++/* the page a session opens when it is given no URL and WWW_HOME is unset: DuckDuckGo's
++ * search without JavaScript (Google Search needs JavaScript since 2025 and answers
++ * browsers without it with "update your browser") */
++#ifndef DEFAULT_WWW_HOME
++#define DEFAULT_WWW_HOME "https://html.duckduckgo.com/html/"
++#endif
++
+ static void abort_and_delete_download(void *);
+ static void undisplay_download(void *);
+ static void increase_download_file(unsigned char **f);
+@@ -2921,8 +2928,12 @@ static int read_session_info(struct session *ses, void *data, int len)
+ 		goto_url(ses, uu);
+ 		mem_free(u);
+ 		mem_free(uu);
+-	} else if ((h = cast_uchar getenv("WWW_HOME")) && *h) {
+-		goto_url(ses, h);
++	} else {
++		/* no URL given: $WWW_HOME, or, when it is unset, DEFAULT_WWW_HOME (a set but
++		 * empty WWW_HOME keeps the blank start page) */
++		h = cast_uchar getenv("WWW_HOME");
++		if (!h) h = cast_uchar DEFAULT_WWW_HOME;
++		if (*h) goto_url(ses, h);
+ 	}
+ 	return 0;
+ }
