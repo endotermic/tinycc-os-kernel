@@ -126,6 +126,12 @@ linux-firmware a2dcb924f0897368b0b4f305cbf9808cdda90ce0  20261019  https://git.k
 #sparse linux-firmware ath12k/WCN7850
 #sparse linux-firmware /brcm/brcmfmac*-pcie*
 #sparse linux-firmware cypress
+#sparse linux-firmware i915
+#sparse linux-firmware xe
+#sparse linux-firmware radeon
+#sparse linux-firmware amdgpu
+#sparse linux-firmware nvidia
+#sparse linux-firmware !/nvidia/*/gsp/
 # The wireless regulatory database (2026-11-17): regulatory.db, which cfg80211 loads as
 # firmware (the channels and powers of the country the access point announces); not part of
 # linux-firmware any more.  ISC licence.

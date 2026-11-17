@@ -219,8 +219,12 @@ copies the files the kernel's drivers request from linux-firmware (and `regulato
 `out/<arch>/firmware.cpio.gz`, which the ISO's entries load as a second initrd into
 `/lib/firmware` (`run.sh --firmware` does the same for the direct boot). In the guest,
 `su -c 'wifi scan'` lists the networks in range and `su -c 'wifi connect NAME PASSWORD'` joins
-one (WPA2 or WPA3, then DHCP); `wifi` alone shows the state, `wifi off` leaves. Only QEMU has
-run it so far: none of this has been tried on real hardware yet.
+one (WPA2 or WPA3, then DHCP); `wifi` alone shows the state, `wifi off` leaves. The GPUs:
+Intel i915 and xe, AMD amdgpu (with its DC display engine) and radeon, NVIDIA nouveau
+(without GSP firmware: the GPUs before Ada), with the panel's backlight and write-combined
+framebuffers (MTRR, PAT); the firmware image carries their firmware too (257 MB unpacked in
+all). The i386 kernel leaves out amdgpu and xe. Only QEMU has run it so far: none of this has
+been tried on real hardware yet.
 
 The boot ends with:
 
@@ -256,16 +260,17 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 146 patches, the linker suite, the libelf subset objtool links against, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 154 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
 | `/usr/bin/build-kernel`, `build-toolchain`, `send-file` | the commands (`userland/selfhost/`), see `/usr/share/tinycc-os-kernel/README`. Like `/init`, `flex` and `bison`, they are C scripts: a `#!/usr/bin/tcc -run` line, and tcc compiles and runs them in memory. The image has no shell scripts |
 
 ```bash
-./run.sh --selfhost          # 1 GB of RAM, every CPU (SMP), ttyS1 -> out/<arch>/selfhost/ttyS1.bin
+./run.sh --selfhost          # 1 GB of RAM, every CPU (SMP), ttyS1 -> out/<arch>/selfhost/ttyS1.bin,
+                             # an 8 GB sparse build disk (out/<arch>/selfhost/build.img; BUILD_DISK=size or 0)
 # in the guest:
-build-kernel                 # unpacks the tree to /build (tmpfs), tinyconfig + the fragments, the same
+build-kernel                 # unpacks the tree to /build (the build disk, else a tmpfs), tinyconfig + the fragments, the same
                              # make line as the host's kernel step; result: /build/linux/arch/x86/boot/bzImage
 send-file /build/linux/arch/x86/boot/bzImage      # over ttyS1 to the host
 build-toolchain              # optional: tcc + i386-tcc and tld rebuilt from source into /usr/local,
@@ -284,6 +289,13 @@ the image's toolchain (49 s on 8 cores, a bzImage of the reference's size), `qem
 `./run.sh --selfhost --auto` (the guest runs `build-kernel` and `send-file` itself and shuts
 down: 1 min 34 s for the build on 8 virtual CPUs under KVM, 223 MB of tmpfs, 21 s for the
 transfer, 2 minutes in all), `boot` boots the received kernel and checks for generation 2.
+Since the GPU drivers (2026-11-17) the tree and its objects take 1.8 GB (x86_64) and 1.3 GB
+(i386), more than a tmpfs can hold in 1 GB of RAM: `run.sh --selfhost` attaches a fresh sparse
+disk image whose first bytes mark it as a build disk, and `build-kernel`/`build-toolchain`
+format it (ext2, label `tcc-build`, `/usr/bin/build-disk`) and build there; they touch no
+other disk, so on a real PC a disk is used only when it carries that mark or label
+(`mke2fs -L tcc-build` by hand). With it the guest build takes 12 min 7 s (x86_64) and 7 min
+52 s (i386) on 4 virtual CPUs, with 1 GB of RAM.
 `AUTO=all` has the guest run `build-toolchain` first and build the kernel with its own,
 second-generation tcc and tld (`./run.sh --selfhost --auto=all`), and the same test run on a
 guest-built kernel (`KERNEL=out/<arch>/selfhost/bzImage scripts/selfhost-test.sh all`) builds
@@ -319,7 +331,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 146 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `patches/tinycc/` | 154 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `tools/libelf/` | the libelf subset the kernel's objtool needs (24 functions, ELF32 and ELF64), so that Kbuild builds the real objtool with tcc on the host and in the guest; `test.sh` compares it with a gcc/elfutils objtool |
@@ -479,7 +491,7 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 | libnl | 3.12.0 (release tarball; only libnl-3 and libnl-genl-3, static, musl, built by tcc unpatched: the netlink library of wpa_supplicant, hostapd and iw) | fc51ca71... |
 | wpa_supplicant, hostapd | 2.12, 2.12 (release tarballs; the Wi-Fi client and access point, static, musl, nl80211 through libnl, WPA2/WPA3 (SAE, OWE), 802.11r and enterprise EAP with TLS from LibreSSL, built by tcc unpatched; their build configurations are `userland/wifi/*.config`) | 08e23937..., f4350256... |
 | iw | 6.17 (release tarball; nl80211 from the shell, built by tcc unpatched) | 7d182e49... |
-| linux-firmware | 20261019, a partial clone with only the directories of the kernel's drivers checked out (the `#sparse` lines of `sources.lock`); `scripts/build.sh firmware` takes the files the drivers request into `out/<arch>/firmware.cpio.gz` (216 files, 130 MB unpacked), with the licences of linux-firmware | a2dcb924 |
+| linux-firmware | 20261019, a partial clone with only the directories of the kernel's drivers checked out (the `#sparse` lines of `sources.lock`); `scripts/build.sh firmware` takes the files the drivers request into `out/<arch>/firmware.cpio.gz` (Wi-Fi, Bluetooth, Ethernet and GPU firmware: 1 517 files, 257 MB unpacked; not NVIDIA's GSP firmware), with the licences of linux-firmware | a2dcb924 |
 | wireless-regdb | 2026.09.03 (release tarball; `regulatory.db`, the channels and powers per country, ISC licence; part of the firmware image) | b22e0901... |
 | unifont | 18.0.01 (a single PCF file, sha256 in `sources.lock`; GNU Unifont as the fallback font for the scripts DejaVu lacks, OFL-1.1 / GPL-2.0-or-later with the font exception; `userland/xfiles/LICENSE.unifont`) | 3f770242... |
 

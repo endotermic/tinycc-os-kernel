@@ -50,7 +50,7 @@
 #             drives the first two
 #   --firmware  the direct boot of the busybox image with out/<arch>/firmware.cpio.gz appended
 #             to the initrd, as the ISO's entries load it (scripts/build.sh firmware: the
-#             firmware files of the kernel's drivers in /lib/firmware, 130 MB; MEM 768M); QEMU
+#             firmware files of the kernel's drivers in /lib/firmware, 260 MB; MEM 1G); QEMU
 #             emulates none of those cards, but cfg80211 loads its regulatory.db from there
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
@@ -58,7 +58,9 @@
 # --startx and --iso: the busybox image unpacks to about 97 MB of ramfs and the graphical
 # session needs the rest, 256M ran out of memory when links rescaled a photograph during a
 # window resize, 2026-11-17; 128M panicked at boot since the file manager, 2026-11-03; 1G with
-# --selfhost), KERNEL (a bzImage to boot instead of
+# --selfhost), BUILD_DISK (--selfhost: the size of the sparse build disk image
+# out/<arch>/selfhost/build.img, made fresh for every boot, default 8G; BUILD_DISK=0 or empty:
+# none, the build stays in a tmpfs in RAM), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
 # host's, at most 8 = CONFIG_NR_CPUS), KVM (0: no hardware virtualization; default: KVM with the
 # host's CPU model when /dev/kvm is writable, else TCG), RES (screen resolution for QEMU's display, default
@@ -174,8 +176,8 @@ if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 # rest: on 256 MB the OOM killer ended links or the whole session (2026-11-17)
 if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=512M; fi
 # the firmware image (--firmware, and the ISO's busybox entries when the ISO has it) unpacks
-# to about 130 MB more of ramfs
-if [ -z "$MEM" ] && { [ -n "$firmware" ] || { [ -n "$iso" ] && [ -f "$O/firmware.cpio.gz" ]; }; }; then MEM=768M; fi
+# to about 260 MB more of ramfs (Wi-Fi 130 MB, GPUs 130 MB)
+if [ -z "$MEM" ] && { [ -n "$firmware" ] || { [ -n "$iso" ] && [ -f "$O/firmware.cpio.gz" ]; }; }; then MEM=1G; fi
 if [ -n "$efi" ]; then
     # a combined image works with -bios; a split CODE image needs pflash with a VARS copy
     fw=$OVMF
@@ -213,6 +215,15 @@ if [ -n "$selfhost" ]; then
     mkdir -p "$O/selfhost"
     : > "$O/selfhost/ttyS1.bin"
     set -- -serial file:"$O/selfhost/ttyS1.bin" "$@"
+    # the build disk (userland/selfhost/build-disk): a fresh sparse image whose first bytes
+    # mark it as one, which build-kernel and build-toolchain format and build on, so that the
+    # tree and the objects (1.3-1.7 GB with the GPU drivers) are not held in RAM
+    if [ "${BUILD_DISK-8G}" != "" ] && [ "${BUILD_DISK-8G}" != 0 ]; then
+        rm -f "$O/selfhost/build.img"
+        truncate -s "${BUILD_DISK-8G}" "$O/selfhost/build.img" || die "cannot create $O/selfhost/build.img"
+        printf 'TCC-BUILD-DISK' | dd of="$O/selfhost/build.img" conv=notrunc status=none
+        set -- -drive if=none,id=builddisk,format=raw,file="$O/selfhost/build.img" -device ide-hd,drive=builddisk "$@"
+    fi
     [ -z "$auto" ] || cmdline="$cmdline tcc.selfhost=$auto"
 fi
 KERNEL=${KERNEL:-$O/bzImage}

@@ -307,10 +307,14 @@ step_kernel() {
         "$LINUX/scripts/kconfig/merge_config.sh" -m -O "$KB" "$KB/.config" "$ROOT/kernels/linux/$f" >>"$LOGS/kernel-config.log" 2>&1
     done
     $MK -s olddefconfig >>"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "olddefconfig failed"
-    # every fragment line must survive olddefconfig
+    # every fragment line must survive olddefconfig, unless a later fragment sets the same
+    # option (i386.config leaves out drivers.config's amdgpu and xe)
     for f in $KFRAGS; do
+        later=$(echo "$KFRAGS" | sed "s/.*$f//")
         grep -E '^(CONFIG_|# CONFIG_.* is not set)' "$ROOT/kernels/linux/$f" | while IFS= read -r line; do
             grep -qxF -- "$line" "$KB/.config" && continue
+            opt=$(echo "$line" | sed -E 's/^# //; s/[= ].*//')
+            for g in $later; do grep -qE "^(# )?$opt[= ]" "$ROOT/kernels/linux/$g" && continue 2; done
             case $line in
                 "# CONFIG_"*" is not set")   # absent altogether = not available for this compiler
                     opt=${line#\# }; opt=${opt%% *}
@@ -1270,11 +1274,17 @@ step_wifi() {
 # out/<arch>/firmware.cpio.gz, a second initrd (boot/mkiso.sh) whose /lib/firmware the kernel
 # loads them from; scripts/firmware-select.py resolves WHENCE's links, the globs and the
 # versioned names (an older API version when the newest one the driver names is not out).
-# Left out: the firmware of access-point chips (QCA988X/QCA9887, QCN9074, QCN9274), which no
-# PC or laptop carries, and SDIO/USB Broadcom parts (the kernel has the PCIe driver only).
+# Left out: the firmware of access-point chips (QCA988X/QCA9887, QCN9074, QCN9274) and of AMD's
+# datacenter accelerators (MI100 arcturus, MI200 aldebaran, MI300/MI350: GC 9.4.3/9.4.4/9.5.0
+# and their PSP, SDMA and VCN), which no PC or laptop carries, SDIO/USB Broadcom parts (the
+# kernel has the PCIe driver only), and NVIDIA's GSP firmware (sources.lock checks it out
+# not at all: 145 MB; nouveau drives the GPUs before Ada without it).
 # The licences of linux-firmware and wireless-regdb go along.  Packed with the host's cpio:
 # gen_init_cpio's manifest cannot hold the spaces of some board-specific file names.
-FW_SKIP="ath10k/QCA988X/ ath10k/QCA9887/ ath11k/QCN9074/ ath12k/QCN9274/"
+FW_SKIP="ath10k/QCA988X/ ath10k/QCA9887/ ath11k/QCN9074/ ath12k/QCN9274/
+ amdgpu/arcturus amdgpu/aldebaran amdgpu/gc_9_4_3 amdgpu/gc_9_4_4 amdgpu/gc_9_5_0 amdgpu/psp_13_0_6
+ amdgpu/psp_13_0_12 amdgpu/psp_13_0_14 amdgpu/sdma_4_4_2 amdgpu/sdma_4_4_4 amdgpu/sdma_4_4_5
+ amdgpu/vcn_4_0_3 amdgpu/vcn_5_0_1"
 step_firmware() {
     need_src linux-firmware wireless-regdb
     KB=$B/linux
@@ -1366,6 +1376,14 @@ step_guest_make() {
 # objtool with what it is built from (tools/build, tools/lib/subcmd, tools/scripts, tools/lib,
 # tools/arch/x86: Kbuild builds it in the guest, HOSTCC=tcc-hostcc against /usr/lib/libelf.a).
 # scripts/selfhost-test.sh host proves the list: it builds the kernel from the tarball.
+# src_includes DIR FILE: the files FILE includes as "include $(src)/PATH" (DIR/PATH), and theirs
+src_includes() {
+    sed -n 's/^[[:space:]]*-\{0,1\}include[[:space:]][[:space:]]*\$(src)\/\([^[:space:]]*\).*/\1/p' "$2" \
+        | while IFS= read -r i; do
+            echo "$1/$i"
+            [ ! -f "$1/$i" ] || src_includes "$1" "$1/$i"
+        done
+}
 kernel_source_list() (
     cd "$LINUX"
     {
@@ -1374,8 +1392,14 @@ kernel_source_list() (
         (cd "$KB" && find . -type d) | sed 's|^\./||' | while IFS= read -r d; do
             [ -d "$d" ] || continue      # include/config, include/generated: generated only
             for f in "$d"/Makefile* "$d"/Kbuild* "$d"/*.sh "$d"/*.tbl "$d"/*.bc "$d"/*.lds "$d"/*.lds.S "$d"/*.ld "$d"/*.pl \
-                     "$d"/*_shipped "$d"/*.uni "$d"/*.map "$d"/*.awk; do
+                     "$d"/*_shipped "$d"/*.uni "$d"/*.map "$d"/*.awk "$d"/*.rules; do
                 [ ! -f "$f" ] || echo "$f"      # (no "&&": a failing test would end the subshell under set -e)
+            done
+            # what those Makefiles include from their own tree, also from a directory that
+            # builds nothing (i915's "include $(src)/gvt/Makefile" without CONFIG_DRM_I915_GVT)
+            # and from those (nouveau's Kbuild files chain; $(src) stays the directory built)
+            for f in "$d"/Makefile* "$d"/Kbuild*; do
+                [ ! -f "$f" ] || src_includes "$d" "$f"
             done
         done
         git ls-files Kbuild Makefile COPYING scripts include/linux include/asm-generic include/uapi \
@@ -1447,7 +1471,7 @@ step_selfhost() {
     # the Kbuild wrappers and the commands are C scripts ("#!/usr/bin/tcc -run"), installed
     # under their command names
     for w in tcc-kcc tcc-hostcc; do cp "$ROOT/kernels/linux/$w.c" "$STAGE/usr/bin/$w"; done
-    for c in build-kernel build-toolchain send-file flex bison; do cp "$ROOT/userland/selfhost/$c.c" "$STAGE/usr/bin/$c"; done
+    for c in build-kernel build-toolchain build-disk send-file flex bison; do cp "$ROOT/userland/selfhost/$c.c" "$STAGE/usr/bin/$c"; done
     chmod 755 "$STAGE"/usr/bin/*
     # 4. the Kconfig fragments, the pre-generated Kconfig lexer and parser (flex and bison are
     #    not in the guest), the kernel and tcc patches and the notes

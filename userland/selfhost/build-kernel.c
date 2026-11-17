@@ -10,9 +10,9 @@
  * It is the same make line as the kernel step of scripts/build.sh on the host.
  *
  * Usage: build-kernel [-j N] [make-target...]      (default target: bzImage + the modules dir)
- *   The source is unpacked into $WORK/linux (a tmpfs mounted on /build in the guest, so that
- *   df shows the usage and a full disk cannot take the whole RAM) and left there: a second run
- *   is incremental.  The result is $WORK/linux/arch/x86/boot/bzImage; "send-file" copies it to
+ *   The source is unpacked into $WORK/linux (in the guest /build: a build disk when one is
+ *   attached, see build-disk, else a tmpfs, so that df shows the usage and a full tree cannot
+ *   take the whole RAM) and left there: a second run is incremental.  The result is $WORK/linux/arch/x86/boot/bzImage; "send-file" copies it to
  *   the host (run.sh --selfhost).
  * Env: WORK (/build), JOBS (-j; default nproc), TCC (the tcc to use: /usr/local/bin/tcc when
  *   build-toolchain made one, else /usr/bin/tcc), GEN (the generation number that becomes the
@@ -415,10 +415,13 @@ int main(int argc, char **argv)
     if (!gen || !*gen)
         gen = fmt("%ld", (u.version[0] == '#' ? strtol(u.version + 1, NULL, 10) : 0) + 1);
 
-    /* the work directory: a tmpfs in the guest (85% of RAM at most; the tree needs ~70 MB, the
-     * build ~160 MB), nothing on the host (NO_TMPFS) */
+    /* the work directory: in the guest a build disk when there is one (build-disk: a disk
+     * marked for it by run.sh --selfhost; the tree and the objects of the kernel with the GPU
+     * drivers are 1.3-1.7 GB, which would otherwise stay in RAM), else a tmpfs (85% of RAM at
+     * most); nothing on the host (NO_TMPFS) */
     mkdir_p(work);
-    if (!getenv("NO_TMPFS") && !is_mounted(work)) {
+    if (!getenv("NO_TMPFS") && !is_mounted(work)
+        && run((char *[]){ "build-disk", (char *)work, NULL }, NULL) != 0) {
         if (mount("tmpfs", work, "tmpfs", 0, "size=85%") != 0)
             fprintf(stderr, "%s: no tmpfs (CONFIG_TMPFS); building on the root filesystem (ramfs, no size limit)\n", prog);
     }

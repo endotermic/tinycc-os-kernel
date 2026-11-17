@@ -66,12 +66,12 @@ lock_urls()   { lock_field "$1" 4 | tr ',' ' '; }
 # the directory of a component that is checked out alone ("#sparse NAME DIRECTORY", which may
 # contain spaces); empty for the components that are checked out whole.  lock_sparse_all: every
 # "#sparse NAME ..." line of the component, one per line (linux-firmware: the directories and
-# files the image takes from it; a value that starts with "/" is a git pattern as it is,
-# e.g. "/iwlwifi-*", any other one a directory)
+# files the image takes from it; a value that starts with "/" or "!" (an exclusion) is a
+# git pattern as it is, e.g. "/intel/ibt-*" or "!/nvidia/*/gsp/", any other one a directory)
 lock_sparse() { awk -v n="$1" '$1 == "#sparse" && $2 == n { sub(/^#sparse[ \t]+[^ \t]+[ \t]+/, ""); print; exit }' "$LOCK"; }
 lock_sparse_all() { awk -v n="$1" '$1 == "#sparse" && $2 == n { sub(/^#sparse[ \t]+[^ \t]+[ \t]+/, ""); print }' "$LOCK"; }
 # the git sparse-checkout patterns of those lines (--no-cone)
-sparse_patterns() { lock_sparse_all "$1" | while IFS= read -r l; do case $l in /*) echo "$l";; *) echo "/$l/";; esac; done; }
+sparse_patterns() { lock_sparse_all "$1" | while IFS= read -r l; do case $l in /*|!*) echo "$l";; *) echo "/$l/";; esac; done; }
 
 # number of non-comment entries of a series file
 series_files() { sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$1"; }

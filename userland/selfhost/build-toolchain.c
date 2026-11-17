@@ -381,7 +381,9 @@ int main(int argc, char **argv)
     if (!is_file(fmt("%s/tld.tar.gz", src)))
         die("no %s/tld.tar.gz", src);
     mkdir_p(work);
-    if (!getenv("NO_TMPFS") && !is_mounted(work))
+    /* a build disk when one is attached (build-disk), else a tmpfs */
+    if (!getenv("NO_TMPFS") && !is_mounted(work)
+        && run((char *[]){ "build-disk", (char *)work, NULL }, NULL) != 0)
         mount("tmpfs", work, "tmpfs", 0, "size=85%");
     if (chdir(work) != 0)
         die("cannot enter %s: %s", work, strerror(errno));

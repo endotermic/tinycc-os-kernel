@@ -61,11 +61,38 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   the firmware image unpacks into `/lib/firmware` and cfg80211 loads `regulatory.db` from it;
   selfhost-test all.  Not tested: any real card.
 
-## Group 3: GPU and display
-- `DRM_I915` (Intel), `DRM_AMDGPU` (+ firmware) / `DRM_RADEON`, `DRM_NOUVEAU`.
-- `BACKLIGHT_CLASS_DEVICE`, `ACPI_VIDEO` (brightness keys), `MTRR` + `X86_PAT` (write-combined
-  framebuffer).
-- Today: simpledrm on the firmware framebuffer only (no mode change, no external monitor).
+## Group 3: GPU and display — DONE (2026-11-17)
+
+- Drivers (drivers.config): Intel `DRM_I915` and `DRM_XE` (with `X86_PLATFORM_DEVICES`), AMD
+  `DRM_AMDGPU` with SI and CIK support and the DC display engine, `DRM_RADEON`, NVIDIA
+  `DRM_NOUVEAU`; `BACKLIGHT_CLASS_DEVICE`, `ACPI_VIDEO`, `MTRR` and `X86_PAT` (the boot log
+  shows PAT's write-combining entry).  simpledrm keeps the screen until one of them probes.
+  x86_64 bzImage 10.8 -> 18.3 MB (5 196 compiler runs from clean).
+- i386 leaves out amdgpu and xe (i386.config): their GPUs postdate 32-bit-only PCs, and
+  amdgpu's DC converts doubles to 64-bit integers, which tcc's i386 back end does through
+  libtcc1's __fixdfdi/__fixsfdi (3 700 references, not linked into a kernel).  i386
+  bzImage 9.7 -> 12.3 MB.  scripts/build.sh's fragment check now lets a later fragment
+  override an earlier one.
+- tcc fixes 136 (`__VA_OPT__`: xe), 137 (GNU `, ## args` pastes the argument unexpanded:
+  nouveau), 138 (`__builtin_constant_p` in a constant expression: nouveau) and 139 (u64 <->
+  double inline on x86: amdgpu's DC), docs/FIX-LOG.md.
+- Firmware: the firmware image takes what i915, xe, amdgpu, radeon and nouveau request from
+  linux-firmware's i915/, xe/, amdgpu/, radeon/ and nvidia/ (without NVIDIA's GSP firmware,
+  145 MB, which sources.lock does not check out: nouveau drives the GPUs before Ada without
+  it; Ada and later stay on simpledrm or the iGPU), without AMD's datacenter accelerators
+  (MI100/MI200/MI300/MI350).  The image grew to 1 517 files, 257 MB unpacked (amdgpu 100 MB,
+  i915 11 MB, radeon 6 MB, xe 5.5 MB, nvidia 3.3 MB), 104 MB packed; `run.sh --firmware`
+  and `--iso` give 1 GB.  Missing: firmware of unreleased AMD parts (GC 11.5.4/11.5.6/12.1,
+  PSP 15) and the GSP files.
+- Self-hosting: the pruned tree now carries the Makefiles that others include through
+  `$(src)/` (i915's gvt/, nouveau's Kbuild chain) and xe's `*.rules` (the input of its generated
+  xe_wa_oob.h).  The tree and the objects grew to 1.8 GB (x86_64) and 1.3 GB (i386), which no
+  longer fit a tmpfs in the guest's RAM (the i386 link was OOM-killed at 1.5 GB): the guest
+  builds on a disk image that `run.sh --selfhost` attaches (8 GB sparse, marked
+  "TCC-BUILD-DISK"; userland/selfhost/build-disk formats it ext2 and mounts it on /build).
+- Verified in QEMU: both kernels boot, devices-test 14/14 (the screen still on bochs-drm),
+  selfhost-test host and all on both arches with the default 1 GB (generation 2 built in
+  12 min 7 s on x86_64, 7 min 52 s on i386, and boots).  Not tested: any real GPU.
 
 ## Group 4: input
 - `HID_MULTITOUCH`, `I2C_HID_ACPI`, `I2C_DESIGNWARE_PLATFORM`, `INTEL_LPSS(_PCI)`, `PINCTRL` +
