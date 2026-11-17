@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 16:50:07 +0200
+Subject: [PATCH] tests: 174_paren_string_init, the case of the previous commit
+
+---
+ tests/tests2/174_paren_string_init.c      | 29 +++++++++++++++++++++++
+ tests/tests2/174_paren_string_init.expect |  4 ++++
+ 2 files changed, 33 insertions(+)
+ create mode 100644 tests/tests2/174_paren_string_init.c
+ create mode 100644 tests/tests2/174_paren_string_init.expect
+
+diff --git a/tests/tests2/174_paren_string_init.c b/tests/tests2/174_paren_string_init.c
+new file mode 100644
+index 0000000..4c1e3f2
+--- /dev/null
++++ b/tests/tests2/174_paren_string_init.c
+@@ -0,0 +1,29 @@
++/* arrays initialized from parenthesized string literals (a GCC extension the
++   Linux rtw88 driver uses), and the parenthesized initializers that are not one */
++#include <stdio.h>
++
++struct r { char a[2]; unsigned char x, y; };
++static const struct r w = {.a = ("00"), .x = (1), .y = 2};
++static const struct r m[] = { {.a = ("AD"), .x = 3, .y = 4}, {.a = ("AE"), .x = 5, .y = 6} };
++char s1[] = ("hello");
++char s2[4] = (("abc"));
++struct q { int n; char t[8]; } qq = { 1, ("xy") };
++#define S(x) (x)
++char mac[] = S("mac" "ro");
++
++/* not a parenthesized literal: brace elision, subscripts */
++struct e { char a[2]; } ee = { (1), (2) };
++char c0[2] = { ("ab")[1], ("cd")[0] };
++struct f { char a[3]; int n; } ff = { ("ab")[0], 5 };
++int iw[3] = { (1), (2), (3) };
++
++int main(void)
++{
++    char loc[3] = ("ok");
++    struct r l = {.a = ("ZZ"), .x = 7};
++    printf("%.2s %d %d %.2s %d %.2s\n", w.a, w.x, w.y, m[1].a, m[1].x, m[0].a);
++    printf("%s %s %d %s %s %d\n", s1, s2, (int)sizeof s1, qq.t, mac, (int)sizeof mac);
++    printf("%s %.2s %d\n", loc, l.a, l.x);
++    printf("%d %d %c%c %d %d %d %d\n", ee.a[0], ee.a[1], c0[0], c0[1], ff.a[0], ff.a[1], ff.n, iw[2]);
++    return 0;
++}
+diff --git a/tests/tests2/174_paren_string_init.expect b/tests/tests2/174_paren_string_init.expect
+new file mode 100644
+index 0000000..04c9447
+--- /dev/null
++++ b/tests/tests2/174_paren_string_init.expect
+@@ -0,0 +1,4 @@
++00 1 2 AE 5 AD
++hello abc 6 xy macro 6
++ok ZZ 7
++1 2 bc 97 5 0 3

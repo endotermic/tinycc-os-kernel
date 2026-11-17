@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 16:58:30 +0200
+Subject: [PATCH] tccgen: unreferenced static const data is not emitted, as
+ with gcc -O2 (a braced initializer is kept as tokens and emitted at the end
+ of the unit when referenced; the Linux iwlwifi driver's mei_ops without
+ CONFIG_IWLMEI)
+
+---
+ tccgen.c | 105 ++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 101 insertions(+), 4 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 9602616..f21434a 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -575,7 +575,8 @@ static void mark_pending_alias_targets(void)
+     int i;
+     for (i = 0; i < nb_pending_aliases; i++) {
+         Sym *ts = sym_find(pending_aliases[i]->target);
+-        if (ts && !ts->c && (ts->type.t & VT_BTYPE) == VT_FUNC)
++        if (ts && !ts->c && ((ts->type.t & VT_BTYPE) == VT_FUNC
++                             || (ts->type.t & VT_STATIC)))
+             put_extern_sym2(ts, SHN_UNDEF, 0, 0, 1);
+     }
+ }
+@@ -11620,6 +11621,98 @@ static void gen_function(Sym *sym)
+     next();
+ }
+ 
++/* Unreferenced static const data is not emitted, as gcc -O2 drops it: a
++   file-scope "static const T x = { ... };" keeps its initializer as tokens
++   and is emitted at the end of the unit only if something referenced it
++   (sym->c: an ELF symbol was made for a relocation or an alias), like the
++   static functions of gen_inline_functions(), with which it alternates
++   until neither adds anything.  The Linux kernel relies on it: iwlwifi's
++   "static const struct iwl_mei_ops mei_ops = { ... }" is only passed to
++   iwl_mei_register(), a stub that folds without CONFIG_IWLMEI, and points
++   to a function that calls into vendor-cmd.c, which is then not built.
++   Only plain cases: complete type, a braced initializer, no attribute
++   section/used/alias/cleanup/asm label, not -g, the first declaration. */
++typedef struct DeferredData {
++    TokenString *init;
++    Sym *sym; /* while not emitted */
++    CType type;
++    AttributeDef ad;
++    int r, v;
++    char filename[1];
++} DeferredData;
++static DeferredData **deferred_data;
++static int nb_deferred_data;
++
++static int defer_static_data(CType *type, AttributeDef *ad, int r, int v)
++{
++    CType *tp = type;
++    DeferredData *dd;
++    Sym *sym, *f;
++    int align;
++
++    if (!(type->t & VT_STATIC) || (type->t & (VT_TLS | VT_VOLATILE)) || tok != '{'
++        || debug_modes || ad->section || ad->f.func_used || ad->alias_target
++        || ad->cleanup_func || ad->asm_label || ad->auto_type || sym_find(v)
++        || (type->t & VT_BTYPE) == VT_FUNC || type_size(type, &align) <= 0)
++        return 0;
++    while ((tp->t & (VT_BTYPE|VT_ARRAY)) == (VT_PTR|VT_ARRAY))
++        tp = &tp->ref->type;
++    if (!(tp->t & VT_CONSTANT))
++        return 0;
++    if ((type->t & VT_BTYPE) == VT_STRUCT && (f = type->ref->next)) {
++        while (f->next)
++            f = f->next;
++        if ((f->type.t & VT_ARRAY) && f->type.ref->c < 0)
++            return 0;                   /* a flexible array member */
++    }
++    /* declared as a tentative definition is ("static T x;"), so that the
++       definition at the end of the unit is not a redefinition */
++    sym = sym_push(v, type, r | VT_SYM, 0);
++    sym->type.t |= VT_EXTERN;
++    patch_storage(sym, ad, NULL);
++    dd = tcc_mallocz(sizeof *dd + strlen(file->filename));
++    strcpy(dd->filename, file->filename);
++    dd->sym = sym, dd->type = *type, dd->ad = *ad, dd->r = r, dd->v = v;
++    skip_or_save_block(&dd->init);      /* tok: the ',' or ';' after it */
++    dynarray_add(&deferred_data, &nb_deferred_data, dd);
++    return 1;
++}
++
++/* emit the deferred data that was referenced; nonzero if any */
++static int gen_deferred_data(void)
++{
++    int i, done = 0, saved_nocode_wanted = nocode_wanted;
++    for (i = 0; i < nb_deferred_data; ++i) {
++        DeferredData *dd = deferred_data[i];
++        if (dd->sym && dd->sym->c) {
++            dd->sym = NULL;
++            nocode_wanted = DATA_ONLY_WANTED; /* as at file scope */
++            tccpp_putfile(dd->filename);
++            unget_tok(0);
++            begin_macro(dd->init, 1);
++            dd->init = NULL;            /* freed with the macro level */
++            next();
++            decl_initializer_alloc(&dd->type, &dd->ad, dd->r, 1, dd->v, VT_CONST);
++            if (tok != TOK_EOF)
++                expect("end of the initializer");
++            end_macro();
++            next();
++            nocode_wanted = saved_nocode_wanted;
++            done = 1;
++        }
++    }
++    return done;
++}
++
++static void free_deferred_data(void)
++{
++    int i;
++    for (i = 0; i < nb_deferred_data; ++i)
++        if (deferred_data[i]->init)
++            tok_str_free(deferred_data[i]->init);
++    dynarray_reset(&deferred_data, &nb_deferred_data);
++}
++
+ static void gen_inline_functions(TCCState *s)
+ {
+     Sym *sym;
+@@ -11629,7 +11722,7 @@ static void gen_inline_functions(TCCState *s)
+     tcc_open_bf(s, ":inline:", 0);
+     /* iterate while inline function are referenced */
+     do {
+-        inline_generated = 0;
++        inline_generated = gen_deferred_data();
+         for (i = 0; i < s->nb_inline_fns; ++i) {
+             fn = s->inline_fns[i];
+             sym = fn->sym;
+@@ -11662,6 +11755,7 @@ static void gen_inline_functions(TCCState *s)
+ static void free_inline_functions(TCCState *s)
+ {
+     int i;
++    free_deferred_data();
+     /* free the saved bodies (kept after their compilation for
+        inline_call()) */
+     for (i = 0; i < s->nb_inline_fns; ++i) {
+@@ -12019,7 +12113,9 @@ static int decl(int l)
+                         else if (l == VT_CONST)
+                             /* uninitialized global variables may be overridden */
+                             type.t |= VT_EXTERN;
+-                        decl_initializer_alloc(&type, &ad, r, has_init, v, l);
++                        if (!(has_init && l == VT_CONST
++                              && defer_static_data(&type, &ad, r, v)))
++                            decl_initializer_alloc(&type, &ad, r, has_init, v, l);
+                     }
+ 
+                     if (ad.alias_target && l == VT_CONST) {
+@@ -12032,7 +12128,8 @@ static int decl(int l)
+                             /* the target of an alias is used (it may be
+                                a static function whose code is deferred) */
+                             Sym *ts = sym_find(ad.alias_target);
+-                            if (ts && !ts->c && (ts->type.t & VT_BTYPE) == VT_FUNC)
++                            if (ts && !ts->c && ((ts->type.t & VT_BTYPE) == VT_FUNC
++                                                 || (ts->type.t & VT_STATIC)))
+                                 put_extern_sym2(ts, SHN_UNDEF, 0, 0, 1);
+                         }
+                         esym = elfsym(sym_find(ad.alias_target));

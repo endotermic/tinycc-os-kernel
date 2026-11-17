@@ -141,3 +141,7 @@ compatibility/0139-tests-159_depfile-the-MT-case-of-the-previous-commit.patch
 compatibility/0140-include-limits.h-each-limit-guarded-on-its-own-for-a.patch
 compatibility/0141-tccpp-no-redefined-warning-for-a-macro-that-a-system.patch
 compatibility/0142-tests-173_sysheader_redef-the-case-of-the-previous-c.patch
+compatibility/0143-tccgen-an-array-initialized-from-a-parenthesized-str.patch
+compatibility/0144-tests-174_paren_string_init-the-case-of-the-previous.patch
+compatibility/0145-tccgen-unreferenced-static-const-data-is-not-emitted.patch
+compatibility/0146-tests-175_unused_static_data-the-case-of-the-previou.patch

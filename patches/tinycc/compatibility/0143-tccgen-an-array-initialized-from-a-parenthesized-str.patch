@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 16:50:07 +0200
+Subject: [PATCH] tccgen: an array initialized from a parenthesized string
+ literal, as with gcc (char a[2] = ("00"); the Linux rtw88 driver's
+ COUNTRY_REGD_ENT())
+
+---
+ tccgen.c | 35 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/tccgen.c b/tccgen.c
+index 613aca1..9602616 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -10880,6 +10880,38 @@ static void init_putv(init_params *p, CType *type, unsigned long c)
+    allocation. 'flags & DIF_FIRST' is true if array '{' must be read (multi
+    dimension implicit array init handling). 'flags & DIF_SIZE_ONLY' is true if
+    size only evaluation is wanted (only for arrays). */
++/* An array initialized from a parenthesized string literal, as GCC accepts:
++       char a[2] = ("00");   struct { char c[4]; } s = { .c = (("abc")) };
++   (the Linux rtw88 driver's COUNTRY_REGD_ENT() wraps its macro argument so).
++   At a '(' look ahead: when only parentheses enclose the literal(s) and the
++   initializer ends right after them, continue with the literal(s) alone;
++   otherwise ("(1)" of a brace-elided element, "("ab")[0]") give the tokens
++   back unchanged. */
++static void init_unparen_string(void)
++{
++    TokenString *all = tok_str_alloc(), *lit = tok_str_alloc(), *use;
++    int k = 0, n;
++
++    while (tok == '(')
++        tok_str_add_tok(all), next(), ++k;
++    use = all;
++    if (tok == TOK_STR || tok == TOK_LSTR) {
++        while (tok == TOK_STR || tok == TOK_LSTR)
++            tok_str_add_tok(all), tok_str_add_tok(lit), next();
++        for (n = k; n && tok == ')'; --n)
++            tok_str_add_tok(all), next();
++        if (n == 0 && (tok == ',' || tok == '}' || tok == ';' || tok == ')'
++                       || tok == TOK_EOF))
++            use = lit;
++    }
++    if (tok != TOK_EOF)
++        tok_str_add_tok(use);
++    tok_str_add(use, 0);
++    tok_str_free(use == all ? lit : all);
++    begin_macro(use, 1);
++    next();
++}
++
+ static void decl_initializer(init_params *p, CType *type, unsigned long c, int flags)
+ {
+     int len, n, no_oblock, i;
+@@ -10892,6 +10924,9 @@ static void decl_initializer(init_params *p, CType *type, unsigned long c, int f
+     if (debug_modes && !(flags & DIF_SIZE_ONLY) && !p->sec)
+         tcc_debug_line(tcc_state), tcc_tcov_check_line (tcc_state, 1);
+ 
++    if (!(flags & DIF_HAVE_ELEM) && tok == '(' && (type->t & VT_ARRAY))
++        init_unparen_string();
++
+     if (!(flags & DIF_HAVE_ELEM) && tok != '{' &&
+ 	/* In case of strings we have special handling for arrays, so
+ 	   don't consume them as initializer value (which would commit them

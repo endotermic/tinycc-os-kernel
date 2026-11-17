@@ -74,12 +74,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 131 | tinycc 0138 |
 | | | | | 132 | tinycc 0140 |
 | | | | | 133 | tinycc 0141 |
+| | | | | 134 | tinycc 0143 |
+| | | | | 135 | tinycc 0145 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -140,6 +142,8 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/171_codesize.c` | all (the regparm and relaxation cases on i386) | 128 |
 | `tests/tests2/172_reload_relax.c` | all (the relaxation and reload cases on i386; the 16-bit addresses by `tests/m16-check.sh`) | 130 |
 | `tests/tests2/173_sysheader_redef.c` (+ `173_sysheader/`) | all | 133 |
+| `tests/tests2/174_paren_string_init.c` | all | 134 |
+| `tests/tests2/175_unused_static_data.c` | all (the link fails without the fix) | 135 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2737,3 +2741,53 @@ stub), left the series that day; patches/linux/ is gone and the tree is vanilla.
     by `"..."` redefine two macros of the program, compiled with -Werror; the same headers
     through -I give both warnings), `make test`, and the guest's generation-2 kernel build
     (PORT-NOTES, the vanilla-kernel section, 2026-11-11).
+
+## Real hardware: the Wi-Fi drivers (2026-11-17)
+
+Group 2 of docs/HARDWARE.md put the Wi-Fi drivers of laptops into kernels/linux/drivers.config
+(iwlwifi DVM/MVM/MLD, rtw88, rtw89, mt7921e/mt7925e, ath10k/ath11k/ath12k, brcmfmac). Two tcc
+fixes came out of it; the rest of the ~500 new objects compiled as they were.
+
+134. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0143, test 0144 =
+    tests2/174_paren_string_init), `tccgen.c` (init_unparen_string(), called from
+    decl_initializer()). Problem: an array initialized from a parenthesized string literal,
+    which gcc accepts: rtw88's regd.c builds its country table with
+    `#define COUNTRY_REGD_ENT(_alpha2, ...) {.alpha2 = (_alpha2), ...}` for a `char alpha2[2]`,
+    and tcc took `("AD")` for an expression (a `char *`) and stopped with "struct or union
+    expected". Fix: at a `(` that starts the initializer of an array, look ahead: when only
+    parentheses enclose the string literal(s) and the initializer ends right after them
+    (`,` `}` `;` `)` or the end), continue with the literal(s) alone; otherwise the saved
+    tokens are given back unchanged, so a brace-elided element in parentheses (`{ (1), (2) }`
+    for a `char a[2]` member) and `("ab")[0]` keep their meaning. Verification:
+    174_paren_string_init (gcc's output: globals, locals, a struct member, a macro argument,
+    nested parentheses, and the four negative cases), `make test` ALL TESTS PASSED, the
+    kernel's rtw88.
+
+135. 2026-11-17, COMMITTED (patches/tinycc/compatibility/0145, test 0146 =
+    tests2/175_unused_static_data), `tccgen.c` (defer_static_data(), gen_deferred_data(),
+    free_deferred_data(), decl(), gen_inline_functions(), the alias-target marking).
+    Problem: the kernel link failed with an undefined `iwl_mvm_send_roaming_forbidden_event`:
+    without CONFIG_IWLMEI, iwlwifi's ops.c passes `&mei_ops` (a `static const struct
+    iwl_mei_ops`) to `iwl_mei_register()`, a stub returning -EOPNOTSUPP, which fix 45's
+    folding already drops; but tcc emits every static variable where it is defined, so the
+    unused table stayed in .rodata, its pointer to `iwl_mvm_mei_roaming_forbidden()` made
+    that deferred static function (fix 46) emitted too, and that one calls into
+    vendor-cmd.c, which Kbuild does not build without IWLMEI. gcc -O2 drops unreferenced
+    static data. Fix: a file-scope `static const` object with a braced initializer and a
+    complete type (no flexible array member), no section/used/alias/cleanup/asm-label
+    attribute, not under -g, and not declared before, is declared like a tentative
+    definition (`static T x;`, VT_EXTERN, no storage) and its initializer kept as tokens
+    (skip_or_save_block); at the end of the unit, in the loop of gen_inline_functions(), the
+    objects whose symbol got an ELF symbol (a relocation, an alias, an initializer of another
+    emitted object) are allocated and initialized from the saved tokens, alternating with
+    the deferred functions until neither adds anything. An alias target that is static data
+    gets its ELF symbol at the alias as functions did. Verification: 175_unused_static_data
+    (the unused table's function calls a function defined nowhere and the program links;
+    referenced tables, a table referenced from a deferred function, a declarator list, an
+    alias, a table referenced only by an unused table that is not deferred (an unsized
+    array)), gcc's output; `make test` ALL TESTS PASSED; both kernels link, devices-test
+    14/14 on i386 (every object's static data goes through the new path).
+    Also needed for the link, not a tcc change: CONFIG_HWMON=y (ath12k's thermal.c calls
+    hwmon_device_unregister() in a function reached only through a label that dead code
+    jumps to; gcc removes it, tcc keeps the code after a label).
+

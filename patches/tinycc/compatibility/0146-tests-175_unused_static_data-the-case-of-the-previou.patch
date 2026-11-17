@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 17 Nov 2026 16:58:30 +0200
+Subject: [PATCH] tests: 175_unused_static_data, the case of the previous
+ commit
+
+---
+ tests/tests2/175_unused_static_data.c      | 31 ++++++++++++++++++++++
+ tests/tests2/175_unused_static_data.expect |  1 +
+ 2 files changed, 32 insertions(+)
+ create mode 100644 tests/tests2/175_unused_static_data.c
+ create mode 100644 tests/tests2/175_unused_static_data.expect
+
+diff --git a/tests/tests2/175_unused_static_data.c b/tests/tests2/175_unused_static_data.c
+new file mode 100644
+index 0000000..628822b
+--- /dev/null
++++ b/tests/tests2/175_unused_static_data.c
+@@ -0,0 +1,31 @@
++/* unreferenced static const data is not emitted (gcc -O2 drops it), so what
++   only it points to is not needed: missing_function() is defined nowhere and
++   the program still links.  The Linux iwlwifi driver relies on it (mei_ops). */
++#include <stdio.h>
++#include <string.h>
++struct ops { int (*f)(int); const char *name; };
++int missing_function(int);                       /* defined nowhere */
++static int uses_missing(int x) { return missing_function(x); }
++static inline int reg_stub(void *p, const struct ops *o) { return -95; }
++static const struct ops unused_ops = { uses_missing, "unused" };   /* only passed to a folded stub */
++static int twice(int x) { return 2 * x; }
++static int thrice(int x) { return 3 * x; }
++static const struct ops used_ops = { twice, "used" };
++static const struct ops *const table[] = { &used_ops };              /* references used_ops */
++static const struct ops via_fn = { thrice, "via-function" };
++static const struct ops *get(void) { return &via_fn; }              /* deferred fn -> deferred data */
++static const int arr[4] = { 1, 2, 3, 4 };
++static const char str[] = "flex";                                    /* size from the initializer: not deferred */
++static const struct ops a1 = { twice, "a1" }, a2 = { twice, "a2" };  /* declarator list */
++static const struct ops aliased = { thrice, "aliased" };
++extern const struct ops alias_of __attribute__((alias("aliased")));
++static const int never = 42;                                         /* scalar, not braced: emitted as before */
++static const struct ops nested_user = { twice, "nested" };
++static const struct ops *const unused_tab[] = { &nested_user };      /* unused itself */
++int main(void)
++{
++    int r = reg_stub(0, &unused_ops);
++    printf("%d %s %d %s %d %d %lu %s %s %s %d\n", r, table[0]->name, table[0]->f(5), get()->name, get()->f(5),
++           arr[3], (unsigned long)sizeof unused_ops, str, a2.name, alias_of.name, (int)sizeof arr);
++    return 0;
++}
+diff --git a/tests/tests2/175_unused_static_data.expect b/tests/tests2/175_unused_static_data.expect
+new file mode 100644
+index 0000000..b2b5f16
+--- /dev/null
++++ b/tests/tests2/175_unused_static_data.expect
+@@ -0,0 +1 @@
++-95 used 10 via-function 15 4 16 flex a2 aliased 16
