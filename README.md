@@ -210,7 +210,8 @@ leaves them out): an e1000 on the user-mode network (the host is 10.0.2.2), an H
 16 MB USB stick image (`out/<arch>/usbstick.img`), the VGA with the `RES` EDID. There is no
 emulated Wi-Fi or Bluetooth hardware in QEMU; the virtual radios and controller exercise the
 stacks. `scripts/devices-test.sh` boots the image and checks every device class unattended
-(`devices-test` in the guest: DHCP, ICMP and HTTP to the host, IPv6, the Wi-Fi interface
+(`devices-test` in the guest: DHCP, ICMP and HTTP to the host, IPv6, a second port on
+QEMU's igb with its own DHCP lease, the Wi-Fi interface
 up, a Bluetooth controller registered, a tone written to `/dev/dsp`, USB enumeration, a FAT
 filesystem on the stick, mouse motion sent through QMP, the screen at `RES`, and a WPA3
 association: hostapd makes an access point of one virtual radio and the `wifi` command joins
@@ -233,7 +234,9 @@ framebuffers (MTRR, PAT); the firmware image carries their firmware too (257 MB 
 all). The i386 kernel leaves out amdgpu and xe. Touchpads and touchscreens: I2C HID precision
 touchpads (hid-multitouch on the Intel LPSS and AMD I2C controllers, with the Intel and AMD pin
 controllers), Elan and Synaptics SMBus touchpads, Goodix touchscreens; X sees them as a mouse
-(tap to click). Only QEMU has run it so far: none of this has
+(tap to click). Wired: Intel igb/igc, Broadcom tg3, Atheros alx/atl1c/atl1e, Marvell sky2,
+JMicron, Aquantia, Realtek r8152 USB dongles and docks; PCIe port services and hotplug, USB4 and
+Thunderbolt docks, USB-C (UCSI). Only QEMU has run it so far: none of this has
 been tried on real hardware yet.
 
 The boot ends with:
@@ -446,7 +449,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 
 | Arch | Status |
 |------|--------|
-| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc, objtool among them since 2026-11-11 (against `tools/libelf`; a stub before); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 15 checks); self-hosting (the kernel rebuilds itself inside the guest) |
+| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc, objtool among them since 2026-11-11 (against `tools/libelf`; a stub before); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 16 checks); self-hosting (the kernel rebuilds itself inside the guest) |
 | i386 | works (2026-10-23; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2788 tcc invocations from a clean tree with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 

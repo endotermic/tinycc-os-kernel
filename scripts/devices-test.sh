@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # devices-test.sh - boot the busybox image with the emulated devices and run the guest's
 # device checks (userland/devices-test.c: PCI, screen, Ethernet with DHCP, ICMP and HTTP to
-# the host, IPv6, Wi-Fi with a WPA3 association, Bluetooth, sound, USB, USB storage, mouse, an I2C HID
-# touchpad made through /dev/uhid) unattended.
+# the host, IPv6, a second port on igb, Wi-Fi with a WPA3 association, Bluetooth, sound, USB,
+# USB storage, mouse, an I2C HID touchpad made through /dev/uhid) unattended.
 # Usage: scripts/devices-test.sh [--arch ARCH]
 #   The host side: a web server on 127.0.0.1 (python3 http.server) that the guest reaches as
 #   10.0.2.2 through QEMU's user-mode network, and mouse motion sent through QMP while the
@@ -37,10 +37,12 @@ trap cleanup EXIT INT TERM
   done ) &
 mouse_pid=$!
 msg "devices-test: $ARCH, RES=$RES, HTTP on 127.0.0.1:$HTTP_PORT (log: $D/console.log)"
-# the guest: a fresh USB stick image, the test mode on the command line, QMP for the mouse
+# the guest: a fresh USB stick image, the test mode on the command line, QMP for the mouse,
+# a second Ethernet port (Intel 82576, the igb driver) on a user network of its own
 rm -f "$D/usbstick.img"
 APPEND="tcc.devtest=http:$HTTP_PORT" USBSTICK=$D/usbstick.img TIMEOUT=${TIMEOUT:-240} RES=$RES \
-    "$ROOT/run.sh" --arch "$ARCH" --no-vga -- -qmp unix:"$qmp",server,nowait </dev/null 2>&1 | tr -d '\r' > "$D/console.log"
+    "$ROOT/run.sh" --arch "$ARCH" --no-vga -- -qmp unix:"$qmp",server,nowait \
+        -netdev user,id=igbnet,net=10.0.3.0/24 -device igb,netdev=igbnet </dev/null 2>&1 | tr -d '\r' > "$D/console.log"
 grep -E '^devtest:|^\*\*\* devices-test' "$D/console.log" | grep -v 'waiting up to'
 failed=$(sed -n 's/^devtest: done: .* checks, \([0-9]*\) failed.*/\1/p' "$D/console.log")
 [ -n "$failed" ] || { echo "error: the guest did not finish the checks (see $D/console.log)" >&2; exit 1; }

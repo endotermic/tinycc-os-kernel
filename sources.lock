@@ -114,6 +114,7 @@ linux-firmware a2dcb924f0897368b0b4f305cbf9808cdda90ce0  20261019  https://git.k
 #sparse linux-firmware rtw88
 #sparse linux-firmware rtw89
 #sparse linux-firmware rtl_nic
+#sparse linux-firmware tigon
 #sparse linux-firmware rtl_bt
 #sparse linux-firmware /mediatek/WIFI_*
 #sparse linux-firmware mediatek/mt7925

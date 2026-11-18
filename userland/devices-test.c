@@ -4,7 +4,8 @@
  * devices-test: exercise the device drivers of kernels/linux/drivers.config inside the guest
  * and print one "devtest: <device>: ok|FAIL <details>" line per device class, then a summary
  * (wpa: a WPA2/WPA3 association between the two mac80211_hwsim radios, hostapd and the wifi
- * command; touchpad: a HID multitouch touchpad made through /dev/uhid).
+ * command; igb: a second Ethernet port of another driver; touchpad: a HID multitouch
+ * touchpad made through /dev/uhid).
  * A C script run by tcc -run (every script of this system is one).  /init runs it when the
  * kernel command line has tcc.devtest (run.sh APPEND=..., scripts/devices-test.sh drives the
  * whole thing: it serves HTTP on the host and moves the mouse through QMP); it can be run by
@@ -179,6 +180,43 @@ static void test_ethernet(const char *http_port)
             fclose(f);
         result("ipv6", ok, "%s link-local address on eth0", ok ? "a" : "no");
     }
+}
+
+/* a second wired port of another driver (scripts/devices-test.sh adds QEMU's igb, Intel's
+   82576, on a user network of its own, 10.0.3.0/24): /init's DHCP must give it an address of
+   that network and its gateway must answer through it */
+static void test_ethernet2(const char *want)
+{
+    char names[256], ifc[32] = "", path[300], addr[32] = "no address", *name, *save;
+    struct ifreq ifr;
+    int fd, i, rc = -1;
+    count_dir("/sys/class/net", "eth", names, sizeof names);
+    for (name = strtok_r(names, " ", &save); name; name = strtok_r(NULL, " ", &save)) {
+        snprintf(path, sizeof path, "/sys/class/net/%s/device", name);
+        if (!strcmp(driver_of(path), want))
+            snprintf(ifc, sizeof ifc, "%s", name);
+    }
+    if (!ifc[0]) {
+        result(want, 0, "no interface driven by %s (eth*: %s)", want, names);
+        return;
+    }
+    /* udhcpc runs in the background from /init: wait for its lease */
+    for (i = 0; i < 100 && strncmp(addr, "10.0.3.", 7); i++) {
+        if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+            break;
+        memset(&ifr, 0, sizeof ifr);
+        snprintf(ifr.ifr_name, sizeof ifr.ifr_name, "%s", ifc);
+        if (ioctl(fd, SIOCGIFADDR, &ifr) == 0)
+            inet_ntop(AF_INET, &((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr, addr, sizeof addr);
+        close(fd);
+        if (strncmp(addr, "10.0.3.", 7))
+            usleep(100000);
+    }
+    if (!strncmp(addr, "10.0.3.", 7))
+        rc = run((char *[]){ "ping", "-c", "1", "-W", "3", "-I", ifc, "10.0.3.2", NULL }, 1);
+    snprintf(path, sizeof path, "/sys/class/net/%s/carrier", ifc);
+    result(want, rc == 0, "%s %s (%s), carrier %s, DHCP from its own user network, ICMP echo to 10.0.3.2 %s", ifc,
+           addr, want, first_line(path)[0] == '1' ? "on" : "off", rc == 0 ? "answered" : "not answered");
 }
 
 static void test_wifi(void)
@@ -630,6 +668,7 @@ int main(int argc, char **argv)
     test_pci();
     test_video();
     test_ethernet(http_port);
+    test_ethernet2("igb");
     test_wifi();
     test_wpa();
     test_bluetooth();

@@ -122,9 +122,27 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   OOM-killed linking vmlinux, so `run.sh --selfhost` now gives 1536M).  Not tested: a real
   touchpad, the LPSS/AMD I2C controllers and the pin controllers.
 
-## Group 5: Ethernet and USB
-- `IGB`, `IGC` (Intel I225/I226), `TIGON3`, `ALX`, `ATL1C`, `USB_RTL8152` (most USB-C dongles).
-- `PCIEPORTBUS`, `HOTPLUG_PCI`, `USB4`/`THUNDERBOLT`.
+## Group 5: Ethernet, PCIe ports, USB4 — DONE (2026-11-18)
+
+- Wired Ethernet (drivers.config), next to e1000/e1000e/r8169/8139 and virtio: Intel `IGB`
+  (82575/82576, I210/I211/I350) and `IGC` (I225/I226 2.5G), Broadcom `TIGON3`, Qualcomm
+  Atheros `ALX`, `ATL1C`, `ATL1E`, Marvell `SKY2`, JMicron `JME`, Aquantia `AQTION`.
+- USB Ethernet: Realtek `USB_RTL8152` (RTL8152/8153/8156: most USB-C dongles and docks),
+  `USB_LAN78XX`, `USB_NET_SMSC95XX`, `USB_NET_AQC111`, next to CDC ECM/NCM, RNDIS and AX88179.
+- PCIe: `PCIEPORTBUS` with `PCIEAER`, `HOTPLUG_PCI` (`_PCIE` native and `_ACPI`).
+- USB4/Thunderbolt 3+: `USB4` (the connection manager: PCIe and DisplayPort tunnels of docks)
+  and `USB4_NET`; USB-C port management through ACPI: `TYPEC`, `TYPEC_UCSI`, `UCSI_ACPI`.
+- Firmware: linux-firmware's `tigon/` (tg3) is now checked out; `rtl_nic/` was already there
+  (r8169) and now also gives r8152 its RTL8153/8156 files.  rtl8157/8159 are not in
+  linux-firmware yet.
+- No tcc fix was needed (2 784 compiler runs for the step).
+- Verified in QEMU: devices-test's new `igb` check (QEMU's 82576 on a user network of its own:
+  /init's DHCP lease on eth1 and an ICMP echo through it), 16/16 on both arches; on q35 with
+  the igb behind a `pcie-root-port` the port driver binds with AER, the NIC works through it
+  and acpiphp registers the slots (QEMU's firmware keeps native hotplug, so pciehp is not
+  exercised).  selfhost-test all on both (i386 9 min 10 s, x86_64 15 min 14 s at 1.5 GB).
+  bzImage: x86_64 18.6 -> 19.3 MB, i386 12.6 -> 13.3 MB.  Not tested: any real NIC,
+  USB4/Thunderbolt, UCSI.
 
 ## Group 6: sound
 - HDA codecs: `SND_HDA_CODEC_HDMI`, `CIRRUS`, `SIGMATEL`, `ANALOG`, `VIA`, `CA0132`.
