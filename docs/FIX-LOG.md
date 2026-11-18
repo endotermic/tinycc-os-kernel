@@ -81,13 +81,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 138 | tinycc 0151 |
 | | | | | 139 | tinycc 0153 |
 | | | | | 140 | tinycc 0155 |
+| | | | | 141 | tinycc 0157 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154 and 0156 those of fixes
-136-140.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156 and 0158 those of fixes
+136-141.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -155,6 +156,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/178_constant_p_const_expr.c` | all (a compile error without the fix) | 138 |
 | `tests/tests2/179_u64_double.c` | all (the inline sequences on x86_64 and i386) | 139 |
 | `tests/tests2/180_constant_p_address.c` | all (a compile error without the fix) | 140 |
+| `tests/tests2/181_inline_const_cond.c` | all (the link fails without the fix) | 141 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2876,3 +2878,33 @@ touchscreens) needed one tcc fix.
     literal) and the offset is 0. Verification: 180_constant_p_address (gcc's output: arrays,
     functions, `&var`, string literals, null and integer pointers, the pinctrl table form),
     `make test`, both kernels (pinctrl-baytrail, -cherryview and the other Intel tables).
+
+## Real hardware: the sound drivers (2026-11-18)
+
+Group 6 of docs/HARDWARE.md (the HD Audio codecs, HDMI/DisplayPort audio, the laptops' speaker
+amplifiers, Intel SOF and AMD ACP for digital microphones) turned on CONFIG_EFI for the
+amplifiers' calibration variables, which needed one tcc fix.
+
+141. 2026-11-18, COMMITTED (patches/tinycc/compatibility/0157, test 0158 =
+    tests2/181_inline_const_cond), `tcc.h` (InlineFunc.kcond), `tccgen.c` (kscan_labels(),
+    inline_call()). Problem: with CONFIG_EFI and without CONFIG_EFI_MIXED the link failed
+    with undefined `efi_mixed_mode_stack_pa`, `__efi64_thunk` and `__efi64_thunk_ret_tramp`:
+    arch/x86/platform/efi/efi_64.c guards their uses with `if (!efi_is_mixed()) return 0;`,
+    and `efi_is_mixed()` is a static inline function
+    `{ if (!IS_ENABLED(CONFIG_EFI_MIXED)) return false; return ...; }`, which gcc inlines and
+    folds; tcc's inliner (fix 120) took a merely static function only with a constant argument
+    that the body tests or with a body of one return statement, so the call stayed and so did
+    the code after it. Fix: kscan_labels() notes an `if` whose condition has no identifier
+    once macros are expanded (numbers and operators: IS_ENABLED()'s `0 || 0`), and
+    inline_call() inlines a static function with such an `if` and at most 192 tokens even
+    without a constant argument; the constant propagation then folds its result in the
+    caller as for the other inlined bodies. Inside a body inlined that way (or for a constant
+    argument) a one-return accessor is still inlined: `scoped_guard()` expands to
+    `if (0) ... else for (...)`, so mac80211_hwsim_nan.c's helper became inlined, and its
+    `tsf / ieee80211_tu_to_usec(512)` stayed a call and a u64 division by an unknown value,
+    `__udivdi3` on i386, until the accessor folded there too. Verification:
+    181_inline_const_cond (a constant `if` in a parameterless helper and in one with a
+    parameter, an identifier condition that stays a test, the accessor inside a body inlined
+    for its `if (0)`; gcc's output; the link fails without the fix), `make test`, both kernels
+    with CONFIG_EFI (the whole tree recompiled: 5 748 compiler runs on x86_64), the ISO
+    booted on OVMF (EFI runtime services set up), devices-test, selfhost-test.

@@ -1282,22 +1282,36 @@ step_wifi() {
 # and their PSP, SDMA and VCN), which no PC or laptop carries, SDIO/USB Broadcom parts (the
 # kernel has the PCIe driver only), and NVIDIA's GSP firmware (sources.lock checks it out
 # not at all: 145 MB; nouveau drives the GPUs before Ada without it).
-# The licences of linux-firmware and wireless-regdb go along.  Packed with the host's cpio:
+# The licences of linux-firmware, wireless-regdb and sof-bin go along.  Packed with the host's cpio:
 # gen_init_cpio's manifest cannot hold the spaces of some board-specific file names.
 FW_SKIP="ath10k/QCA988X/ ath10k/QCA9887/ ath11k/QCN9074/ ath12k/QCN9274/
  amdgpu/arcturus amdgpu/aldebaran amdgpu/gc_9_4_3 amdgpu/gc_9_4_4 amdgpu/gc_9_5_0 amdgpu/psp_13_0_6
  amdgpu/psp_13_0_12 amdgpu/psp_13_0_14 amdgpu/sdma_4_4_2 amdgpu/sdma_4_4_4 amdgpu/sdma_4_4_5
  amdgpu/vcn_4_0_3 amdgpu/vcn_5_0_1"
+# Whole directories: firmware whose names the driver builds at run time (none in modinfo):
+# the TI TAS2781 laptop amplifiers (TAS2XXX<PCI subsystem id>.bin, WHENCE links to ti/audio/)
+FW_ALL="ti/audio/tas2781"
 step_firmware() {
-    need_src linux-firmware wireless-regdb
+    need_src linux-firmware wireless-regdb sof-bin
     KB=$B/linux
     [ -f "$KB/modules.builtin.modinfo" ] || die "no $KB/modules.builtin.modinfo: run the kernel step first"
     FW=$B/firmware; STAGE=$FW/stage
-    msg "firmware: linux-firmware $(lock_ref linux-firmware) + wireless-regdb $(lock_ref wireless-regdb), the files the kernel's drivers request -> $O/firmware.cpio.gz"
+    msg "firmware: linux-firmware $(lock_ref linux-firmware) + wireless-regdb $(lock_ref wireless-regdb) + sof-bin $(lock_ref sof-bin), the files the kernel's drivers request -> $O/firmware.cpio.gz"
     rm -rf "$STAGE"; mkdir -p "$FW"
     python3 -I "$ROOT/scripts/firmware-select.py" "$KB/modules.builtin.modinfo" "$SRC/linux-firmware" \
         "$SRC/wireless-regdb" "$STAGE" $(for p in $FW_SKIP; do printf -- '--skip %s ' "$p"; done) \
+        $(for d in $FW_ALL; do printf -- '--all %s ' "$d"; done) \
         || die "firmware selection failed"
+    # SOF: the audio DSP firmware and topologies of sof-bin, as its install.sh lays them out
+    # (/lib/firmware/intel/sof, sof-ipc4, sof-ipc4-lib, sof-tplg, sof-ipc4-tplg, sof-ace-tplg ->
+    # sof-ipc4-tplg; symlinks kept): the SOF driver builds the names from the PCI id and the
+    # codecs it finds, so modinfo lists none of them
+    if grep -q '^CONFIG_SND_SOC_SOF_INTEL_TOPLEVEL=y' "$KB/.config"; then
+        mkdir -p "$STAGE/lib/firmware/intel"
+        cp -a "$SRC"/sof-bin/sof* "$STAGE/lib/firmware/intel/"
+        cp "$SRC/sof-bin/LICENCE.Intel" "$STAGE/lib/firmware/LICENCE.sof-bin"
+        echo "   sof-bin $(lock_ref sof-bin): $(find "$STAGE/lib/firmware/intel"/sof* -type f | wc -l) files, $(du -sm "$STAGE/lib/firmware/intel"/sof* | awk '{s+=$1} END {print s}') MB"
+    fi
     # brcmfmac's names include its SDIO and USB parts, which the PCIe-only kernel never loads
     grep -v -e '-sdio' -e '-usb' "$FW/missing.txt" > "$FW/missing-pcie.txt" || true
     (cd "$STAGE" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc -R 0:0 --quiet) | gzip -6 -n > "$O/firmware.cpio.gz"

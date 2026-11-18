@@ -127,6 +127,12 @@ linux-firmware a2dcb924f0897368b0b4f305cbf9808cdda90ce0  20261019  https://git.k
 #sparse linux-firmware ath12k/WCN7850
 #sparse linux-firmware /brcm/brcmfmac*-pcie*
 #sparse linux-firmware cypress
+#sparse linux-firmware cirrus
+#sparse linux-firmware /intel/sof*
+#sparse linux-firmware ti/audio/tas2781
+#sparse linux-firmware /aw88399*
+#sparse linux-firmware /ctefx*
+#sparse linux-firmware /ctspeq*
 #sparse linux-firmware i915
 #sparse linux-firmware xe
 #sparse linux-firmware radeon
@@ -137,3 +143,8 @@ linux-firmware a2dcb924f0897368b0b4f305cbf9808cdda90ce0  20261019  https://git.k
 # firmware (the channels and powers of the country the access point announces); not part of
 # linux-firmware any more.  ISC licence.
 wireless-regdb sha256:b22e0901227b820cd1c280abe681a15b773a5103a5e10dc442e94ebb34cbf58d 2026.09.03 https://mirrors.edge.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.09.03.tar.xz,https://www.kernel.org/pub/software/network/wireless-regdb/wireless-regdb-2026.09.03.tar.xz
+# Sound Open Firmware (2026-11-18): the firmware and topology files of Intel's audio DSP
+# (Skylake .. Nova Lake), which SOF loads from /lib/firmware/intel/sof*; not in linux-firmware,
+# released by the SOF project as sof-bin.  The firmware step copies its sof* directories.
+# Intel's firmware licence (redistributable, LICENCE.Intel) and BSD for the topologies.
+sof-bin sha256:5f7bc30b2b5c1e6b0da55a33fc44e2b7f56ae9b06952edcde614f51ef6b943e1 2026.09.2 https://github.com/thesofproject/sof-bin/releases/download/v2026.09.2/sof-bin-2026.09.2.tar.gz

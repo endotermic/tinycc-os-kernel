@@ -236,7 +236,9 @@ touchpads (hid-multitouch on the Intel LPSS and AMD I2C controllers, with the In
 controllers), Elan and Synaptics SMBus touchpads, Goodix touchscreens; X sees them as a mouse
 (tap to click). Wired: Intel igb/igc, Broadcom tg3, Atheros alx/atl1c/atl1e, Marvell sky2,
 JMicron, Aquantia, Realtek r8152 USB dongles and docks; PCIe port services and hotplug, USB4 and
-Thunderbolt docks, USB-C (UCSI). Only QEMU has run it so far: none of this has
+Thunderbolt docks, USB-C (UCSI). Sound: the HD Audio codecs of PCs and HDMI/DisplayPort audio,
+the speaker amplifiers of recent laptops (Cirrus, TI), Intel SOF (its firmware from sof-bin) and
+AMD ACP digital microphones; the kernel knows UEFI's runtime services (EFI). Only QEMU has run it so far: none of this has
 been tried on real hardware yet.
 
 The boot ends with:
@@ -273,7 +275,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 156 patches, the linker suite, the libelf subset objtool links against, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 158 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -344,7 +346,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 156 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `patches/tinycc/` | 158 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `tools/libelf/` | the libelf subset the kernel's objtool needs (24 functions, ELF32 and ELF64), so that Kbuild builds the real objtool with tcc on the host and in the guest; `test.sh` compares it with a gcc/elfutils objtool |

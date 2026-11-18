@@ -144,12 +144,47 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   bzImage: x86_64 18.6 -> 19.3 MB, i386 12.6 -> 13.3 MB.  Not tested: any real NIC,
   USB4/Thunderbolt, UCSI.
 
-## Group 6: sound
-- HDA codecs: `SND_HDA_CODEC_HDMI`, `CIRRUS`, `SIGMATEL`, `ANALOG`, `VIA`, `CA0132`.
-- `SND_SOC` + SOF/SoundWire for Intel laptops with digital microphones (ACPI + firmware).
+## Group 6: sound and HDMI audio — DONE (2026-11-18)
+
+- HD Audio codecs (drivers.config), next to Realtek, Conexant and the generic one: Analog
+  Devices, SigmaTel/IDT, VIA, Senary, Creative CA0110 and CA0132 (with its DSP), C-Media,
+  Cirrus Logic (`SND_HDA_CODEC_CIRRUS`: CS420x/CS421x, CS8409).
+- HDMI and DisplayPort audio: `SND_HDA_CODEC_HDMI` with the Intel, AMD/ATI and NVIDIA
+  variants and the generic one; the GPU drivers of group 3 hand it the monitors' ELD.
+- The speaker amplifiers behind the codec of recent laptops: Cirrus CS35L41/CS35L56, TI
+  TAS2781 (I2C and SPI), Awinic AW88399; `SPI_PXA2XX` and `SPI_AMD` for the SPI ones.  They
+  read their calibration from EFI variables, so the kernel now has `EFI` (UEFI runtime
+  services; GRUB still boots it through the BIOS protocol, no EFI stub): from group 7.
+- Digital microphones and DSP audio: Intel SOF (`SND_SOC_SOF_*`, Skylake .. Panther Lake,
+  HDA link + codec, SoundWire) with the common machine drivers (HDA + DMIC, SoundWire, RT5682,
+  NAU8825, DA7219, ES8336, CS42L42, SSP amplifiers); AMD ACP for Renoir, Yellow Carp (ACP6.x)
+  and Pink Sardine (ACP6.3/7.x) DMICs.  snd-intel-dsp-config chooses SOF only on machines
+  whose ACPI announces a DMIC or SoundWire.
+- Firmware: SOF's firmware and topologies are not in linux-firmware: sources.lock pins
+  sof-bin 2026.09.2 (17.5 MB tarball), and the firmware step copies its `sof*` directories to
+  `/lib/firmware/intel` (611 files, 58 MB); linux-firmware's `cirrus/` (the amplifiers' tuning
+  per laptop model, 1 388 files, 9 MB), `ti/audio/tas2781` (all 93 files and WHENCE's 124
+  links to them, through firmware-select.py's new `--all`: the driver builds the names from the
+  laptop's subsystem id), `ctefx.bin` (CA0132) are checked out now.  The firmware image: x86_64 123 MB packed (+18 MB), i386 85 MB.
+- tcc fix 141 (a small static function with an `if` of constant condition is inlined, as
+  gcc: efi_is_mixed() without CONFIG_EFI_MIXED), docs/FIX-LOG.md.  bzImage x86_64 19.3 ->
+  20.7 MB, i386 13.3 -> 14.4 MB.  Both arches take the whole group.
+- `SERIAL_MULTI_INSTANTIATE` is pinned on (the amplifiers' ACPI node names both of a pair;
+  the drivers only imply it, so the host tree kept it off while the guest's fresh
+  configuration turned it on, and the pruned self-hosting tree lacked its source).
+- The ISOs now carry GRUB's 32-bit UEFI loader too (BOOTIA32.EFI next to BOOTX64.EFI) when the
+  host has grub-efi-ia32-bin (installed 2026-11-18): the i386 ISO for 32-bit UEFI tablets.
+- Verified in QEMU: devices-test 16/16 on both arches (sound on intel-hda + hda-duplex, the
+  generic codec); the x86_64 ISO on OVMF (EFI runtime services set up, /init at 1 GB with the
+  bigger firmware image); the i386 ISO on the 64-bit OVMF through qemu-system-x86_64 (boots,
+  "No EFI runtime due to 32/64-bit mismatch", as any 32-bit kernel there; no 32-bit OVMF
+  package in this Ubuntu, so BOOTIA32.EFI itself is untested); selfhost-test all on both
+  (i386 10 min 50 s, x86_64 16 min at 1.5 GB).
+  QEMU emulates no HDMI codec, DSP, SoundWire or amplifier: not tested on real hardware.
 
 ## Group 7: power and the rest
-- `PM`, `SUSPEND`, `THERMAL`, `X86_MCE`, `EFI` + `EFIVAR_FS`, `INTEL_IOMMU`, `NTFS3_FS`.
+- `PM`, `SUSPEND`, `THERMAL`, `X86_MCE`, `EFIVAR_FS` (`EFI` itself came with group 6),
+  `INTEL_IOMMU`, `NTFS3_FS`.
 - i386 only: `HIGHMEM4G` is on since 2026-11-17 (the self-hosting guest's final link of the
   kernel with the Wi-Fi drivers ran out of the 896 MB of low memory); still no PAE/NX, so at
   most 4 GB; x86_64 has neither limit.

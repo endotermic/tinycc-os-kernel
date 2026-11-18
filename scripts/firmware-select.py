@@ -3,7 +3,7 @@
 """firmware-select.py - copy the firmware files a kernel's built-in drivers request into a
 staging tree (scripts/build.sh firmware).
 
-Usage: firmware-select.py MODINFO LINUX_FIRMWARE REGDB DEST [--skip PREFIX]...
+Usage: firmware-select.py MODINFO LINUX_FIRMWARE REGDB DEST [--skip PREFIX]... [--all DIR]...
 
 MODINFO is the kernel build's modules.builtin.modinfo: its "<driver>.firmware=<name>" entries
 are the names the drivers may load.  Each one is looked up in the linux-firmware checkout
@@ -22,6 +22,9 @@ the requested one, with its .pnvm: the driver builds the name from the steppings
 from the card, and lists only one of them per family in MODULE_FIRMWARE.
 A file that several names resolve to is stored once; the other names are relative symlinks.
 Names starting with a --skip PREFIX are left out (chips of access points, not of PCs).
+--all DIR takes every file under DIR and every WHENCE link to one of them, for drivers that
+build their names at run time from what they find and list none in MODULE_FIRMWARE (the TI
+TAS2781 amplifiers: TAS2XXX<subsystem id>.bin).
 DEST/lib/firmware gets the files and the licences (WHENCE, LICENCE.*, LICENSE.*, GPL-*, the
 regulatory database's LICENSE as LICENSE.wireless-regdb).  Prints a summary; the names found
 nowhere go to DEST/../missing.txt, the skipped ones to DEST/../skipped.txt.
@@ -38,12 +41,15 @@ def main(argv):
         print(__doc__.strip())
         return 0 if len(argv) > 1 and argv[1] in ("-h", "--help") else 2
     modinfo, fwsrc, regdb, dest = argv[1:5]
-    skips = []
+    skips, alls = [], []
     siblings = "iwlwifi-"
     rest = argv[5:]
     while rest:
         if rest[0] == "--skip" and len(rest) > 1:
             skips.append(rest[1])
+            rest = rest[2:]
+        elif rest[0] == "--all" and len(rest) > 1:
+            alls.append(rest[1].rstrip("/") + "/")
             rest = rest[2:]
         else:
             print("firmware-select.py: unknown argument %r" % rest[0], file=sys.stderr)
@@ -154,6 +160,13 @@ def main(argv):
                 take(found[m.group(1)][1], index[found[m.group(1)][1]])
                 continue
         missing.append(name)
+
+    # --all: the directories' files first (so that they are the copies), then the links
+    for d in alls:
+        for k in sorted(k for k in index if index[k] == k and k.startswith(d)):
+            take(k, k)
+        for k in sorted(k for k in index if index[k] != k and index[k].startswith(d)):
+            take(k, index[k])
 
     for fn in sorted(os.listdir(fwsrc)):
         if fn == "WHENCE" or fn.startswith(("LICENCE.", "LICENSE.", "GPL-")):

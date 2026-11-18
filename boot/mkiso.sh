@@ -1,12 +1,13 @@
 #!/bin/sh
 # SPDX-License-Identifier: BSD-2-Clause
 # mkiso.sh - hybrid BIOS + UEFI bootable ISO of out/<arch>: GRUB (grub-mkrescue needs
-# grub-pc-bin, grub-efi-amd64-bin, xorriso and mtools) with the kernel and both initramfs
-# images, plus the self-hosting image and its two menu entries when out/<arch>/initramfs-selfhost.cpio
-# exists; GRUB talks on the serial console like the kernel.  The default entry boots into the
-# graphical login (tcc.xdm: /init runs xdm, whose greeter on the TinyX X server lists the
-# accounts and runs links -g as the session), the second into the graphical mode without a
-# login (tcc.startx); the text console entries follow.
+# grub-pc-bin, grub-efi-amd64-bin, xorriso and mtools; grub-efi-ia32-bin adds 32-bit UEFI)
+# with the kernel and both initramfs images, plus the self-hosting image and its two menu
+# entries when out/<arch>/initramfs-selfhost.cpio exists; GRUB talks on the serial console
+# like the kernel.  The default entry boots into the graphical login (tcc.xdm: /init runs
+# xdm, whose greeter on the TinyX X server lists the accounts and runs links -g as the
+# session), the second into the graphical mode without a login (tcc.startx); the text
+# console entries follow.
 # Usage: boot/mkiso.sh [out.iso]      (default: out/<arch>/tcc-linux-<arch>.iso)
 # Env: ARCH (x86_64, i386), OUT, BUILD (the directories, see scripts/lib.sh)
 set -e
@@ -95,6 +96,7 @@ menuentry "self-hosting, screen first" {
 }
 CFG
 [ -z "$firmware" ] || sed -i -E 's#^(    initrd /boot/initramfs\.cpio\.gz)$#\1 /boot/firmware.cpio.gz#' "$R/boot/grub/grub.cfg"
-# every GRUB platform installed under /usr/lib/grub is included (i386-pc + x86_64-efi)
+# every GRUB platform installed under /usr/lib/grub is included: i386-pc (BIOS), x86_64-efi,
+# and i386-efi when grub-efi-ia32-bin is installed (32-bit UEFI: Bay Trail tablets and 2-in-1s)
 grub-mkrescue -o "$ISO" "$R" >"$BUILD/$ARCH/logs/iso.log" 2>&1 || { tail -5 "$BUILD/$ARCH/logs/iso.log"; die "grub-mkrescue failed"; }
 ls -l "$ISO" | awk '{print "   " $5 "\t" $9}'

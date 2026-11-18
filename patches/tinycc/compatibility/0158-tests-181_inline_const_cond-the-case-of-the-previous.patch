@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 18 Nov 2026 13:19:28 +0200
+Subject: [PATCH] tests: 181_inline_const_cond, the case of the previous commit
+
+---
+ tests/tests2/181_inline_const_cond.c      | 64 +++++++++++++++++++++++
+ tests/tests2/181_inline_const_cond.expect |  4 ++
+ 2 files changed, 68 insertions(+)
+ create mode 100644 tests/tests2/181_inline_const_cond.c
+ create mode 100644 tests/tests2/181_inline_const_cond.expect
+
+diff --git a/tests/tests2/181_inline_const_cond.c b/tests/tests2/181_inline_const_cond.c
+new file mode 100644
+index 0000000..d3607de
+--- /dev/null
++++ b/tests/tests2/181_inline_const_cond.c
+@@ -0,0 +1,64 @@
++/* a small static inline function whose if has a constant condition (the
++   kernel's IS_ENABLED() helpers) is inlined, so that its constant result
++   folds in the caller and the code it guards goes: the symbols that code
++   names do not exist in this configuration (efi_is_mixed() without
++   CONFIG_EFI_MIXED and its __efi64_thunk).  The test links only then. */
++#include <stdio.h>
++
++#define IS_ENABLED_X 0
++extern int missing_thunk(int);          /* defined nowhere */
++extern const char missing_tramp[];      /* defined nowhere */
++
++int flag = 1;
++
++static inline int is_mixed(void)
++{
++    if (!(IS_ENABLED_X || 0))
++        return 0;
++    return !flag;
++}
++
++static inline int scale(int x)
++{
++    if (sizeof(long) >= 4 && 1)
++        return x * 3;
++    return missing_thunk(x);
++}
++
++static int setup(void)
++{
++    if (!is_mixed())
++        return 7;
++    return missing_thunk((int)(long)missing_tramp);
++}
++
++/* inlined for its constant if (as the kernel's scoped_guard() is
++   "if (0) ... else for ..."); the one-return helper inside it must still
++   be inlined and fold, or the dead call stays (and on i386 a u64 divided
++   by it needs __udivdi3) */
++static inline unsigned long tu_to_usec(unsigned long tu) { return 1024 * tu; }
++static int dw_index(unsigned long long tsf, int c)
++{
++    if (0)
++        return -1;
++    if (tu_to_usec(512) != 524288)
++        return missing_thunk(c);
++    return (tsf / tu_to_usec(512)) & 0xf;
++}
++
++static inline int runtime(int v)
++{
++    if (flag)                   /* not constant: stays a test */
++        return v + 1;
++    return v - 1;
++}
++
++int main(void)
++{
++    printf("%d %d %d\n", setup(), is_mixed() ? missing_thunk(1) : 5, scale(4));
++    printf("%d\n", runtime(10));
++    printf("%d\n", dw_index(3ULL * 524288 + 7, 1));
++    flag = 0;
++    printf("%d\n", runtime(10));
++    return 0;
++}
+diff --git a/tests/tests2/181_inline_const_cond.expect b/tests/tests2/181_inline_const_cond.expect
+new file mode 100644
+index 0000000..445d32c
+--- /dev/null
++++ b/tests/tests2/181_inline_const_cond.expect
+@@ -0,0 +1,4 @@
++7 5 12
++11
++3
++9

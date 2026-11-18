@@ -132,7 +132,7 @@ wallpapers: xlib-libX11 xlib-jpeg libpng @wallpapers
 links: xlib-libX11 xlib-jpeg xlib-fontconfig libressl kernel-headers @links @dejavu-fonts @liberation-fonts
 libnl: musl kernel-headers @libnl
 wifi: libnl libressl kernel-headers @wpa_supplicant @hostapd @iw
-firmware: kernel @linux-firmware @wireless-regdb
+firmware: kernel @linux-firmware @wireless-regdb @sof-bin
 initramfs: kernel busybox nnn libressl tinyx xdm jwm mlterm xfiles xedit wallpapers links wifi firmware guest-tcc
 ${selfhost:+selfhost: initramfs @make}
 ${iso:+iso: initramfs ${selfhost:+selfhost}}
