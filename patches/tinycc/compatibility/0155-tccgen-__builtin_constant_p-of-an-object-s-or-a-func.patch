@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 18 Nov 2026 10:21:30 +0200
+Subject: [PATCH] tccgen: __builtin_constant_p of an object's or a function's
+ address is 0, of a string literal 1, as gcc (Linux Intel pinctrl tables:
+ __builtin_choose_expr(__builtin_constant_p(m), m, 0) with an array)
+
+---
+ tccgen.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index 89ff3ee..65b99fe 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -7551,7 +7551,14 @@ ST_FUNC void unary(void)
+ 	n = 1;
+ 	kval(vtop);
+ 	if ((vtop->r & (VT_VALMASK | VT_LVAL)) != VT_CONST
+-	    || ((vtop->r & VT_SYM) && vtop->sym->a.addrtaken)
++	    /* the address of an object or a function (an array, a function
++	       name, &var) is not a constant for gcc, only that of a string
++	       literal ("ab", &"ab"[0]; not "ab" + 1): the Intel pinctrl
++	       tables' __builtin_choose_expr(__builtin_constant_p(m), m, 0)
++	       would put an array's address into an int field */
++	    || ((vtop->r & VT_SYM) && !(vtop->sym->v >= SYM_FIRST_ANOM
++	        && vtop->c.i == 0 && (vtop->sym->type.t & VT_ARRAY)
++	        && (pointed_type(&vtop->sym->type)->t & VT_BTYPE) == VT_BYTE))
+ 	    /* in a constant expression (gcc evaluates it there at parsing
+ 	       time) only a constant expression counts, not a value known by
+ 	       optimization (VT_NONCONST, a local of known value): nouveau's

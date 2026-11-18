@@ -4,7 +4,7 @@
  * devices-test: exercise the device drivers of kernels/linux/drivers.config inside the guest
  * and print one "devtest: <device>: ok|FAIL <details>" line per device class, then a summary
  * (wpa: a WPA2/WPA3 association between the two mac80211_hwsim radios, hostapd and the wifi
- * command).
+ * command; touchpad: a HID multitouch touchpad made through /dev/uhid).
  * A C script run by tcc -run (every script of this system is one).  /init runs it when the
  * kernel command line has tcc.devtest (run.sh APPEND=..., scripts/devices-test.sh drives the
  * whole thing: it serves HTTP on the host and moves the mouse through QMP); it can be run by
@@ -407,6 +407,127 @@ static void test_mouse(int wait_secs)
     result("evdev", count_dir("/dev/input", "event", NULL, 0) > 0, "%d /dev/input/event* devices", count_dir("/dev/input", "event", NULL, 0));
 }
 
+/* /dev/uhid (<linux/uhid.h>; the guest has no kernel headers): the requests this test sends */
+enum { UHID_DESTROY = 1, UHID_CREATE2 = 11, UHID_INPUT2 = 12 };
+struct uhid_ev {
+    unsigned int type;
+    union {
+        struct {
+            unsigned char name[128], phys[64], uniq[64];
+            unsigned short rd_size, bus;
+            unsigned int vendor, product, version, country;
+            unsigned char rd_data[4096];
+        } __attribute__((packed)) create2;
+        struct {
+            unsigned short size;
+            unsigned char data[4096];
+        } __attribute__((packed)) input2;
+    } u;
+} __attribute__((packed));
+
+/* a precision touchpad as an I2C laptop's firmware describes it: one finger (confidence,
+   tip, contact id, X, Y 0..4095), the contact count and the click button, report id 1 */
+static const unsigned char touchpad_rd[] = {
+    0x05, 0x0d, 0x09, 0x05, 0xa1, 0x01,             /* Digitizer, Touch Pad, application */
+    0x85, 0x01,                                     /*  report id 1 */
+    0x09, 0x22, 0xa1, 0x02,                         /*  Finger, logical */
+    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x02,
+    0x09, 0x47, 0x09, 0x42, 0x81, 0x02,             /*   Confidence, Tip Switch */
+    0x95, 0x06, 0x81, 0x03,                         /*   padding */
+    0x75, 0x08, 0x95, 0x01, 0x25, 0x05,
+    0x09, 0x51, 0x81, 0x02,                         /*   Contact Id */
+    0x05, 0x01, 0x26, 0xff, 0x0f, 0x75, 0x10,
+    0x09, 0x30, 0x81, 0x02, 0x09, 0x31, 0x81, 0x02, /*   X, Y */
+    0xc0,
+    0x05, 0x0d, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01,
+    0x09, 0x54, 0x81, 0x02,                         /*  Contact Count */
+    0x05, 0x09, 0x09, 0x01, 0x25, 0x01, 0x75, 0x01,
+    0x81, 0x02,                                     /*  Button 1 */
+    0x95, 0x07, 0x81, 0x03,                         /*  padding */
+    0xc0,
+};
+
+static int uhid_send(int fd, struct uhid_ev *ev)
+{
+    return write(fd, ev, sizeof *ev) == (ssize_t)sizeof *ev;
+}
+
+/* the I2C touchpad path above the bus: a HID multitouch device (made through /dev/uhid, the
+   way an I2C HID touchpad appears to the HID layer) must bind hid-multitouch, and a finger
+   sliding to the right on it must come out of /dev/input/mice as motion to the right */
+static void test_touchpad(void)
+{
+    static struct uhid_ev ev;
+    char path[300], drv[64] = "none";
+    int fd = open("/dev/uhid", O_RDWR | O_CLOEXEC), mice = -1, i, bytes = 0, right = 0;
+    DIR *d;
+    struct dirent *e;
+    if (fd < 0) {
+        result("touchpad", 0, "/dev/uhid: %s", strerror(errno));
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.type = UHID_CREATE2;
+    strcpy((char *)ev.u.create2.name, "devtest touchpad");
+    ev.u.create2.rd_size = sizeof touchpad_rd;
+    ev.u.create2.bus = 0x18;                        /* BUS_I2C */
+    ev.u.create2.vendor = 0x04f3;                   /* (Elan's id) */
+    ev.u.create2.product = 0x7e57;
+    memcpy(ev.u.create2.rd_data, touchpad_rd, sizeof touchpad_rd);
+    if (!uhid_send(fd, &ev)) {
+        result("touchpad", 0, "UHID_CREATE2: %s", strerror(errno));
+        close(fd);
+        return;
+    }
+    /* the driver binds asynchronously to the write: wait for it */
+    for (i = 0; i < 30 && strcmp(drv, "hid-multitouch"); i++) {
+        usleep(100000);
+        if (!(d = opendir("/sys/bus/hid/devices")))
+            continue;
+        while ((e = readdir(d)))
+            if (strstr(e->d_name, ":04F3:7E57.")) {
+                snprintf(path, sizeof path, "/sys/bus/hid/devices/%s", e->d_name);
+                snprintf(drv, sizeof drv, "%s", driver_of(path));
+            }
+        closedir(d);
+    }
+    usleep(200000);     /* its input devices register after the bind */
+    if ((mice = open("/dev/input/mice", O_RDONLY | O_NONBLOCK)) >= 0) {
+        unsigned char b[300];
+        ssize_t n;
+        while (read(mice, b, sizeof b) > 0)     /* whatever the mouse check left */
+            ;
+        /* a finger down at x=1000, sliding right in 16 steps, then up */
+        for (i = 0; i <= 17; i++) {
+            unsigned x = 1000 + 100 * (i < 17 ? i : 16);
+            unsigned char r[] = { 1, i < 17 ? 3 : 1, 0, x & 0xff, x >> 8, 0xe8, 0x03, 1, 0 };
+            memset(&ev, 0, sizeof ev);
+            ev.type = UHID_INPUT2;
+            ev.u.input2.size = sizeof r;
+            memcpy(ev.u.input2.data, r, sizeof r);
+            uhid_send(fd, &ev);
+            usleep(20000);
+        }
+        usleep(200000);
+        while ((n = read(mice, b, sizeof b)) > 0) {
+            ssize_t k;
+            for (k = 0; k + 2 < n; k += 3) {     /* PS/2 packets: flags, dx, dy */
+                bytes += 3;
+                if ((signed char)b[k + 1] > 0)
+                    right++;
+            }
+        }
+        close(mice);
+    }
+    result("touchpad", !strcmp(drv, "hid-multitouch") && right > 0,
+           "uhid I2C touchpad bound to %s, %d bytes of motion on /dev/input/mice, %d packets to the right (%s)",
+           drv, bytes, right, mice >= 0 ? "opened" : "no /dev/input/mice");
+    memset(&ev, 0, sizeof ev);
+    ev.type = UHID_DESTROY;
+    uhid_send(fd, &ev);
+    close(fd);
+}
+
 static void test_usb(void)
 {
     DIR *d = opendir("/sys/bus/usb/devices");
@@ -516,6 +637,7 @@ int main(int argc, char **argv)
     test_usb();
     test_usb_storage();
     test_mouse(8);
+    test_touchpad();
     printf("devtest: done: %d checks, %d failed\n", checks, failures);
     fflush(stdout);
     return failures;

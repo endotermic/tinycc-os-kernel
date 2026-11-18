@@ -59,8 +59,9 @@
 # with the GPU drivers takes 60 MB of code (2026-11-17: 256M left 59 MB available), and the
 # graphical session needs the rest, 256M ran out of memory when links rescaled a photograph
 # during a window resize, 2026-11-17; 128M panicked at boot since the file manager,
-# 2026-11-03; 1G with --firmware and with an --iso that has the firmware image, 1G with
-# --selfhost), BUILD_DISK (--selfhost: the size of the sparse build disk image
+# 2026-11-03; 1G with --firmware and with an --iso that has the firmware image, 1536M with
+# --selfhost: the x86_64 guest's link of vmlinux was OOM-killed at 1G on 2026-11-18, ld
+# alone takes 677 MB next to the 205 MB of ramfs), BUILD_DISK (--selfhost: the size of the sparse build disk image
 # out/<arch>/selfhost/build.img, made fresh for every boot, default 8G; BUILD_DISK=0 or empty:
 # none, the build stays in a tmpfs in RAM), KERNEL (a bzImage to boot instead of
 # out/<arch>/bzImage, e.g. the one built inside the guest), SMP (virtual CPUs; default: the
@@ -215,7 +216,7 @@ RES=${RES-1024x768}
 # files, silently.  ramfs has no size cap (the initramfs is in RAM either way)
 cmdline="console=tty0 console=ttyS0 rootfstype=ramfs${xdm:+ $xdm}${startx:+ $startx}${APPEND:+ $APPEND}"
 if [ -n "$selfhost" ]; then
-    MEM=${MEM:-1G}
+    MEM=${MEM:-1536M}
     mkdir -p "$O/selfhost"
     : > "$O/selfhost/ttyS1.bin"
     set -- -serial file:"$O/selfhost/ttyS1.bin" "$@"

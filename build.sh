@@ -164,5 +164,5 @@ hint "" "./run.sh --arch $arch --nolibc" "the libc-free init, a static binary: b
 case $output in iso|all) hint "" "./run.sh --arch $arch --iso" "the ISO on SeaBIOS (--efi: on OVMF); its default entry is the graphical mode";; esac
 hint "" "./run.sh --arch $arch --xdm" "the graphical login: xdm's greeter on TinyX's X server (accounts ada/lovelace, grace/hopper, dennis/ritchie), JWM with links and the mlterm terminal as the session"
 hint "" "./run.sh --arch $arch --startx" "the graphical mode without a login: the X server with the JWM window manager, the links browser and the mlterm terminal (startx in a shell does the same)"
-[ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1 GB (inside: build-kernel, send-file: C scripts tcc runs)"
+[ -z "$selfhost" ] || hint "" "./run.sh --arch $arch --selfhost" "the self-hosting image, 1.5 GB (inside: build-kernel, send-file: C scripts tcc runs)"
 [ -z "$run" ] || exec "$ROOT/run.sh" --arch "$arch"

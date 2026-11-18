@@ -153,3 +153,5 @@ compatibility/0151-tccgen-__builtin_constant_p-in-a-constant-expression.patch
 compatibility/0152-tests-178_constant_p_const_expr-the-case-of-the-prev.patch
 compatibility/0153-tccgen-unsigned-long-long-double-inline-on-x86_64-an.patch
 compatibility/0154-tests-179_u64_double-the-case-of-the-previous-commit.patch
+compatibility/0155-tccgen-__builtin_constant_p-of-an-object-s-or-a-func.patch
+compatibility/0156-tests-180_constant_p_address-the-case-of-the-previou.patch

@@ -80,13 +80,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 137 | tinycc 0149 |
 | | | | | 138 | tinycc 0151 |
 | | | | | 139 | tinycc 0153 |
+| | | | | 140 | tinycc 0155 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152 and 0154 those of fixes
-136-139.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154 and 0156 those of fixes
+136-140.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -153,6 +154,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/177_gnu_comma_paste.c` | all | 137 |
 | `tests/tests2/178_constant_p_const_expr.c` | all (a compile error without the fix) | 138 |
 | `tests/tests2/179_u64_double.c` | all (the inline sequences on x86_64 and i386) | 139 |
+| `tests/tests2/180_constant_p_address.c` | all (a compile error without the fix) | 140 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2854,3 +2856,23 @@ fixes came out of them.
     gcc's output on x86_64; the i386 musl build gives the same), `make test`, no helper
     reference left in either kernel.
 
+## Real hardware: the touchpad drivers (2026-11-18)
+
+Group 4 of docs/HARDWARE.md (I2C HID touchpads with hid-multitouch, the Intel LPSS and AMD
+I2C controllers, the Intel and AMD pin controllers, Elan/Synaptics SMBus touchpads, Goodix
+touchscreens) needed one tcc fix.
+
+140. 2026-11-18, COMMITTED (patches/tinycc/compatibility/0155, test 0156 =
+    tests2/180_constant_p_address), `tccgen.c` (unary() TOK_builtin_constant_p). Problem:
+    the Intel pin controller tables use `PIN_GROUP(n, p, m)` with
+    `.mode = __builtin_choose_expr(__builtin_constant_p((m)), (m), 0)` and
+    `.modes = __builtin_choose_expr(__builtin_constant_p((m)), NULL, (m))`, where `m` is a
+    number or an array of mux values; tcc said 1 for an array (and for a function name: only
+    `&var`, marked addrtaken, gave 0), so pinctrl-baytrail.c put the array's address into the
+    unsigned `mode` field: "initializer element is not computable at load time". gcc folds
+    `__builtin_constant_p` of an address to 1 only for a string literal at offset 0 (`"ab"`,
+    `&"ab"[0]`; not `"ab" + 1`), to 0 for every object and function. Fix: a value with a
+    symbol counts as constant only when the symbol is an anonymous char array (a string
+    literal) and the offset is 0. Verification: 180_constant_p_address (gcc's output: arrays,
+    functions, `&var`, string literals, null and integer pointers, the pinctrl table form),
+    `make test`, both kernels (pinctrl-baytrail, -cherryview and the other Intel tables).

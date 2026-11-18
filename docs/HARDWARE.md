@@ -94,10 +94,33 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   selfhost-test host and all on both arches with the default 1 GB (generation 2 built in
   12 min 7 s on x86_64, 7 min 52 s on i386, and boots).  Not tested: any real GPU.
 
-## Group 4: input
-- `HID_MULTITOUCH`, `I2C_HID_ACPI`, `I2C_DESIGNWARE_PLATFORM`, `INTEL_LPSS(_PCI)`, `PINCTRL` +
-  the Intel/AMD pin controllers: I2C precision touchpads (almost every laptop since ~2016).
-- `MOUSE_PS2_ELANTECH`, `INPUT_TOUCHSCREEN`.
+## Group 4: touchpads and touchscreens — DONE (2026-11-18)
+
+- I2C HID (drivers.config): `I2C_HID_ACPI` and `HID_MULTITOUCH` (precision touchpads and HID
+  touchscreens, ACPI PNP0C50), on the DesignWare I2C controllers of the chipset
+  (`I2C_DESIGNWARE_PLATFORM`/`_PCI`/`_BAYTRAIL`, Intel LPSS through `X86_INTEL_LPSS` and
+  `MFD_INTEL_LPSS_ACPI`/`_PCI`, AMD through `X86_AMD_PLATFORM_DEVICE`, and `I2C_AMD_MP2` for
+  AMD's sensor-hub bridge), with the pin controllers their interrupt GPIOs come from: Intel
+  Bay Trail, Cherry View, Lynx Point, Sunrise Point, Broxton, Gemini Lake, Cannon Lake, Ice
+  Lake, Jasper Lake, Elkhart Lake, Tiger Lake, Alder Lake, Meteor Lake, Meteor Point and
+  the ACPI-described Intel platform controller; `PINCTRL_AMD`.
+- PS/2 and SMBus: `MOUSE_PS2_ELANTECH` (+ SMBus), Synaptics InterTouch through RMI4 over SMBus
+  (`RMI4_SMB`, F03/F11/F12/F30, `HID_RMI`), Elan I2C/SMBus touchpads (`MOUSE_ELAN_I2C`), the
+  SMBus controllers they sit on (`I2C_I801`, `I2C_PIIX4`).
+- Touchscreens: `INPUT_TOUCHSCREEN` with `TOUCHSCREEN_GOODIX` (tablets, 2-in-1s); the HID
+  ones go through hid-multitouch.
+- X: the touchpads reach TinyX through /dev/input/mice (mousedev's touchpad mode: relative
+  motion from the absolute position, a tap shorter than 200 ms is a left click; the physical
+  button clicks too); no gestures, no two-finger scroll.
+- tcc fix 140 (`__builtin_constant_p` of an address: the Intel pinctrl tables),
+  docs/FIX-LOG.md.  Both arches take the whole group.
+- Verified in QEMU (which has no I2C HID device): devices-test's new `touchpad` check makes a
+  precision touchpad through `/dev/uhid` (`UHID`), as an I2C HID device on the HID bus;
+  hid-multitouch binds it and a finger sliding right comes out of /dev/input/mice as motion
+  to the right.  15/15 on both arches; i801 probes QEMU's SMBus.  selfhost-test all on
+  both (i386 8 min 10 s at 1 GB; x86_64 13 min at 1.5 GB: at 1 GB the guest's `ld` was
+  OOM-killed linking vmlinux, so `run.sh --selfhost` now gives 1536M).  Not tested: a real
+  touchpad, the LPSS/AMD I2C controllers and the pin controllers.
 
 ## Group 5: Ethernet and USB
 - `IGB`, `IGC` (Intel I225/I226), `TIGON3`, `ALX`, `ATL1C`, `USB_RTL8152` (most USB-C dongles).

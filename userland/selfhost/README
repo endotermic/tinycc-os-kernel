@@ -47,4 +47,5 @@ Commands:
                         (scripts/recv-file.sh cuts them out of the capture)
 
 The host boots the result with KERNEL=out/<arch>/selfhost/bzImage ./run.sh and the banner
-shows generation #2.  Everything happens in RAM: ./run.sh --selfhost gives the machine 1 GB.
+shows generation #2.  The build runs on the build disk (build-disk) or in RAM: ./run.sh --selfhost gives the
+machine 1.5 GB (the x86_64 link of vmlinux alone needs about 700 MB).

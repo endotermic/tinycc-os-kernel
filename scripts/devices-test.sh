@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # devices-test.sh - boot the busybox image with the emulated devices and run the guest's
 # device checks (userland/devices-test.c: PCI, screen, Ethernet with DHCP, ICMP and HTTP to
-# the host, IPv6, Wi-Fi with a WPA3 association, Bluetooth, sound, USB, USB storage, mouse) unattended.
+# the host, IPv6, Wi-Fi with a WPA3 association, Bluetooth, sound, USB, USB storage, mouse, an I2C HID
+# touchpad made through /dev/uhid) unattended.
 # Usage: scripts/devices-test.sh [--arch ARCH]
 #   The host side: a web server on 127.0.0.1 (python3 http.server) that the guest reaches as
 #   10.0.2.2 through QEMU's user-mode network, and mouse motion sent through QMP while the

@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 18 Nov 2026 10:21:30 +0200
+Subject: [PATCH] tests: 180_constant_p_address, the case of the previous
+ commit
+
+---
+ tests/tests2/180_constant_p_address.c      | 27 ++++++++++++++++++++++
+ tests/tests2/180_constant_p_address.expect |  4 ++++
+ 2 files changed, 31 insertions(+)
+ create mode 100644 tests/tests2/180_constant_p_address.c
+ create mode 100644 tests/tests2/180_constant_p_address.expect
+
+diff --git a/tests/tests2/180_constant_p_address.c b/tests/tests2/180_constant_p_address.c
+new file mode 100644
+index 0000000..9731038
+--- /dev/null
++++ b/tests/tests2/180_constant_p_address.c
+@@ -0,0 +1,27 @@
++/* __builtin_constant_p of an address: 0 for objects and functions (an
++   array, a function name, &var), 1 for a string literal, as gcc; the
++   Linux Intel pinctrl tables choose with it between a number and an array */
++#include <stdio.h>
++
++static const unsigned int vals[] = { 7, 8 };
++int g;
++static int s;
++void f(void) {}
++
++struct grp { unsigned mode; const unsigned *modes; };
++#define GRP(m) { \
++    .mode = __builtin_choose_expr(__builtin_constant_p((m)), (m), 0), \
++    .modes = __builtin_choose_expr(__builtin_constant_p((m)), NULL, (m)) }
++static const struct grp grps[] = { GRP(3), GRP(vals) };
++
++int main(void)
++{
++    static int st = __builtin_constant_p(vals);
++    printf("%d %d %d %d %d %d\n", __builtin_constant_p(vals), __builtin_constant_p(&g),
++           __builtin_constant_p(&s), __builtin_constant_p(f), __builtin_constant_p(&f), st);
++    printf("%d %d %d\n", __builtin_constant_p("ab"), __builtin_constant_p(&"ab"[0]),
++           __builtin_constant_p("ab" + 1));
++    printf("%d %d\n", __builtin_constant_p((char *)0), __builtin_constant_p(42));
++    printf("%u %p %u %u\n", grps[0].mode, (void *)grps[0].modes, grps[1].mode, grps[1].modes[1]);
++    return 0;
++}
+diff --git a/tests/tests2/180_constant_p_address.expect b/tests/tests2/180_constant_p_address.expect
+new file mode 100644
+index 0000000..ab951b4
+--- /dev/null
++++ b/tests/tests2/180_constant_p_address.expect
+@@ -0,0 +1,4 @@
++0 0 0 0 0 0
++1 1 0
++1 1
++3 (nil) 0 8

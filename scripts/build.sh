@@ -1499,7 +1499,7 @@ step_selfhost() {
     "$TOOLS/gen_init_cpio" "$SH/initramfs-selfhost.gen.list" > "$O/initramfs-selfhost.cpio"
     echo "   toolchain: $(ls "$STAGE/usr/bin" | tr '\n' ' ')"
     echo "   $(ls -l "$O/initramfs-selfhost.cpio" | awk '{print $5}') bytes: $O/initramfs-selfhost.cpio (staging tree $(du -sh "$STAGE" | cut -f1))"
-    echo "   boot it with ./run.sh --selfhost (1 GB RAM, every CPU); inside: build-kernel, then send-file"
+    echo "   boot it with ./run.sh --selfhost (1.5 GB RAM, every CPU); inside: build-kernel, then send-file"
 }
 
 step_initramfs() {
