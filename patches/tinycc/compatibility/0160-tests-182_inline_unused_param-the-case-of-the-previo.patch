@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 19 Nov 2026 12:09:48 +0200
+Subject: [PATCH] tests: 182_inline_unused_param, the case of the previous
+ commit
+
+---
+ tests/tests2/182_inline_unused_param.c      | 38 +++++++++++++++++++++
+ tests/tests2/182_inline_unused_param.expect |  4 +++
+ 2 files changed, 42 insertions(+)
+ create mode 100644 tests/tests2/182_inline_unused_param.c
+ create mode 100644 tests/tests2/182_inline_unused_param.expect
+
+diff --git a/tests/tests2/182_inline_unused_param.c b/tests/tests2/182_inline_unused_param.c
+new file mode 100644
+index 0000000..61a4c74
+--- /dev/null
++++ b/tests/tests2/182_inline_unused_param.c
+@@ -0,0 +1,38 @@
++/* an inlined stub that ignores a parameter given the address of a static
++   structure: the argument needs no store, so nothing refers to the
++   structure, which goes with the static functions it points to and their
++   references (the kernel's debugfs_create_file_aux() without
++   CONFIG_DEBUG_FS, given &awcc_gpio_pin_fops whose show function calls
++   debugfs_get_aux(), defined nowhere then).  The test links only then. */
++#include <stdio.h>
++
++struct fops { int (*show)(void); };
++extern void *missing_get_aux(void);     /* defined nowhere */
++
++static int pin_show(void) { return (int)(long)missing_get_aux(); }
++static const struct fops pin_fops = { pin_show };
++
++static inline void *create_aux(const char *name, int mode, void *data,
++                               void *aux, const void *fops)
++{
++    return (void *)-19L;
++}
++
++/* a parameter the body names keeps its value */
++static inline long pick(long a, const void *unused, long b) { return a * 10 + b; }
++
++static int calls;
++static long side(void) { return ++calls; }
++
++int main(void)
++{
++    int d = 1;
++    long r = (long)create_aux("pin", 0644, &d, (void *)(unsigned long)3, &pin_fops);
++    printf("%ld\n", r);
++    printf("%ld\n", pick(4, &pin_fops, 2));
++    r = pick(side(), "x", 5);          /* a named argument with a side effect */
++    printf("%ld %d\n", r, calls);
++    r = pick(0, (void *)side(), 1);    /* an unnamed one: its side effect stays */
++    printf("%ld %d\n", r, calls);
++    return 0;
++}
+diff --git a/tests/tests2/182_inline_unused_param.expect b/tests/tests2/182_inline_unused_param.expect
+new file mode 100644
+index 0000000..5c4c443
+--- /dev/null
++++ b/tests/tests2/182_inline_unused_param.expect
+@@ -0,0 +1,4 @@
++-19
++42
++15 1
++1 2

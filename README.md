@@ -216,7 +216,8 @@ up, a Bluetooth controller registered, a tone written to `/dev/dsp`, USB enumera
 filesystem on the stick, mouse motion sent through QMP, the screen at `RES`, and a WPA3
 association: hostapd makes an access point of one virtual radio and the `wifi` command joins
 it from the other, and an I2C HID touchpad made through `/dev/uhid`: hid-multitouch must
-bind it and its finger motion must reach `/dev/input/mice`).
+bind it and its finger motion must reach `/dev/input/mice`; an NTFS disk the host made with mkntfs is
+read and written; the machine suspends to RAM and the CMOS clock's alarm wakes it).
 
 For real PCs and laptops (`docs/HARDWARE.md` is the roadmap, in groups): ACPI (power button,
 battery, AC, thermal zones, the CPUs of firmware without MP tables), SATA (AHCI, PIIX), NVMe and
@@ -238,7 +239,9 @@ controllers), Elan and Synaptics SMBus touchpads, Goodix touchscreens; X sees th
 JMicron, Aquantia, Realtek r8152 USB dongles and docks; PCIe port services and hotplug, USB4 and
 Thunderbolt docks, USB-C (UCSI). Sound: the HD Audio codecs of PCs and HDMI/DisplayPort audio,
 the speaker amplifiers of recent laptops (Cirrus, TI), Intel SOF (its firmware from sof-bin) and
-AMD ACP digital microphones; the kernel knows UEFI's runtime services (EFI). Only QEMU has run it so far: none of this has
+AMD ACP digital microphones; the kernel knows UEFI's runtime services (EFI). Power: suspend to RAM
+and to idle, the CPUs' idle states, machine checks, the core temperatures; the Intel and AMD IOMMUs;
+NTFS; the ThinkPad, IdeaPad, ASUS, HP, Dell and Acer keys; PAE (NX) on i386. Only QEMU has run it so far: none of this has
 been tried on real hardware yet.
 
 The boot ends with:
@@ -275,7 +278,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 158 patches, the linker suite, the libelf subset objtool links against, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 162 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -346,7 +349,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 158 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `patches/tinycc/` | 162 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `tools/libelf/` | the libelf subset the kernel's objtool needs (24 functions, ELF32 and ELF64), so that Kbuild builds the real objtool with tcc on the host and in the guest; `test.sh` compares it with a gcc/elfutils objtool |
@@ -451,7 +454,7 @@ commits in `--category`. To move to a newer upstream commit, change `sources.loc
 
 | Arch | Status |
 |------|--------|
-| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc, objtool among them since 2026-11-11 (against `tools/libelf`; a stub before); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 16 checks); self-hosting (the kernel rebuilds itself inside the guest) |
+| x86_64 | works: every file of the kernel is compiled or assembled by tcc (2838 invocations including Kconfig probes and the host tools from a clean tree with the drivers of 2026-10-26, 0 gcc; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04) and linked by `tools/tld`; the real-mode code by `i386-tcc -m16`; the host tools by tcc, objtool among them since 2026-11-11 (against `tools/libelf`; a stub before); SMP; the device drivers (`kernels/linux/drivers.config`: networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; `scripts/devices-test.sh` passes its 18 checks); self-hosting (the kernel rebuilds itself inside the guest) |
 | i386 | works (2026-10-23; the whole system rebuilt and verified with the 131-patch compiler on 2026-11-04): the 32-bit kernel (`ARCH=i386`, `kernels/linux/i386.config`) compiled by the `i386-tcc` cross compiler (2788 tcc invocations from a clean tree with the drivers, 0 gcc), linked by `tools/tld`, with the decompressor and the 32-bit vDSO as position-independent code (`-fPIE`/`-fpic`, tcc fix 74); musl, busybox and tcc built for i386 by the same compiler; boots in `qemu-system-i386` to the busybox shell; the device drivers too (`scripts/devices-test.sh --arch i386`; tcc fixes 112-114 came from this build); self-hosting as well (`scripts/selfhost-test.sh --arch i386 all`: generation 2 built inside the 32-bit guest in 1 min 32 s boots). Details in `docs/PORT-NOTES.md`, "The i386 target" |
 | arm64 | not available: tcc has an arm64 code generator but its assembler cannot handle the kernel's inline asm; nothing attempted |
 

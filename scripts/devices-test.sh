@@ -3,7 +3,8 @@
 # devices-test.sh - boot the busybox image with the emulated devices and run the guest's
 # device checks (userland/devices-test.c: PCI, screen, Ethernet with DHCP, ICMP and HTTP to
 # the host, IPv6, a second port on igb, Wi-Fi with a WPA3 association, Bluetooth, sound, USB,
-# USB storage, mouse, an I2C HID touchpad made through /dev/uhid) unattended.
+# USB storage, mouse, an I2C HID touchpad made through /dev/uhid, an NTFS disk, suspend to
+# RAM and back) unattended.
 # Usage: scripts/devices-test.sh [--arch ARCH]
 #   The host side: a web server on 127.0.0.1 (python3 http.server) that the guest reaches as
 #   10.0.2.2 through QEMU's user-mode network, and mouse motion sent through QMP while the
@@ -17,7 +18,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 while [ $# -gt 0 ]; do case $1 in --arch) ARCH=$2; shift 2;; --arch=*) ARCH=${1#--arch=}; shift;; -h|--help) usage;; *) usage 2;; esac; done
 ARCH=${ARCH:-x86_64}
 case $ARCH in x86_64|i386) ;; *) die "--arch $ARCH: x86_64 or i386";; esac
-need_reset; need_qemu "$ARCH"; need_tool python3 socat; need_done
+need_reset; need_qemu "$ARCH"; need_tool python3 socat mkntfs:ntfs-3g ntfscp:ntfs-3g; need_done
 O=$OUT/$ARCH; D=$BUILD/$ARCH/devtest; mkdir -p "$D/www"
 [ -f "$O/bzImage" ] && [ -f "$O/initramfs.cpio.gz" ] || die "no $O/bzImage + initramfs.cpio.gz: ./build.sh --arch $ARCH first"
 RES=${RES-1024x768}; HTTP_PORT=${HTTP_PORT:-18080}
@@ -37,12 +38,18 @@ trap cleanup EXIT INT TERM
   done ) &
 mouse_pid=$!
 msg "devices-test: $ARCH, RES=$RES, HTTP on 127.0.0.1:$HTTP_PORT (log: $D/console.log)"
+# an NTFS disk (IDE): formatted by the host's mkntfs, a file put in by ntfscp, for the ntfs check
+rm -f "$D/ntfs.img"; truncate -s 16M "$D/ntfs.img"
+mkntfs -F -Q -q -L devtest "$D/ntfs.img" >/dev/null 2>&1 || die "mkntfs failed"
+printf 'tinycc-os-kernel ntfs\n' > "$D/hello.txt"
+ntfscp -f "$D/ntfs.img" "$D/hello.txt" hello.txt >/dev/null 2>&1 || die "ntfscp failed"
 # the guest: a fresh USB stick image, the test mode on the command line, QMP for the mouse,
 # a second Ethernet port (Intel 82576, the igb driver) on a user network of its own
 rm -f "$D/usbstick.img"
 APPEND="tcc.devtest=http:$HTTP_PORT" USBSTICK=$D/usbstick.img TIMEOUT=${TIMEOUT:-240} RES=$RES \
     "$ROOT/run.sh" --arch "$ARCH" --no-vga -- -qmp unix:"$qmp",server,nowait \
-        -netdev user,id=igbnet,net=10.0.3.0/24 -device igb,netdev=igbnet </dev/null 2>&1 | tr -d '\r' > "$D/console.log"
+        -netdev user,id=igbnet,net=10.0.3.0/24 -device igb,netdev=igbnet \
+        -drive if=ide,format=raw,file="$D/ntfs.img" </dev/null 2>&1 | tr -d '\r' > "$D/console.log"
 grep -E '^devtest:|^\*\*\* devices-test' "$D/console.log" | grep -v 'waiting up to'
 failed=$(sed -n 's/^devtest: done: .* checks, \([0-9]*\) failed.*/\1/p' "$D/console.log")
 [ -n "$failed" ] || { echo "error: the guest did not finish the checks (see $D/console.log)" >&2; exit 1; }

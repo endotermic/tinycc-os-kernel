@@ -182,9 +182,32 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   (i386 10 min 50 s, x86_64 16 min at 1.5 GB).
   QEMU emulates no HDMI codec, DSP, SoundWire or amplifier: not tested on real hardware.
 
-## Group 7: power and the rest
-- `PM`, `SUSPEND`, `THERMAL`, `X86_MCE`, `EFIVAR_FS` (`EFI` itself came with group 6),
-  `INTEL_IOMMU`, `NTFS3_FS`.
-- i386 only: `HIGHMEM4G` is on since 2026-11-17 (the self-hosting guest's final link of the
-  kernel with the Wi-Fi drivers ran out of the 896 MB of low memory); still no PAE/NX, so at
-  most 4 GB; x86_64 has neither limit.
+## Group 7: power, the CPU's health, IOMMU, NTFS, laptop keys — DONE (2026-11-19)
+
+- Power (drivers.config): `PM` (the devices' runtime power management) and `SUSPEND`: suspend
+  to RAM (ACPI S3) and to idle (s2idle, the "modern standby" of recent laptops) through
+  `/sys/power/state` or busybox `rtcwake`; no hibernation (no swap).  `INTEL_IDLE` (the
+  CPUs' deep C-states); cpufreq with the Intel and AMD P-state drivers was on already.
+- The CPU's health: `X86_MCE` (Intel, AMD: memory and cache errors are reported), the core
+  temperatures (`SENSORS_CORETEMP`, `SENSORS_K10TEMP`), Intel's DPTF devices
+  (`INT340X_THERMAL`); ACPI thermal zones and fans were on already.
+- `IOMMU_SUPPORT` with `INTEL_IOMMU` (VT-d), `AMD_IOMMU` and `IRQ_REMAP`: DMA from
+  Thunderbolt/USB4 devices is confined, x2APIC machines get interrupt remapping.
+- `NTFS3_FS` (read and write, with the LZX/Xpress decompression of Windows' compact files).
+- The laptops' keys and switches: Intel HID events and virtual buttons (the tablet switch of
+  2-in-1s), `THINKPAD_ACPI`, `IDEAPAD_LAPTOP`, `ASUS_NB_WMI`, `HP_WMI`, `DELL_WMI`, `ACER_WMI`.
+- `EFI_VARS`/`EFIVAR_FS`: on since `EFI` came with group 6.
+- i386: `X86_PAE` (i386.config): PAE page tables give the 32-bit kernel the NX bit;
+  `HIGHMEM64G` is gone from the kernel, so a 32-bit kernel still uses at most 4 GB.  AMD's
+  IOMMU, interrupt remapping and int340x are 64-bit only.
+- tcc fixes 142 (an inlined stub's unused parameter given an address: no store, so the
+  structure it names can go: the Dell drivers) and 143 (`.p2align 4,,7`: the i386 resume
+  code), docs/FIX-LOG.md.  bzImage x86_64 20.7 -> 21.5 MB, i386 14.4 -> 15.1 MB.
+- Verified in QEMU: devices-test's new `suspend` (busybox rtcwake -m mem -s 3: S3 entered,
+  the CMOS alarm wakes the machine, the network answers afterwards) and `ntfs` (a disk made
+  by the host's mkntfs + ntfscp: the file read, another written and read back after a
+  remount) checks, 18/18 on both arches (NX active on both, i386 through PAE); the device checks on q35 with QEMU's Intel IOMMU
+  (translated DMA, interrupt remapping in x2APIC mode): network, sound, USB, storage and
+  suspend work through it; the x86_64 ISO on OVMF; selfhost-test all on both (i386 11 min,
+  x86_64 15 min 46 s).  Not tested: real laptops' S3/s2idle
+  (firmware and drivers decide), the platform drivers, MCE reports.

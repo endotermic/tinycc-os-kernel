@@ -157,3 +157,7 @@ compatibility/0155-tccgen-__builtin_constant_p-of-an-object-s-or-a-func.patch
 compatibility/0156-tests-180_constant_p_address-the-case-of-the-previou.patch
 compatibility/0157-tccgen-inline-a-small-static-function-with-an-if-of-.patch
 compatibility/0158-tests-181_inline_const_cond-the-case-of-the-previous.patch
+compatibility/0159-tccgen-an-inlined-function-s-parameter-that-the-body.patch
+compatibility/0160-tests-182_inline_unused_param-the-case-of-the-previo.patch
+compatibility/0161-tccasm-.p2align-.balign-.align-with-an-empty-fill-va.patch
+compatibility/0162-tests-183_asm_align_max-the-case-of-the-previous-com.patch

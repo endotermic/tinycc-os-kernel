@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 19 Nov 2026 12:09:48 +0200
+Subject: [PATCH] tccgen: an inlined function's parameter that the body never
+ names, given a constant or an address, gets no local and no store, as gcc
+ drops it (Linux debugfs_create_file_aux() stub given &fops without
+ CONFIG_DEBUG_FS: debugfs_get_aux undefined)
+
+---
+ tcc.h    |  1 +
+ tccgen.c | 21 +++++++++++++++++++--
+ 2 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index e1b3de0..d25e3c7 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -713,6 +713,7 @@ typedef struct InlineFunc {
+     char sret; /* the body is one return statement (kscan_labels()) */
+     char kcond; /* the body has an if whose condition is constant (kscan_labels()) */
+     unsigned cond; /* bit i: the body tests parameter i (kscan_labels()) */
++    unsigned used; /* bit i: the body names parameter i (kscan_labels()) */
+     char filename[1];
+ } InlineFunc;
+ 
+diff --git a/tccgen.c b/tccgen.c
+index e6344fd..c86f243 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -145,6 +145,7 @@ static void klabs_free(void);
+ static int kscan_static; /* kscan_labels(): the body declares something static */
+ static Sym *kscan_params; /* kscan_labels(): the parameters to look for ... */
+ static unsigned kscan_cond; /* ... in conditions: bit i = parameter i is tested */
++static unsigned kscan_used; /* ... anywhere: bit i = parameter i is named */
+ static int kscan_sret; /* kscan_labels(): the body is "{ return ...; }" */
+ static int kscan_kcond; /* kscan_labels(): an if of the body has a constant
+                            condition (no identifier once macros expanded:
+@@ -4955,6 +4956,7 @@ static void kscan_labels(TokenString *str)
+     klabs_free();
+     kscan_static = 0;
+     kscan_cond = 0;
++    kscan_used = 0;
+     kscan_kcond = 0;
+     begin_macro(str, 0);
+     next();
+@@ -5008,6 +5010,12 @@ static void kscan_labels(TokenString *str)
+             if (tok != '(')
+                 prevp = tok;
+         }
++        if (kscan_params && tok >= TOK_UIDENT && prev != '.' && prev != TOK_ARROW) {
++            /* a parameter named anywhere (a member of that name is not it) */
++            for (i = 0, sa = kscan_params; sa; sa = sa->next, i++)
++                if ((sa->v & ~SYM_FIELD) == tok)
++                    kscan_used |= i < 32 ? 1u << i : ~0u;
++        }
+         if (kscan_params) {
+             /* a parameter in a condition: the parentheses of if, while,
+                switch, for, or next to !, ?, &&, ||, ==, != */
+@@ -8846,7 +8854,8 @@ static int inline_call(Sym *fs, int nb_args)
+     kscan_params = fn->inlinable ? NULL : fs->next;
+     kscan_labels(fn->func_str);
+     if (!fn->inlinable)
+-        fn->cond = kscan_cond, fn->sret = kscan_sret, fn->kcond = kscan_kcond;
++        fn->cond = kscan_cond, fn->sret = kscan_sret, fn->kcond = kscan_kcond,
++        fn->used = kscan_used;
+     kscan_params = NULL;
+     if (kscan_static || (!fs->f.func_alwinl
+                          && ((!(cst & fn->cond) && !inl_sret_ok(fn)
+@@ -8937,7 +8946,15 @@ static int inline_call(Sym *fs, int nb_args)
+     for (i = np; i-- > 0;) {
+         CType t = pargs[i]->type;
+         int v = pargs[i]->v & ~SYM_FIELD;
+-        if (!v) {
++        if (!v || (i < 32 && !(fn->used & (1u << i))
++                   && (vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST)) {
++            /* unnamed, or never named by the body and given a constant or
++               an address (no side effect to keep): no local, and no
++               store, which would be a reference to that address (a stub
++               ignoring its fops keeps an unused static structure, and the
++               functions it points to, alive: alienware-wmi-wmax.c's
++               debugfs_create_file_aux_num(..., &awcc_gpio_pin_fops)
++               without CONFIG_DEBUG_FS, then debugfs_get_aux undefined) */
+             vpop();
+             continue;
+         }

@@ -82,13 +82,15 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 139 | tinycc 0153 |
 | | | | | 140 | tinycc 0155 |
 | | | | | 141 | tinycc 0157 |
+| | | | | 142 | tinycc 0159 |
+| | | | | 143 | tinycc 0161 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156 and 0158 those of fixes
-136-141.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156, 0158, 0160 and 0162 those of fixes
+136-143.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -157,6 +159,8 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/179_u64_double.c` | all (the inline sequences on x86_64 and i386) | 139 |
 | `tests/tests2/180_constant_p_address.c` | all (a compile error without the fix) | 140 |
 | `tests/tests2/181_inline_const_cond.c` | all (the link fails without the fix) | 141 |
+| `tests/tests2/182_inline_unused_param.c` | all (the link fails without the fix) | 142 |
+| `tests/tests2/183_asm_align_max.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 143 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2908,3 +2912,39 @@ amplifiers' calibration variables, which needed one tcc fix.
     for its `if (0)`; gcc's output; the link fails without the fix), `make test`, both kernels
     with CONFIG_EFI (the whole tree recompiled: 5 748 compiler runs on x86_64), the ISO
     booted on OVMF (EFI runtime services set up), devices-test, selfhost-test.
+
+## Real hardware: power, IOMMU, NTFS and the laptops' keys (2026-11-19)
+
+Group 7 of docs/HARDWARE.md (PM and suspend, intel_idle, MCE, the CPU temperatures, the Intel
+and AMD IOMMUs, NTFS3, the ThinkPad/IdeaPad/ASUS/HP/Dell/Acer platform drivers; PAE on i386)
+needed two tcc fixes.
+
+142. 2026-11-19, COMMITTED (patches/tinycc/compatibility/0159, test 0160 =
+    tests2/182_inline_unused_param), `tcc.h` (InlineFunc.used), `tccgen.c` (kscan_labels(),
+    inline_call()). Problem: with the Dell platform drivers the link failed with an undefined
+    `debugfs_get_aux`: alienware-wmi-wmax.c passes `&awcc_gpio_pin_fops` to
+    `debugfs_create_file_aux_num()`, which without CONFIG_DEBUG_FS is a static inline stub
+    `{ return ERR_PTR(-ENODEV); }` that ignores its fops; gcc inlines it, nothing refers to
+    the static fops structure any more, and it goes with the show and write functions it
+    points to, the only callers of debugfs_get_aux(). tcc inlined the stub too (a body of one
+    return statement), but made every parameter a local initialised with its argument, and
+    the store of `&awcc_gpio_pin_fops` was a relocation that kept the structure and the
+    functions. Fix: kscan_labels() notes which parameters the body names (an identifier
+    token, not after `.` or `->`); a parameter it never names, given a constant or an address
+    (no side effect to keep), gets no local and no store. Verification:
+    182_inline_unused_param (the stub given a static structure whose function calls an
+    undefined symbol: the link fails without the fix; a parameter that is named keeps its
+    value; an unnamed argument with a side effect still runs it; gcc's output), `make test`,
+    both kernels rebuilt from clean, devices-test 18/18, selfhost-test.
+
+143. 2026-11-19, COMMITTED (patches/tinycc/compatibility/0161, test 0162 =
+    tests2/183_asm_align_max), `tccasm.c` (asm_parse_directive(): .align/.balign/.p2align).
+    Problem: with CONFIG_SUSPEND the i386 kernel assembles arch/x86/kernel/acpi/wakeup_32.S,
+    whose `.p2align 4,,7` stopped tcc's assembler ("bad expression syntax [,]"): tcc read
+    `n[,fill]` only, while GNU as takes `n[,[fill][,max]]`, an empty fill meaning NOPs in code
+    and zeros elsewhere, and leaves the alignment out when it would skip more than max bytes.
+    Fix: the fill may be empty, and a third operand is the maximum skip (for .align, .balign
+    and .p2align). Verification: 183_asm_align_max (five alignments with and without fill and
+    maximum, the label offsets as gcc and GNU as give them), a directive file assembled by
+    tcc and by GNU as with the same symbol addresses and data bytes (the code padding differs
+    only in the NOP encodings), `make test`, the i386 kernel.

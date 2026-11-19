@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 19 Nov 2026 12:28:21 +0200
+Subject: [PATCH] tests: 183_asm_align_max, the case of the previous commit
+
+---
+ tests/tests2/183_asm_align_max.c      | 27 +++++++++++++++++++++++++++
+ tests/tests2/183_asm_align_max.expect |  1 +
+ 2 files changed, 28 insertions(+)
+ create mode 100644 tests/tests2/183_asm_align_max.c
+ create mode 100644 tests/tests2/183_asm_align_max.expect
+
+diff --git a/tests/tests2/183_asm_align_max.c b/tests/tests2/183_asm_align_max.c
+new file mode 100644
+index 0000000..0eed910
+--- /dev/null
++++ b/tests/tests2/183_asm_align_max.c
+@@ -0,0 +1,27 @@
++/* .p2align/.balign with an empty fill and a maximum skip (GNU as: the
++   alignment is left out when it would skip more): the Linux i386
++   wakeup_32.S has ".p2align 4,,7" */
++#include <stdio.h>
++
++extern char t0[], t1[], t2[], t3[], t4[], t5[];
++
++__asm__(".text\n"
++        ".p2align 5\n"
++        "t0: nop\n"
++        "    .p2align 4,,7\n"       /* 15 bytes to skip, at most 7: none */
++        "t1: nop\n"
++        "    .p2align 3,,7\n"       /* 6 bytes: done */
++        "t2: nop\n"
++        "    .balign 8,0x90,3\n"    /* 7 bytes, at most 3: none */
++        "t3: nop\n"
++        "    .p2align 2,0x90\n"     /* a fill, no maximum */
++        "t4: nop\n"
++        "    .balign 16,,15\n"      /* within the maximum */
++        "t5: ret\n");
++
++int main(void)
++{
++    printf("%d %d %d %d %d\n", (int)(t1 - t0), (int)(t2 - t0), (int)(t3 - t0),
++           (int)(t4 - t0), (int)(t5 - t0));
++    return 0;
++}
+diff --git a/tests/tests2/183_asm_align_max.expect b/tests/tests2/183_asm_align_max.expect
+new file mode 100644
+index 0000000..2f18317
+--- /dev/null
++++ b/tests/tests2/183_asm_align_max.expect
+@@ -0,0 +1 @@
++1 8 9 12 16

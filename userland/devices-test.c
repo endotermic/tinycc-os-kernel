@@ -5,7 +5,8 @@
  * and print one "devtest: <device>: ok|FAIL <details>" line per device class, then a summary
  * (wpa: a WPA2/WPA3 association between the two mac80211_hwsim radios, hostapd and the wifi
  * command; igb: a second Ethernet port of another driver; touchpad: a HID multitouch
- * touchpad made through /dev/uhid).
+ * touchpad made through /dev/uhid; ntfs: an NTFS disk the host formatted; suspend: suspend to
+ * RAM and back through the CMOS clock's alarm).
  * A C script run by tcc -run (every script of this system is one).  /init runs it when the
  * kernel command line has tcc.devtest (run.sh APPEND=..., scripts/devices-test.sh drives the
  * whole thing: it serves HTTP on the host and moves the mouse through QMP); it can be run by
@@ -590,17 +591,28 @@ static void test_usb(void)
 
 static void test_usb_storage(void)
 {
-    char disks[64], dev[32], *vendor, *model;
+    char disks[64], dev[32], *vendor, *model, *usb = NULL, *name, *save, link[256];
     int n = count_dir("/sys/block", "sd", disks, sizeof disks), rc = -1, ok = 0;
     char path[128];
-    if (n == 0) {
-        result("usb-storage", 0, "no SCSI disk (/sys/block/sd*)");
+    ssize_t len;
+    /* the disk on the USB bus (its sysfs device path goes through usbN), not another one (the
+       NTFS check's IDE disk) */
+    for (name = strtok_r(disks, " ", &save); name && !usb; name = strtok_r(NULL, " ", &save)) {
+        snprintf(path, sizeof path, "/sys/block/%s", name);
+        if ((len = readlink(path, link, sizeof link - 1)) > 0) {
+            link[len] = 0;
+            if (strstr(link, "/usb"))
+                usb = name;
+        }
+    }
+    if (n == 0 || !usb) {
+        result("usb-storage", 0, "no SCSI disk on USB (/sys/block/sd*: %d)", n);
         return;
     }
-    snprintf(dev, sizeof dev, "/dev/%.8s", disks);
-    snprintf(path, sizeof path, "/sys/block/%.8s/device/vendor", disks);
+    snprintf(dev, sizeof dev, "/dev/%.8s", usb);
+    snprintf(path, sizeof path, "/sys/block/%.8s/device/vendor", usb);
     vendor = strdup(first_line(path));
-    snprintf(path, sizeof path, "/sys/block/%.8s/device/model", disks);
+    snprintf(path, sizeof path, "/sys/block/%.8s/device/model", usb);
     model = strdup(first_line(path));
     /* a FAT filesystem on the stick: made, mounted, written, remounted, read back */
     rc = run((char *[]){ "mkfs.vfat", dev, NULL }, 1);
@@ -618,6 +630,68 @@ static void test_usb_storage(void)
     }
     result("usb-storage", ok, "%s (%s %s): mkfs.vfat %s, a file written, remounted and read back %s", dev, vendor, model,
            rc == 0 ? "ok" : "failed", ok ? "ok" : "failed");
+}
+
+/* NTFS (ntfs3): scripts/devices-test.sh attaches a disk formatted by the host's mkntfs with a
+   file put in by ntfscp; it is mounted, the file read, another written, and read back after a
+   remount */
+static void test_ntfs(void)
+{
+    char disks[64], dev[32] = "", *name, *save, buf[16], *got = "";
+    int fd, ok = 0, wrote = 0;
+    count_dir("/sys/block", "sd", disks, sizeof disks);
+    for (name = strtok_r(disks, " ", &save); name && !dev[0]; name = strtok_r(NULL, " ", &save)) {
+        char d[32];
+        snprintf(d, sizeof d, "/dev/%.8s", name);
+        if ((fd = open(d, O_RDONLY)) < 0)
+            continue;
+        if (read(fd, buf, 11) == 11 && memcmp(buf + 3, "NTFS    ", 8) == 0)
+            snprintf(dev, sizeof dev, "%s", d);
+        close(fd);
+    }
+    if (!dev[0]) {
+        result("ntfs", 0, "no disk with an NTFS boot sector (/sys/block/sd*)");
+        return;
+    }
+    mkdir("/mnt/ntfs", 0755);
+    if (mount(dev, "/mnt/ntfs", "ntfs3", 0, NULL) == 0) {
+        FILE *f;
+        got = strdup(first_line("/mnt/ntfs/hello.txt"));
+        if ((f = fopen("/mnt/ntfs/from-guest.txt", "w"))) {
+            wrote = fprintf(f, "written by devices-test\n") > 0;
+            wrote &= fclose(f) == 0;
+        }
+        umount("/mnt/ntfs");
+        if (mount(dev, "/mnt/ntfs", "ntfs3", MS_RDONLY, NULL) == 0) {
+            ok = wrote && strcmp(first_line("/mnt/ntfs/from-guest.txt"), "written by devices-test") == 0;
+            umount("/mnt/ntfs");
+        }
+    }
+    result("ntfs", ok && strcmp(got, "tinycc-os-kernel ntfs") == 0,
+           "%s: the host's file reads \"%s\", a file written, remounted read-only and read back %s", dev, got,
+           ok ? "ok" : "failed");
+}
+
+/* suspend to RAM (ACPI S3 of QEMU's PC machine) and back: busybox rtcwake sets the CMOS
+   clock's alarm, writes mem to /sys/power/state and returns after the wakeup; the network
+   must still work afterwards */
+static void test_suspend(void)
+{
+    struct timespec t0, t1;
+    char states[64];
+    int rc = -1, ping = -1;
+    double secs = 0;
+    snprintf(states, sizeof states, "%s", first_line("/sys/power/state"));
+    if (strstr(states, "mem")) {
+        clock_gettime(CLOCK_BOOTTIME, &t0);
+        rc = run((char *[]){ "rtcwake", "-m", "mem", "-s", "3", NULL }, 1);
+        clock_gettime(CLOCK_BOOTTIME, &t1);
+        secs = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+        ping = run((char *[]){ "ping", "-c", "1", "-W", "5", "10.0.2.2", NULL }, 1);
+    }
+    result("suspend", rc == 0 && secs >= 2.5 && ping == 0,
+           "/sys/power/state: %s; rtcwake -m mem -s 3: exit %d after %.1f s (asleep), ping after resume %s",
+           states, rc, secs, ping == 0 ? "answered" : "not answered");
 }
 
 static void test_video(void)
@@ -677,6 +751,8 @@ int main(int argc, char **argv)
     test_usb_storage();
     test_mouse(8);
     test_touchpad();
+    test_ntfs();
+    test_suspend();
     printf("devtest: done: %d checks, %d failed\n", checks, failures);
     fflush(stdout);
     return failures;

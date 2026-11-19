@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 19 Nov 2026 12:28:21 +0200
+Subject: [PATCH] tccasm: .p2align/.balign/.align with an empty fill value and
+ a maximum skip (n,,max), as GNU as: the alignment is left out when it would
+ skip more (Linux i386 wakeup_32.S: .p2align 4,,7)
+
+---
+ tccasm.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/tccasm.c b/tccasm.c
+index f55f126..079dac3 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1517,7 +1517,18 @@ static void asm_parse_directive(TCCState *s1, int global)
+         v = 0;
+         if (tok == ',') {
+             next();
+-            v = asm_int_expr(s1), c = 0;
++            /* .p2align 4,,7: no fill value (NOPs in code, zeros
++               elsewhere), only the maximum to skip */
++            if (tok != ',')
++                v = asm_int_expr(s1), c = 0;
++            if (tok == ',' && (tok1 == TOK_ASMDIR_align || tok1 == TOK_ASMDIR_balign)) {
++                /* the most bytes to skip: GNU as leaves the alignment
++                   out when it would take more (the kernel's i386
++                   wakeup_32.S) */
++                next();
++                if (size > asm_int_expr(s1))
++                    size = 0;
++            }
+         }
+     zero_pad:
+ 	if ((uint64_t)ind + size >= 1<<30)
