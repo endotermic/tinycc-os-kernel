@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 19 Nov 2026 14:36:50 +0200
+Subject: [PATCH] kdrive/fbdev: a shadow framebuffer in RAM when reading the
+ frame buffer is slow
+
+Xfbdev drew into the mmap'd frame buffer directly unless the screen was
+rotated.  On real graphics hardware that memory is video memory mapped
+uncached or write-combined, where reads are an order of magnitude or more
+slower than RAM: every scroll (CopyArea), every blended or composited
+window (Render, the Composite extension) reads it, and a browser redraw at
+1920x1080 crawled.
+
+At startup the server now times reading 256 KB of the frame buffer against
+the same amount of RAM and takes the shadow framebuffer (kdrive's existing
+rotation path: drawing in RAM, the damaged parts copied write-only to the
+frame buffer by shadowUpdatePacked, as Xorg's fbdev driver does with
+ShadowFB) when the frame buffer is more than 4 times slower; QEMU's display
+devices, whose frame buffer is ordinary memory, keep drawing directly.
+-shadow and -noshadow force either; the measured speeds and the choice go
+to the server's log.
+---
+ kdrive/fbdev/fbdev.c  | 55 ++++++++++++++++++++++++++++++++++++++++++-
+ kdrive/fbdev/fbdev.h  |  1 +
+ kdrive/fbdev/fbinit.c | 15 ++++++++++++
+ 3 files changed, 70 insertions(+), 1 deletion(-)
+
+diff --git a/kdrive/fbdev/fbdev.c b/kdrive/fbdev/fbdev.c
+index ae89381..cce940f 100644
+--- a/kdrive/fbdev/fbdev.c
++++ b/kdrive/fbdev/fbdev.c
+@@ -28,10 +28,54 @@
+ #include <sys/ioctl.h>
+ 
+ #include <errno.h>
++#include <time.h>
+ 
+ extern int KdTsPhyScreen;
+ 
+ const char *fbdevDevicePath = NULL;
++int fbdevShadow = -1;		/* -1: decided by fbdevReadsSlow, else -shadow/-noshadow */
++
++/* nanoseconds to read len bytes at p, after one pass that faults the pages in */
++static long fbdevReadTime(const char *p, size_t len)
++{
++	const volatile unsigned long *q = (const volatile unsigned long *) p;
++	size_t i, n = len / sizeof(unsigned long);
++	unsigned long sum = 0;
++	struct timespec a, b;
++	int pass;
++
++	for (pass = 0; pass < 2; pass++) {
++		clock_gettime(CLOCK_MONOTONIC, &a);
++		for (i = 0; i < n; i++)
++			sum += q[i];
++		clock_gettime(CLOCK_MONOTONIC, &b);
++	}
++	(void) sum;
++	return (b.tv_sec - a.tv_sec) * 1000000000L + (b.tv_nsec - a.tv_nsec) + 1;
++}
++
++/* whether reading the frame buffer is much slower than reading RAM: video memory
++   mapped uncached or write-combined (a real graphics card) rather than ordinary
++   memory (QEMU's display devices, DRM's fbdev emulation with a shadow of its own) */
++static Bool fbdevReadsSlow(FbdevPriv * priv)
++{
++	size_t len = 256 * 1024;
++	long tfb, tram;
++	char *ram;
++
++	if (len > priv->fix.smem_len)
++		len = priv->fix.smem_len & ~(sizeof(unsigned long) - 1);
++	ram = malloc(len);
++	if (!ram)
++		return TRUE;
++	memcpy(ram, priv->fb, len);
++	tfb = fbdevReadTime(priv->fb, len);
++	tram = fbdevReadTime(ram, len);
++	free(ram);
++	ErrorF("Xfbdev: reading %s: %ld MB/s, RAM %ld MB/s\n", fbdevDevicePath,
++	       (long) (len * 1000L / tfb), (long) (len * 1000L / tram));
++	return tfb > 4 * tram;
++}
+ 
+ static Bool fbdevMapFramebuffer(KdScreenInfo * screen);
+ 
+@@ -75,6 +119,10 @@ static Bool fbdevInitialize(KdCardInfo * card, FbdevPriv * priv)
+ 	}
+ 	off = (unsigned long) priv->fix.smem_start % (unsigned long) getpagesize();
+ 	priv->fb = priv->fb_base + off;
++	if (fbdevShadow < 0)
++		fbdevShadow = fbdevReadsSlow(priv);
++	ErrorF("Xfbdev: %s\n", fbdevShadow ? "shadow framebuffer in RAM"
++	       : "drawing into the framebuffer directly");
+ 	return TRUE;
+ }
+ 
+@@ -317,7 +365,12 @@ static Bool fbdevMapFramebuffer(KdScreenInfo * screen)
+ 	KdMouseMatrix m;
+ 	FbdevPriv *priv = screen->card->driver;
+ 
+-	if (scrpriv->randr != RR_Rotate_0 ||
++	/* the shadow framebuffer in RAM when reading the frame buffer is slow (or
++	   -shadow): on real hardware it is video memory mapped uncached or
++	   write-combined, where every read (scrolling, blending, the Composite
++	   extension) is very slow; the shadow is copied to it write-only, the damaged
++	   parts (like Xorg's ShadowFB) */
++	if (fbdevShadow || scrpriv->randr != RR_Rotate_0 ||
+ 		priv->fix.type != FB_TYPE_PACKED_PIXELS)
+ 		scrpriv->shadow = TRUE;
+ 	else
+diff --git a/kdrive/fbdev/fbdev.h b/kdrive/fbdev/fbdev.h
+index ae4cb91..aa3dc11 100644
+--- a/kdrive/fbdev/fbdev.h
++++ b/kdrive/fbdev/fbdev.h
+@@ -48,6 +48,7 @@ typedef struct _fbdevScrPriv {
+ } FbdevScrPriv;
+ 
+ extern const char *fbdevDevicePath;
++extern int fbdevShadow;
+ 
+ Bool fbdevCardInit(KdCardInfo * card);
+ 
+diff --git a/kdrive/fbdev/fbinit.c b/kdrive/fbdev/fbinit.c
+index 7be0190..8f678ad 100644
+--- a/kdrive/fbdev/fbinit.c
++++ b/kdrive/fbdev/fbinit.c
+@@ -76,6 +76,11 @@ void ddxUseMsg(void)
+ 	ErrorF("\nXfbdev Device Usage:\n");
+ 	ErrorF
+ 	    ("-fb path         Framebuffer device to use. Defaults to /dev/fb0\n");
++	ErrorF
++	    ("-shadow          Draw into a shadow of the framebuffer in RAM (default when\n"
++	     "                 reading the framebuffer is slow: real video memory)\n");
++	ErrorF
++	    ("-noshadow        Draw into the framebuffer directly\n");
+ 	ErrorF("\n");
+ }
+ 
+@@ -87,6 +92,16 @@ int ddxProcessArgument(int argc, char **argv, int i)
+ 		exit(0);
+ 	}
+ 
++	if (!strcmp(argv[i], "-shadow")) {
++		fbdevShadow = TRUE;
++		return 1;
++	}
++
++	if (!strcmp(argv[i], "-noshadow")) {
++		fbdevShadow = FALSE;
++		return 1;
++	}
++
+ 	if (!strcmp(argv[i], "-fb")) {
+ 		if (i + 1 < argc) {
+ 			fbdevDevicePath = argv[i + 1];

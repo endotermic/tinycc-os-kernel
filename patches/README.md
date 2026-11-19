@@ -19,7 +19,9 @@ Categories:
   `xmenu/upstreamable` (a build without Imlib2, the same pattern fix, keys without XKB, Down/Up
   with nothing selected, ARGB32 layers whatever the visual),
   `dmenu/compatibility` (bitmap fonts as glyph fallbacks),
-  `links/upstreamable` (an `<li>`/`<p>` hidden with display:none no longer hides its siblings) and
+  `links/upstreamable` (an `<li>`/`<p>` hidden with display:none no longer hides its siblings),
+  `tinyx/features` (the server out of the OOM killer's choice; a shadow framebuffer in RAM when
+  reading the frame buffer is slow, as on real video memory) and
   `links/features` (a subset of CSS: stylesheets, simple selectors, and the properties that map
   onto what Links renders: widths, alignment, colours, bold/italic/underline, display:none; and
   CSS fonts: font-family through fontconfig, font-size, FreeType default faces)

@@ -5,3 +5,4 @@ upstreamable/0003-Add-the-Composite-extension-from-X-server-1.2.0.patch
 upstreamable/0004-Add-nocursor-an-invisible-root-cursor.patch
 upstreamable/0005-colormap-opaque-alpha-in-colours-allocated-on-32-bit.patch
 features/0006-os-keep-the-server-out-of-the-OOM-killer-s-choice-on.patch
+features/0007-kdrive-fbdev-a-shadow-framebuffer-in-RAM-when-readin.patch

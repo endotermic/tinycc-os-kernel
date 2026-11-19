@@ -1631,6 +1631,19 @@ C29. 2026-11-17, COMMITTED (patches/tinyx/features/0006), TinyX `os/osinit.c` (O
     --startx, --iso) 512 MB by default. Not a tcc matter. Verification (x86_64, QEMU, xdm session,
     xresize test tool): at 256 MB, Xfbdev's oom_score_adj -1000, the OOM killer killed links after
     50 fast resizes and the session stayed; at 512 MB, 200 resizes, nothing killed.
+C30. 2026-11-19, COMMITTED (patches/tinyx/features/0007), TinyX `kdrive/fbdev` (fbdevInitialize,
+    fbdevMapFramebuffer, -shadow/-noshadow in fbinit.c): on the first real machine (an Acer Aspire,
+    x86_64 ISO, i915drmfb) links -g redrew very slowly. Xfbdev drew straight into the mmap'd frame
+    buffer unless rotated; on real hardware that is uncached/write-combined video memory, and
+    scrolling (CopyArea), blended inactive windows and xcompmgr's compositing all read it. The
+    server now times reading 256 KB of the frame buffer against RAM at start and uses kdrive's
+    shadow framebuffer (draw in RAM, shadowUpdatePacked copies the damage write-only, like Xorg's
+    ShadowFB) when the frame buffer is over 4x slower; -shadow/-noshadow force it; speeds and the
+    choice go to /tmp/Xfbdev.log. QEMU (fb = RAM: 6117 vs 6402 MB/s) keeps drawing directly,
+    where the shadow costs ~35% more server CPU (40 page scrolls of links at 1920x1080: 165 -> 229
+    ticks with xcompmgr, 90 -> 121 without; xcompmgr alone nearly doubles the server's work).
+    Not a tcc matter. Verification: x86_64 QEMU at 1920x1080: same rendering with the shadow,
+    a -shadow server repaints fully after a VT round trip; the laptop not yet re-tested.
 
 ## The device drivers (2026-10-26)
 

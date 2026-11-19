@@ -211,3 +211,13 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   suspend work through it; the x86_64 ISO on OVMF; selfhost-test all on both (i386 11 min,
   x86_64 15 min 46 s).  Not tested: real laptops' S3/s2idle
   (firmware and drivers decide), the platform drivers, MCE reports.
+
+## Real hardware reports
+
+- 2026-11-19, Acer Aspire laptop, x86_64 ISO (commit 37af92b): boots; the desktop (xdm
+  login, JWM, mlterm, the other X programs) works.  links -g is very slow to draw, but
+  resizing its window no longer hangs.  Cause: Xfbdev drew in the frame buffer itself, video
+  memory that is very slow to read (scrolling, blending, compositing read it); since
+  patches/tinyx/features/0007 it draws in a shadow in RAM when it measures slow reads
+  (FIX-LOG C30; /tmp/Xfbdev.log names the choice).  To re-test on the laptop.  Not yet checked there: Wi-Fi, sound, suspend,
+  the touchpad driver in use, the internal disk.
