@@ -1727,6 +1727,28 @@ C38. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0007, 0008), libnsfb `s
     call nsfb_set_title() (WM_NAME + _NET_WM_NAME); the front end's set_title shows "<page title> -
     NetSurf". Also in x.c: select() got the millisecond remainder as microseconds (a 50 ms wait
     lasted 50 us). Not a tcc matter.
+C39. 2026-11-20, COMMITTED (patches/netsurf/features/0009, 0010), NetSurf `content/handlers/html` (html.c,
+    dom_event.c, box_construct.c, box_special.c, box_textarea.c) and `css/select.c`: DOM changes
+    made after the page was laid out (timers, events, promises) ran but were never drawn: NetSurf
+    builds the box tree once ("NS layout is static"). A DOMSubtreeModified on a rendered node now
+    schedules html_rebox (debounced; at least 3x the last rebuild apart; only when the content is
+    DONE; not for form controls, options, title, script, head, nor for documents with frames or
+    iframes). It resets focus/selection/drag, drops libcss's cached node data
+    (nscss_reset_node_data: without it libcss asserted "old_node_data == NULL" in
+    set_libcss_node_data), builds a new tree in one go (dom_to_box_sync) in its own talloc context,
+    re-extracts image maps, releases the old objects after the new ones hold the cached contents,
+    clears node data that still points into the old tree, frees it, reformats and redraws. Form
+    gadgets keep their text areas and select options. Not a tcc matter. Verification: host
+    (-f ram): a page changing text, list items, a class and inserting an image every 300 ms
+    rebuilt 5 times in 0-1 ms each, the input kept its value; the stress page (13 rebuilds), the
+    event and ES pages, BBC News and Wikipedia: no crash. 0010: a rebuilt tree takes over the old
+    tree's loaded objects for the same URL (html_fetch_object during the rebuild; only objects that
+    had a box, whose callback handles animation frames), so images do not vanish until a cache
+    fetch returns; and the last object that arrives after the page is DONE reformats (before, one
+    arriving within the minimum time between reformats stayed invisible: a script-inserted <img>).
+    x86_64 QEMU: a page that changes text, a class and list items and inserts an image every second
+    shows every change, the static image stays, the input keeps its value; the test page's
+    await-after-setTimeout text, never drawn before, appears.
 
 ## The device drivers (2026-10-26)
 

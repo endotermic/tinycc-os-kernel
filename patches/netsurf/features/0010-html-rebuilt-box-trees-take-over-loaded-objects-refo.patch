@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 18:03:52 +0200
+Subject: [PATCH] html: rebuilt box trees take over loaded objects; reformat
+ for late objects
+
+When the box tree is rebuilt (html_schedule_rebox), html_fetch_object
+takes the old tree's object for the same URL if it has arrived, instead
+of fetching it again: the boxes are laid out with their images, which
+otherwise disappeared until the new fetch came back from the cache.
+
+An object that a script added after the page was done only caused a
+reformat when it arrived after the minimum time between reformats; after
+a rebuild it usually did not, and stayed invisible.  The last such object
+to arrive now lays the page out again.
+---
+ netsurf/content/handlers/html/html.c    | 10 ++++--
+ netsurf/content/handlers/html/object.c  | 43 +++++++++++++++++++++++++
+ netsurf/content/handlers/html/private.h |  3 ++
+ 3 files changed, 54 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index 2c099c7..66c3f60 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -1237,6 +1237,8 @@ static void html_rebox(void *p)
+ 	c->bctx = NULL;
+ 	c->object_list = NULL;
+ 	c->num_objects = 0;
++	/* html_fetch_object takes the objects that have arrived from here */
++	c->rebox_objects = old_objects;
+ 
+ 	/* libcss keeps selection data on the nodes, which knows nothing of
+ 	 * the changes: select every style afresh */
+@@ -1247,9 +1249,13 @@ static void html_rebox(void *p)
+ 	err = dom_to_box_sync(html, c, html_rebox_done);
+ 	c->rebox_running = false;
+ 	dom_node_unref(html);
++	/* the old objects not taken over */
++	old_objects = c->rebox_objects;
++	c->rebox_objects = NULL;
+ 
+ 	if (err != NSERROR_OK || c->rebox_ok == false || c->layout == NULL) {
+-		/* keep the old tree */
++		/* keep the old tree (with the objects the new one took back
++		 * in its list: they point at new boxes, so they go) */
+ 		NSLOG(netsurf, WARNING, "box tree rebuild failed: keeping the old layout");
+ 		html_object_free_objects(c);
+ 		if (c->bctx != NULL) {
+@@ -1269,7 +1275,7 @@ static void html_rebox(void *p)
+ 		NSLOG(netsurf, INFO, "imagemap extraction failed");
+ 	}
+ 
+-	/* release the old objects (the new ones hold the cached contents) and
++	/* release the old objects that the new tree did not take over and
+ 	 * the old boxes, after forgetting the node data that points at them */
+ 	new_objects = c->object_list;
+ 	c->object_list = old_objects;
+diff --git a/netsurf/content/handlers/html/object.c b/netsurf/content/handlers/html/object.c
+index a1f020b..b9ba993 100644
+--- a/netsurf/content/handlers/html/object.c
++++ b/netsurf/content/handlers/html/object.c
+@@ -482,6 +482,18 @@ html_object_callback(hlcache_handle *object,
+ 		content__reformat(&c->base, false, c->base.available_width,
+ 				c->base.available_height);
+ 		content_set_done(&c->base);
++	} else if (c->base.status == CONTENT_STATUS_DONE &&
++		   c->base.active == 0 &&
++		   c->had_initial_layout &&
++		   box != NULL &&
++		   (event->type == CONTENT_MSG_DONE ||
++		    event->type == CONTENT_MSG_ERROR)) {
++		/* the last of the objects that a script added after the
++		 * page was done (html_schedule_rebox) has arrived: lay out
++		 * again, or it stays invisible when it came within the
++		 * minimum time between reformats */
++		content__reformat(&c->base, false, c->base.available_width,
++				c->base.available_height);
+ 	} else if (nsoption_bool(incremental_reflow) &&
+ 		   event->type == CONTENT_MSG_DONE &&
+ 		   box != NULL &&
+@@ -722,6 +734,37 @@ html_fetch_object(html_content *c,
+ 	if (c->aborted)
+ 		return true;
+ 
++	if (c->rebox_running && box != NULL) {
++		/* The box tree is being rebuilt (html_schedule_rebox): take
++		 * the old tree's object for the same URL, if it has arrived,
++		 * instead of fetching it again (and showing nothing until it
++		 * has) */
++		struct content_html_object **prev;
++		for (prev = &c->rebox_objects; *prev != NULL;
++				prev = &(*prev)->next) {
++			object = *prev;
++			/* (box-less objects, the speculative fetches of
++			 * inserted images, have a callback that ignores the
++			 * content's later events, such as animation frames) */
++			if (object->content == NULL ||
++			    object->box == NULL ||
++			    object->background != background ||
++			    content_get_status(object->content) !=
++					CONTENT_STATUS_DONE ||
++			    nsurl_compare(content_get_url(
++					hlcache_handle_get_content(object->content)),
++					url, NSURL_COMPLETE) == false)
++				continue;
++			*prev = object->next;
++			object->box = box;
++			object->next = c->object_list;
++			c->object_list = object;
++			c->num_objects++;
++			html_object_done(box, object->content, background);
++			return true;
++		}
++	}
++
+ 	child.charset = c->encoding;
+ 	child.quirks = c->base.quirks;
+ 
+diff --git a/netsurf/content/handlers/html/private.h b/netsurf/content/handlers/html/private.h
+index 53d9059..cc6bdc8 100644
+--- a/netsurf/content/handlers/html/private.h
++++ b/netsurf/content/handlers/html/private.h
+@@ -132,6 +132,9 @@ typedef struct html_content {
+ 	bool rebox_ok;
+ 	/** Minimum delay before the next rebuild, in ms */
+ 	unsigned int rebox_delay;
++	/** The old tree's objects during a rebuild, for html_fetch_object to
++	 * reuse */
++	struct content_html_object *rebox_objects;
+ 
+ 	/** Whether scripts are enabled for this content */
+ 	bool enable_scripting;

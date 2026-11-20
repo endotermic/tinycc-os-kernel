@@ -1,0 +1,495 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 17:53:58 +0200
+Subject: [PATCH] html: show DOM changes made after layout (rebuild the box
+ tree)
+
+NetSurf builds the box tree once, when the document has been parsed, and
+documents were static after that: what scripts changed later (in timers,
+event handlers, promise callbacks) ran but never reached the screen.
+
+A DOMSubtreeModified on a rendered node now schedules a rebuild
+(html_schedule_rebox; debounced, at least three times the last rebuild's
+duration apart, and only once the content is DONE).  html_rebox() resets
+the focus, selection and drag, forgets libcss's cached node data
+(nscss_reset_node_data: it is never told of DOM changes), builds a new
+box tree in one go (dom_to_box_sync) in a talloc context of its own,
+extracts the image maps again, releases the old objects after the new
+ones have taken the cached contents, clears the node data that still
+points into the old tree, frees it, and reformats and redraws.  Form
+gadgets keep their text area (box_textarea_create_textarea) and select
+options (box_select), and so what the user typed and chose.  Documents
+with frames or iframes are left as they were; changes inside form
+controls, options, title, script and head do not trigger a rebuild.
+---
+ netsurf/content/handlers/css/select.c         |  42 +++++
+ netsurf/content/handlers/css/select.h         |   8 +
+ netsurf/content/handlers/html/box_construct.c |  38 +++-
+ netsurf/content/handlers/html/box_construct.h |  13 ++
+ netsurf/content/handlers/html/box_special.c   |  14 +-
+ netsurf/content/handlers/html/box_textarea.c  |   6 +
+ netsurf/content/handlers/html/dom_event.c     |  15 ++
+ netsurf/content/handlers/html/html.c          | 165 ++++++++++++++++++
+ netsurf/content/handlers/html/private.h       |  17 ++
+ 9 files changed, 313 insertions(+), 5 deletions(-)
+
+diff --git a/netsurf/content/handlers/css/select.c b/netsurf/content/handlers/css/select.c
+index c77644b..fc8cca9 100644
+--- a/netsurf/content/handlers/css/select.c
++++ b/netsurf/content/handlers/css/select.c
+@@ -1749,6 +1749,48 @@ css_error set_libcss_node_data(void *pw, void *node, void *libcss_node_data)
+ 	return CSS_OK;
+ }
+ 
++/* exported function documented in css/select.h */
++void nscss_reset_node_data(dom_node *root)
++{
++	dom_node *n = dom_node_ref(root), *next;
++	dom_exception err;
++
++	/* depth first, without recursion */
++	while (n != NULL) {
++		void *data = NULL;
++
++		err = dom_node_set_user_data(n,
++				corestring_dom___ns_key_libcss_node_data,
++				NULL, NULL, &data);
++		if (err == DOM_NO_ERR && data != NULL) {
++			css_libcss_node_data_handler(&selection_handler,
++					CSS_NODE_DELETED, NULL, n, NULL, data);
++		}
++
++		/* the next node: first child, else next sibling of this node
++		 * or of the nearest ancestor below root that has one */
++		next = NULL;
++		err = dom_node_get_first_child(n, &next);
++		if (err != DOM_NO_ERR)
++			next = NULL;
++		while (next == NULL && n != root) {
++			dom_node *parent = NULL;
++			err = dom_node_get_next_sibling(n, &next);
++			if (err != DOM_NO_ERR)
++				next = NULL;
++			if (next != NULL)
++				break;
++			err = dom_node_get_parent_node(n, &parent);
++			if (err != DOM_NO_ERR || parent == NULL)
++				break;
++			dom_node_unref(n);
++			n = parent;
++		}
++		dom_node_unref(n);
++		n = next;
++	}
++}
++
+ css_error get_libcss_node_data(void *pw, void *node, void **libcss_node_data)
+ {
+ 	dom_node *n = node;
+diff --git a/netsurf/content/handlers/css/select.h b/netsurf/content/handlers/css/select.h
+index c17caad..2cc096b 100644
+--- a/netsurf/content/handlers/css/select.h
++++ b/netsurf/content/handlers/css/select.h
+@@ -59,4 +59,12 @@ css_error named_ancestor_node(void *pw, void *node,
+ 
+ css_error node_is_visited(void *pw, void *node, bool *match);
+ 
++/**
++ * Forget libcss's cached selection data of every node under root, so that
++ * styles are selected afresh after the document changed.
++ *
++ * \param root  The node to start at (e.g. the document element)
++ */
++void nscss_reset_node_data(dom_node *root);
++
+ #endif
+diff --git a/netsurf/content/handlers/html/box_construct.c b/netsurf/content/handlers/html/box_construct.c
+index 8519c2b..cf286a1 100644
+--- a/netsurf/content/handlers/html/box_construct.c
++++ b/netsurf/content/handlers/html/box_construct.c
+@@ -61,6 +61,8 @@ struct box_construct_ctx {
+ 	box_construct_complete_cb cb;	/**< Callback to invoke on completion */
+ 
+ 	int *bctx;			/**< talloc context */
++
++	bool sync;			/**< Convert in one go, without yielding */
+ };
+ 
+ /**
+@@ -1305,7 +1307,7 @@ static void convert_xml_to_box(struct box_construct_ctx *ctx)
+ 			free(ctx);
+ 			return;
+ 		}
+-	} while (++num_processed < max_processed_before_yield);
++	} while (ctx->sync || ++num_processed < max_processed_before_yield);
+ 
+ 	/* More work to do: schedule a continuation */
+ 	guit->misc->schedule(0, (void *)convert_xml_to_box, ctx);
+@@ -1341,6 +1343,7 @@ dom_to_box(dom_node *n,
+ 	ctx->root_box = NULL;
+ 	ctx->cb = cb;
+ 	ctx->bctx = c->bctx;
++	ctx->sync = false;
+ 
+ 	*box_conversion_context = ctx;
+ 
+@@ -1348,6 +1351,39 @@ dom_to_box(dom_node *n,
+ }
+ 
+ 
++/* exported function documented in html/box_construct.h */
++nserror
++dom_to_box_sync(dom_node *n, html_content *c, box_construct_complete_cb cb)
++{
++	struct box_construct_ctx *ctx;
++
++	if (c->bctx == NULL) {
++		/* create a context allocation for this box tree */
++		c->bctx = talloc_zero(0, int);
++		if (c->bctx == NULL) {
++			return NSERROR_NOMEM;
++		}
++	}
++
++	ctx = malloc(sizeof(*ctx));
++	if (ctx == NULL) {
++		return NSERROR_NOMEM;
++	}
++
++	ctx->content = c;
++	ctx->n = dom_node_ref(n);
++	ctx->root_box = NULL;
++	ctx->cb = cb;
++	ctx->bctx = c->bctx;
++	ctx->sync = true;
++
++	/* runs to completion: cb has been called when this returns */
++	convert_xml_to_box(ctx);
++
++	return NSERROR_OK;
++}
++
++
+ /* exported function documented in html/box_construct.h */
+ nserror cancel_dom_to_box(void *box_conversion_context)
+ {
+diff --git a/netsurf/content/handlers/html/box_construct.h b/netsurf/content/handlers/html/box_construct.h
+index f4bd119..9bf8b48 100644
+--- a/netsurf/content/handlers/html/box_construct.h
++++ b/netsurf/content/handlers/html/box_construct.h
+@@ -89,6 +89,19 @@ nserror dom_to_box(struct dom_node *n, struct html_content *c, box_construct_com
+  */
+ nserror cancel_dom_to_box(void *box_conversion_context);
+ 
++/**
++ * Construct a box tree from a DOM tree at once, without yielding.
++ *
++ * Used to rebuild the box tree of a document that changed after it was
++ * laid out (html_schedule_rebox); cb has been called when this returns.
++ *
++ * \param n   dom tree
++ * \param c   content of type CONTENT_HTML that is being processed
++ * \param cb  callback to report conversion completion
++ * \return netsurf error code indicating status of call
++ */
++nserror dom_to_box_sync(struct dom_node *n, struct html_content *c, box_construct_complete_cb cb);
++
+ 
+ /**
+  * Retrieve the box for a dom node, if there is one
+diff --git a/netsurf/content/handlers/html/box_special.c b/netsurf/content/handlers/html/box_special.c
+index db3c412..f1d5ed5 100644
+--- a/netsurf/content/handlers/html/box_special.c
++++ b/netsurf/content/handlers/html/box_special.c
+@@ -1677,10 +1677,16 @@ box_select(dom_node *n,
+ 		return false;
+ 
+ 	gadget->html = content;
+-	err = dom_node_get_first_child(n, &c);
+-	if (err != DOM_NO_ERR) {
+-		form_free_control(gadget);
+-		return false;
++	if (gadget->data.select.items != NULL) {
++		/* the box tree is being rebuilt (html_schedule_rebox): the
++		 * gadget keeps its options and their selection */
++		c = NULL;
++	} else {
++		err = dom_node_get_first_child(n, &c);
++		if (err != DOM_NO_ERR) {
++			form_free_control(gadget);
++			return false;
++		}
+ 	}
+ 
+ 	while (c != NULL) {
+diff --git a/netsurf/content/handlers/html/box_textarea.c b/netsurf/content/handlers/html/box_textarea.c
+index d086600..867a9b8 100644
+--- a/netsurf/content/handlers/html/box_textarea.c
++++ b/netsurf/content/handlers/html/box_textarea.c
+@@ -279,6 +279,12 @@ bool box_textarea_create_textarea(html_content *html,
+ 			gadget->type == GADGET_TEXTBOX ||
+ 			gadget->type == GADGET_PASSWORD);
+ 
++	if (gadget->data.text.ta != NULL) {
++		/* the box tree is being rebuilt (html_schedule_rebox): the
++		 * gadget keeps its text area and what was typed into it */
++		return true;
++	}
++
+ 	if (gadget->type == GADGET_TEXTAREA) {
+ 		dom_html_text_area_element *textarea =
+ 				(dom_html_text_area_element *) node;
+diff --git a/netsurf/content/handlers/html/dom_event.c b/netsurf/content/handlers/html/dom_event.c
+index d389a21..c1503bd 100644
+--- a/netsurf/content/handlers/html/dom_event.c
++++ b/netsurf/content/handlers/html/dom_event.c
+@@ -740,9 +740,24 @@ dom_default_action_DOMSubtreeModified_cb(struct dom_event *evt, void *pw)
+ 			case DOM_HTML_ELEMENT_TYPE_TEXTAREA:
+ 			case DOM_HTML_ELEMENT_TYPE_INPUT:
+ 				html_texty_element_update(htmlc, (dom_node *)node);
++				break;
++			case DOM_HTML_ELEMENT_TYPE_SELECT:
++			case DOM_HTML_ELEMENT_TYPE_OPTION:
++			case DOM_HTML_ELEMENT_TYPE_TITLE:
++			case DOM_HTML_ELEMENT_TYPE_SCRIPT:
++			case DOM_HTML_ELEMENT_TYPE_HEAD:
++				/* gadgets keep themselves in step; the
++				 * others are not rendered */
++				break;
+ 			default:
++				/* a change to the rendered document after it
++				 * was laid out: build its boxes again */
++				html_schedule_rebox(htmlc);
+ 				break;
+ 			}
++		} else if ((exc == DOM_NO_ERR) &&
++			   (type == DOM_TEXT_NODE || type == DOM_DOCUMENT_NODE)) {
++			html_schedule_rebox(htmlc);
+ 		}
+ 		dom_node_unref(node);
+ 	}
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index 82f5f13..2c099c7 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -57,6 +57,7 @@
+ #include "javascript/js.h"
+ #include "desktop/gui_internal.h"
+ 
++#include "css/select.h"
+ #include "html/html.h"
+ #include "html/private.h"
+ #include "html/dom_event.h"
+@@ -1138,6 +1139,167 @@ void html__redraw_a_box(struct html_content *html, struct box *box)
+ 			box->padding[TOP] + box->height + box->padding[BOTTOM]);
+ }
+ 
++/**
++ * Walk a box tree: point each node's box data at its box and each gadget at
++ * its box (relink), or forget the node data that still points into this tree
++ * (unlink, before the tree is freed).
++ */
++static void html_rebox_walk(struct box *box, bool relink)
++{
++	struct box *child;
++
++	for (; box != NULL; box = box->next) {
++		if (box->node != NULL) {
++			void *old = NULL;
++			if (relink) {
++				dom_node_set_user_data(box->node,
++					corestring_dom___ns_key_box_node_data,
++					box, NULL, &old);
++			} else if (box_for_node(box->node) == box) {
++				dom_node_set_user_data(box->node,
++					corestring_dom___ns_key_box_node_data,
++					NULL, NULL, &old);
++			}
++		}
++		if (relink && box->gadget != NULL) {
++			box->gadget->box = box;
++		}
++		for (child = box->children; child != NULL; child = child->next) {
++			html_rebox_walk(child, relink);
++		}
++	}
++}
++
++static void html_rebox_done(html_content *c, bool success)
++{
++	c->rebox_ok = success;
++}
++
++/**
++ * Rebuild the box tree from the DOM, lay it out again and redraw.
++ *
++ * NetSurf builds the box tree once, when the document has been parsed, so
++ * changes that scripts make to the DOM later (timers, events, promises) were
++ * never shown.  The tree is now rebuilt in one go: form controls keep their
++ * gadgets (and what was typed into them), images and other objects are
++ * fetched again (from the cache) before the old ones are released, and the
++ * focus, selection and drag, which point into the old tree, are reset.
++ * Documents with frames or iframes are left alone: their child windows hang
++ * off the boxes.
++ */
++static void html_rebox(void *p)
++{
++	html_content *c = p;
++	struct box *old_layout;
++	int *old_bctx;
++	struct content_html_object *old_objects, *new_objects;
++	unsigned int old_num_objects;
++	dom_node *html;
++	dom_exception exc;
++	nserror err;
++	uint64_t ms_before, ms_after;
++	union html_drag_owner drag_owner = { .no_owner = true };
++	union html_selection_owner sel_owner = { .none = true };
++	union html_focus_owner focus_owner = { .self = true };
++
++	c->rebox_pending = false;
++	if (c->layout == NULL || c->aborted || c->box_conversion_context != NULL ||
++	    c->iframe != NULL || c->frameset != NULL) {
++		return;
++	}
++	if (c->base.locked ||
++	    content__get_status(&c->base) != CONTENT_STATUS_DONE) {
++		/* still loading objects (or busy): try again later */
++		c->rebox_pending = true;
++		guit->misc->schedule(100, html_rebox, c);
++		return;
++	}
++
++	exc = dom_document_get_document_element(c->document, (void *) &html);
++	if ((exc != DOM_NO_ERR) || (html == NULL)) {
++		return;
++	}
++
++	nsu_getmonotonic_ms(&ms_before);
++	NSLOG(netsurf, INFO, "DOM changed after layout: rebuilding the box tree (%p)", c);
++
++	/* nothing may keep pointing into the old tree */
++	html_set_drag_type(c, HTML_DRAG_NONE, drag_owner, NULL);
++	html_set_selection(c, HTML_SELECTION_NONE, sel_owner, true);
++	html_set_focus(c, HTML_FOCUS_SELF, focus_owner, true, 0, 0, 0, NULL);
++	selection_clear(c->sel, false);
++
++	old_layout = c->layout;
++	old_bctx = c->bctx;
++	old_objects = c->object_list;
++	old_num_objects = c->num_objects;
++	c->layout = NULL;
++	c->bctx = NULL;
++	c->object_list = NULL;
++	c->num_objects = 0;
++
++	/* libcss keeps selection data on the nodes, which knows nothing of
++	 * the changes: select every style afresh */
++	nscss_reset_node_data(html);
++
++	c->rebox_running = true;
++	c->rebox_ok = false;
++	err = dom_to_box_sync(html, c, html_rebox_done);
++	c->rebox_running = false;
++	dom_node_unref(html);
++
++	if (err != NSERROR_OK || c->rebox_ok == false || c->layout == NULL) {
++		/* keep the old tree */
++		NSLOG(netsurf, WARNING, "box tree rebuild failed: keeping the old layout");
++		html_object_free_objects(c);
++		if (c->bctx != NULL) {
++			talloc_free(c->bctx);
++		}
++		c->layout = old_layout;
++		c->bctx = old_bctx;
++		c->object_list = old_objects;
++		c->num_objects = old_num_objects;
++		html_rebox_walk(c->layout, true);
++		return;
++	}
++
++	/* image maps come from the DOM, and the old ones from the old tree */
++	imagemap_destroy(c);
++	if (imagemap_extract(c) != NSERROR_OK) {
++		NSLOG(netsurf, INFO, "imagemap extraction failed");
++	}
++
++	/* release the old objects (the new ones hold the cached contents) and
++	 * the old boxes, after forgetting the node data that points at them */
++	new_objects = c->object_list;
++	c->object_list = old_objects;
++	html_object_free_objects(c);
++	c->object_list = new_objects;
++	html_rebox_walk(old_layout, false);
++	talloc_free(old_bctx);
++
++	content__reformat(&c->base, false, c->base.available_width,
++			  c->base.available_height);
++	content__request_redraw(&c->base, 0, 0, c->base.width, c->base.height);
++
++	/* pages that change often: wait at least three times what this took */
++	nsu_getmonotonic_ms(&ms_after);
++	c->rebox_delay = (ms_after - ms_before) * 3;
++	NSLOG(netsurf, INFO, "box tree rebuilt in %u ms", (unsigned)(ms_after - ms_before));
++}
++
++/* exported interface documented in html/private.h */
++void html_schedule_rebox(html_content *htmlc)
++{
++	if (htmlc->layout == NULL || htmlc->rebox_running ||
++	    htmlc->rebox_pending || htmlc->box_conversion_context != NULL) {
++		return;
++	}
++	htmlc->rebox_pending = true;
++	guit->misc->schedule(htmlc->rebox_delay > 20 ? htmlc->rebox_delay : 20,
++			     html_rebox, htmlc);
++}
++
+ static void html_destroy_frameset(struct content_html_frames *frameset)
+ {
+ 	int i;
+@@ -1206,6 +1368,9 @@ static void html_destroy(struct content *c)
+ 
+ 	NSLOG(netsurf, INFO, "content %p", c);
+ 
++	/* A rebuild of the box tree may be scheduled */
++	guit->misc->schedule(-1, html_rebox, html);
++
+ 	/* If we're still converting a layout, cancel it */
+ 	if (html->box_conversion_context != NULL) {
+ 		if (cancel_dom_to_box(html->box_conversion_context) != NSERROR_OK) {
+diff --git a/netsurf/content/handlers/html/private.h b/netsurf/content/handlers/html/private.h
+index 56cd957..53d9059 100644
+--- a/netsurf/content/handlers/html/private.h
++++ b/netsurf/content/handlers/html/private.h
+@@ -124,6 +124,15 @@ typedef struct html_content {
+ 	/** Whether an initial layout has been done */
+ 	bool had_initial_layout;
+ 
++	/** A rebuild of the box tree after a DOM change is scheduled */
++	bool rebox_pending;
++	/** The box tree is being rebuilt */
++	bool rebox_running;
++	/** The last rebuild's conversion succeeded */
++	bool rebox_ok;
++	/** Minimum delay before the next rebuild, in ms */
++	unsigned int rebox_delay;
++
+ 	/** Whether scripts are enabled for this content */
+ 	bool enable_scripting;
+ 
+@@ -228,6 +237,14 @@ extern bool html_redraw_debug;
+  */
+ void html__redraw_a_box(html_content *htmlc, struct box *box);
+ 
++/**
++ * Rebuild the box tree and layout soon, because the DOM changed after the
++ * document was laid out (by a script, typically).
++ *
++ * \param htmlc The HTML content
++ */
++void html_schedule_rebox(html_content *htmlc);
++
+ 
+ /**
+  * Complete conversion of an HTML document

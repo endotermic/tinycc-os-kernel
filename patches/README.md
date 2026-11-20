@@ -29,7 +29,7 @@ Categories:
   under compilers that report `__GNUC__` 2; `-Wl,--trace` only for a linker that has it;
   nsgenbind's and libnslog's lexer headers generated before the parsers are compiled, for
   parallel builds; libnsfb's X window closing on WM_DELETE_WINDOW and titled with the page) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
-  QuickJS: ES2023 instead of ES5.1)
+  QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

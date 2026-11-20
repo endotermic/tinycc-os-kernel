@@ -7,3 +7,5 @@ upstreamable/0005-libnslog-generate-the-lexer-header-before-compiling.patch
 features/0006-JavaScript-run-the-Duktape-bindings-on-QuickJS-NETSU.patch
 upstreamable/0007-libnsfb-x-close-on-WM_DELETE_WINDOW-window-title-sel.patch
 upstreamable/0008-framebuffer-show-the-page-title-in-the-window-title.patch
+features/0009-html-show-DOM-changes-made-after-layout-rebuild-the-.patch
+features/0010-html-rebuilt-box-trees-take-over-loaded-objects-refo.patch
