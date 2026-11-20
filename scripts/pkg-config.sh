@@ -17,7 +17,8 @@
 # requirement is missing, as pkg-config does.
 set -e
 case ${1:-} in -h|--help) sed -n '3,/^[^#]/p' "$0" | sed '$d' | cut -c3-; exit 0;; esac
-want=; atleast=; exact=; maxv=; variable=; defines=; errors=; quiet=
+# pkgs: the arguments that are not options, joined: the package list
+want=; atleast=; exact=; maxv=; variable=; defines=; errors=; quiet=; pkgs=
 while [ $# -gt 0 ]; do
     case $1 in
         --exists) want="$want exists";;
@@ -50,12 +51,10 @@ $2"; shift;;
         --list-all) want="$want list";;
         --errors-to-stdout) ;;
         -*) echo "pkg-config.sh: unknown option $1" >&2; exit 1;;
-        *) break;;
+        *) pkgs="${pkgs:+$pkgs }$1";;   # options may follow the packages (NetSurf: "pkg-config libcss --cflags")
     esac
     shift
 done
-# the remaining arguments, joined, are the package list
-pkgs=$*
 [ -n "$PKG_CONFIG_LIBDIR" ] || { [ -n "$quiet" ] || echo "pkg-config.sh: PKG_CONFIG_LIBDIR is not set" >&2; exit 1; }
 dirs=$(echo "${PKG_CONFIG_PATH:+$PKG_CONFIG_PATH:}$PKG_CONFIG_LIBDIR" | tr ':' ' ')
 # find NAME: the .pc file of a package

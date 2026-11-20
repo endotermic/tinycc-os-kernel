@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 15:50:40 +0200
+Subject: [PATCH] Pass -Wl,--trace only to a linker that accepts it
+
+The link line always carried -Wl,--trace (its output records the libraries
+for the relink dependency), and a linker without the option, such as tcc's,
+fails the link.  Probe it with a test link first; without it the binary is
+just not relinked when only a library changed.
+---
+ netsurf/Makefile | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/netsurf/Makefile b/netsurf/Makefile
+index 05cb03e..fc0ae70 100644
+--- a/netsurf/Makefile
++++ b/netsurf/Makefile
+@@ -230,8 +230,11 @@ CXXFLAGS += -DSTMTEXPR=1
+ endif
+ 
+ # We trace during link so that we can determine if a libary changes under us in
+-# order to re-link.  This *may* be gcc specific, so may need tweaks in future.
++# order to re-link.  Not every linker has --trace (tcc's has not): it is only
++# used when a test link with it succeeds.
++ifeq ($(shell echo 'int main(void){return 0;}' | $(CC) -x c -o /dev/null -Wl,--trace - >/dev/null 2>&1 && echo yes),yes)
+ LDFLAGS += -Wl,--trace
++endif
+ 
+ # ----------------------------------------------------------------------------
+ # General make rules

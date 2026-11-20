@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 15:55:58 +0200
+Subject: [PATCH] libnslog: generate the lexer header before compiling
+
+As in nsgenbind: the bison filter parser includes the flex lexer's header,
+which no rule said, and the generators wrote into the build directory
+without waiting for it.  A parallel make failed with "filter-lexer.h not
+found".  The generators now wait for the build directory's stamp and the
+lexer header is a PRE_TARGET.
+---
+ libnslog/src/Makefile | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/libnslog/src/Makefile b/libnslog/src/Makefile
+index d598cf5..3da2351 100644
+--- a/libnslog/src/Makefile
++++ b/libnslog/src/Makefile
+@@ -4,13 +4,17 @@ CFLAGS := $(CFLAGS) -I$(BUILDDIR) -Isrc/
+ 
+ SOURCES := $(SOURCES) $(BUILDDIR)/filter-parser.c $(BUILDDIR)/filter-lexer.c
+ 
+-$(BUILDDIR)/%-lexer.inc $(BUILDDIR)/%-lexer.h: src/%-lexer.l
++$(BUILDDIR)/%-lexer.inc $(BUILDDIR)/%-lexer.h: src/%-lexer.l | $(BUILDDIR)/stamp
+ 	$(VQ)$(ECHO) "	  FLEX: $<"
+ 	$(Q)$(FLEX) --outfile=$(BUILDDIR)/$(*F)-lexer.inc --header-file=$(BUILDDIR)/$(*F)-lexer.h $<
+ .PRECIOUS: $(BUILDDIR)/%-lexer.inc
+ 
+ $(BUILDDIR)/%-lexer.inc: $(BUILDDIR)/%-parser.h
+ 
++# The parser includes the lexer's header: generate it before any object is
++# compiled, or a parallel make compiles the parser too early
++PRE_TARGETS := $(PRE_TARGETS) $(BUILDDIR)/filter-lexer.h
++
+ $(BUILDDIR)/%-lexer.c: $(BUILDDIR)/%-lexer.inc
+ 	$(Q)echo "#ifndef __clang_analyzer__" > $@
+ 	$(Q)echo "#include \"$(notdir $<)\"" >> $@
+@@ -36,7 +40,7 @@ else
+   endif
+ endif
+ 
+-$(BUILDDIR)/%-parser.c $(BUILDDIR)/%-parser.h: src/%-parser.y
++$(BUILDDIR)/%-parser.c $(BUILDDIR)/%-parser.h: src/%-parser.y | $(BUILDDIR)/stamp
+ 	$(VQ)$(ECHO) "	 BISON: $<"
+ 	$(Q)$(BISON) -d -t $(BISON_DEFINES) --report=all --output=$(BUILDDIR)/$(*F)-parser.c --defines=$(BUILDDIR)/$(*F)-parser.h $<
+ 

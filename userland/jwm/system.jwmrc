@@ -11,7 +11,7 @@
   browser, Restart JWM, Log out).  JWM's own menu opens on the tray's Menu button and on
   Alt-F1 (and on a click on the bare root window when the desktop is not running): the mlterm terminal (also Ctrl-Alt-T; its settings are in
   /etc/mlterm/main), the xfiles file manager (also Ctrl-Alt-F; its resources are in
-  /etc/X11/Xresources), the xedit text editor (also Ctrl-Alt-E), the links browser, Restart, Exit, which ends the session (back
+  /etc/X11/Xresources), the xedit text editor (also Ctrl-Alt-E), the links browser, the NetSurf browser, Restart, Exit, which ends the session (back
   to the greeter under xdm, back to the text console under startx), then Reboot and Shut
   down, without a confirmation (JWM has none for programs): busybox reboot and poweroff,
   which every user may run (/etc/busybox.conf), named by their full path because xdm's
@@ -32,6 +32,7 @@
         <Program icon="text-editor" label="Text editor (xedit)">xedit</Program>
         <Program icon="web-browser" label="Web browser (links)">links -g</Program>
         <Program icon="web-browser" label="Web browser: the host's http.server (10.0.2.2:8000)">links -g http://10.0.2.2:8000/</Program>
+        <Program icon="web-browser" label="Web browser (NetSurf)">netsurf</Program>
         <Dynamic icon="wallpaper" label="Wallpaper">exec:wallpaper -m</Dynamic>
         <Separator/>
         <Restart label="Restart JWM" icon="restart"/>

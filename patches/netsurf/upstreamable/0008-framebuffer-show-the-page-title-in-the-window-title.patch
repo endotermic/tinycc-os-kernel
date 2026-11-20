@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 17:33:48 +0200
+Subject: [PATCH] framebuffer: show the page title in the window title
+
+On surfaces that are windows (libnsfb's X surface: nsfb_set_title) the
+window title follows the page, "<title> - NetSurf", cut at a character
+boundary when long; "NetSurf" when the page has none.
+---
+ netsurf/frontends/framebuffer/framebuffer.c |  6 ++++++
+ netsurf/frontends/framebuffer/framebuffer.h |  1 +
+ netsurf/frontends/framebuffer/gui.c         | 23 +++++++++++++++++++++
+ 3 files changed, 30 insertions(+)
+
+diff --git a/netsurf/frontends/framebuffer/framebuffer.c b/netsurf/frontends/framebuffer/framebuffer.c
+index 52afdbf..2889081 100644
+--- a/netsurf/frontends/framebuffer/framebuffer.c
++++ b/netsurf/frontends/framebuffer/framebuffer.c
+@@ -640,6 +640,12 @@ framebuffer_finalise(void)
+     nsfb_free(nsfb);
+ }
+ 
++bool
++framebuffer_set_title(const char *title)
++{
++    return nsfb_set_title(nsfb, title) == 0;
++}
++
+ bool
+ framebuffer_set_cursor(struct fbtk_bitmap *bm)
+ {
+diff --git a/netsurf/frontends/framebuffer/framebuffer.h b/netsurf/frontends/framebuffer/framebuffer.h
+index d99049f..5d5e638 100644
+--- a/netsurf/frontends/framebuffer/framebuffer.h
++++ b/netsurf/frontends/framebuffer/framebuffer.h
+@@ -30,6 +30,7 @@ nsfb_t *framebuffer_initialise(const char *fename, int width, int height, int bp
+ bool framebuffer_resize(nsfb_t *nsfb, int width, int height, int bpp);
+ void framebuffer_finalise(void);
+ bool framebuffer_set_cursor(struct fbtk_bitmap *bm);
++bool framebuffer_set_title(const char *title);
+ 
+ /** Set framebuffer surface to render into
+  *
+diff --git a/netsurf/frontends/framebuffer/gui.c b/netsurf/frontends/framebuffer/gui.c
+index 934ba05..1715e47 100644
+--- a/netsurf/frontends/framebuffer/gui.c
++++ b/netsurf/frontends/framebuffer/gui.c
+@@ -2147,6 +2147,28 @@ gui_window_event(struct gui_window *gw, enum gui_window_event event)
+ 	return NSERROR_OK;
+ }
+ 
++/**
++ * Show the page title in the window's title (on surfaces that are windows)
++ */
++static void
++gui_window_set_title(struct gui_window *g, const char *title)
++{
++	char buf[256];
++
++	if (title == NULL || title[0] == '\0') {
++		framebuffer_set_title("NetSurf");
++		return;
++	}
++	if (snprintf(buf, sizeof(buf), "%s - NetSurf", title) >= (int)sizeof(buf)) {
++		/* cut long titles at a character boundary */
++		size_t n = sizeof(buf) - sizeof(" - NetSurf");
++		while (n > 0 && (title[n] & 0xc0) == 0x80)
++			n--;
++		snprintf(buf, sizeof(buf), "%.*s - NetSurf", (int)n, title);
++	}
++	framebuffer_set_title(buf);
++}
++
+ static struct gui_window_table framebuffer_window_table = {
+ 	.create = gui_window_create,
+ 	.destroy = gui_window_destroy,
+@@ -2156,6 +2178,7 @@ static struct gui_window_table framebuffer_window_table = {
+ 	.get_dimensions = gui_window_get_dimensions,
+ 	.event = gui_window_event,
+ 
++	.set_title = gui_window_set_title,
+ 	.set_url = gui_window_set_url,
+ 	.set_status = gui_window_set_status,
+ 	.set_pointer = gui_window_set_pointer,

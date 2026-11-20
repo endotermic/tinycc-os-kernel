@@ -1,0 +1,203 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 17:33:48 +0200
+Subject: [PATCH] libnsfb x: close on WM_DELETE_WINDOW, window title, select
+ timeout
+
+The X surface's window did not take part in the window manager's close
+protocol: the close button and Alt-F4 made the window manager offer to
+kill the client (JWM: "Kill this window?").  It now names
+WM_DELETE_WINDOW in WM_PROTOCOLS and turns that client message (sent
+with SendEvent, so the type has its high bit set) into
+NSFB_CONTROL_QUIT.  The window had no title or class either: it gets
+WM_CLASS netsurf/NetSurf and the title NetSurf, and a new optional
+surface call, nsfb_set_title(), sets WM_NAME and _NET_WM_NAME (UTF-8)
+on surfaces that have one (-1 elsewhere).
+
+The event wait passed the millisecond remainder to select() as
+microseconds, so a 50 ms wait lasted 50 us and the loop spun.
+---
+ libnsfb/include/libnsfb.h | 10 ++++++
+ libnsfb/src/libnsfb.c     |  9 +++++
+ libnsfb/src/surface.h     |  3 ++
+ libnsfb/src/surface/x.c   | 70 ++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 91 insertions(+), 1 deletion(-)
+
+diff --git a/libnsfb/include/libnsfb.h b/libnsfb/include/libnsfb.h
+index 674df65..fd31bfd 100644
+--- a/libnsfb/include/libnsfb.h
++++ b/libnsfb/include/libnsfb.h
+@@ -156,6 +156,16 @@ int nsfb_set_geometry(nsfb_t *nsfb, int width, int height, enum nsfb_format_e fo
+  */
+ int nsfb_set_parameters(nsfb_t *nsfb, const char *parameters);
+ 
++/** Set the title of the surface's window (UTF-8).
++ *
++ * Only surfaces that are windows of a windowing system have a title.
++ *
++ * @param nsfb The surface to alter.
++ * @param title The new title.
++ * @return 0 on success, -1 when the surface has no title.
++ */
++int nsfb_set_title(nsfb_t *nsfb, const char *title);
++
+ /** Obtain the buffer memory base and stride. 
+  *
+  * @param nsfb The context to read.
+diff --git a/libnsfb/src/libnsfb.c b/libnsfb/src/libnsfb.c
+index 4d652c1..a50d99d 100644
+--- a/libnsfb/src/libnsfb.c
++++ b/libnsfb/src/libnsfb.c
+@@ -77,6 +77,15 @@ nsfb_event(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+     return nsfb->surface_rtns->input(nsfb, event, timeout);
+ }
+ 
++/* exported interface documented in libnsfb.h */
++int
++nsfb_set_title(nsfb_t *nsfb, const char *title)
++{
++    if (nsfb->surface_rtns->title == NULL)
++        return -1;
++    return nsfb->surface_rtns->title(nsfb, title);
++}
++
+ /* exported interface documented in libnsfb.h */
+ int 
+ nsfb_claim(nsfb_t *nsfb, nsfb_bbox_t *box)
+diff --git a/libnsfb/src/surface.h b/libnsfb/src/surface.h
+index efb84fb..3fea28b 100644
+--- a/libnsfb/src/surface.h
++++ b/libnsfb/src/surface.h
+@@ -31,6 +31,8 @@ typedef int (nsfb_surfacefn_update_t)(nsfb_t *nsfb, nsfb_bbox_t *box);
+ /* surface cursor display */
+ typedef int (nsfb_surfacefn_cursor_t)(nsfb_t *nsfb, struct nsfb_cursor_s *cursor);
+ 
++typedef int (nsfb_surfacefn_title_t)(nsfb_t *nsfb, const char *title);
++
+ typedef struct nsfb_surface_rtns_s {
+     nsfb_surfacefn_defaults_t *defaults;
+     nsfb_surfacefn_init_t *initialise;
+@@ -41,6 +43,7 @@ typedef struct nsfb_surface_rtns_s {
+     nsfb_surfacefn_claim_t *claim;
+     nsfb_surfacefn_update_t *update;
+     nsfb_surfacefn_cursor_t *cursor;
++    nsfb_surfacefn_title_t *title; /* optional: NULL for surfaces without a title */
+ } nsfb_surface_rtns_t;
+ 
+ void _nsfb_register_surface(const enum nsfb_type_e type, const nsfb_surface_rtns_t *rtns, const char *name);
+diff --git a/libnsfb/src/surface/x.c b/libnsfb/src/surface/x.c
+index c011b38..3f5fefb 100644
+--- a/libnsfb/src/surface/x.c
++++ b/libnsfb/src/surface/x.c
+@@ -77,6 +77,10 @@ typedef struct xstate_s {
+     xcb_pixmap_t pmap; /* The handle to the backing pixmap */
+     xcb_gcontext_t gc; /* The handle to the pixmap plotting graphics context */
+     xcb_shm_seg_t segment; /* The handle to the image shared memory */
++    xcb_atom_t wm_protocols; /* WM_PROTOCOLS */
++    xcb_atom_t wm_delete_window; /* WM_DELETE_WINDOW: the window manager's close */
++    xcb_atom_t net_wm_name; /* _NET_WM_NAME: the title in UTF-8 */
++    xcb_atom_t utf8_string; /* UTF8_STRING */
+ } xstate_t;
+ 
+ /* X keyboard codepage to nsfb mapping */
+@@ -764,6 +768,38 @@ create_blank_cursor(xcb_connection_t *conn, const xcb_screen_t *scr)
+ }
+ 
+ 
++/* the atom of name, or XCB_ATOM_NONE */
++static xcb_atom_t x_intern_atom(xcb_connection_t *c, const char *name)
++{
++    xcb_intern_atom_reply_t *reply;
++    xcb_atom_t atom = XCB_ATOM_NONE;
++
++    reply = xcb_intern_atom_reply(c, xcb_intern_atom(c, 0, strlen(name), name), NULL);
++    if (reply != NULL) {
++        atom = reply->atom;
++        free(reply);
++    }
++    return atom;
++}
++
++/* set the window title: WM_NAME (for older window managers) and _NET_WM_NAME */
++static int x_set_title(nsfb_t *nsfb, const char *title)
++{
++    xstate_t *xstate = nsfb->surface_priv;
++
++    if (xstate == NULL || title == NULL)
++        return -1;
++    xcb_change_property(xstate->connection, XCB_PROP_MODE_REPLACE,
++                        xstate->window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
++                        strlen(title), title);
++    if (xstate->net_wm_name != XCB_ATOM_NONE && xstate->utf8_string != XCB_ATOM_NONE)
++        xcb_change_property(xstate->connection, XCB_PROP_MODE_REPLACE,
++                            xstate->window, xstate->net_wm_name, xstate->utf8_string, 8,
++                            strlen(title), title);
++    xcb_flush(xstate->connection);
++    return 0;
++}
++
+ static int x_initialise(nsfb_t *nsfb)
+ {
+     uint32_t mask;
+@@ -860,6 +896,23 @@ static int x_initialise(nsfb_t *nsfb)
+         xcb_free_size_hints(hints);
+     }
+ 
++    /* the window manager's close button (and Alt-F4) sends WM_DELETE_WINDOW
++     * instead of killing the client; the class (instance and class name,
++     * each NUL-terminated) and a first title */
++    xstate->wm_protocols = x_intern_atom(xstate->connection, "WM_PROTOCOLS");
++    xstate->wm_delete_window = x_intern_atom(xstate->connection, "WM_DELETE_WINDOW");
++    xstate->net_wm_name = x_intern_atom(xstate->connection, "_NET_WM_NAME");
++    xstate->utf8_string = x_intern_atom(xstate->connection, "UTF8_STRING");
++    if (xstate->wm_protocols != XCB_ATOM_NONE && xstate->wm_delete_window != XCB_ATOM_NONE)
++        xcb_change_property(xstate->connection, XCB_PROP_MODE_REPLACE,
++                            xstate->window, xstate->wm_protocols, XCB_ATOM_ATOM, 32,
++                            1, &xstate->wm_delete_window);
++    xcb_change_property(xstate->connection, XCB_PROP_MODE_REPLACE,
++                        xstate->window, XCB_ATOM_WM_CLASS, XCB_ATOM_STRING, 8,
++                        sizeof("netsurf\0NetSurf"), "netsurf\0NetSurf");
++    nsfb->surface_priv = xstate;
++    x_set_title(nsfb, "NetSurf");
++
+     /* create backing pixmap */
+     xstate->pmap = xcb_generate_id(xstate->connection);
+     xcb_create_pixmap(xstate->connection, 24, xstate->pmap, xstate->window, xstate->image->width, xstate->image->height);
+@@ -934,7 +987,7 @@ static bool x_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+             FD_SET(confd, &rfds);
+ 
+             tv.tv_sec = timeout / 1000;
+-            tv.tv_usec = timeout % 1000;
++            tv.tv_usec = (timeout % 1000) * 1000;
+ 
+             retval = select(confd + 1, &rfds, NULL, NULL, &tv);
+             if (retval == 0) {
+@@ -960,6 +1013,20 @@ static bool x_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+ 
+     event->type = NSFB_EVENT_NONE;
+ 
++    /* the window manager asks the window to close: quit (client messages
++     * come with SendEvent, the high bit of the type set) */
++    if ((e->response_type & ~0x80) == XCB_CLIENT_MESSAGE) {
++        xcb_client_message_event_t *ecm = (xcb_client_message_event_t *)e;
++        if (ecm->type == xstate->wm_protocols &&
++            ecm->format == 32 &&
++            ecm->data.data32[0] == xstate->wm_delete_window) {
++            event->type = NSFB_EVENT_CONTROL;
++            event->value.controlcode = NSFB_CONTROL_QUIT;
++        }
++        free(e);
++        return true;
++    }
++
+     switch (e->response_type) {
+     case XCB_EXPOSE:
+         ee = (xcb_expose_event_t *)e;
+@@ -1128,6 +1195,7 @@ const nsfb_surface_rtns_t x_rtns = {
+     .update = x_update,
+     .cursor = x_cursor,
+     .geometry = x_set_geometry,
++    .title = x_set_title,
+ };
+ 
+ NSFB_SURFACE_DEF(x, NSFB_SURFACE_X, &x_rtns)

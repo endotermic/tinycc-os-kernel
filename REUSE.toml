@@ -74,6 +74,24 @@ SPDX-FileCopyrightText = ["Anselm R Garbe and the dmenu authors", "2026 Nikolajs
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = ["patches/netsurf/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The NetSurf authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = ["patches/netsurf/**/*talloc*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Andrew Tridgell", "Stefan Metzmacher", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["patches/netsurf/**/*nsgenbind*.patch", "patches/netsurf/**/*libnslog*.patch", "patches/netsurf/**/*libnsfb*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Vincent Sanders", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
 path = ["patches/links/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Mikulas Patocka and the Links authors", "2026 Nikolajs Agafonovs"]

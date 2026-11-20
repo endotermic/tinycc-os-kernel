@@ -1,0 +1,9 @@
+# patches/netsurf: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-Use-the-OpenSSL-1.1-API-with-LibreSSL-2.7-and-later.patch
+upstreamable/0002-talloc-use-va_copy-when-stdarg.h-defines-it.patch
+upstreamable/0003-Pass-Wl-trace-only-to-a-linker-that-accepts-it.patch
+upstreamable/0004-nsgenbind-generate-the-lexer-headers-before-compilin.patch
+upstreamable/0005-libnslog-generate-the-lexer-header-before-compiling.patch
+features/0006-JavaScript-run-the-Duktape-bindings-on-QuickJS-NETSU.patch
+upstreamable/0007-libnsfb-x-close-on-WM_DELETE_WINDOW-window-title-sel.patch
+upstreamable/0008-framebuffer-show-the-page-title-in-the-window-title.patch

@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 15:50:40 +0200
+Subject: [PATCH] talloc: use va_copy when <stdarg.h> defines it
+
+talloc.c assumed va_copy only for __GNUC__ > 2 and otherwise defined it as
+a plain assignment, which does not compile where va_list is an array type
+(x86_64).  Compilers that define __GNUC__ as 2 or not at all but have a
+C99 <stdarg.h> (tcc) failed with "lvalue expected".  va_copy is a macro
+in every C99 <stdarg.h>, so test for it as well.
+---
+ netsurf/utils/talloc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/netsurf/utils/talloc.c b/netsurf/utils/talloc.c
+index 408e94b..2d79d24 100644
+--- a/netsurf/utils/talloc.c
++++ b/netsurf/utils/talloc.c
+@@ -55,7 +55,7 @@
+ #include "replace.h"
+ #else
+ #include <stdarg.h>
+-#if !defined(__BEOS__) && __GNUC__ > 2
++#if !defined(__BEOS__) && (__GNUC__ > 2 || defined(va_copy))
+ /* Assume we've got va_copy */
+ #define HAVE_VA_COPY
+ #include <string.h>

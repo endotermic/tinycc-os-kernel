@@ -1,0 +1,2479 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 17:16:05 +0200
+Subject: [PATCH] JavaScript: run the Duktape bindings on QuickJS
+ (NETSURF_USE_QUICKJS)
+
+The JavaScript bindings (dukky.c, the .bnd files and the C nsgenbind
+generates from them) use 93 functions of the Duktape C API.
+duk_quickjs.c implements them on QuickJS, an ES2023 engine (classes,
+arrow functions, let/const, destructuring, async/await, Promise, Map/Set,
+Proxy, BigInt, optional chaining, ...), where Duktape has ES5.1 and
+modern site scripts stop at their first SyntaxError.  The bindings
+compile unchanged: duktape.h includes duk_quickjs.h when
+NETSURF_JS_QUICKJS is defined.
+
+NETSURF_USE_QUICKJS := YES and NETSURF_QUICKJS_DIR (a QuickJS source tree)
+select it; duk_quickjs.c compiles quickjs.c in, the qjs_*.c files the
+rest of QuickJS.  The model: one runtime and context per heap, every
+Duktape thread a global object of its own swapped into the context when
+used (a real QuickJS global object with the built-ins and the window
+object's properties), a value stack per thread, pointers as BigInts,
+hidden keys as private symbols, errors thrown with longjmp to the
+nearest protected call, and finalizers (set on the prototypes) queued
+when QuickJS frees an object and run later on a stand-in carrying the
+object's hidden pointers, since QuickJS frees the properties first and
+allows no calls during collection.  Promise jobs run after each
+top-level call.
+---
+ netsurf/Makefile                              |    1 +
+ netsurf/Makefile.defaults                     |    7 +
+ .../handlers/javascript/duktape/Makefile      |   11 +
+ .../handlers/javascript/duktape/duk_quickjs.c | 2050 +++++++++++++++++
+ .../handlers/javascript/duktape/duk_quickjs.h |  263 +++
+ .../handlers/javascript/duktape/duktape.h     |    5 +-
+ .../handlers/javascript/duktape/qjs_cutils.c  |    4 +
+ .../handlers/javascript/duktape/qjs_dtoa.c    |    4 +
+ .../javascript/duktape/qjs_libregexp.c        |    4 +
+ .../javascript/duktape/qjs_libunicode.c       |    4 +
+ 10 files changed, 2352 insertions(+), 1 deletion(-)
+ create mode 100644 netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+ create mode 100644 netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+ create mode 100644 netsurf/content/handlers/javascript/duktape/qjs_cutils.c
+ create mode 100644 netsurf/content/handlers/javascript/duktape/qjs_dtoa.c
+ create mode 100644 netsurf/content/handlers/javascript/duktape/qjs_libregexp.c
+ create mode 100644 netsurf/content/handlers/javascript/duktape/qjs_libunicode.c
+
+diff --git a/netsurf/Makefile b/netsurf/Makefile
+index fc0ae70..d8f5194 100644
+--- a/netsurf/Makefile
++++ b/netsurf/Makefile
+@@ -140,6 +140,7 @@ $(eval $(call feature_switch,JPEG,JPEG (libjpeg),-DWITH_JPEG,-ljpeg,-UWITH_JPEG,
+ $(eval $(call feature_switch,HARU_PDF,PDF export (haru),-DWITH_PDF_EXPORT,-lhpdf -lpng,-UWITH_PDF_EXPORT,))
+ $(eval $(call feature_switch,LIBICONV_PLUG,glibc internal iconv,-DLIBICONV_PLUG,,-ULIBICONV_PLUG,-liconv))
+ $(eval $(call feature_switch,DUKTAPE,Javascript (Duktape),,,,,))
++$(eval $(call feature_switch,QUICKJS,Javascript engine QuickJS,,,,,))
+ 
+ # Common libraries with pkgconfig
+ $(eval $(call pkg_config_find_and_add,libcss,CSS))
+diff --git a/netsurf/Makefile.defaults b/netsurf/Makefile.defaults
+index bbff688..9ec3168 100644
+--- a/netsurf/Makefile.defaults
++++ b/netsurf/Makefile.defaults
+@@ -71,6 +71,13 @@ NETSURF_USE_WEBP := AUTO
+ # Valid options: YES, NO
+ NETSURF_USE_DUKTAPE := YES
+ 
++# Run the javascript bindings on QuickJS (ES2023) instead of the bundled
++# Duktape (ES5.1); NETSURF_QUICKJS_DIR is a QuickJS source tree (quickjs.c,
++# libregexp.c, ...), which is compiled into NetSurf.  Needs NETSURF_USE_DUKTAPE.
++# Valid options: YES, NO
++NETSURF_USE_QUICKJS := NO
++NETSURF_QUICKJS_DIR :=
++
+ # Enable NetSurf's use of libharu for PDF export and GTK printing support.
+ # There is no auto-detection available for this, as it does not have a
+ # pkg-config file.
+diff --git a/netsurf/content/handlers/javascript/duktape/Makefile b/netsurf/content/handlers/javascript/duktape/Makefile
+index 638ca44..45ab15a 100644
+--- a/netsurf/content/handlers/javascript/duktape/Makefile
++++ b/netsurf/content/handlers/javascript/duktape/Makefile
+@@ -55,6 +55,17 @@ S_JAVASCRIPT_BINDING:=$(addprefix $(OBJROOT)/duktape/,$(NSGENBIND_SOURCES))
+ 
+ $(S_JAVASCRIPT_BINDING): $(BINDINGS)
+ 
++ifeq ($(NETSURF_USE_QUICKJS),YES)
++# the bindings on QuickJS: duk_quickjs.c implements the Duktape API they use
++# and compiles quickjs.c in; the qjs_*.c files are QuickJS's other sources
++S_JAVASCRIPT += content.c duktape/dukky.c duktape/duk_quickjs.c \
++	duktape/qjs_cutils.c duktape/qjs_dtoa.c duktape/qjs_libregexp.c \
++	duktape/qjs_libunicode.c
++CFLAGS += -DNETSURF_JS_QUICKJS -I$(NETSURF_QUICKJS_DIR) \
++	-DCONFIG_VERSION=\"$(shell cat $(NETSURF_QUICKJS_DIR)/VERSION 2>/dev/null)\"
++LDFLAGS += -lm
++else
+ S_JAVASCRIPT += content.c duktape/dukky.c duktape/duktape.c
++endif
+ 
+ CFLAGS += -DDUK_OPT_HAVE_CUSTOM_H
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+new file mode 100644
+index 0000000..f3aa799
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -0,0 +1,2050 @@
++/*
++ * Copyright 2026 Nikolajs Agafonovs
++ *
++ * This file is part of NetSurf, http://www.netsurf-browser.org/
++ *
++ * NetSurf is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 2 of the License.
++ *
++ * NetSurf is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/** \file
++ * The Duktape C API subset of duk_quickjs.h, on QuickJS.
++ *
++ * QuickJS is compiled into this file (quickjs.c is included below), so that
++ * the few things the Duktape model needs and QuickJS's public API lacks are
++ * reachable: private symbols for hidden properties, the global object of a
++ * context, the C function behind a function object.
++ *
++ * The model:
++ *  - a heap is a QuickJS runtime with one context; every Duktape thread of
++ *    the heap runs in that context, with its own global object (a real
++ *    QuickJS global object, swapped into the context whenever the thread is
++ *    used) and its own value stack;
++ *  - a value stack slot holds a JSValue and the C string last handed out
++ *    for it, valid while the value stays on the stack, as in Duktape;
++ *  - a pointer (duk_push_pointer) is a BigInt holding the address;
++ *  - a hidden key ("\xFF..." or "\x82...") is a QuickJS private symbol,
++ *    which scripts cannot see or enumerate; pushed as a string, it stays
++ *    that symbol, so that it can be used as a key again;
++ *  - duk_push_object makes objects of a class of its own, whose C side
++ *    remembers the finalizer (own, or inherited from the prototype when
++ *    duk_set_prototype is called, as NetSurf sets finalizers on prototypes)
++ *    and the pointers stored under hidden keys; QuickJS frees an object's
++ *    properties before its finalizer runs and does not allow calls during
++ *    collection, so the Duktape finalizer is queued and run later on a
++ *    stand-in object carrying those hidden pointers (NetSurf's finalizers
++ *    only free the private data they point to);
++ *  - errors are thrown with longjmp to the innermost protected call or C
++ *    function boundary, where the pending QuickJS exception is picked up.
++ */
++
++#define _GNU_SOURCE
++#include "duk_quickjs.h"
++
++/* QuickJS itself */
++#ifndef CONFIG_VERSION
++#define CONFIG_VERSION "netsurf"
++#endif
++#include "quickjs.c"
++/* quickjs.c forbids the C allocator for itself; the code below uses it */
++#undef malloc
++#undef free
++#undef realloc
++
++#include <setjmp.h>
++
++extern duk_bool_t dukky_check_timeout(void *udata);
++
++typedef struct duk_slot {
++	JSValue v;
++	const char *cstr;	/* C string handed out for v, or NULL */
++	size_t clen;
++	int cstr_owned;		/* cstr from JS_ToCStringLen (else a hidden name) */
++} duk_slot;
++
++typedef struct duk_heap duk_heap;
++
++struct duk_hthread {
++	duk_heap *heap;
++	duk_slot *stack;
++	int top;		/* absolute: number of slots in use */
++	int size;
++	int bottom;		/* absolute index of the current frame's index 0 */
++	JSValue this_val;	/* 'this' of the running C function (borrowed) */
++	JSValue global;		/* the thread's global object */
++	JSValue global_var;	/* its global lexical scope (let/const) */
++	JSValue window;		/* the object set with duk_set_global_object */
++};
++
++typedef struct duk_catch {
++	jmp_buf jb;
++	struct duk_catch *prev;
++} duk_catch;
++
++typedef struct duk_hidden {
++	char *name;		/* the Duktape key, 0xFF bytes included */
++	size_t len;
++	JSAtom atom;		/* the private symbol's atom */
++	JSValue sym;		/* the private symbol */
++} duk_hidden;
++
++typedef struct duk_mirror {
++	int hidden;		/* index into heap->hidden */
++	int64_t ptr;
++} duk_mirror;
++
++/* the C side of a duk_push_object object */
++typedef struct duk_objdata {
++	duk_c_function fin_own;	/* set with duk_set_finalizer on this object */
++	duk_c_function fin_inh;	/* found on the prototype chain */
++	int no_fin;		/* a finalizer stand-in: never finalized itself */
++	int nmirror;
++	duk_mirror *mirror;
++} duk_objdata;
++
++typedef struct duk_pending {
++	struct duk_pending *next;
++	duk_c_function fin;
++	int nmirror;
++	duk_mirror *mirror;
++} duk_pending;
++
++struct duk_heap {
++	JSRuntime *rt;
++	JSContext *ctx;
++	duk_context *main;
++	duk_context *cur;	/* the thread whose globals are in ctx */
++	void *udata;
++	duk_alloc_function alloc_func;
++	duk_realloc_function realloc_func;
++	duk_free_function free_func;
++	duk_catch *catchp;
++	duk_hidden *hidden;
++	int nhidden;
++	duk_pending *pending, **pending_tail;
++	int running_fin;
++	int depth;		/* nesting of calls into JavaScript */
++};
++
++static JSClassID duk_obj_class_id;
++static JSClassID duk_thread_class_id;
++
++/* ---------------------------------------------------------------------------
++ * helpers
++ */
++
++static void duk__fatal(const char *msg)
++{
++	fprintf(stderr, "duk_quickjs: fatal: %s\n", msg);
++	abort();
++}
++
++/* throw the exception pending in the QuickJS context */
++static void duk__throw_pending(duk_context *thr) __attribute__((noreturn));
++static void duk__throw_pending(duk_context *thr)
++{
++	duk_heap *heap = thr->heap;
++	if (heap->catchp == NULL) {
++		JSValue e = JS_GetException(heap->ctx);
++		const char *s = JS_ToCString(heap->ctx, e);
++		fprintf(stderr, "duk_quickjs: uncaught error outside a protected call: %s\n", s ? s : "?");
++		duk__fatal("uncaught error");
++	}
++	longjmp(heap->catchp->jb, 1);
++}
++
++/* make thr's global object the context's */
++static void duk__switch(duk_context *thr)
++{
++	duk_heap *heap = thr->heap;
++	JSContext *ctx = heap->ctx;
++	if (heap->cur == thr)
++		return;
++	JS_FreeValue(ctx, ctx->global_obj);
++	ctx->global_obj = JS_DupValue(ctx, thr->global);
++	JS_FreeValue(ctx, ctx->global_var_obj);
++	ctx->global_var_obj = JS_DupValue(ctx, thr->global_var);
++	heap->cur = thr;
++}
++
++static void duk__slot_clear_cstr(JSContext *ctx, duk_slot *s)
++{
++	if (s->cstr != NULL && s->cstr_owned)
++		JS_FreeCString(ctx, s->cstr);
++	s->cstr = NULL;
++	s->cstr_owned = 0;
++}
++
++static void duk__slot_free(JSContext *ctx, duk_slot *s)
++{
++	duk__slot_clear_cstr(ctx, s);
++	JS_FreeValue(ctx, s->v);
++	s->v = JS_UNDEFINED;
++}
++
++/* push v (the reference is taken over) */
++static void duk__push(duk_context *thr, JSValue v)
++{
++	if (thr->top == thr->size) {
++		int nsize = thr->size ? thr->size * 2 : 64;
++		duk_slot *n = realloc(thr->stack, nsize * sizeof(*n));
++		if (n == NULL) {
++			JS_FreeValue(thr->heap->ctx, v);
++			duk__fatal("value stack: out of memory");
++		}
++		thr->stack = n;
++		thr->size = nsize;
++	}
++	thr->stack[thr->top].v = v;
++	thr->stack[thr->top].cstr = NULL;
++	thr->stack[thr->top].cstr_owned = 0;
++	thr->stack[thr->top].clen = 0;
++	thr->top++;
++}
++
++/* absolute index of idx, or -1 */
++static int duk__abs(duk_context *thr, duk_idx_t idx)
++{
++	int a = idx < 0 ? thr->top + idx : thr->bottom + idx;
++	if (a < thr->bottom || a >= thr->top)
++		return -1;
++	return a;
++}
++
++static duk_slot *duk__slot(duk_context *thr, duk_idx_t idx)
++{
++	int a = duk__abs(thr, idx);
++	return a < 0 ? NULL : &thr->stack[a];
++}
++
++static duk_slot *duk__require_slot(duk_context *thr, duk_idx_t idx)
++{
++	duk_slot *s = duk__slot(thr, idx);
++	if (s == NULL) {
++		JS_ThrowRangeError(thr->heap->ctx, "invalid stack index %d", (int)idx);
++		duk__throw_pending(thr);
++	}
++	return s;
++}
++
++/* the value at idx, borrowed; undefined for an invalid index */
++static JSValueConst duk__val(duk_context *thr, duk_idx_t idx)
++{
++	duk_slot *s = duk__slot(thr, idx);
++	return s ? s->v : JS_UNDEFINED;
++}
++
++/* unwind the stack to the absolute top t */
++static void duk__unwind(duk_context *thr, int t)
++{
++	while (thr->top > t) {
++		thr->top--;
++		duk__slot_free(thr->heap->ctx, &thr->stack[thr->top]);
++	}
++}
++
++static void duk__replace_val(duk_context *thr, duk_slot *s, JSValue v)
++{
++	duk__slot_free(thr->heap->ctx, s);
++	s->v = v;
++}
++
++/* the hidden key table: index of the private symbol for key, or -1 when key
++ * is not a hidden key */
++static int duk__is_hidden(const char *key, size_t len)
++{
++	return len > 0 && ((unsigned char)key[0] == 0xFF || (unsigned char)key[0] == 0x82);
++}
++
++static int duk__hidden(duk_heap *heap, const char *key, size_t len)
++{
++	JSContext *ctx = heap->ctx;
++	JSAtom descr;
++	JSValue sym;
++	duk_hidden *n;
++	char buf[128];
++	size_t i, j;
++	int k;
++
++	for (k = 0; k < heap->nhidden; k++) {
++		if (heap->hidden[k].len == len && memcmp(heap->hidden[k].name, key, len) == 0)
++			return k;
++	}
++	/* the description: the key without the marker bytes */
++	for (i = 0, j = 0; i < len && j < sizeof(buf) - 1; i++) {
++		unsigned char c = key[i];
++		if (c >= 0x20 && c < 0x7f)
++			buf[j++] = c;
++	}
++	buf[j] = 0;
++	descr = JS_NewAtom(ctx, buf);
++	sym = JS_NewSymbolFromAtom(ctx, descr, JS_ATOM_TYPE_PRIVATE);
++	if (JS_IsException(sym))
++		duk__fatal("cannot create a private symbol");
++	n = realloc(heap->hidden, (heap->nhidden + 1) * sizeof(*n));
++	if (n == NULL)
++		duk__fatal("hidden keys: out of memory");
++	heap->hidden = n;
++	n = &heap->hidden[heap->nhidden];
++	n->name = malloc(len + 1);
++	if (n->name == NULL)
++		duk__fatal("hidden keys: out of memory");
++	memcpy(n->name, key, len);
++	n->name[len] = 0;
++	n->len = len;
++	n->sym = sym;
++	n->atom = JS_ValueToAtom(ctx, sym);
++	return heap->nhidden++;
++}
++
++/* the hidden key whose private symbol v is, or -1 */
++static int duk__hidden_of_val(duk_heap *heap, JSValueConst v)
++{
++	int k;
++	if (JS_VALUE_GET_TAG(v) != JS_TAG_SYMBOL)
++		return -1;
++	for (k = 0; k < heap->nhidden; k++) {
++		if (JS_VALUE_GET_PTR(heap->hidden[k].sym) == JS_VALUE_GET_PTR(v))
++			return k;
++	}
++	return -1;
++}
++
++static int duk__hidden_of_atom(duk_heap *heap, JSAtom atom)
++{
++	int k;
++	for (k = 0; k < heap->nhidden; k++) {
++		if (heap->hidden[k].atom == atom)
++			return k;
++	}
++	return -1;
++}
++
++/* the atom for a C key (to free with JS_FreeAtom) */
++static JSAtom duk__key_atom(duk_heap *heap, const char *key)
++{
++	size_t len = strlen(key);
++	if (duk__is_hidden(key, len))
++		return JS_DupAtom(heap->ctx, heap->hidden[duk__hidden(heap, key, len)].atom);
++	return JS_NewAtomLen(heap->ctx, key, len);
++}
++
++/* the atom for the key value at idx (to free with JS_FreeAtom) */
++static JSAtom duk__val_atom(duk_context *thr, JSValueConst key)
++{
++	JSAtom a = JS_ValueToAtom(thr->heap->ctx, key);
++	if (a == JS_ATOM_NULL)
++		duk__throw_pending(thr);
++	return a;
++}
++
++static JSValue duk__new_ptr(JSContext *ctx, void *p)
++{
++	return JS_NewBigInt64(ctx, (int64_t)(intptr_t)p);
++}
++
++static int duk__is_ptr(JSValueConst v)
++{
++	int tag = JS_VALUE_GET_TAG(v);
++	return tag == JS_TAG_BIG_INT || tag == JS_TAG_SHORT_BIG_INT;
++}
++
++static void *duk__get_ptr(JSContext *ctx, JSValueConst v)
++{
++	int64_t i;
++	if (!duk__is_ptr(v) || JS_ToBigInt64(ctx, &i, v) < 0)
++		return NULL;
++	return (void *)(intptr_t)i;
++}
++
++/* the duk_c_function of a function made by duk_push_c_function, or NULL */
++static JSValue duk__trampoline(JSContext *ctx, JSValueConst this_val, int argc,
++			       JSValueConst *argv, int magic, JSValue *data);
++
++static duk_c_function duk__c_function_of(JSContext *ctx, JSValueConst f)
++{
++	JSObject *p;
++	JSCFunctionDataRecord *fd;
++	if (JS_VALUE_GET_TAG(f) != JS_TAG_OBJECT)
++		return NULL;
++	p = JS_VALUE_GET_OBJ(f);
++	if (p->class_id != JS_CLASS_C_FUNCTION_DATA)
++		return NULL;
++	fd = p->u.c_function_data_record;
++	if (fd->func != duk__trampoline || fd->data_len < 2)
++		return NULL;
++	return (duk_c_function)duk__get_ptr(ctx, fd->data[0]);
++}
++
++static duk_objdata *duk__objdata(JSValueConst v)
++{
++	return JS_GetOpaque(v, duk_obj_class_id);
++}
++
++/* remember a pointer stored under a hidden key of a duk_push_object object */
++static void duk__mirror(duk_heap *heap, JSValueConst obj, JSAtom atom, JSValueConst val)
++{
++	duk_objdata *od = duk__objdata(obj);
++	int k, i;
++	duk_mirror *n;
++	if (od == NULL || !duk__is_ptr(val))
++		return;
++	k = duk__hidden_of_atom(heap, atom);
++	if (k < 0)
++		return;
++	for (i = 0; i < od->nmirror; i++) {
++		if (od->mirror[i].hidden == k) {
++			od->mirror[i].ptr = (int64_t)(intptr_t)duk__get_ptr(heap->ctx, val);
++			return;
++		}
++	}
++	n = realloc(od->mirror, (od->nmirror + 1) * sizeof(*n));
++	if (n == NULL)
++		return;
++	od->mirror = n;
++	n[od->nmirror].hidden = k;
++	n[od->nmirror].ptr = (int64_t)(intptr_t)duk__get_ptr(heap->ctx, val);
++	od->nmirror++;
++}
++
++/* ---------------------------------------------------------------------------
++ * the two classes
++ */
++
++static void duk__obj_finalizer(JSRuntime *rt, JSValue val)
++{
++	duk_heap *heap = JS_GetRuntimeOpaque(rt);
++	duk_objdata *od = JS_GetOpaque(val, duk_obj_class_id);
++	duk_c_function fin;
++	duk_pending *p;
++	if (od == NULL)
++		return;
++	fin = od->fin_own ? od->fin_own : od->fin_inh;
++	if (fin != NULL && !od->no_fin && heap != NULL &&
++	    (p = malloc(sizeof(*p))) != NULL) {
++		p->next = NULL;
++		p->fin = fin;
++		p->nmirror = od->nmirror;
++		p->mirror = od->mirror;
++		*heap->pending_tail = p;
++		heap->pending_tail = &p->next;
++	} else {
++		free(od->mirror);
++	}
++	free(od);
++}
++
++static void duk__thread_free(duk_context *thr)
++{
++	duk_heap *heap = thr->heap;
++	JSContext *ctx = heap->ctx;
++	if (heap->cur == thr)
++		duk__switch(heap->main);
++	duk__unwind(thr, 0);
++	free(thr->stack);
++	JS_FreeValue(ctx, thr->global);
++	JS_FreeValue(ctx, thr->global_var);
++	JS_FreeValue(ctx, thr->window);
++	free(thr);
++}
++
++static void duk__thread_finalizer(JSRuntime *rt, JSValue val)
++{
++	duk_context *thr = JS_GetOpaque(val, duk_thread_class_id);
++	if (thr == NULL)
++		return;
++	/* no switching during collection: the context keeps its reference
++	 * to this thread's global object until the next switch */
++	if (thr->heap->cur == thr)
++		thr->heap->cur = NULL;
++	duk__thread_free(thr);
++}
++
++static void duk__thread_mark(JSRuntime *rt, JSValueConst val, JS_MarkFunc *mark_func)
++{
++	duk_context *thr = JS_GetOpaque(val, duk_thread_class_id);
++	int i;
++	if (thr == NULL)
++		return;
++	for (i = 0; i < thr->top; i++)
++		JS_MarkValue(rt, thr->stack[i].v, mark_func);
++	JS_MarkValue(rt, thr->global, mark_func);
++	JS_MarkValue(rt, thr->global_var, mark_func);
++	JS_MarkValue(rt, thr->window, mark_func);
++}
++
++static JSClassDef duk__obj_class = {
++	"Object",
++	.finalizer = duk__obj_finalizer,
++};
++
++static JSClassDef duk__thread_class = {
++	"Thread",
++	.finalizer = duk__thread_finalizer,
++	.gc_mark = duk__thread_mark,
++};
++
++/* ---------------------------------------------------------------------------
++ * finalizers and promise jobs
++ */
++
++static void duk__run_pending(duk_heap *heap)
++{
++	duk_context *thr = heap->main, *saved = heap->cur;
++	JSContext *ctx = heap->ctx;
++
++	if (heap->running_fin || heap->depth > 0)
++		return;
++	heap->running_fin = 1;
++	/* promise reactions (await, then) queued by the code that ran */
++	while (JS_IsJobPending(heap->rt)) {
++		JSContext *jctx;
++		if (JS_ExecutePendingJob(heap->rt, &jctx) < 0) {
++			JSValue e = JS_GetException(jctx);
++			JS_FreeValue(jctx, e);
++		}
++	}
++	while (heap->pending != NULL) {
++		duk_pending *p = heap->pending;
++		int t = thr->top, ob = thr->bottom, i;
++		JSValue o;
++		JSValue ot = thr->this_val;
++		duk_objdata *od;
++		duk_catch cp;
++
++		heap->pending = p->next;
++		if (heap->pending == NULL)
++			heap->pending_tail = &heap->pending;
++		duk__switch(thr);
++		/* the stand-in: an object carrying the hidden pointers */
++		o = JS_NewObjectClass(ctx, duk_obj_class_id);
++		od = calloc(1, sizeof(*od));
++		if (JS_IsException(o) || od == NULL) {
++			JS_FreeValue(ctx, o);
++			free(od);
++			free(p->mirror);
++			free(p);
++			continue;
++		}
++		od->no_fin = 1;
++		JS_SetOpaque(o, od);
++		for (i = 0; i < p->nmirror; i++) {
++			JS_DefinePropertyValue(ctx, o, heap->hidden[p->mirror[i].hidden].atom,
++					       JS_NewBigInt64(ctx, p->mirror[i].ptr),
++					       JS_PROP_C_W_E);
++		}
++		duk__push(thr, o);
++		thr->bottom = t;
++		thr->this_val = JS_UNDEFINED;
++		cp.prev = heap->catchp;
++		heap->catchp = &cp;
++		if (setjmp(cp.jb) == 0)
++			p->fin(thr);
++		else
++			JS_FreeValue(ctx, JS_GetException(ctx));
++		heap->catchp = cp.prev;
++		duk__unwind(thr, t);
++		thr->bottom = ob;
++		thr->this_val = ot;
++		free(p->mirror);
++		free(p);
++	}
++	if (saved != NULL)
++		duk__switch(saved);
++	heap->running_fin = 0;
++}
++
++static int duk__interrupt(JSRuntime *rt, void *opaque)
++{
++	duk_heap *heap = opaque;
++	return dukky_check_timeout(heap->udata) ? 1 : 0;
++}
++
++/* ---------------------------------------------------------------------------
++ * heap and threads
++ */
++
++static duk_context *duk__new_thread(duk_heap *heap, duk_context *parent)
++{
++	duk_context *thr = calloc(1, sizeof(*thr));
++	if (thr == NULL)
++		return NULL;
++	thr->heap = heap;
++	thr->this_val = JS_UNDEFINED;
++	thr->window = JS_UNDEFINED;
++	if (parent != NULL) {
++		thr->global = JS_DupValue(heap->ctx, parent->global);
++		thr->global_var = JS_DupValue(heap->ctx, parent->global_var);
++	}
++	return thr;
++}
++
++duk_context *duk_create_heap(duk_alloc_function alloc_func,
++			     duk_realloc_function realloc_func,
++			     duk_free_function free_func,
++			     void *heap_udata,
++			     duk_fatal_function fatal_handler)
++{
++	duk_heap *heap = calloc(1, sizeof(*heap));
++	(void)fatal_handler;
++	if (heap == NULL)
++		return NULL;
++	heap->udata = heap_udata;
++	heap->alloc_func = alloc_func;
++	heap->realloc_func = realloc_func;
++	heap->free_func = free_func;
++	heap->pending_tail = &heap->pending;
++	heap->rt = JS_NewRuntime();
++	if (heap->rt == NULL) {
++		free(heap);
++		return NULL;
++	}
++	JS_SetRuntimeOpaque(heap->rt, heap);
++	if (duk_obj_class_id == 0)
++		JS_NewClassID(&duk_obj_class_id);
++	if (duk_thread_class_id == 0)
++		JS_NewClassID(&duk_thread_class_id);
++	JS_NewClass(heap->rt, duk_obj_class_id, &duk__obj_class);
++	JS_NewClass(heap->rt, duk_thread_class_id, &duk__thread_class);
++	heap->ctx = JS_NewContext(heap->rt);
++	if (heap->ctx == NULL) {
++		JS_FreeRuntime(heap->rt);
++		free(heap);
++		return NULL;
++	}
++	JS_SetContextOpaque(heap->ctx, heap);
++	JS_SetClassProto(heap->ctx, duk_obj_class_id,
++			 JS_DupValue(heap->ctx, heap->ctx->class_proto[JS_CLASS_OBJECT]));
++	JS_SetInterruptHandler(heap->rt, duk__interrupt, heap);
++	heap->main = duk__new_thread(heap, NULL);
++	if (heap->main == NULL)
++		duk__fatal("out of memory");
++	heap->main->global = JS_DupValue(heap->ctx, heap->ctx->global_obj);
++	heap->main->global_var = JS_DupValue(heap->ctx, heap->ctx->global_var_obj);
++	heap->cur = heap->main;
++	return heap->main;
++}
++
++void duk_destroy_heap(duk_context *ctx)
++{
++	duk_heap *heap = ctx->heap;
++	duk_context *m = heap->main;
++	int k;
++
++	duk__switch(m);
++	duk__unwind(m, 0);
++	m->bottom = 0;
++	duk__run_pending(heap);
++	/* the context goes; objects freed with it queue their finalizers,
++	 * which then run in a second context of the same runtime */
++	JS_FreeValue(heap->ctx, m->global);
++	JS_FreeValue(heap->ctx, m->global_var);
++	JS_FreeValue(heap->ctx, m->window);
++	m->global = m->global_var = m->window = JS_UNDEFINED;
++	JS_FreeContext(heap->ctx);
++	JS_RunGC(heap->rt);
++	while (heap->pending != NULL) {
++		heap->ctx = JS_NewContext(heap->rt);
++		if (heap->ctx == NULL)
++			break;
++		JS_SetContextOpaque(heap->ctx, heap);
++		JS_SetClassProto(heap->ctx, duk_obj_class_id,
++				 JS_DupValue(heap->ctx, heap->ctx->class_proto[JS_CLASS_OBJECT]));
++		m->global = JS_DupValue(heap->ctx, heap->ctx->global_obj);
++		m->global_var = JS_DupValue(heap->ctx, heap->ctx->global_var_obj);
++		heap->cur = m;
++		duk__run_pending(heap);
++		duk__unwind(m, 0);
++		JS_FreeValue(heap->ctx, m->global);
++		JS_FreeValue(heap->ctx, m->global_var);
++		m->global = m->global_var = JS_UNDEFINED;
++		JS_FreeContext(heap->ctx);
++		JS_RunGC(heap->rt);
++	}
++	for (k = 0; k < heap->nhidden; k++) {
++		JS_FreeAtomRT(heap->rt, heap->hidden[k].atom);
++		JS_FreeValueRT(heap->rt, heap->hidden[k].sym);
++		free(heap->hidden[k].name);
++	}
++	free(heap->hidden);
++	JS_FreeRuntime(heap->rt);
++	free(m->stack);
++	free(m);
++	free(heap);
++}
++
++void duk_get_memory_functions(duk_context *ctx, duk_memory_functions *out_funcs)
++{
++	out_funcs->alloc_func = ctx->heap->alloc_func;
++	out_funcs->realloc_func = ctx->heap->realloc_func;
++	out_funcs->free_func = ctx->heap->free_func;
++	out_funcs->udata = ctx->heap->udata;
++}
++
++void duk_gc(duk_context *ctx, duk_uint_t flags)
++{
++	(void)flags;
++	JS_RunGC(ctx->heap->rt);
++	duk__run_pending(ctx->heap);
++}
++
++duk_idx_t duk_push_thread(duk_context *ctx)
++{
++	duk_heap *heap = ctx->heap;
++	duk_context *thr = duk__new_thread(heap, ctx);
++	JSValue o;
++	if (thr == NULL)
++		duk__fatal("out of memory");
++	o = JS_NewObjectClass(heap->ctx, duk_thread_class_id);
++	if (JS_IsException(o)) {
++		duk__thread_free(thr);
++		duk__throw_pending(ctx);
++	}
++	JS_SetOpaque(o, thr);
++	duk__push(ctx, o);
++	return ctx->top - 1 - ctx->bottom;
++}
++
++duk_context *duk_require_context(duk_context *ctx, duk_idx_t idx)
++{
++	duk_context *thr = JS_GetOpaque(duk__require_slot(ctx, idx)->v, duk_thread_class_id);
++	if (thr == NULL) {
++		JS_ThrowTypeError(ctx->heap->ctx, "not a thread");
++		duk__throw_pending(ctx);
++	}
++	return thr;
++}
++
++/* define the own properties of src (those of the kinds in mask) on dst */
++static void duk__copy_props(JSContext *qctx, JSValueConst dst, JSValueConst src, int mask)
++{
++	JSPropertyEnum *tab = NULL;
++	uint32_t len = 0, i;
++	if (JS_GetOwnPropertyNamesInternal(qctx, &tab, &len, JS_VALUE_GET_OBJ(src), mask) != 0) {
++		JS_FreeValue(qctx, JS_GetException(qctx));
++		return;
++	}
++	for (i = 0; i < len; i++) {
++		JSPropertyDescriptor d;
++		int flags;
++		if (JS_GetOwnPropertyInternal(qctx, &d, JS_VALUE_GET_OBJ(src), tab[i].atom) <= 0)
++			continue;
++		flags = JS_PROP_HAS_CONFIGURABLE | JS_PROP_HAS_ENUMERABLE | JS_PROP_CONFIGURABLE |
++			(d.flags & JS_PROP_ENUMERABLE);
++		if (d.flags & JS_PROP_GETSET)
++			flags |= JS_PROP_HAS_GET | JS_PROP_HAS_SET;
++		else
++			flags |= JS_PROP_HAS_VALUE | JS_PROP_HAS_WRITABLE | (d.flags & JS_PROP_WRITABLE);
++		if (JS_DefineProperty(qctx, dst, tab[i].atom, d.value, d.getter, d.setter, flags) < 0)
++			JS_FreeValue(qctx, JS_GetException(qctx));
++		JS_FreeValue(qctx, d.value);
++		JS_FreeValue(qctx, d.getter);
++		JS_FreeValue(qctx, d.setter);
++	}
++	JS_FreePropertyEnum(qctx, tab, len);
++}
++
++/* The object on the top becomes the thread's global object.  QuickJS needs a
++ * global object of its own class, so a new one is made with the object's
++ * prototype, the standard built-ins and the object's own properties (hidden
++ * ones included); the object itself is kept, so that its finalizer runs when
++ * the thread goes. */
++void duk_set_global_object(duk_context *ctx)
++{
++	duk_heap *heap = ctx->heap;
++	JSContext *qctx = heap->ctx;
++	JSValueConst w = duk__require_slot(ctx, -1)->v;
++	JSValue g, proto, lex;
++
++	if (!JS_IsObject(w)) {
++		JS_ThrowTypeError(qctx, "global object must be an object");
++		duk__throw_pending(ctx);
++	}
++	proto = JS_GetPrototype(qctx, w);
++	g = JS_NewObjectProtoClassAlloc(qctx, proto, JS_CLASS_GLOBAL_OBJECT, 64);
++	JS_FreeValue(qctx, proto);
++	if (JS_IsException(g))
++		duk__throw_pending(ctx);
++	JS_VALUE_GET_OBJ(g)->u.global_object.uninitialized_vars =
++		JS_NewObjectProtoClassAlloc(qctx, JS_NULL, JS_CLASS_OBJECT, 4);
++	/* the standard built-ins (Object, Array, Map, Promise, ...) as on any
++	 * QuickJS global object, then the object's own properties */
++	duk__copy_props(qctx, g, heap->main->global, JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK);
++	duk__copy_props(qctx, g, w, JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK | JS_GPN_PRIVATE_MASK);
++	JS_DefinePropertyValueStr(qctx, g, "globalThis", JS_DupValue(qctx, g),
++				  JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
++	lex = JS_NewObjectProtoClassAlloc(qctx, JS_NULL, JS_CLASS_OBJECT, 16);
++
++	JS_FreeValue(qctx, ctx->window);
++	ctx->window = JS_DupValue(qctx, w);
++	JS_FreeValue(qctx, ctx->global);
++	ctx->global = g;
++	JS_FreeValue(qctx, ctx->global_var);
++	ctx->global_var = lex;
++	if (heap->cur == ctx) {
++		/* the context still has the old global object: switch again */
++		heap->cur = NULL;
++		duk__switch(ctx);
++	}
++	duk_pop(ctx);
++}
++
++/* ---------------------------------------------------------------------------
++ * the value stack
++ */
++
++duk_idx_t duk_get_top(duk_context *ctx)
++{
++	return ctx->top - ctx->bottom;
++}
++
++void duk_set_top(duk_context *ctx, duk_idx_t idx)
++{
++	int t;
++	if (idx < 0) {
++		t = ctx->top + idx;
++		if (t < ctx->bottom) {
++			JS_ThrowRangeError(ctx->heap->ctx, "invalid stack top %d", (int)idx);
++			duk__throw_pending(ctx);
++		}
++	} else {
++		t = ctx->bottom + idx;
++	}
++	while (ctx->top < t)
++		duk__push(ctx, JS_UNDEFINED);
++	duk__unwind(ctx, t);
++}
++
++duk_idx_t duk_normalize_index(duk_context *ctx, duk_idx_t idx)
++{
++	int a = duk__abs(ctx, idx);
++	return a < 0 ? DUK_INVALID_INDEX : a - ctx->bottom;
++}
++
++void duk_pop(duk_context *ctx)
++{
++	duk_pop_n(ctx, 1);
++}
++
++void duk_pop_2(duk_context *ctx)
++{
++	duk_pop_n(ctx, 2);
++}
++
++void duk_pop_3(duk_context *ctx)
++{
++	duk_pop_n(ctx, 3);
++}
++
++void duk_pop_n(duk_context *ctx, duk_idx_t count)
++{
++	if (count < 0 || ctx->top - count < ctx->bottom) {
++		JS_ThrowRangeError(ctx->heap->ctx, "cannot pop %d values", (int)count);
++		duk__throw_pending(ctx);
++	}
++	duk__unwind(ctx, ctx->top - count);
++}
++
++void duk_dup(duk_context *ctx, duk_idx_t from_idx)
++{
++	duk_slot *s = duk__require_slot(ctx, from_idx);
++	duk__push(ctx, JS_DupValue(ctx->heap->ctx, s->v));
++}
++
++void duk_dup_top(duk_context *ctx)
++{
++	duk_dup(ctx, -1);
++}
++
++void duk_insert(duk_context *ctx, duk_idx_t to_idx)
++{
++	int a = duk__abs(ctx, to_idx);
++	duk_slot t;
++	if (a < 0) {
++		JS_ThrowRangeError(ctx->heap->ctx, "invalid stack index %d", (int)to_idx);
++		duk__throw_pending(ctx);
++	}
++	t = ctx->stack[ctx->top - 1];
++	memmove(&ctx->stack[a + 1], &ctx->stack[a], (ctx->top - 1 - a) * sizeof(duk_slot));
++	ctx->stack[a] = t;
++}
++
++void duk_replace(duk_context *ctx, duk_idx_t to_idx)
++{
++	int a = duk__abs(ctx, to_idx);
++	if (a < 0) {
++		JS_ThrowRangeError(ctx->heap->ctx, "invalid stack index %d", (int)to_idx);
++		duk__throw_pending(ctx);
++	}
++	if (a == ctx->top - 1)
++		return;
++	duk__slot_free(ctx->heap->ctx, &ctx->stack[a]);
++	ctx->stack[a] = ctx->stack[ctx->top - 1];
++	ctx->top--;
++}
++
++void duk_remove(duk_context *ctx, duk_idx_t idx)
++{
++	int a = duk__abs(ctx, idx);
++	if (a < 0) {
++		JS_ThrowRangeError(ctx->heap->ctx, "invalid stack index %d", (int)idx);
++		duk__throw_pending(ctx);
++	}
++	duk__slot_free(ctx->heap->ctx, &ctx->stack[a]);
++	memmove(&ctx->stack[a], &ctx->stack[a + 1], (ctx->top - 1 - a) * sizeof(duk_slot));
++	ctx->top--;
++}
++
++/* ---------------------------------------------------------------------------
++ * pushing
++ */
++
++void duk_push_undefined(duk_context *ctx)
++{
++	duk__push(ctx, JS_UNDEFINED);
++}
++
++void duk_push_null(duk_context *ctx)
++{
++	duk__push(ctx, JS_NULL);
++}
++
++void duk_push_boolean(duk_context *ctx, duk_bool_t val)
++{
++	duk__push(ctx, JS_NewBool(ctx->heap->ctx, val != 0));
++}
++
++void duk_push_int(duk_context *ctx, duk_int_t val)
++{
++	duk__push(ctx, JS_NewInt32(ctx->heap->ctx, val));
++}
++
++void duk_push_uint(duk_context *ctx, duk_uint_t val)
++{
++	duk__push(ctx, JS_NewUint32(ctx->heap->ctx, val));
++}
++
++void duk_push_number(duk_context *ctx, duk_double_t val)
++{
++	duk__push(ctx, JS_NewFloat64(ctx->heap->ctx, val));
++}
++
++const char *duk_push_lstring(duk_context *ctx, const char *str, duk_size_t len)
++{
++	duk_heap *heap = ctx->heap;
++	JSValue v;
++	duk_slot *s;
++	if (str == NULL)
++		len = 0, str = "";
++	if (duk__is_hidden(str, len)) {
++		int k = duk__hidden(heap, str, len);
++		duk__push(ctx, JS_DupValue(heap->ctx, heap->hidden[k].sym));
++		s = &ctx->stack[ctx->top - 1];
++		s->cstr = heap->hidden[k].name;
++		s->clen = heap->hidden[k].len;
++		return s->cstr;
++	}
++	v = JS_NewStringLen(heap->ctx, str, len);
++	if (JS_IsException(v))
++		duk__throw_pending(ctx);
++	duk__push(ctx, v);
++	s = &ctx->stack[ctx->top - 1];
++	s->cstr = JS_ToCStringLen(heap->ctx, &s->clen, v);
++	s->cstr_owned = 1;
++	return s->cstr;
++}
++
++const char *duk_push_string(duk_context *ctx, const char *str)
++{
++	if (str == NULL) {
++		duk_push_null(ctx);
++		return NULL;
++	}
++	return duk_push_lstring(ctx, str, strlen(str));
++}
++
++const char *duk_push_sprintf(duk_context *ctx, const char *fmt, ...)
++{
++	char stackbuf[256], *buf = stackbuf;
++	const char *r;
++	va_list ap;
++	int n;
++	va_start(ap, fmt);
++	n = vsnprintf(stackbuf, sizeof(stackbuf), fmt, ap);
++	va_end(ap);
++	if (n < 0)
++		n = 0;
++	if ((size_t)n >= sizeof(stackbuf)) {
++		buf = malloc(n + 1);
++		if (buf == NULL)
++			duk__fatal("out of memory");
++		va_start(ap, fmt);
++		vsnprintf(buf, n + 1, fmt, ap);
++		va_end(ap);
++	}
++	r = duk_push_lstring(ctx, buf, n);
++	if (buf != stackbuf)
++		free(buf);
++	return r;
++}
++
++void duk_push_pointer(duk_context *ctx, void *p)
++{
++	duk__push(ctx, duk__new_ptr(ctx->heap->ctx, p));
++}
++
++duk_idx_t duk_push_object(duk_context *ctx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue o = JS_NewObjectClass(qctx, duk_obj_class_id);
++	duk_objdata *od;
++	if (JS_IsException(o))
++		duk__throw_pending(ctx);
++	od = calloc(1, sizeof(*od));
++	if (od == NULL) {
++		JS_FreeValue(qctx, o);
++		duk__fatal("out of memory");
++	}
++	JS_SetOpaque(o, od);
++	duk__push(ctx, o);
++	return ctx->top - 1 - ctx->bottom;
++}
++
++duk_idx_t duk_push_array(duk_context *ctx)
++{
++	JSValue a = JS_NewArray(ctx->heap->ctx);
++	if (JS_IsException(a))
++		duk__throw_pending(ctx);
++	duk__push(ctx, a);
++	return ctx->top - 1 - ctx->bottom;
++}
++
++void duk_push_this(duk_context *ctx)
++{
++	duk__push(ctx, JS_DupValue(ctx->heap->ctx, ctx->this_val));
++}
++
++void duk_push_global_object(duk_context *ctx)
++{
++	duk__push(ctx, JS_DupValue(ctx->heap->ctx, ctx->global));
++}
++
++duk_idx_t duk_push_c_function(duk_context *ctx, duk_c_function func, duk_idx_t nargs)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue data[2], f;
++	data[0] = duk__new_ptr(qctx, (void *)func);
++	data[1] = JS_NewInt32(qctx, nargs);
++	f = JS_NewCFunctionData(qctx, duk__trampoline, nargs < 0 ? 0 : nargs, 0, 2, data);
++	JS_FreeValue(qctx, data[0]);
++	if (JS_IsException(f))
++		duk__throw_pending(ctx);
++	duk__push(ctx, f);
++	return ctx->top - 1 - ctx->bottom;
++}
++
++void *duk_push_buffer(duk_context *ctx, duk_size_t size, duk_bool_t dynamic)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue b;
++	uint8_t *zero, *data;
++	size_t len;
++	(void)dynamic;
++	zero = calloc(1, size ? size : 1);
++	if (zero == NULL)
++		duk__fatal("out of memory");
++	b = JS_NewArrayBufferCopy(qctx, zero, size);
++	free(zero);
++	if (JS_IsException(b))
++		duk__throw_pending(ctx);
++	duk__push(ctx, b);
++	data = JS_GetArrayBuffer(qctx, &len, b);
++	return data;
++}
++
++void duk_push_buffer_object(duk_context *ctx, duk_idx_t idx_buffer,
++			    duk_size_t byte_offset, duk_size_t byte_length,
++			    duk_uint_t flags)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue args[3], ta;
++	(void)flags;
++	args[0] = duk__require_slot(ctx, idx_buffer)->v;
++	args[1] = JS_NewInt64(qctx, byte_offset);
++	args[2] = JS_NewInt64(qctx, byte_length);
++	ta = JS_NewTypedArray(qctx, 3, args, JS_TYPED_ARRAY_UINT8C);
++	if (JS_IsException(ta))
++		duk__throw_pending(ctx);
++	duk__push(ctx, ta);
++}
++
++static JSValue duk__make_error(JSContext *qctx, duk_errcode_t code, const char *msg)
++{
++	const char *ctor;
++	JSValue g, c, m, e;
++	switch (code) {
++	case DUK_ERR_EVAL_ERROR: ctor = "EvalError"; break;
++	case DUK_ERR_RANGE_ERROR: ctor = "RangeError"; break;
++	case DUK_ERR_REFERENCE_ERROR: ctor = "ReferenceError"; break;
++	case DUK_ERR_SYNTAX_ERROR: ctor = "SyntaxError"; break;
++	case DUK_ERR_TYPE_ERROR: ctor = "TypeError"; break;
++	case DUK_ERR_URI_ERROR: ctor = "URIError"; break;
++	default: ctor = "Error"; break;
++	}
++	g = JS_GetGlobalObject(qctx);
++	c = JS_GetPropertyStr(qctx, g, ctor);
++	JS_FreeValue(qctx, g);
++	m = JS_NewString(qctx, msg);
++	e = JS_CallConstructor(qctx, c, 1, (JSValueConst *)&m);
++	JS_FreeValue(qctx, m);
++	JS_FreeValue(qctx, c);
++	if (JS_IsException(e)) {
++		JS_FreeValue(qctx, JS_GetException(qctx));
++		e = JS_NewError(qctx);
++		JS_DefinePropertyValueStr(qctx, e, "message", JS_NewString(qctx, msg),
++					  JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
++	}
++	return e;
++}
++
++duk_idx_t duk_push_error_object(duk_context *ctx, duk_errcode_t err_code,
++				const char *fmt, ...)
++{
++	char buf[512];
++	va_list ap;
++	va_start(ap, fmt);
++	vsnprintf(buf, sizeof(buf), fmt, ap);
++	va_end(ap);
++	duk__switch(ctx);
++	duk__push(ctx, duk__make_error(ctx->heap->ctx, err_code, buf));
++	return ctx->top - 1 - ctx->bottom;
++}
++
++void duk_error_raw(duk_context *ctx, duk_errcode_t err_code, const char *fmt, ...)
++{
++	char buf[512];
++	va_list ap;
++	va_start(ap, fmt);
++	vsnprintf(buf, sizeof(buf), fmt, ap);
++	va_end(ap);
++	duk__switch(ctx);
++	JS_Throw(ctx->heap->ctx, duk__make_error(ctx->heap->ctx, err_code, buf));
++	duk__throw_pending(ctx);
++}
++
++void duk_push_context_dump(duk_context *ctx)
++{
++	char buf[1024];
++	size_t n = 0;
++	int i;
++	n += snprintf(buf + n, sizeof(buf) - n, "ctx: top=%d, stack=[", ctx->top - ctx->bottom);
++	for (i = ctx->bottom; i < ctx->top && n < sizeof(buf) - 64; i++) {
++		static const char *names[] = { "none", "undefined", "null", "boolean",
++			"number", "string", "object", "buffer", "pointer", "lightfunc" };
++		n += snprintf(buf + n, sizeof(buf) - n, "%s%s", i > ctx->bottom ? "," : "",
++			      names[duk_get_type(ctx, i - ctx->bottom)]);
++	}
++	snprintf(buf + n, sizeof(buf) - n, "]");
++	duk_push_string(ctx, buf);
++}
++
++/* ---------------------------------------------------------------------------
++ * types and values
++ */
++
++duk_int_t duk_get_type(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__slot(ctx, idx);
++	if (s == NULL)
++		return DUK_TYPE_NONE;
++	switch (JS_VALUE_GET_NORM_TAG(s->v)) {
++	case JS_TAG_UNDEFINED: return DUK_TYPE_UNDEFINED;
++	case JS_TAG_NULL: return DUK_TYPE_NULL;
++	case JS_TAG_BOOL: return DUK_TYPE_BOOLEAN;
++	case JS_TAG_INT: case JS_TAG_FLOAT64: return DUK_TYPE_NUMBER;
++	case JS_TAG_STRING: case JS_TAG_STRING_ROPE: case JS_TAG_SYMBOL: return DUK_TYPE_STRING;
++	case JS_TAG_OBJECT: return DUK_TYPE_OBJECT;
++	case JS_TAG_BIG_INT: case JS_TAG_SHORT_BIG_INT: return DUK_TYPE_POINTER;
++	default: return DUK_TYPE_UNDEFINED;
++	}
++}
++
++duk_bool_t duk_check_type(duk_context *ctx, duk_idx_t idx, duk_int_t type)
++{
++	return duk_get_type(ctx, idx) == type;
++}
++
++duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__slot(ctx, idx);
++	return s != NULL && JS_IsUndefined(s->v);
++}
++
++duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_get_type(ctx, idx) == DUK_TYPE_NULL;
++}
++
++duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_get_type(ctx, idx) == DUK_TYPE_BOOLEAN;
++}
++
++duk_bool_t duk_is_number(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_get_type(ctx, idx) == DUK_TYPE_NUMBER;
++}
++
++duk_bool_t duk_is_string(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_get_type(ctx, idx) == DUK_TYPE_STRING;
++}
++
++duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx)
++{
++	JSValueConst v = duk__val(ctx, idx);
++	return JS_VALUE_GET_TAG(v) == JS_TAG_BOOL ? JS_VALUE_GET_BOOL(v) : 0;
++}
++
++static double duk__num(JSValueConst v)
++{
++	if (JS_VALUE_GET_TAG(v) == JS_TAG_INT)
++		return JS_VALUE_GET_INT(v);
++	if (JS_TAG_IS_FLOAT64(JS_VALUE_GET_TAG(v)))
++		return JS_VALUE_GET_FLOAT64(v);
++	return 0;
++}
++
++static duk_int_t duk__clamp_int(double d)
++{
++	if (isnan(d))
++		return 0;
++	if (d < INT_MIN)
++		return INT_MIN;
++	if (d > INT_MAX)
++		return INT_MAX;
++	return (duk_int_t)d;
++}
++
++static duk_uint_t duk__clamp_uint(double d)
++{
++	if (isnan(d) || d < 0)
++		return 0;
++	if (d > UINT_MAX)
++		return UINT_MAX;
++	return (duk_uint_t)d;
++}
++
++duk_int_t duk_get_int(duk_context *ctx, duk_idx_t idx)
++{
++	return duk__clamp_int(duk__num(duk__val(ctx, idx)));
++}
++
++duk_uint_t duk_get_uint(duk_context *ctx, duk_idx_t idx)
++{
++	return duk__clamp_uint(duk__num(duk__val(ctx, idx)));
++}
++
++void *duk_get_pointer(duk_context *ctx, duk_idx_t idx)
++{
++	return duk__get_ptr(ctx->heap->ctx, duk__val(ctx, idx));
++}
++
++/* the C string of a string slot (a hidden key's name for a private symbol) */
++static const char *duk__slot_cstr(duk_context *thr, duk_slot *s, size_t *out_len)
++{
++	duk_heap *heap = thr->heap;
++	if (s->cstr == NULL) {
++		int k = duk__hidden_of_val(heap, s->v);
++		if (k >= 0) {
++			s->cstr = heap->hidden[k].name;
++			s->clen = heap->hidden[k].len;
++			s->cstr_owned = 0;
++		} else {
++			s->cstr = JS_ToCStringLen(heap->ctx, &s->clen, s->v);
++			if (s->cstr == NULL)
++				duk__throw_pending(thr);
++			s->cstr_owned = 1;
++		}
++	}
++	if (out_len != NULL)
++		*out_len = s->clen;
++	return s->cstr;
++}
++
++const char *duk_get_string(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__slot(ctx, idx);
++	if (s == NULL || duk_get_type(ctx, idx) != DUK_TYPE_STRING)
++		return NULL;
++	return duk__slot_cstr(ctx, s, NULL);
++}
++
++duk_size_t duk_get_length(duk_context *ctx, duk_idx_t idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValueConst v = duk__val(ctx, idx);
++	JSValue l;
++	int64_t n = 0;
++	if (!JS_IsObject(v) && !JS_IsString(v))
++		return 0;
++	duk__switch(ctx);
++	l = JS_GetPropertyStr(qctx, v, "length");
++	if (JS_IsException(l))
++		duk__throw_pending(ctx);
++	JS_ToInt64(qctx, &n, l);
++	JS_FreeValue(qctx, l);
++	return n < 0 ? 0 : (duk_size_t)n;
++}
++
++void duk_get_prototype(duk_context *ctx, duk_idx_t idx)
++{
++	JSValue p = JS_GetPrototype(ctx->heap->ctx, duk__require_slot(ctx, idx)->v);
++	if (JS_IsException(p))
++		duk__throw_pending(ctx);
++	duk__push(ctx, JS_IsNull(p) ? JS_UNDEFINED : p);
++}
++
++static void duk__type_error(duk_context *ctx, duk_idx_t idx, const char *what)
++{
++	duk__switch(ctx);
++	JS_ThrowTypeError(ctx->heap->ctx, "%s required, found %d (stack index %d)",
++			  what, (int)duk_get_type(ctx, idx), (int)idx);
++	duk__throw_pending(ctx);
++}
++
++duk_bool_t duk_require_boolean(duk_context *ctx, duk_idx_t idx)
++{
++	if (!duk_is_boolean(ctx, idx))
++		duk__type_error(ctx, idx, "boolean");
++	return duk_get_boolean(ctx, idx);
++}
++
++duk_bool_t duk_opt_boolean(duk_context *ctx, duk_idx_t idx, duk_bool_t def_value)
++{
++	duk_int_t t = duk_get_type(ctx, idx);
++	if (t == DUK_TYPE_NONE || t == DUK_TYPE_UNDEFINED)
++		return def_value;
++	return duk_require_boolean(ctx, idx);
++}
++
++duk_int_t duk_require_int(duk_context *ctx, duk_idx_t idx)
++{
++	if (!duk_is_number(ctx, idx))
++		duk__type_error(ctx, idx, "number");
++	return duk_get_int(ctx, idx);
++}
++
++duk_double_t duk_require_number(duk_context *ctx, duk_idx_t idx)
++{
++	if (!duk_is_number(ctx, idx))
++		duk__type_error(ctx, idx, "number");
++	return duk__num(duk__val(ctx, idx));
++}
++
++const char *duk_require_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len)
++{
++	if (!duk_is_string(ctx, idx))
++		duk__type_error(ctx, idx, "string");
++	return duk__slot_cstr(ctx, duk__slot(ctx, idx), out_len);
++}
++
++const char *duk_require_string(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_require_lstring(ctx, idx, NULL);
++}
++
++/* ---------------------------------------------------------------------------
++ * coercions
++ */
++
++duk_bool_t duk_to_boolean(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__require_slot(ctx, idx);
++	int b = JS_ToBool(ctx->heap->ctx, s->v);
++	duk__replace_val(ctx, s, JS_NewBool(ctx->heap->ctx, b > 0));
++	return b > 0;
++}
++
++static double duk__to_number(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__require_slot(ctx, idx);
++	double d;
++	duk__switch(ctx);
++	if (JS_ToFloat64(ctx->heap->ctx, &d, s->v) < 0)
++		duk__throw_pending(ctx);
++	return d;
++}
++
++duk_int_t duk_to_int(duk_context *ctx, duk_idx_t idx)
++{
++	duk_int_t r = duk__clamp_int(duk__to_number(ctx, idx));
++	duk__replace_val(ctx, duk__slot(ctx, idx), JS_NewInt32(ctx->heap->ctx, r));
++	return r;
++}
++
++duk_uint_t duk_to_uint(duk_context *ctx, duk_idx_t idx)
++{
++	duk_uint_t r = duk__clamp_uint(duk__to_number(ctx, idx));
++	duk__replace_val(ctx, duk__slot(ctx, idx), JS_NewUint32(ctx->heap->ctx, r));
++	return r;
++}
++
++duk_uint32_t duk_to_uint32(duk_context *ctx, duk_idx_t idx)
++{
++	duk_slot *s = duk__require_slot(ctx, idx);
++	int32_t i;
++	duk__switch(ctx);
++	if (JS_ToInt32(ctx->heap->ctx, &i, s->v) < 0)
++		duk__throw_pending(ctx);
++	duk__replace_val(ctx, s, JS_NewUint32(ctx->heap->ctx, (uint32_t)i));
++	return (uint32_t)i;
++}
++
++const char *duk_to_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len)
++{
++	duk_slot *s = duk__require_slot(ctx, idx);
++	if (duk_get_type(ctx, idx) != DUK_TYPE_STRING ||
++	    (JS_VALUE_GET_TAG(s->v) == JS_TAG_SYMBOL && duk__hidden_of_val(ctx->heap, s->v) < 0)) {
++		JSValue str;
++		duk__switch(ctx);
++		if (duk__is_ptr(s->v)) {
++			char buf[32];
++			snprintf(buf, sizeof(buf), "%p", duk__get_ptr(ctx->heap->ctx, s->v));
++			str = JS_NewString(ctx->heap->ctx, buf);
++		} else {
++			str = JS_ToString(ctx->heap->ctx, s->v);
++		}
++		if (JS_IsException(str))
++			duk__throw_pending(ctx);
++		s = duk__slot(ctx, idx);
++		duk__replace_val(ctx, s, str);
++	}
++	return duk__slot_cstr(ctx, s, out_len);
++}
++
++const char *duk_to_string(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_to_lstring(ctx, idx, NULL);
++}
++
++const char *duk_safe_to_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	duk_slot *s = duk__require_slot(ctx, idx);
++	JSValue str;
++	if (duk_get_type(ctx, idx) == DUK_TYPE_STRING &&
++	    (JS_VALUE_GET_TAG(s->v) != JS_TAG_SYMBOL || duk__hidden_of_val(ctx->heap, s->v) >= 0))
++		return duk__slot_cstr(ctx, s, out_len);
++	duk__switch(ctx);
++	if (duk__is_ptr(s->v)) {
++		char buf[32];
++		snprintf(buf, sizeof(buf), "%p", duk__get_ptr(qctx, s->v));
++		str = JS_NewString(qctx, buf);
++	} else {
++		str = JS_ToString(qctx, s->v);
++	}
++	if (JS_IsException(str)) {
++		JSValue e = JS_GetException(qctx);
++		str = JS_ToString(qctx, e);
++		JS_FreeValue(qctx, e);
++		if (JS_IsException(str)) {
++			JS_FreeValue(qctx, JS_GetException(qctx));
++			str = JS_NewString(qctx, "Error");
++		}
++	}
++	s = duk__slot(ctx, idx);
++	duk__replace_val(ctx, s, str);
++	return duk__slot_cstr(ctx, s, out_len);
++}
++
++const char *duk_safe_to_stacktrace(duk_context *ctx, duk_idx_t idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	duk_slot *s = duk__require_slot(ctx, idx);
++	if (JS_IsError(qctx, s->v)) {
++		JSValue st, msg;
++		const char *m, *t;
++		char *buf;
++		size_t ml, tl;
++		duk__switch(ctx);
++		msg = JS_ToString(qctx, s->v);
++		st = JS_GetPropertyStr(qctx, s->v, "stack");
++		if (JS_IsException(msg) || JS_IsException(st)) {
++			JS_FreeValue(qctx, msg);
++			JS_FreeValue(qctx, st);
++			JS_FreeValue(qctx, JS_GetException(qctx));
++			return duk_safe_to_lstring(ctx, idx, NULL);
++		}
++		m = JS_ToCStringLen(qctx, &ml, msg);
++		t = JS_IsString(st) ? JS_ToCStringLen(qctx, &tl, st) : NULL;
++		buf = malloc(ml + (t ? tl : 0) + 2);
++		if (buf != NULL && m != NULL) {
++			memcpy(buf, m, ml);
++			if (t != NULL) {
++				buf[ml] = '\n';
++				memcpy(buf + ml + 1, t, tl);
++				buf[ml + 1 + tl] = 0;
++			} else {
++				buf[ml] = 0;
++			}
++			s = duk__slot(ctx, idx);
++			duk__replace_val(ctx, s, JS_NewString(qctx, buf));
++		}
++		free(buf);
++		if (m) JS_FreeCString(qctx, m);
++		if (t) JS_FreeCString(qctx, t);
++		JS_FreeValue(qctx, msg);
++		JS_FreeValue(qctx, st);
++	}
++	return duk_safe_to_lstring(ctx, idx, NULL);
++}
++
++void duk_concat(duk_context *ctx, duk_idx_t count)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	size_t total = 0, len, off = 0;
++	char *buf;
++	int i;
++	JSValue r;
++	if (count < 0 || ctx->top - count < ctx->bottom) {
++		JS_ThrowRangeError(qctx, "cannot concatenate %d values", (int)count);
++		duk__throw_pending(ctx);
++	}
++	for (i = -count; i < 0; i++) {
++		duk_to_lstring(ctx, i, &len);
++		total += len;
++	}
++	buf = malloc(total + 1);
++	if (buf == NULL)
++		duk__fatal("out of memory");
++	for (i = -count; i < 0; i++) {
++		const char *p = duk__slot_cstr(ctx, duk__slot(ctx, i), &len);
++		memcpy(buf + off, p, len);
++		off += len;
++	}
++	buf[off] = 0;
++	r = JS_NewStringLen(qctx, buf, off);
++	free(buf);
++	if (JS_IsException(r))
++		duk__throw_pending(ctx);
++	duk__unwind(ctx, ctx->top - count);
++	duk__push(ctx, r);
++}
++
++duk_bool_t duk_strict_equals(duk_context *ctx, duk_idx_t idx1, duk_idx_t idx2)
++{
++	duk_slot *a = duk__slot(ctx, idx1), *b = duk__slot(ctx, idx2);
++	if (a == NULL || b == NULL)
++		return 0;
++	return JS_StrictEq(ctx->heap->ctx, a->v, b->v);
++}
++
++/* ---------------------------------------------------------------------------
++ * properties
++ */
++
++static duk_bool_t duk__get(duk_context *ctx, JSValueConst obj, JSAtom atom)
++{
++	JSValue v;
++	duk__switch(ctx);
++	v = JS_GetProperty(ctx->heap->ctx, obj, atom);
++	JS_FreeAtom(ctx->heap->ctx, atom);
++	if (JS_IsException(v))
++		duk__throw_pending(ctx);
++	duk__push(ctx, v);
++	return !JS_IsUndefined(v);
++}
++
++duk_bool_t duk_get_prop(duk_context *ctx, duk_idx_t obj_idx)
++{
++	JSValue obj = JS_DupValue(ctx->heap->ctx, duk__require_slot(ctx, obj_idx)->v);
++	JSAtom atom = duk__val_atom(ctx, duk__require_slot(ctx, -1)->v);
++	duk_bool_t r;
++	duk_pop(ctx);
++	r = duk__get(ctx, obj, atom);
++	JS_FreeValue(ctx->heap->ctx, obj);
++	return r;
++}
++
++duk_bool_t duk_get_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key)
++{
++	JSValueConst obj = duk__require_slot(ctx, obj_idx)->v;
++	JSValue o = JS_DupValue(ctx->heap->ctx, obj);
++	duk_bool_t r = duk__get(ctx, o, duk__key_atom(ctx->heap, key));
++	JS_FreeValue(ctx->heap->ctx, o);
++	return r;
++}
++
++duk_bool_t duk_get_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx)
++{
++	JSValue o = JS_DupValue(ctx->heap->ctx, duk__require_slot(ctx, obj_idx)->v);
++	duk_bool_t r = duk__get(ctx, o, JS_NewAtomUInt32(ctx->heap->ctx, arr_idx));
++	JS_FreeValue(ctx->heap->ctx, o);
++	return r;
++}
++
++/* obj[atom] = the value on the top (popped); atom is consumed */
++static duk_bool_t duk__put(duk_context *ctx, JSValueConst obj, JSAtom atom)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue v = JS_DupValue(qctx, duk__require_slot(ctx, -1)->v);
++	int r;
++	duk__switch(ctx);
++	duk__mirror(ctx->heap, obj, atom, v);
++	r = JS_SetPropertyInternal(qctx, obj, atom, v, obj, JS_PROP_THROW);
++	JS_FreeAtom(qctx, atom);
++	if (r < 0)
++		duk__throw_pending(ctx);
++	duk_pop(ctx);
++	return r > 0;
++}
++
++duk_bool_t duk_put_prop(duk_context *ctx, duk_idx_t obj_idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue obj = JS_DupValue(qctx, duk__require_slot(ctx, obj_idx)->v);
++	JSAtom atom = duk__val_atom(ctx, duk__require_slot(ctx, -2)->v);
++	duk_bool_t r;
++	duk_remove(ctx, -2);	/* the key */
++	r = duk__put(ctx, obj, atom);
++	JS_FreeValue(qctx, obj);
++	return r;
++}
++
++duk_bool_t duk_put_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue obj = JS_DupValue(qctx, duk__require_slot(ctx, obj_idx)->v);
++	duk_bool_t r = duk__put(ctx, obj, duk__key_atom(ctx->heap, key));
++	JS_FreeValue(qctx, obj);
++	return r;
++}
++
++duk_bool_t duk_put_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValue obj = JS_DupValue(qctx, duk__require_slot(ctx, obj_idx)->v);
++	duk_bool_t r = duk__put(ctx, obj, JS_NewAtomUInt32(qctx, arr_idx));
++	JS_FreeValue(qctx, obj);
++	return r;
++}
++
++static duk_bool_t duk__del(duk_context *ctx, JSValueConst obj, JSAtom atom)
++{
++	int r;
++	duk__switch(ctx);
++	r = JS_DeleteProperty(ctx->heap->ctx, obj, atom, 0);
++	JS_FreeAtom(ctx->heap->ctx, atom);
++	if (r < 0)
++		duk__throw_pending(ctx);
++	return r > 0;
++}
++
++duk_bool_t duk_del_prop(duk_context *ctx, duk_idx_t obj_idx)
++{
++	JSValue obj = JS_DupValue(ctx->heap->ctx, duk__require_slot(ctx, obj_idx)->v);
++	JSAtom atom = duk__val_atom(ctx, duk__require_slot(ctx, -1)->v);
++	duk_bool_t r;
++	duk_pop(ctx);
++	r = duk__del(ctx, obj, atom);
++	JS_FreeValue(ctx->heap->ctx, obj);
++	return r;
++}
++
++duk_bool_t duk_del_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key)
++{
++	return duk__del(ctx, duk__require_slot(ctx, obj_idx)->v, duk__key_atom(ctx->heap, key));
++}
++
++duk_bool_t duk_del_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx)
++{
++	return duk__del(ctx, duk__require_slot(ctx, obj_idx)->v,
++			JS_NewAtomUInt32(ctx->heap->ctx, arr_idx));
++}
++
++duk_bool_t duk_has_prop(duk_context *ctx, duk_idx_t obj_idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValueConst obj = duk__require_slot(ctx, obj_idx)->v;
++	JSAtom atom = duk__val_atom(ctx, duk__require_slot(ctx, -1)->v);
++	int r;
++	duk__switch(ctx);
++	r = JS_IsObject(obj) ? JS_HasProperty(qctx, obj, atom) : 0;
++	JS_FreeAtom(qctx, atom);
++	if (r < 0)
++		duk__throw_pending(ctx);
++	duk_pop(ctx);
++	return r > 0;
++}
++
++void duk_def_prop(duk_context *ctx, duk_idx_t obj_idx, duk_uint_t flags)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	int nval = !!(flags & DUK_DEFPROP_HAVE_VALUE) + !!(flags & DUK_DEFPROP_HAVE_GETTER) +
++		!!(flags & DUK_DEFPROP_HAVE_SETTER);
++	JSValueConst val = JS_UNDEFINED, getter = JS_UNDEFINED, setter = JS_UNDEFINED;
++	JSValueConst obj = duk__require_slot(ctx, obj_idx)->v;
++	JSAtom atom;
++	int i = -nval, qflags = JS_PROP_THROW, r;
++
++	atom = duk__val_atom(ctx, duk__require_slot(ctx, -nval - 1)->v);
++	if (flags & DUK_DEFPROP_HAVE_VALUE)
++		val = duk__require_slot(ctx, i++)->v;
++	if (flags & DUK_DEFPROP_HAVE_GETTER)
++		getter = duk__require_slot(ctx, i++)->v;
++	if (flags & DUK_DEFPROP_HAVE_SETTER)
++		setter = duk__require_slot(ctx, i++)->v;
++	if (flags & DUK_DEFPROP_HAVE_VALUE) qflags |= JS_PROP_HAS_VALUE;
++	if (flags & DUK_DEFPROP_HAVE_GETTER) qflags |= JS_PROP_HAS_GET;
++	if (flags & DUK_DEFPROP_HAVE_SETTER) qflags |= JS_PROP_HAS_SET;
++	if (flags & DUK_DEFPROP_HAVE_WRITABLE) qflags |= JS_PROP_HAS_WRITABLE;
++	if (flags & DUK_DEFPROP_WRITABLE) qflags |= JS_PROP_WRITABLE;
++	if (flags & DUK_DEFPROP_HAVE_ENUMERABLE) qflags |= JS_PROP_HAS_ENUMERABLE;
++	if (flags & DUK_DEFPROP_ENUMERABLE) qflags |= JS_PROP_ENUMERABLE;
++	if (flags & DUK_DEFPROP_HAVE_CONFIGURABLE) qflags |= JS_PROP_HAS_CONFIGURABLE;
++	if (flags & DUK_DEFPROP_CONFIGURABLE) qflags |= JS_PROP_CONFIGURABLE;
++	duk__switch(ctx);
++	if (flags & DUK_DEFPROP_HAVE_VALUE)
++		duk__mirror(ctx->heap, obj, atom, val);
++	r = JS_IsObject(obj) ? JS_DefineProperty(qctx, obj, atom, val, getter, setter, qflags)
++		: (JS_ThrowTypeError(qctx, "not an object"), -1);
++	JS_FreeAtom(qctx, atom);
++	if (r < 0)
++		duk__throw_pending(ctx);
++	duk_pop_n(ctx, nval + 1);
++}
++
++duk_bool_t duk_get_global_string(duk_context *ctx, const char *key)
++{
++	JSValue g = JS_DupValue(ctx->heap->ctx, ctx->global);
++	duk_bool_t r = duk__get(ctx, g, duk__key_atom(ctx->heap, key));
++	JS_FreeValue(ctx->heap->ctx, g);
++	return r;
++}
++
++duk_bool_t duk_put_global_string(duk_context *ctx, const char *key)
++{
++	JSValue g = JS_DupValue(ctx->heap->ctx, ctx->global);
++	duk_bool_t r = duk__put(ctx, g, duk__key_atom(ctx->heap, key));
++	JS_FreeValue(ctx->heap->ctx, g);
++	return r;
++}
++
++/* the Duktape finalizer that obj inherits from its prototype chain */
++static duk_c_function duk__inherited_finalizer(JSContext *qctx, JSValueConst proto)
++{
++	JSObject *p;
++	if (JS_VALUE_GET_TAG(proto) != JS_TAG_OBJECT)
++		return NULL;
++	for (p = JS_VALUE_GET_OBJ(proto); p != NULL; p = p->shape->proto) {
++		if (p->class_id == duk_obj_class_id && p->u.opaque != NULL) {
++			duk_objdata *od = p->u.opaque;
++			if (od->fin_own)
++				return od->fin_own;
++		}
++	}
++	return NULL;
++}
++
++void duk_set_prototype(duk_context *ctx, duk_idx_t idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	JSValueConst obj = duk__require_slot(ctx, idx)->v;
++	JSValueConst proto = duk__require_slot(ctx, -1)->v;
++	duk_objdata *od;
++	int r;
++	r = JS_SetPrototype(qctx, obj, JS_IsUndefined(proto) ? JS_NULL : proto);
++	if (r < 0)
++		duk__throw_pending(ctx);
++	od = duk__objdata(obj);
++	if (od != NULL)
++		od->fin_inh = duk__inherited_finalizer(qctx, proto);
++	duk_pop(ctx);
++}
++
++void duk_set_finalizer(duk_context *ctx, duk_idx_t idx)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	duk_objdata *od = duk__objdata(duk__require_slot(ctx, idx)->v);
++	JSValueConst f = duk__require_slot(ctx, -1)->v;
++	if (od != NULL) {
++		od->fin_own = duk__c_function_of(qctx, f);
++		if (od->fin_own == NULL && !JS_IsUndefined(f))
++			fprintf(stderr, "duk_quickjs: only C functions can be finalizers\n");
++	}
++	duk_pop(ctx);
++}
++
++/* ---------------------------------------------------------------------------
++ * calls
++ */
++
++/* a C function called from JavaScript */
++static JSValue duk__trampoline(JSContext *qctx, JSValueConst this_val, int argc,
++			       JSValueConst *argv, int magic, JSValue *data)
++{
++	duk_heap *heap = JS_GetContextOpaque(qctx);
++	duk_context *thr = heap->cur ? heap->cur : heap->main;
++	duk_c_function fn = (duk_c_function)duk__get_ptr(qctx, data[0]);
++	int nargs = JS_VALUE_GET_INT(data[1]);
++	int old_top = thr->top, old_bottom = thr->bottom, n, i;
++	JSValueConst old_this = thr->this_val;
++	volatile int rc = 0, threw = 0;
++	JSValue result;
++	duk_catch cp;
++
++	(void)magic;
++	n = nargs < 0 ? argc : nargs;
++	for (i = 0; i < n; i++)
++		duk__push(thr, i < argc ? JS_DupValue(qctx, argv[i]) : JS_UNDEFINED);
++	thr->bottom = old_top;
++	thr->this_val = this_val;
++	cp.prev = heap->catchp;
++	heap->catchp = &cp;
++	heap->depth++;
++	if (setjmp(cp.jb) == 0)
++		rc = fn(thr);
++	else
++		threw = 1;
++	heap->depth--;
++	heap->catchp = cp.prev;
++	if (heap->cur != thr)
++		duk__switch(thr);
++	if (threw) {
++		result = JS_EXCEPTION;
++	} else if (rc > 0) {
++		result = thr->top > thr->bottom ?
++			JS_DupValue(qctx, thr->stack[thr->top - 1].v) : JS_UNDEFINED;
++	} else if (rc == 0) {
++		result = JS_UNDEFINED;
++	} else {
++		JS_Throw(qctx, duk__make_error(qctx, -rc, "error"));
++		result = JS_EXCEPTION;
++	}
++	duk__unwind(thr, old_top);
++	thr->bottom = old_bottom;
++	thr->this_val = old_this;
++	return result;
++}
++
++/* call the function at the absolute index base (with nargs arguments after
++ * it, or this and nargs arguments for a method call); the call slots are
++ * replaced by the result; returns 0, or 1 with the exception pending */
++static int duk__do_call(duk_context *ctx, int base, int nargs, int method)
++{
++	duk_heap *heap = ctx->heap;
++	JSContext *qctx = heap->ctx;
++	JSValue f = JS_DupValue(qctx, ctx->stack[base].v);
++	JSValue thisv = method ? JS_DupValue(qctx, ctx->stack[base + 1].v) : JS_UNDEFINED;
++	int first = base + 1 + (method ? 1 : 0), i;
++	JSValue *argv = NULL, r;
++
++	if (nargs > 0) {
++		argv = malloc(nargs * sizeof(JSValue));
++		if (argv == NULL)
++			duk__fatal("out of memory");
++		for (i = 0; i < nargs; i++)
++			argv[i] = JS_DupValue(qctx, ctx->stack[first + i].v);
++	}
++	duk__unwind(ctx, base);
++	duk__switch(ctx);
++	heap->depth++;
++	if (JS_VALUE_GET_TAG(f) == JS_TAG_FUNCTION_BYTECODE ||
++	    JS_VALUE_GET_TAG(f) == JS_TAG_MODULE) {
++		r = JS_EvalFunction(qctx, f);	/* takes f */
++		f = JS_UNDEFINED;
++	} else {
++		r = JS_Call(qctx, f, thisv, nargs, (JSValueConst *)argv);
++	}
++	heap->depth--;
++	if (heap->cur != ctx)
++		duk__switch(ctx);
++	for (i = 0; i < nargs; i++)
++		JS_FreeValue(qctx, argv[i]);
++	free(argv);
++	JS_FreeValue(qctx, f);
++	JS_FreeValue(qctx, thisv);
++	if (JS_IsException(r)) {
++		duk__run_pending(heap);
++		return 1;
++	}
++	duk__push(ctx, r);
++	duk__run_pending(heap);
++	return 0;
++}
++
++static int duk__call_base(duk_context *ctx, duk_idx_t nargs, int method)
++{
++	int base = ctx->top - nargs - 1 - (method ? 1 : 0);
++	if (nargs < 0 || base < ctx->bottom) {
++		JS_ThrowRangeError(ctx->heap->ctx, "invalid call argument count %d", (int)nargs);
++		duk__throw_pending(ctx);
++	}
++	return base;
++}
++
++void duk_call(duk_context *ctx, duk_idx_t nargs)
++{
++	if (duk__do_call(ctx, duk__call_base(ctx, nargs, 0), nargs, 0))
++		duk__throw_pending(ctx);
++}
++
++static duk_int_t duk__pcall(duk_context *ctx, duk_idx_t nargs, int method)
++{
++	JSContext *qctx = ctx->heap->ctx;
++	int base = ctx->top - nargs - 1 - (method ? 1 : 0);
++	if (nargs < 0 || base < ctx->bottom)
++		return DUK_EXEC_ERROR;	/* Duktape throws for this; nothing to catch it here */
++	if (duk__do_call(ctx, base, nargs, method)) {
++		duk__push(ctx, JS_GetException(qctx));
++		return DUK_EXEC_ERROR;
++	}
++	return DUK_EXEC_SUCCESS;
++}
++
++duk_int_t duk_pcall(duk_context *ctx, duk_idx_t nargs)
++{
++	return duk__pcall(ctx, nargs, 0);
++}
++
++duk_int_t duk_pcall_method(duk_context *ctx, duk_idx_t nargs)
++{
++	return duk__pcall(ctx, nargs, 1);
++}
++
++duk_int_t duk_safe_call(duk_context *ctx, duk_safe_call_function func,
++			void *udata, duk_idx_t nargs, duk_idx_t nrets)
++{
++	duk_heap *heap = ctx->heap;
++	JSContext *qctx = heap->ctx;
++	int base = ctx->top - nargs, old_bottom = ctx->bottom, i, avail;
++	JSValueConst old_this = ctx->this_val;
++	volatile int rc = 0, threw = 0;
++	JSValue *res;
++	duk_catch cp;
++
++	if (nargs < 0 || base < ctx->bottom || nrets < 0)
++		return DUK_EXEC_ERROR;
++	ctx->bottom = base;
++	cp.prev = heap->catchp;
++	heap->catchp = &cp;
++	if (setjmp(cp.jb) == 0)
++		rc = func(ctx, udata);
++	else
++		threw = 1;
++	heap->catchp = cp.prev;
++	if (heap->cur != ctx)
++		duk__switch(ctx);
++	res = calloc(nrets ? nrets : 1, sizeof(JSValue));
++	if (res == NULL)
++		duk__fatal("out of memory");
++	for (i = 0; i < nrets; i++)
++		res[i] = JS_UNDEFINED;
++	if (threw || rc < 0) {
++		if (threw)
++			res[0] = JS_GetException(qctx);
++		else
++			res[0] = duk__make_error(qctx, -rc, "error");
++		if (nrets == 0)
++			JS_FreeValue(qctx, res[0]);
++	} else {
++		avail = ctx->top - ctx->bottom;
++		if (rc > avail)
++			rc = avail;
++		/* the top rc values are the results */
++		for (i = 0; i < nrets && i < rc; i++)
++			res[i] = JS_DupValue(qctx, ctx->stack[ctx->top - rc + i].v);
++	}
++	duk__unwind(ctx, base);
++	ctx->bottom = old_bottom;
++	ctx->this_val = old_this;
++	for (i = 0; i < nrets; i++)
++		duk__push(ctx, res[i]);
++	free(res);
++	duk__run_pending(heap);
++	return (threw || rc < 0) ? DUK_EXEC_ERROR : DUK_EXEC_SUCCESS;
++}
++
++/* compile src; the filename slot (absolute index fslot) is replaced by the
++ * function, or by the error */
++static duk_int_t duk__compile(duk_context *ctx, duk_uint_t flags, const char *src,
++			      size_t len, int fslot)
++{
++	duk_heap *heap = ctx->heap;
++	JSContext *qctx = heap->ctx;
++	const char *fname = "input";
++	char *buf;
++	JSValue f;
++	int fn = (flags & DUK_COMPILE_FUNCTION) != 0;
++	duk_slot *s = &ctx->stack[fslot];
++
++	if (duk_get_type(ctx, fslot - ctx->bottom) == DUK_TYPE_STRING)
++		fname = duk__slot_cstr(ctx, s, NULL);
++	/* QuickJS wants the source NUL-terminated; a function expression is
++	 * compiled as one in parentheses and evaluated, which only makes the
++	 * function object */
++	buf = malloc(len + 3);
++	if (buf == NULL)
++		duk__fatal("out of memory");
++	if (fn) {
++		buf[0] = '(';
++		memcpy(buf + 1, src, len);
++		buf[len + 1] = ')';
++		buf[len + 2] = 0;
++		len += 2;
++	} else {
++		memcpy(buf, src, len);
++		buf[len] = 0;
++	}
++	duk__switch(ctx);
++	heap->depth++;
++	f = JS_Eval(qctx, buf, len, fname, JS_EVAL_TYPE_GLOBAL |
++		    (fn ? 0 : JS_EVAL_FLAG_COMPILE_ONLY) |
++		    ((flags & DUK_COMPILE_STRICT) ? JS_EVAL_FLAG_STRICT : 0));
++	heap->depth--;
++	free(buf);
++	if (JS_IsException(f)) {
++		duk__replace_val(ctx, &ctx->stack[fslot], JS_GetException(qctx));
++		duk__run_pending(heap);
++		return DUK_EXEC_ERROR;
++	}
++	duk__replace_val(ctx, &ctx->stack[fslot], f);
++	duk__run_pending(heap);
++	return DUK_EXEC_SUCCESS;
++}
++
++duk_int_t duk_pcompile(duk_context *ctx, duk_uint_t flags)
++{
++	duk_slot *src = duk__slot(ctx, -2);
++	const char *p;
++	size_t len;
++	duk_int_t r;
++	if (src == NULL || duk__slot(ctx, -1) == NULL)
++		return DUK_EXEC_ERROR;
++	if (duk_get_type(ctx, -2) != DUK_TYPE_STRING) {
++		duk_safe_to_lstring(ctx, -2, NULL);
++		src = duk__slot(ctx, -2);
++	}
++	p = duk__slot_cstr(ctx, src, &len);
++	r = duk__compile(ctx, flags, p, len, ctx->top - 1);
++	duk_remove(ctx, -2);	/* the source */
++	return r;
++}
++
++duk_int_t duk_pcompile_lstring_filename(duk_context *ctx, duk_uint_t flags,
++					const char *src, duk_size_t len)
++{
++	if (duk__slot(ctx, -1) == NULL)
++		return DUK_EXEC_ERROR;
++	return duk__compile(ctx, flags, src, len, ctx->top - 1);
++}
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+new file mode 100644
+index 0000000..c65a2f7
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -0,0 +1,263 @@
++/*
++ * Copyright 2026 Nikolajs Agafonovs
++ *
++ * This file is part of NetSurf, http://www.netsurf-browser.org/
++ *
++ * NetSurf is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; version 2 of the License.
++ *
++ * NetSurf is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/** \file
++ * The subset of the Duktape 2 C API that NetSurf's JavaScript bindings use,
++ * implemented on QuickJS (duk_quickjs.c).
++ *
++ * duktape.h includes this header instead of Duktape's own when
++ * NETSURF_JS_QUICKJS is defined, so that dukky.c, the binding files and the
++ * C that nsgenbind generates from them compile unchanged against QuickJS, a
++ * JavaScript engine with ES2023 (classes, arrow functions, let/const,
++ * async/await, modules, Map/Set, Promise, Proxy, BigInt, ...) where Duktape
++ * has ES5.1.  The semantics are Duktape's: a value stack per context, index 0
++ * the first argument of the running C function, negative indices from the
++ * top, errors thrown with longjmp to the nearest protected call, hidden
++ * properties (keys starting with byte 0xFF) invisible to scripts, and
++ * finalizers inherited through the prototype chain.
++ */
++
++#ifndef DUK_QUICKJS_H
++#define DUK_QUICKJS_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <limits.h>
++
++#define DUK_VERSION 20700L	/* the API level these bindings were written for */
++
++typedef struct duk_hthread duk_context;
++
++typedef int duk_idx_t;
++typedef int duk_int_t;
++typedef unsigned int duk_uint_t;
++typedef int duk_int32_t;
++typedef unsigned int duk_uint32_t;
++typedef int duk_small_int_t;
++typedef unsigned int duk_small_uint_t;
++typedef int duk_bool_t;
++typedef int duk_ret_t;
++typedef int duk_errcode_t;
++typedef size_t duk_size_t;
++typedef unsigned int duk_uarridx_t;
++typedef double duk_double_t;
++typedef unsigned int duk_ucodepoint_t;
++
++typedef duk_ret_t (*duk_c_function)(duk_context *ctx);
++typedef duk_ret_t (*duk_safe_call_function)(duk_context *ctx, void *udata);
++typedef void *(*duk_alloc_function)(void *udata, duk_size_t size);
++typedef void *(*duk_realloc_function)(void *udata, void *ptr, duk_size_t size);
++typedef void (*duk_free_function)(void *udata, void *ptr);
++typedef void (*duk_fatal_function)(void *udata, const char *msg);
++
++typedef struct duk_memory_functions {
++	duk_alloc_function alloc_func;
++	duk_realloc_function realloc_func;
++	duk_free_function free_func;
++	void *udata;
++} duk_memory_functions;
++
++#define DUK_VARARGS			((duk_int_t) (-1))
++#define DUK_INVALID_INDEX		((duk_idx_t) (-0x7fffffff - 1))
++
++/* value types (duk_get_type) */
++#define DUK_TYPE_NONE			0
++#define DUK_TYPE_UNDEFINED		1
++#define DUK_TYPE_NULL			2
++#define DUK_TYPE_BOOLEAN		3
++#define DUK_TYPE_NUMBER			4
++#define DUK_TYPE_STRING			5
++#define DUK_TYPE_OBJECT			6
++#define DUK_TYPE_BUFFER			7
++#define DUK_TYPE_POINTER		8
++#define DUK_TYPE_LIGHTFUNC		9
++
++/* error codes; a C function returns their negation to throw */
++#define DUK_ERR_NONE			0
++#define DUK_ERR_ERROR			1
++#define DUK_ERR_EVAL_ERROR		2
++#define DUK_ERR_RANGE_ERROR		3
++#define DUK_ERR_REFERENCE_ERROR		4
++#define DUK_ERR_SYNTAX_ERROR		5
++#define DUK_ERR_TYPE_ERROR		6
++#define DUK_ERR_URI_ERROR		7
++#define DUK_RET_ERROR			(-DUK_ERR_ERROR)
++#define DUK_RET_EVAL_ERROR		(-DUK_ERR_EVAL_ERROR)
++#define DUK_RET_RANGE_ERROR		(-DUK_ERR_RANGE_ERROR)
++#define DUK_RET_REFERENCE_ERROR		(-DUK_ERR_REFERENCE_ERROR)
++#define DUK_RET_SYNTAX_ERROR		(-DUK_ERR_SYNTAX_ERROR)
++#define DUK_RET_TYPE_ERROR		(-DUK_ERR_TYPE_ERROR)
++#define DUK_RET_URI_ERROR		(-DUK_ERR_URI_ERROR)
++
++/* results of the protected calls */
++#define DUK_EXEC_SUCCESS		0
++#define DUK_EXEC_ERROR			1
++
++/* duk_pcompile flags */
++#define DUK_COMPILE_EVAL		(1U << 3)
++#define DUK_COMPILE_FUNCTION		(1U << 4)
++#define DUK_COMPILE_STRICT		(1U << 5)
++
++/* duk_def_prop flags */
++#define DUK_DEFPROP_WRITABLE		(1U << 0)
++#define DUK_DEFPROP_ENUMERABLE		(1U << 1)
++#define DUK_DEFPROP_CONFIGURABLE	(1U << 2)
++#define DUK_DEFPROP_HAVE_WRITABLE	(1U << 3)
++#define DUK_DEFPROP_HAVE_ENUMERABLE	(1U << 4)
++#define DUK_DEFPROP_HAVE_CONFIGURABLE	(1U << 5)
++#define DUK_DEFPROP_HAVE_VALUE		(1U << 6)
++#define DUK_DEFPROP_HAVE_GETTER		(1U << 7)
++#define DUK_DEFPROP_HAVE_SETTER		(1U << 8)
++#define DUK_DEFPROP_FORCE		(1U << 9)
++
++/* duk_gc flags */
++#define DUK_GC_COMPACT			(1U << 0)
++
++/* duk_push_buffer_object types (only the one NetSurf uses) */
++#define DUK_BUFOBJ_UINT8CLAMPEDARRAY	4
++
++/* heap and threads */
++duk_context *duk_create_heap(duk_alloc_function alloc_func,
++			     duk_realloc_function realloc_func,
++			     duk_free_function free_func,
++			     void *heap_udata,
++			     duk_fatal_function fatal_handler);
++void duk_destroy_heap(duk_context *ctx);
++void duk_get_memory_functions(duk_context *ctx, duk_memory_functions *out_funcs);
++void duk_gc(duk_context *ctx, duk_uint_t flags);
++duk_idx_t duk_push_thread(duk_context *ctx);
++duk_context *duk_require_context(duk_context *ctx, duk_idx_t idx);
++void duk_set_global_object(duk_context *ctx);
++
++/* the value stack */
++duk_idx_t duk_get_top(duk_context *ctx);
++void duk_set_top(duk_context *ctx, duk_idx_t idx);
++duk_idx_t duk_normalize_index(duk_context *ctx, duk_idx_t idx);
++void duk_pop(duk_context *ctx);
++void duk_pop_2(duk_context *ctx);
++void duk_pop_3(duk_context *ctx);
++void duk_pop_n(duk_context *ctx, duk_idx_t count);
++void duk_dup(duk_context *ctx, duk_idx_t from_idx);
++void duk_dup_top(duk_context *ctx);
++void duk_insert(duk_context *ctx, duk_idx_t to_idx);
++void duk_replace(duk_context *ctx, duk_idx_t to_idx);
++void duk_remove(duk_context *ctx, duk_idx_t idx);
++
++/* pushing */
++void duk_push_undefined(duk_context *ctx);
++void duk_push_null(duk_context *ctx);
++void duk_push_boolean(duk_context *ctx, duk_bool_t val);
++#define duk_push_bool(ctx, val) duk_push_boolean((ctx), (val))
++void duk_push_int(duk_context *ctx, duk_int_t val);
++void duk_push_uint(duk_context *ctx, duk_uint_t val);
++void duk_push_number(duk_context *ctx, duk_double_t val);
++const char *duk_push_string(duk_context *ctx, const char *str);
++const char *duk_push_lstring(duk_context *ctx, const char *str, duk_size_t len);
++const char *duk_push_sprintf(duk_context *ctx, const char *fmt, ...);
++void duk_push_pointer(duk_context *ctx, void *p);
++duk_idx_t duk_push_object(duk_context *ctx);
++duk_idx_t duk_push_array(duk_context *ctx);
++void duk_push_this(duk_context *ctx);
++void duk_push_global_object(duk_context *ctx);
++duk_idx_t duk_push_c_function(duk_context *ctx, duk_c_function func, duk_idx_t nargs);
++void *duk_push_buffer(duk_context *ctx, duk_size_t size, duk_bool_t dynamic);
++void duk_push_buffer_object(duk_context *ctx, duk_idx_t idx_buffer,
++			    duk_size_t byte_offset, duk_size_t byte_length,
++			    duk_uint_t flags);
++duk_idx_t duk_push_error_object(duk_context *ctx, duk_errcode_t err_code,
++				const char *fmt, ...);
++void duk_push_context_dump(duk_context *ctx);
++
++/* types */
++duk_int_t duk_get_type(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_check_type(duk_context *ctx, duk_idx_t idx, duk_int_t type);
++duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_number(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_string(duk_context *ctx, duk_idx_t idx);
++
++/* getting values (no coercion) */
++duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx);
++duk_int_t duk_get_int(duk_context *ctx, duk_idx_t idx);
++duk_uint_t duk_get_uint(duk_context *ctx, duk_idx_t idx);
++void *duk_get_pointer(duk_context *ctx, duk_idx_t idx);
++const char *duk_get_string(duk_context *ctx, duk_idx_t idx);
++duk_size_t duk_get_length(duk_context *ctx, duk_idx_t idx);
++void duk_get_prototype(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_opt_boolean(duk_context *ctx, duk_idx_t idx, duk_bool_t def_value);
++duk_bool_t duk_require_boolean(duk_context *ctx, duk_idx_t idx);
++duk_int_t duk_require_int(duk_context *ctx, duk_idx_t idx);
++duk_double_t duk_require_number(duk_context *ctx, duk_idx_t idx);
++const char *duk_require_string(duk_context *ctx, duk_idx_t idx);
++const char *duk_require_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len);
++
++/* coercions (the value is replaced by the result) */
++duk_bool_t duk_to_boolean(duk_context *ctx, duk_idx_t idx);
++duk_int_t duk_to_int(duk_context *ctx, duk_idx_t idx);
++duk_uint_t duk_to_uint(duk_context *ctx, duk_idx_t idx);
++duk_uint32_t duk_to_uint32(duk_context *ctx, duk_idx_t idx);
++const char *duk_to_string(duk_context *ctx, duk_idx_t idx);
++const char *duk_to_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len);
++const char *duk_safe_to_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len);
++#define duk_safe_to_string(ctx, idx) duk_safe_to_lstring((ctx), (idx), NULL)
++const char *duk_safe_to_stacktrace(duk_context *ctx, duk_idx_t idx);
++void duk_concat(duk_context *ctx, duk_idx_t count);
++duk_bool_t duk_strict_equals(duk_context *ctx, duk_idx_t idx1, duk_idx_t idx2);
++
++/* properties */
++duk_bool_t duk_get_prop(duk_context *ctx, duk_idx_t obj_idx);
++duk_bool_t duk_get_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key);
++duk_bool_t duk_get_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx);
++duk_bool_t duk_put_prop(duk_context *ctx, duk_idx_t obj_idx);
++duk_bool_t duk_put_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key);
++duk_bool_t duk_put_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx);
++duk_bool_t duk_del_prop(duk_context *ctx, duk_idx_t obj_idx);
++duk_bool_t duk_del_prop_string(duk_context *ctx, duk_idx_t obj_idx, const char *key);
++duk_bool_t duk_del_prop_index(duk_context *ctx, duk_idx_t obj_idx, duk_uarridx_t arr_idx);
++duk_bool_t duk_has_prop(duk_context *ctx, duk_idx_t obj_idx);
++void duk_def_prop(duk_context *ctx, duk_idx_t obj_idx, duk_uint_t flags);
++duk_bool_t duk_get_global_string(duk_context *ctx, const char *key);
++duk_bool_t duk_put_global_string(duk_context *ctx, const char *key);
++void duk_set_prototype(duk_context *ctx, duk_idx_t idx);
++void duk_set_finalizer(duk_context *ctx, duk_idx_t idx);
++
++/* calls, compilation, errors */
++void duk_call(duk_context *ctx, duk_idx_t nargs);
++duk_int_t duk_pcall(duk_context *ctx, duk_idx_t nargs);
++duk_int_t duk_pcall_method(duk_context *ctx, duk_idx_t nargs);
++duk_int_t duk_safe_call(duk_context *ctx, duk_safe_call_function func,
++			void *udata, duk_idx_t nargs, duk_idx_t nrets);
++duk_int_t duk_pcompile(duk_context *ctx, duk_uint_t flags);
++duk_int_t duk_pcompile_lstring_filename(duk_context *ctx, duk_uint_t flags,
++					const char *src, duk_size_t len);
++void duk_error_raw(duk_context *ctx, duk_errcode_t err_code, const char *fmt, ...)
++#if defined(__GNUC__) || defined(__TINYC__)
++	__attribute__((noreturn))
++#endif
++	;
++/* as in Duktape, usable as an expression (return duk_error(...);) */
++#define duk_error(ctx, err_code, ...) \
++	(duk_error_raw((ctx), (err_code), __VA_ARGS__), (duk_ret_t) 0)
++#define duk_generic_error(ctx, ...) duk_error((ctx), DUK_ERR_ERROR, __VA_ARGS__)
++
++#endif
+diff --git a/netsurf/content/handlers/javascript/duktape/duktape.h b/netsurf/content/handlers/javascript/duktape/duktape.h
+index d3cba11..757ae3d 100644
+--- a/netsurf/content/handlers/javascript/duktape/duktape.h
++++ b/netsurf/content/handlers/javascript/duktape/duktape.h
+@@ -163,7 +163,10 @@
+  *  (``sami.vaarala@iki.fi``) and I'll fix the omission.
+  */
+ 
+-#if !defined(DUKTAPE_H_INCLUDED)
++#if defined(NETSURF_JS_QUICKJS)
++/* the Duktape API on QuickJS (NETSURF_USE_QUICKJS) */
++#include "duk_quickjs.h"
++#elif !defined(DUKTAPE_H_INCLUDED)
+ #define DUKTAPE_H_INCLUDED
+ 
+ #define DUK_SINGLE_FILE
+diff --git a/netsurf/content/handlers/javascript/duktape/qjs_cutils.c b/netsurf/content/handlers/javascript/duktape/qjs_cutils.c
+new file mode 100644
+index 0000000..d759aaf
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/qjs_cutils.c
+@@ -0,0 +1,4 @@
++/* QuickJS's cutils.c, compiled as part of NetSurf's JavaScript engine
++ * (NETSURF_USE_QUICKJS; see duk_quickjs.c) */
++#define _GNU_SOURCE
++#include "cutils.c"
+diff --git a/netsurf/content/handlers/javascript/duktape/qjs_dtoa.c b/netsurf/content/handlers/javascript/duktape/qjs_dtoa.c
+new file mode 100644
+index 0000000..c722bd5
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/qjs_dtoa.c
+@@ -0,0 +1,4 @@
++/* QuickJS's dtoa.c, compiled as part of NetSurf's JavaScript engine
++ * (NETSURF_USE_QUICKJS; see duk_quickjs.c) */
++#define _GNU_SOURCE
++#include "dtoa.c"
+diff --git a/netsurf/content/handlers/javascript/duktape/qjs_libregexp.c b/netsurf/content/handlers/javascript/duktape/qjs_libregexp.c
+new file mode 100644
+index 0000000..5be36fe
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/qjs_libregexp.c
+@@ -0,0 +1,4 @@
++/* QuickJS's libregexp.c, compiled as part of NetSurf's JavaScript engine
++ * (NETSURF_USE_QUICKJS; see duk_quickjs.c) */
++#define _GNU_SOURCE
++#include "libregexp.c"
+diff --git a/netsurf/content/handlers/javascript/duktape/qjs_libunicode.c b/netsurf/content/handlers/javascript/duktape/qjs_libunicode.c
+new file mode 100644
+index 0000000..3410253
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/qjs_libunicode.c
+@@ -0,0 +1,4 @@
++/* QuickJS's libunicode.c, compiled as part of NetSurf's JavaScript engine
++ * (NETSURF_USE_QUICKJS; see duk_quickjs.c) */
++#define _GNU_SOURCE
++#include "libunicode.c"

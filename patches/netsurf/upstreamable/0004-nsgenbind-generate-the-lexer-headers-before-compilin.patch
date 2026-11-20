@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 15:52:47 +0200
+Subject: [PATCH] nsgenbind: generate the lexer headers before compiling
+
+The bison parsers include the flex lexer's header, but no rule said so,
+and the generated files were written into the build directory without
+waiting for it to exist.  A parallel make (-j4) compiled a parser before
+its lexer header existed or ran flex before the directory was made, and
+failed in about one build of two.  The generators now wait for the build
+directory's stamp, and the lexer headers are PRE_TARGETS, which the build
+system makes before any object.
+---
+ nsgenbind/src/Makefile | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/nsgenbind/src/Makefile b/nsgenbind/src/Makefile
+index fa1ddc8..3974f5e 100644
+--- a/nsgenbind/src/Makefile
++++ b/nsgenbind/src/Makefile
+@@ -8,12 +8,16 @@ DIR_SOURCES := nsgenbind.c utils.c output.c \
+ 
+ SOURCES := $(SOURCES) $(BUILDDIR)/nsgenbind-parser.c $(BUILDDIR)/nsgenbind-lexer.c $(BUILDDIR)/webidl-parser.c $(BUILDDIR)/webidl-lexer.c
+ 
+-$(BUILDDIR)/%-lexer.c $(BUILDDIR)/%-lexer.h: src/%-lexer.l
++$(BUILDDIR)/%-lexer.c $(BUILDDIR)/%-lexer.h: src/%-lexer.l | $(BUILDDIR)/stamp
+ 	$(VQ)$(ECHO) "    FLEX: $<"
+ 	$(Q)$(FLEX) --outfile=$(BUILDDIR)/$(*F)-lexer.c --header-file=$(BUILDDIR)/$(*F)-lexer.h $<
+ 
+ $(BUILDDIR)/%-lexer.c: $(BUILDDIR)/%-parser.h
+ 
++# The parsers include their lexer's header: generate the headers before any
++# object is compiled, or a parallel make compiles a parser too early
++PRE_TARGETS := $(PRE_TARGETS) $(BUILDDIR)/nsgenbind-lexer.h $(BUILDDIR)/webidl-lexer.h
++
+ # Bison 3.0 and later require api.prefix in curly braces
+ # Bison 2.6 and later require api.prefix
+ # Bison 2.5 and earlier require name-prefix switch
+@@ -34,7 +38,7 @@ else
+   endif
+ endif
+ 
+-$(BUILDDIR)/%-parser.c $(BUILDDIR)/%-parser.h: src/%-parser.y
++$(BUILDDIR)/%-parser.c $(BUILDDIR)/%-parser.h: src/%-parser.y | $(BUILDDIR)/stamp
+ 	$(VQ)$(ECHO) "   BISON: $<"
+ 	$(Q)$(BISON) -d -t $(BISON_DEFINES) --report=all --output=$(BUILDDIR)/$(*F)-parser.c --defines=$(BUILDDIR)/$(*F)-parser.h $<
+ 

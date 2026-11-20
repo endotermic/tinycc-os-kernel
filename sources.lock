@@ -85,6 +85,22 @@ unifont   sha256:3f7702429c948f05b979800b65c7e1383614d924591627aeae5d38d20101c69
 # The text editor (2026-11-17): X.Org's xedit (Xaw + Xmu + Xt, core fonts; its own small
 # Lisp interpreter drives the syntax-highlighting modes, /usr/lib/X11/xedit/lisp).
 xedit     sha256:733460cbf20a9d88e2a482ff1b288f51a97150cff807c7ffb98d2430546c8867  1.2.5   https://xorg.freedesktop.org/archive/individual/app/xedit-1.2.5.tar.xz
+# The NetSurf web browser (2026-11-20): libcurl (its fetcher; HTTP/1.1 and TLS from the
+# LibreSSL above, also the guest's /usr/bin/curl), the xcb-util libraries libnsfb's X surface
+# needs (atom/aux/event, image, keysyms, icccm), and NetSurf 3.11 as the "netsurf-all" release
+# tarball: the browser and its own libraries (libcss, libdom, libhubbub, libnsfb, Duktape for
+# JavaScript, ...) and their build system in one tree.  scripts/build.sh netsurf builds the
+# framebuffer front end on libnsfb's X surface.
+curl      sha256:8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5  8.23.0  https://curl.se/download/curl-8.23.0.tar.xz,https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.xz
+xcb-util  sha256:5abe3bbbd8e54f0fa3ec945291b7e8fa8cfd3cccc43718f8758430f94126e512  0.4.1   https://xorg.freedesktop.org/archive/individual/lib/xcb-util-0.4.1.tar.xz
+xcb-util-image sha256:ccad8ee5dadb1271fd4727ad14d9bd77a64e505608766c4e98267d9aede40d3d 0.4.1 https://xorg.freedesktop.org/archive/individual/lib/xcb-util-image-0.4.1.tar.xz
+xcb-util-keysyms sha256:7c260a5294412aed429df1da2f8afd3bd07b7cba3fec772fba15a613a6d5c638 0.4.1 https://xorg.freedesktop.org/archive/individual/lib/xcb-util-keysyms-0.4.1.tar.xz
+xcb-util-wm sha256:62c34e21d06264687faea7edbf63632c9f04d55e72114aa4a57bb95e4f888a0b 0.4.2 https://xorg.freedesktop.org/archive/individual/lib/xcb-util-wm-0.4.2.tar.xz
+netsurf   sha256:4dea880ff3c2f698bfd62c982b259340f9abcd7f67e6c8eb2b32c61f71644b7b  3.11    https://download.netsurf-browser.org/netsurf/releases/source-full/netsurf-all-3.11.tar.gz
+# QuickJS (2026-11-20): Fabrice Bellard's ES2023 JavaScript engine (MIT), the release tarball;
+# NetSurf's bindings run on it instead of the bundled Duktape (ES5.1) through
+# patches/netsurf's Duktape-API layer, which compiles quickjs.c in (step netsurf).
+quickjs   sha256:b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a  2026-06-04  https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz
 # The wallpapers (2026-11-13): the elementary OS photographs of LinuxKits/Distro-wallpapers
 # (Unsplash photographs, named after their photographers).  The repository is 2 GB, so
 # fetch.sh fetches the commit without file contents (a partial clone, --filter=blob:none) and

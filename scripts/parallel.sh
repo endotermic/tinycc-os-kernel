@@ -122,6 +122,10 @@ X xrdb: libXmu
 X libXcomposite: libXfixes
 X libXdamage: libXfixes
 X xcompmgr: libXcomposite libXdamage libXrender libXext
+X xcb-util: libxcb
+X xcb-util-image: xcb-util
+X xcb-util-keysyms: libxcb
+X xcb-util-wm: libxcb
 tinyx: xlib-libXfont xlib-libXdmcp kernel-headers @tinyx
 xdm: xlib-libXaw xlib-libXft xlib-libXdmcp @xdm
 jwm: xlib-libXft xlib-libXinerama xlib-jpeg xlib-libXpm xlib-libXmu @jwm @dejavu-fonts
@@ -130,10 +134,12 @@ xfiles: xlib-libXft xlib-libXinerama xlib-jpeg xlib-libXcursor xlib-libXpm xlib-
 xedit: xlib-libXaw @xedit
 wallpapers: xlib-libX11 xlib-jpeg libpng @wallpapers
 links: xlib-libX11 xlib-jpeg xlib-fontconfig libressl kernel-headers @links @dejavu-fonts @liberation-fonts
+curl: libressl zlib kernel-headers @curl
+netsurf: curl xlib-xcb-util-image xlib-xcb-util-keysyms xlib-xcb-util-wm xlib-freetype xlib-jpeg libpng @netsurf @quickjs @dejavu-fonts
 libnl: musl kernel-headers @libnl
 wifi: libnl libressl kernel-headers @wpa_supplicant @hostapd @iw
 firmware: kernel @linux-firmware @wireless-regdb @sof-bin
-initramfs: kernel busybox nnn libressl tinyx xdm jwm mlterm xfiles xedit wallpapers links wifi firmware guest-tcc
+initramfs: kernel busybox nnn libressl tinyx xdm jwm mlterm xfiles xedit wallpapers links curl netsurf wifi firmware guest-tcc
 ${selfhost:+selfhost: initramfs @make}
 ${iso:+iso: initramfs ${selfhost:+selfhost}}
 "

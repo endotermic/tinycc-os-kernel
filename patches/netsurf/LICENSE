@@ -1,0 +1,13 @@
+The patches in this directory modify NetSurf (https://www.netsurf-browser.org/), whose browser
+sources are released under the GNU General Public License version 2 only (netsurf/COPYING;
+copyright the NetSurf authors), with talloc (netsurf/utils/talloc.c, from Samba; copyright
+Andrew Tridgell and Stefan Metzmacher) under the GNU Lesser General Public License version 2.1
+or later, and the nsgenbind tool and the libnslog and libnsfb libraries (their COPYING files;
+copyright Vincent Sanders and the NetSurf authors) under the MIT license.  Each patch is released under the license of the file
+it modifies: 0002 (talloc.c) under LGPL-2.1-or-later (text in
+../../LICENSES/LGPL-2.1-or-later.txt), 0004, 0005 (the Makefiles of nsgenbind and
+libnslog) and 0007 (libnsfb) under MIT (../../LICENSES/MIT.txt), the others under GPL-2.0-only
+(../../LICENSES/GPL-2.0-only.txt); 0006 adds GPL-2.0-only files to NetSurf's JavaScript
+directory, and its three-line hunk in Duktape's duktape.h (MIT) is under MIT as well.  They
+are not part of the BSD-2-Clause license of the rest of this repository (see
+../../REUSE.toml).

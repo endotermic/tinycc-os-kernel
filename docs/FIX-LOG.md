@@ -1644,6 +1644,89 @@ C30. 2026-11-19, COMMITTED (patches/tinyx/features/0007), TinyX `kdrive/fbdev` (
     ticks with xcompmgr, 90 -> 121 without; xcompmgr alone nearly doubles the server's work).
     Not a tcc matter. Verification: x86_64 QEMU at 1920x1080: same rendering with the shadow,
     a -shadow server repaints fully after a VT round trip; the laptop not yet re-tested.
+C31. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0001), NetSurf
+    `content/fetchers/curl.c`, `content/fetchers/about/certificate.c`: every LibreSSL was taken for
+    OpenSSL 1.0.x, whose X509/RSA structures the code reads directly; LibreSSL 2.7 has the 1.1
+    accessors and 3.x made the structures opaque, so with 4.4.0 the build stopped with
+    "dereferencing incomplete type 'x509_st'". The 1.0.x path is now for LibreSSL < 2.7 only
+    (LibreSSL reports OPENSSL_VERSION_NUMBER 0x20000000 and takes the 1.1.1 code). Not a tcc
+    matter.
+C32. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0002), NetSurf `utils/talloc.c`: talloc
+    assumed va_copy only for `__GNUC__ > 2` and otherwise defined it as `(dest) = (src)`, an array
+    assignment on x86_64 ("lvalue expected" under tcc, which reports `__GNUC__` 2); it now also
+    takes the `<stdarg.h>` macro when `va_copy` is defined. Not a tcc bug.
+C33. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0003), NetSurf `Makefile`: the link line
+    always had `-Wl,--trace` (for the relink dependency file), which tcc's linker rejects
+    ("unsupported linker option '--trace'"); a test link decides now. Not a tcc bug (tcc has no
+    --trace; NetSurf only loses the relink-when-a-library-changed dependency).
+C34. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0004, 0005), the Makefiles of nsgenbind and
+    libnslog: the bison parsers include the flex lexers' headers without a rule saying so, and
+    flex/bison wrote into the build directory before it existed; parallel builds (-j4) failed
+    about every second time ("include file 'nsgenbind-lexer.h' not found", "No rule to make target
+    ...-lexer.c", "flex: could not create ..."). The generators wait for the build directory's
+    stamp and the lexer headers are PRE_TARGETS. Not a tcc matter. Verification: six clean -j8
+    builds of each in a row.
+C35. 2026-11-20, build recipe (not a patch), the netsurf step: `tools/gperf/gperf.c`, the subset of GNU
+    gperf (C++, so neither on the host nor buildable with tcc) that libhubbub's element-type.gperf
+    and libsvgtiny's colors.gperf use (%struct-type, %ignore-case, lookup-function-name; a sorted
+    table and a binary search instead of the perfect hash). Verified against both inputs: every
+    keyword finds its own entry, HTML tags case-insensitively, SVG colour names case-sensitively,
+    prefixes and longer strings are not found. `scripts/pkg-config.sh` accepts options after the
+    package names (NetSurf's makefiles run `pkg-config libcss --cflags`); its output for the
+    existing X builds is unchanged (compared with the old script on --cflags/--libs/--variable/
+    --exists queries). The libressl step no longer installs its libtool .la files, whose libdir
+    (/usr/lib) made libtool link curl against the host's path. Not a tcc matter.
+C36. 2026-11-20, build recipe, the curl step: libcurl's configure found eventfd() in musl, but the guest
+    kernel is tinyconfig-based with CONFIG_EVENTFD (and epoll, signalfd, timerfd) off, so
+    curl_multi_init failed in the guest and NetSurf stopped with "NetSurf failed to initialise"
+    (on the host it worked). curl is configured with `ac_cv_func_eventfd=no` (a socketpair
+    instead), and a configure re-run is followed by `make clean` (no dependency tracking).
+    Verification: x86_64 QEMU, startx: NetSurf renders the host's test page (CSS float, table
+    cells, borders, FreeType faces, a Duktape script's result), https://en.wikipedia.org/wiki/NetSurf
+    (SVG and PNG images; 31 MB resident) and its DuckDuckGo start page; the guest's curl gets
+    HTTP/1.1 200 from https://example.com/ and rejects untrusted-root.badssl.com (error 60).
+    NetSurf, its libraries, Duktape (a 100 000-line file) and curl all compiled with tcc
+    unpatched: no tcc fix.
+C37. 2026-11-20, COMMITTED (patches/netsurf/features/0006), NetSurf's JavaScript on QuickJS 2026-06-04
+    (sources.lock `quickjs`) instead of Duktape 2.7 (ES5.1: every script with ES2015+ syntax
+    stopped at a SyntaxError; BBC News: 47 of 52 script errors). The bindings use 93 Duktape
+    C API functions; `duk_quickjs.c` implements them on QuickJS and includes quickjs.c, so that
+    the bindings and the 108 000 lines nsgenbind generates compile unchanged (duktape.h includes
+    `duk_quickjs.h` under NETSURF_JS_QUICKJS; NETSURF_USE_QUICKJS/NETSURF_QUICKJS_DIR select it).
+    Model: one runtime and context per heap; each Duktape thread a QuickJS global object of its
+    own (JS_CLASS_GLOBAL_OBJECT, the built-ins and the window object's properties copied), swapped
+    into the context with its global lexical scope when the thread is used; a value stack per
+    thread with the C strings handed out kept until the value goes; pointers as BigInts; "\xFF"
+    keys as private symbols; errors by longjmp to the innermost C function or protected call;
+    finalizers (NetSurf sets them on the prototypes) recorded at duk_set_prototype and, because
+    QuickJS frees the properties before the class finalizer and forbids calls during collection,
+    queued and run after the next top-level call on a stand-in object carrying the dead object's
+    hidden pointers; heap destruction runs the ones queued while the context goes in a second
+    context; Promise jobs after each top-level call. QuickJS needs `<stdatomic.h>`, which musl
+    lacks: the netsurf step puts tcc's own (alone) on the include path. No tcc fix: QuickJS
+    compiled unpatched, and its test suite (test_closure, test_language, test_builtin --std,
+    test_loop, test_bigint, test_cyclic_import, test_worker, test_std, test_rw_handler) passes
+    with a tcc-built qjs (test_bjson and examples/test_point need shared-library modules).
+    Verification: host (-f ram, verbose log): ES2023 page (classes with #private fields, arrow
+    functions with default/rest, destructuring, Map/Set, ?. ??, BigInt, Object.groupBy,
+    async/await, Promise.then, setTimeout, try/catch) and DOM calls; an event page gives the
+    same output on both engines (inline onclick/onload compiled, listeners, uncaught errors
+    logged); a stress page (90 000 DOM wrappers, then navigation, which destroys the heap): no
+    crash, 132 MB peak, 18 MB after (Duktape: 101 MB peak, 99 MB after); BBC News 8 script
+    errors, none syntax (missing APIs: performance, ...); MDN fails on ES modules
+    (`<script type=module>` runs as a classic script) with both. x86_64 QEMU: the test page's
+    ES2023 results on screen, BBC News renders. Known: NetSurf 3.11 does not redraw DOM changes
+    made after the page loaded (timers, promises: they run, the screen keeps the old text), with
+    either engine; libnsfb's X window has no WM_DELETE_WINDOW, so JWM asks "Kill this window?"
+    on Alt-F4 (OK closes it), with either engine (fixed by C38).
+C38. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0007, 0008), libnsfb `src/surface/x.c` and
+    NetSurf's framebuffer front end: the X window had no WM_PROTOCOLS, so JWM answered Alt-F4 and
+    the close button with "Kill this window?", and no title or class (an empty title bar and task
+    list entry). libnsfb now names WM_DELETE_WINDOW and turns that client message (SendEvent: type
+    | 0x80) into NSFB_CONTROL_QUIT, sets WM_CLASS netsurf/NetSurf, and has a new optional surface
+    call nsfb_set_title() (WM_NAME + _NET_WM_NAME); the front end's set_title shows "<page title> -
+    NetSurf". Also in x.c: select() got the millisecond remainder as microseconds (a 50 ms wait
+    lasted 50 us). Not a tcc matter.
 
 ## The device drivers (2026-10-26)
 

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# /usr/share/netsurf/Choices: NetSurf's system settings (scripts/build.sh, step netsurf).
+# NetSurf reads the first Choices on its resource path, so ~/.netsurf/Choices replaces this
+# file as a whole (the browser writes it when its settings change).
+# JavaScript on (Duktape; NetSurf's default is off)
+enable_javascript:1
+# the start page: DuckDuckGo's HTML search, as for links (Google Search needs more JavaScript
+# than NetSurf runs)
+homepage_url:https://html.duckduckgo.com/html/
+# the CA bundle of the libressl step (libcurl's compiled-in default too)
+ca_bundle:/etc/ssl/cert.pem
+# the window: inside a 1024x768 screen with JWM's tray and title bar ("netsurf -w W -h H"
+# for another size)
+window_width:980
+window_height:680
