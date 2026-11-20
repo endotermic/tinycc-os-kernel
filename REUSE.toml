@@ -92,6 +92,12 @@ SPDX-FileCopyrightText = ["Vincent Sanders", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = ["patches/netsurf/**/0011-*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The NetSurf authors", "Vincent Sanders", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT AND GPL-2.0-only"
+
+[[annotations]]
 path = ["patches/links/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Mikulas Patocka and the Links authors", "2026 Nikolajs Agafonovs"]

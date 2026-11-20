@@ -1749,6 +1749,19 @@ C39. 2026-11-20, COMMITTED (patches/netsurf/features/0009, 0010), NetSurf `conte
     x86_64 QEMU: a page that changes text, a class and list items and inserts an image every second
     shows every change, the static image stays, the input keeps its value; the test page's
     await-after-setTimeout text, never drawn before, appears.
+C40. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0011), libnsfb `src/surface/x.c`,
+    `src/cursor.c` and the framebuffer front end (framebuffer.c, fbtk/fbtk.c): the X window had
+    min = max size hints, so JWM showed no maximize button and could not resize it; it now has
+    only a minimum (300x200), asks for StructureNotify, a ConfigureNotify with a new size becomes
+    NSFB_EVENT_RESIZE (the front end's gui_resize existed for SDL), and x_set_geometry re-creates
+    the image (SHM or not) and the pixmap on a live surface. The window hid the X pointer and
+    libnsfb drew NetSurf's pointer bitmaps into the page; nsfb_cursor_set_system() (new, optional
+    surface call) shows the X server's pointer from the cursor font (left_ptr, hand2 over links,
+    xterm over text fields, watch, fleur), as JWM does, and the software cursor is no longer drawn
+    (its location is still tracked); surfaces without one keep the software cursor. Not a tcc
+    matter. Verification: x86_64 QEMU: maximize button in JWM's title bar, Alt-F10 maximizes, the
+    toolbar and page reflow to 1024 px; the X arrow over the page, the hand over a link (status bar
+    shows its URL), the I-beam over the URL bar.
 
 ## The device drivers (2026-10-26)
 

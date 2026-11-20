@@ -9,3 +9,4 @@ upstreamable/0007-libnsfb-x-close-on-WM_DELETE_WINDOW-window-title-sel.patch
 upstreamable/0008-framebuffer-show-the-page-title-in-the-window-title.patch
 features/0009-html-show-DOM-changes-made-after-layout-rebuild-the-.patch
 features/0010-html-rebuilt-box-trees-take-over-loaded-objects-refo.patch
+upstreamable/0011-libnsfb-x-framebuffer-resizable-maximizable-window-t.patch

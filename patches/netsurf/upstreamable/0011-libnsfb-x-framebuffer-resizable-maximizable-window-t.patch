@@ -1,0 +1,447 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 18:25:45 +0200
+Subject: [PATCH] libnsfb x, framebuffer: resizable (maximizable) window; the
+ system's pointer
+
+The X surface's window had its minimum and maximum size set to its first
+size, so the window manager offered no maximize and could not resize it.
+It now only has a minimum (300x200), asks for StructureNotify, turns a
+ConfigureNotify with a new size into NSFB_EVENT_RESIZE (which the
+framebuffer front end already handles: gui_resize -> nsfb_set_geometry),
+and x_set_geometry on a live surface re-creates the image (shared memory
+or not) and the backing pixmap at the new size.
+
+The window hid the X pointer (a blank cursor) and libnsfb drew the front
+end's pointer images into the surface.  A new optional surface call,
+nsfb_cursor_set_system(), shows the windowing system's pointer in a
+shape (default, point, caret, menu, progress, move) instead; the X
+surface makes them from the cursor font (left_ptr, hand2, xterm, watch,
+fleur, as window managers do) and stops drawing the software cursor,
+whose location is still tracked.  The framebuffer front end maps its
+pointer images to those shapes (framebuffer_set_cursor, which fbtk's
+pointer changes now go through too) and keeps the software cursor on
+surfaces without a system pointer.
+---
+ libnsfb/include/libnsfb_cursor.h            |  21 +++
+ libnsfb/src/cursor.c                        |   8 +
+ libnsfb/src/surface.h                       |   4 +
+ libnsfb/src/surface/x.c                     | 170 +++++++++++++++++---
+ netsurf/frontends/framebuffer/fbtk/fbtk.c   |  11 +-
+ netsurf/frontends/framebuffer/framebuffer.c |  19 +++
+ 6 files changed, 205 insertions(+), 28 deletions(-)
+
+diff --git a/libnsfb/include/libnsfb_cursor.h b/libnsfb/include/libnsfb_cursor.h
+index 525bd83..37c0745 100644
+--- a/libnsfb/include/libnsfb_cursor.h
++++ b/libnsfb/include/libnsfb_cursor.h
+@@ -44,5 +44,26 @@ bool nsfb_cursor_loc_set(nsfb_t *nsfb, const nsfb_bbox_t *loc);
+ /** get the cursor location */
+ bool nsfb_cursor_loc_get(nsfb_t *nsfb, nsfb_bbox_t *loc);
+ 
++/** Pointer shapes of the windowing system */
++enum nsfb_pointer_e {
++    NSFB_POINTER_DEFAULT, /**< the arrow */
++    NSFB_POINTER_POINT, /**< a pointing hand, over links */
++    NSFB_POINTER_CARET, /**< the text cursor */
++    NSFB_POINTER_MENU, /**< over a menu */
++    NSFB_POINTER_PROGRESS, /**< busy */
++    NSFB_POINTER_MOVE /**< moving */
++};
++
++/** Show the windowing system's pointer in a shape instead of the software
++ * cursor (nsfb_cursor_set's bitmap, drawn into the surface).
++ *
++ * The software cursor's location is still tracked (nsfb_cursor_loc_set,
++ * nsfb_cursor_loc_get), but it is no longer drawn.
++ *
++ * @return true when the surface shows the system pointer (a window of a
++ *         windowing system), false when the software cursor stays.
++ */
++bool nsfb_cursor_set_system(nsfb_t *nsfb, enum nsfb_pointer_e shape);
++
+ 
+ #endif
+diff --git a/libnsfb/src/cursor.c b/libnsfb/src/cursor.c
+index 1f107a5..366cbd0 100644
+--- a/libnsfb/src/cursor.c
++++ b/libnsfb/src/cursor.c
+@@ -56,6 +56,14 @@ bool nsfb_cursor_set(nsfb_t *nsfb, const nsfb_colour_t *pixel,
+     return nsfb->surface_rtns->cursor(nsfb, nsfb->cursor);
+ }
+ 
++bool nsfb_cursor_set_system(nsfb_t *nsfb, enum nsfb_pointer_e shape)
++{
++    if (nsfb->surface_rtns->pointer == NULL)
++        return false;
++
++    return nsfb->surface_rtns->pointer(nsfb, shape) == 0;
++}
++
+ bool nsfb_cursor_loc_set(nsfb_t *nsfb, const nsfb_bbox_t *loc)
+ {
+     if (nsfb->cursor == NULL) 
+diff --git a/libnsfb/src/surface.h b/libnsfb/src/surface.h
+index 3fea28b..815f0e7 100644
+--- a/libnsfb/src/surface.h
++++ b/libnsfb/src/surface.h
+@@ -2,6 +2,7 @@
+ 
+ #include "libnsfb.h" 
+ #include "libnsfb_plot.h"
++#include "libnsfb_cursor.h"
+ #include "nsfb.h"
+ 
+ /* surface default options */
+@@ -33,6 +34,8 @@ typedef int (nsfb_surfacefn_cursor_t)(nsfb_t *nsfb, struct nsfb_cursor_s *cursor
+ 
+ typedef int (nsfb_surfacefn_title_t)(nsfb_t *nsfb, const char *title);
+ 
++typedef int (nsfb_surfacefn_pointer_t)(nsfb_t *nsfb, enum nsfb_pointer_e shape);
++
+ typedef struct nsfb_surface_rtns_s {
+     nsfb_surfacefn_defaults_t *defaults;
+     nsfb_surfacefn_init_t *initialise;
+@@ -44,6 +47,7 @@ typedef struct nsfb_surface_rtns_s {
+     nsfb_surfacefn_update_t *update;
+     nsfb_surfacefn_cursor_t *cursor;
+     nsfb_surfacefn_title_t *title; /* optional: NULL for surfaces without a title */
++    nsfb_surfacefn_pointer_t *pointer; /* optional: NULL without a system pointer */
+ } nsfb_surface_rtns_t;
+ 
+ void _nsfb_register_surface(const enum nsfb_type_e type, const nsfb_surface_rtns_t *rtns, const char *name);
+diff --git a/libnsfb/src/surface/x.c b/libnsfb/src/surface/x.c
+index 3f5fefb..a5ed03d 100644
+--- a/libnsfb/src/surface/x.c
++++ b/libnsfb/src/surface/x.c
+@@ -81,6 +81,9 @@ typedef struct xstate_s {
+     xcb_atom_t wm_delete_window; /* WM_DELETE_WINDOW: the window manager's close */
+     xcb_atom_t net_wm_name; /* _NET_WM_NAME: the title in UTF-8 */
+     xcb_atom_t utf8_string; /* UTF8_STRING */
++    bool system_pointer; /* the X pointer is shown: no software cursor */
++    xcb_font_t cursor_font; /* the X cursor font, once opened */
++    xcb_cursor_t pointers[NSFB_POINTER_MOVE + 1]; /* its pointers, once made */
+ } xstate_t;
+ 
+ /* X keyboard codepage to nsfb mapping */
+@@ -582,8 +585,35 @@ xcopy(nsfb_t *nsfb, nsfb_bbox_t *srcbox, nsfb_bbox_t *dstbox)
+ static int 
+ x_set_geometry(nsfb_t *nsfb, int width, int height, enum nsfb_format_e format)
+ {
+-    if (nsfb->surface_priv != NULL)
+-        return -1; /* if were already initialised fail */
++    xstate_t *xstate = nsfb->surface_priv;
++
++    if (xstate != NULL) {
++        /* the window was resized: a new image and backing pixmap of the
++         * new size (the format cannot change) */
++        if (format != nsfb->format)
++            return -1;
++        if (width == nsfb->width && height == nsfb->height)
++            return 0;
++        x_free_image(xstate);
++        if (x_alloc_image(nsfb, xstate, width, height) != 0) {
++            /* keep a usable surface at the old size */
++            if (x_alloc_image(nsfb, xstate, nsfb->width, nsfb->height) != 0) {
++                fprintf(stderr, "Unable to create image\n");
++                abort();
++            }
++            return -1;
++        }
++        nsfb->width = width;
++        nsfb->height = height;
++        xcb_free_pixmap(xstate->connection, xstate->pmap);
++        xstate->pmap = xcb_generate_id(xstate->connection);
++        xcb_create_pixmap(xstate->connection, 24, xstate->pmap,
++                          xstate->window, width, height);
++        if (nsfb->cursor != NULL)
++            nsfb->cursor->plotted = false; /* its saved pixels are gone */
++        update_and_redraw_pixmap(xstate, 0, 0, width, height);
++        return 0;
++    }
+ 
+     nsfb->width = width;
+     nsfb->height = height;
+@@ -800,6 +830,33 @@ static int x_set_title(nsfb_t *nsfb, const char *title)
+     return 0;
+ }
+ 
++/* the image (shared memory if the server has it) for a w x h surface */
++static int x_alloc_image(nsfb_t *nsfb, xstate_t *xstate, int w, int h)
++{
++    xstate->image = create_shm_image(xstate, w, h, nsfb->bpp);
++    if (xstate->image == NULL)
++        xstate->image = create_image(xstate->connection, w, h, nsfb->bpp);
++    if (xstate->image == NULL)
++        return -1;
++    nsfb->ptr = xstate->image->data;
++    nsfb->linelen = xstate->image->stride;
++    return 0;
++}
++
++static void x_free_image(xstate_t *xstate)
++{
++    if (xstate->image == NULL)
++        return;
++    if (xstate->shminfo.shmseg != 0) {
++        xcb_shm_detach(xstate->connection, xstate->shminfo.shmseg);
++        shmdt(xstate->shminfo.shmaddr);
++        xstate->shminfo.shmseg = 0;
++        xstate->image->base = NULL; /* the shared memory, not malloc'd */
++    }
++    xcb_image_destroy(xstate->image);
++    xstate->image = NULL;
++}
++
+ static int x_initialise(nsfb_t *nsfb)
+ {
+     uint32_t mask;
+@@ -837,22 +894,15 @@ static int x_initialise(nsfb_t *nsfb)
+     xstate->screen = xcb_setup_roots_iterator(xcb_get_setup(xstate->connection)).data;
+ 
+     /* create image */
+-    xstate->image = create_shm_image(xstate, nsfb->width, nsfb->height, nsfb->bpp);
+-
+-    if (xstate->image == NULL)
+-        xstate->image = create_image(xstate->connection, nsfb->width, nsfb->height, nsfb->bpp);
+-
+-    if (xstate->image == NULL) {
++    if (x_alloc_image(nsfb, xstate, nsfb->width, nsfb->height) != 0) {
+         fprintf(stderr, "Unable to create image\n");
+-        free(xstate);
+         xcb_disconnect(xstate->connection);
++        free(xstate);
+         return -1;
+     }
+ 
+     /* ensure plotting information is stored */
+     nsfb->surface_priv = xstate;
+-    nsfb->ptr = xstate->image->data;
+-    nsfb->linelen = xstate->image->stride;
+ 
+     /* get blank cursor */
+     blank_cursor = create_blank_cursor(xstate->connection, xstate->screen);
+@@ -868,7 +918,8 @@ static int x_initialise(nsfb_t *nsfb)
+ 		XCB_EVENT_MASK_KEY_RELEASE |
+ 		XCB_EVENT_MASK_BUTTON_PRESS |
+                 XCB_EVENT_MASK_BUTTON_RELEASE |
+-                XCB_EVENT_MASK_POINTER_MOTION;
++                XCB_EVENT_MASK_POINTER_MOTION |
++                XCB_EVENT_MASK_STRUCTURE_NOTIFY; /* size changes */
+     values[2] = blank_cursor;
+ 
+     xstate->window = xcb_generate_id(xstate->connection);
+@@ -880,15 +931,12 @@ static int x_initialise(nsfb_t *nsfb)
+                        XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                        xstate->screen->root_visual,
+                        mask, values);
+-    /* set size hits on window */
++    /* set size hints on window: resizable (and so maximizable), not
++     * below a usable minimum; a resize reaches the client as
++     * NSFB_EVENT_RESIZE, which calls nsfb_set_geometry */
+     hints = xcb_alloc_size_hints();
+     if (hints != NULL) {
+-        xcb_size_hints_set_max_size(hints,
+-                                    xstate->image->width,
+-                                    xstate->image->height);
+-        xcb_size_hints_set_min_size(hints,
+-                                    xstate->image->width,
+-                                    xstate->image->height);
++        xcb_size_hints_set_min_size(hints, 300, 200);
+         xcb_set_wm_size_hints(xstate->connection,
+                               xstate->window,
+                               WM_NORMAL_HINTS,
+@@ -1028,6 +1076,18 @@ static bool x_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+     }
+ 
+     switch (e->response_type) {
++    case XCB_CONFIGURE_NOTIFY: {
++        /* the window manager resized (maximized) the window */
++        xcb_configure_notify_event_t *ecn = (xcb_configure_notify_event_t *)e;
++        if (ecn->window == xstate->window &&
++            (ecn->width != nsfb->width || ecn->height != nsfb->height)) {
++            event->type = NSFB_EVENT_RESIZE;
++            event->value.resize.w = ecn->width;
++            event->value.resize.h = ecn->height;
++        }
++        break;
++    }
++
+     case XCB_EXPOSE:
+         ee = (xcb_expose_event_t *)e;
+         xcb_copy_area(xstate->connection,
+@@ -1128,6 +1188,10 @@ static bool x_input(nsfb_t *nsfb, nsfb_event_t *event, int timeout)
+ static int x_claim(nsfb_t *nsfb, nsfb_bbox_t *box)
+ {
+     struct nsfb_cursor_s *cursor = nsfb->cursor;
++    xstate_t *xstate = nsfb->surface_priv;
++
++    if (xstate != NULL && xstate->system_pointer)
++        return 0; /* no software cursor to take off */
+ 
+     if ((cursor != NULL) &&
+         (cursor->plotted == true) &&
+@@ -1146,6 +1210,9 @@ x_cursor(nsfb_t *nsfb, struct nsfb_cursor_s *cursor)
+     nsfb_bbox_t redraw;
+     nsfb_bbox_t fbarea;
+ 
++    if (xstate != NULL && xstate->system_pointer)
++        return true; /* the X server draws the pointer */
++
+     if ((cursor != NULL) && (cursor->plotted == true)) {
+ 
+         nsfb_plot_add_rect(&cursor->savloc, &cursor->loc, &redraw);
+@@ -1178,7 +1245,8 @@ static int x_update(nsfb_t *nsfb, nsfb_bbox_t *box)
+     struct nsfb_cursor_s *cursor = nsfb->cursor;
+ 
+     if ((cursor != NULL) &&
+-	(cursor->plotted == false)) {
++	(cursor->plotted == false) &&
++        !xstate->system_pointer) {
+         nsfb_cursor_plot(nsfb, cursor);
+     }
+ 
+@@ -1187,6 +1255,67 @@ static int x_update(nsfb_t *nsfb, nsfb_bbox_t *box)
+     return 0;
+ }
+ 
++/* the X cursor font's glyphs for the pointer shapes (X11/cursorfont.h) */
++static const uint16_t x_pointer_glyph[NSFB_POINTER_MOVE + 1] = {
++    [NSFB_POINTER_DEFAULT] = 68,	/* XC_left_ptr */
++    [NSFB_POINTER_POINT] = 60,		/* XC_hand2 */
++    [NSFB_POINTER_CARET] = 152,		/* XC_xterm */
++    [NSFB_POINTER_MENU] = 68,		/* XC_left_ptr */
++    [NSFB_POINTER_PROGRESS] = 150,	/* XC_watch */
++    [NSFB_POINTER_MOVE] = 52,		/* XC_fleur */
++};
++
++/* show the X server's pointer in a shape (from the cursor font, as most
++ * window managers do) instead of the software cursor */
++static int x_pointer(nsfb_t *nsfb, enum nsfb_pointer_e shape)
++{
++    xstate_t *xstate = nsfb->surface_priv;
++    xcb_cursor_t cur;
++
++    if (xstate == NULL || shape < 0 || shape > NSFB_POINTER_MOVE)
++        return -1;
++
++    if (xstate->cursor_font == 0) {
++        xcb_font_t font = xcb_generate_id(xstate->connection);
++        xcb_generic_error_t *err;
++
++        err = xcb_request_check(xstate->connection,
++                xcb_open_font_checked(xstate->connection, font,
++                                      strlen("cursor"), "cursor"));
++        if (err != NULL) {
++            free(err);
++            return -1; /* no cursor font: keep the software cursor */
++        }
++        xstate->cursor_font = font;
++    }
++
++    cur = xstate->pointers[shape];
++    if (cur == 0) {
++        cur = xcb_generate_id(xstate->connection);
++        xcb_create_glyph_cursor(xstate->connection, cur,
++                                xstate->cursor_font, xstate->cursor_font,
++                                x_pointer_glyph[shape], x_pointer_glyph[shape] + 1,
++                                0, 0, 0, 0xffff, 0xffff, 0xffff);
++        xstate->pointers[shape] = cur;
++    }
++    xcb_change_window_attributes(xstate->connection, xstate->window,
++                                 XCB_CW_CURSOR, &cur);
++    xcb_flush(xstate->connection);
++
++    if (!xstate->system_pointer) {
++        /* from now on the software cursor is not drawn: take it off */
++        struct nsfb_cursor_s *cursor = nsfb->cursor;
++        xstate->system_pointer = true;
++        if (cursor != NULL && cursor->plotted) {
++            nsfb_bbox_t sav = cursor->savloc;
++            nsfb_cursor_clear(nsfb, cursor);
++            update_and_redraw_pixmap(xstate, sav.x0, sav.y0,
++                                     sav.x1 - sav.x0, sav.y1 - sav.y0);
++        }
++    }
++    return 0;
++}
++
+ const nsfb_surface_rtns_t x_rtns = {
+     .initialise = x_initialise,
+     .finalise = x_finalise,
+@@ -1196,6 +1325,7 @@ const nsfb_surface_rtns_t x_rtns = {
+     .cursor = x_cursor,
+     .geometry = x_set_geometry,
+     .title = x_set_title,
++    .pointer = x_pointer,
+ };
+ 
+ NSFB_SURFACE_DEF(x, NSFB_SURFACE_X, &x_rtns)
+diff --git a/netsurf/frontends/framebuffer/fbtk/fbtk.c b/netsurf/frontends/framebuffer/fbtk/fbtk.c
+index 91f6e25..5bd9ec2 100644
+--- a/netsurf/frontends/framebuffer/fbtk/fbtk.c
++++ b/netsurf/frontends/framebuffer/fbtk/fbtk.c
+@@ -39,6 +39,7 @@
+ 
+ #include "framebuffer/gui.h"
+ #include "framebuffer/fbtk.h"
++#include "framebuffer/framebuffer.h"
+ #include "framebuffer/image_data.h"
+ 
+ #include "widget.h"
+@@ -392,16 +393,10 @@ fbtk_clip_to_widget(fbtk_widget_t *widget, bbox_t * restrict box)
+ int
+ fbtk_set_ptr(fbtk_widget_t *widget, fbtk_callback_info *cbi)
+ {
+-	fbtk_widget_t *root = fbtk_get_root_widget(widget);
+ 	struct fbtk_bitmap *bm = cbi->context;
+ 
+-	nsfb_cursor_set(root->u.root.fb,
+-			(nsfb_colour_t *)bm->pixdata,
+-			bm->width,
+-			bm->height,
+-			bm->width,
+-			bm->hot_x,
+-			bm->hot_y);
++	/* the system pointer where the surface has one */
++	framebuffer_set_cursor(bm);
+ 
+ 	return 0;
+ }
+diff --git a/netsurf/frontends/framebuffer/framebuffer.c b/netsurf/frontends/framebuffer/framebuffer.c
+index 2889081..32fa911 100644
+--- a/netsurf/frontends/framebuffer/framebuffer.c
++++ b/netsurf/frontends/framebuffer/framebuffer.c
+@@ -40,6 +40,7 @@
+ #include "framebuffer/framebuffer.h"
+ #include "framebuffer/font.h"
+ #include "framebuffer/bitmap.h"
++#include "framebuffer/image_data.h"
+ 
+ /* netsurf framebuffer library handle */
+ static nsfb_t *nsfb;
+@@ -649,6 +650,24 @@ framebuffer_set_title(const char *title)
+ bool
+ framebuffer_set_cursor(struct fbtk_bitmap *bm)
+ {
++    enum nsfb_pointer_e shape = NSFB_POINTER_DEFAULT;
++
++    /* on surfaces that are windows (X) the system's pointer, in the shape
++     * that this pointer image stands for; elsewhere the image itself,
++     * drawn by libnsfb as the software cursor */
++    if (bm == &hand_image)
++	shape = NSFB_POINTER_POINT;
++    else if (bm == &caret_image)
++	shape = NSFB_POINTER_CARET;
++    else if (bm == &menu_image)
++	shape = NSFB_POINTER_MENU;
++    else if (bm == &progress_image)
++	shape = NSFB_POINTER_PROGRESS;
++    else if (bm == &move_image)
++	shape = NSFB_POINTER_MOVE;
++    if (nsfb_cursor_set_system(nsfb, shape))
++	return true;
++
+     return nsfb_cursor_set(nsfb, (nsfb_colour_t *)bm->pixdata, bm->width, bm->height, bm->width, bm->hot_x, bm->hot_y);
+ }
+ 
