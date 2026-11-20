@@ -7,7 +7,9 @@ copyright Vincent Sanders and the NetSurf authors) under the MIT license.  Each 
 it modifies: 0002 (talloc.c) under LGPL-2.1-or-later (text in
 ../../LICENSES/LGPL-2.1-or-later.txt), 0004, 0005 (the Makefiles of nsgenbind and
 libnslog) and 0007 (libnsfb) under MIT (../../LICENSES/MIT.txt), 0011 under MIT for its libnsfb
-hunks and GPL-2.0-only for its front-end hunks, the others under GPL-2.0-only
+hunks and GPL-2.0-only for its front-end hunks, 0012 (libdom) under MIT, 0013 under
+GPL-2.0-only (dukky.c) and MIT (EventTarget.bnd; its two-line WebIDL hunk is in a copy of the
+WHATWG DOM specification's IDL), the others under GPL-2.0-only
 (../../LICENSES/GPL-2.0-only.txt); 0006 adds GPL-2.0-only files to NetSurf's JavaScript
 directory, and its three-line hunk in Duktape's duktape.h (MIT) is under MIT as well.  They
 are not part of the BSD-2-Clause license of the rest of this repository (see

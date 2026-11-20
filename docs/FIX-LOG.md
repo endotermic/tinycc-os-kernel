@@ -1762,6 +1762,26 @@ C40. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0011), libnsfb `src/sur
     matter. Verification: x86_64 QEMU: maximize button in JWM's title bar, Alt-F10 maximizes, the
     toolbar and page reflow to 1024 px; the X arrow over the page, the hand over a link (status bar
     shows its URL), the I-beam over the URL bar.
+C41. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0012, 0013), found investigating why
+    youtube.com stays blank (it needs XMLHttpRequest/fetch, Custom Elements, Shadow DOM,
+    MutationObserver, ... which NetSurf lacks, and spends ~6 s compiling its 10.9 MB app script; its
+    first error was "argument 2 (capture) requires a bool"). 0013, NetSurf's JavaScript events: the
+    WebIDL declared addEventListener/removeEventListener's third argument "optional boolean
+    capture", so the generated binding rejected options objects ({passive: true}, {once: true});
+    now "any" (the binding already read the object). event_target_register_listener and
+    _unregister_listener scanned the callback instead of the listener array and compared the wrong
+    stack slots: every addEventListener replaced the previous listener of that event, and
+    removeEventListener removed nothing. dukky_shuffle_array deleted one past the moved last element
+    (it stayed twice), the dispatch loop skipped the listener after a once listener, and an
+    element's libdom listener was registered for the phase of its first script listener only (later
+    listeners of the other phase never ran): elements now get a bubbling and a capturing libdom
+    listener, every script listener runs once at the target. 0012, libdom
+    (`_dom_node_dispatch_event`): the target was in the capture/bubble array as well as in its own
+    phase, so its listeners ran twice (the "click fires twice" noted under C37), and events with
+    bubbles = false bubbled. Not tcc matters, and the same with Duktape. Verification (host, -f
+    ram): options objects, once, removeEventListener with {capture: true}, two listeners on one
+    event, capture/target/bubble order over div and body, a non-bubbling event; the event, dynamic,
+    stress and ES test pages unchanged.
 
 ## The device drivers (2026-10-26)
 

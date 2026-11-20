@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 19:22:56 +0200
+Subject: [PATCH] events: dispatch to the target once, and bubble only bubbling
+ events
+
+_dom_node_dispatch_event put the target itself into the array of the
+capture and bubbling phases, so the target's listeners ran in those
+loops as well as in the target phase: a click on an element with a
+listener called it twice (three times for capture listeners).  The array
+now holds the target's ancestors only.  The bubbling loop also ran for
+events created with bubbles false; it now runs only for bubbling events
+(default actions are unchanged).
+---
+ libdom/src/core/node.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/libdom/src/core/node.c b/libdom/src/core/node.c
+index 1218742..9fc6a31 100644
+--- a/libdom/src/core/node.c
++++ b/libdom/src/core/node.c
+@@ -2457,8 +2457,10 @@ dom_exception _dom_node_dispatch_event(dom_event_target *et,
+ 	ntargets_allocated = 0;
+ 	ntargets = 0;
+ 
+-	/* Add interested event listeners to array */
+-	for (; target != NULL; target = target->parent) {
++	/* Add interested event listeners to array: the target's ancestors
++	 * (the target itself has its own phase, DOM_AT_TARGET; with it in
++	 * the array too its listeners ran up to three times) */
++	for (target = target->parent; target != NULL; target = target->parent) {
+ 		struct listener_entry *le = target->eti.listeners;
+ 		bool target_has_listener = false;
+ 
+@@ -2538,10 +2540,10 @@ dom_exception _dom_node_dispatch_event(dom_event_target *et,
+ 	if (evt->stop_now == true || evt->stop == true)
+ 		goto cleanup;
+ 
+-	/* Bubbling phase */
++	/* Bubbling phase (only for events that bubble) */
+ 	evt->phase = DOM_BUBBLING_PHASE;
+ 
+-	for (targetnr = 0; targetnr < ntargets; ++targetnr) {
++	for (targetnr = 0; evt->bubble && targetnr < ntargets; ++targetnr) {
+ 		dom_node_internal *node =
+ 			(dom_node_internal *) targets[targetnr];
+ 		err = _dom_event_target_dispatch(targets[targetnr],

@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 20 Nov 2026 19:22:56 +0200
+Subject: [PATCH] JavaScript: addEventListener options objects, several
+ listeners per event
+
+addEventListener/removeEventListener: the WebIDL said "optional boolean
+capture", so the generated binding rejected an options object
+({passive: true}, {once: true}, {capture: true}) with "argument 2
+(capture) requires a bool" before the binding's own code, which already
+reads them; the argument is now "any".
+
+event_target_register_listener and _unregister_listener scanned the
+callback instead of the listener array (and compared the wrong stack
+slots), so every addEventListener replaced the previous listener of the
+same event and removeEventListener removed nothing; dukky_shuffle_array
+deleted one past the moved last element, leaving it twice; the dispatch
+loop skipped the listener after a once listener; and the element's
+libdom listener was registered for the phase of the first script
+listener only, so bubbling listeners added after a capture one (or the
+other way round) never ran.  Elements now get a bubbling and a capturing
+libdom listener, and at the target every script listener runs once.
+---
+ .../handlers/javascript/WebIDL/dom.idl        |  6 ++-
+ .../javascript/duktape/EventTarget.bnd        |  8 +--
+ .../handlers/javascript/duktape/dukky.c       | 51 ++++++++++++++++---
+ 3 files changed, 51 insertions(+), 14 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/WebIDL/dom.idl b/netsurf/content/handlers/javascript/WebIDL/dom.idl
+index 1c9e75b..495bb0a 100644
+--- a/netsurf/content/handlers/javascript/WebIDL/dom.idl
++++ b/netsurf/content/handlers/javascript/WebIDL/dom.idl
+@@ -49,8 +49,10 @@ dictionary CustomEventInit : EventInit {
+ 
+ [Exposed=(Window,Worker)]
+ interface EventTarget {
+-  void addEventListener(DOMString type, EventListener? callback, optional boolean capture = false);
+-  void removeEventListener(DOMString type, EventListener? callback, optional boolean capture = false);
++  // (AddEventListenerOptions or boolean) options: the binding takes either
++  // (EventTarget.bnd); as "boolean" an options object was rejected
++  void addEventListener(DOMString type, EventListener? callback, optional any options);
++  void removeEventListener(DOMString type, EventListener? callback, optional any options);
+   boolean dispatchEvent(Event event);
+ };
+ 
+diff --git a/netsurf/content/handlers/javascript/duktape/EventTarget.bnd b/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
+index d1f9e50..02f046e 100644
+--- a/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
++++ b/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
+@@ -46,12 +46,12 @@ static void event_target_register_listener(duk_context *ctx,
+ 	 * a tuple of the callback and flags
+ 	 */
+ 	duk_uarridx_t idx = 0;
+-	while (duk_get_prop_index(ctx, -1, idx)) {
++	while (duk_get_prop_index(ctx, -2, idx)) {
+ 		/* ... listeners callback candidate */
+ 		duk_get_prop_index(ctx, -1, 0);
+ 		duk_get_prop_index(ctx, -2, 1);
+ 		/* ... listeners callback candidate candidatecallback candidateflags */
+-		if (duk_strict_equals(ctx, -1, -3) &&
++		if (duk_strict_equals(ctx, -2, -4) &&
+ 		    duk_get_int(ctx, -1) == (duk_int_t)flags) {
+ 			/* already present, nothing to do */
+ 			duk_pop_n(ctx, 5);
+@@ -90,12 +90,12 @@ static void event_target_unregister_listener(duk_context *ctx,
+ 	 * we remove it and shuffle the rest up.
+ 	 */
+ 	duk_uarridx_t idx = 0;
+-	while (duk_get_prop_index(ctx, -1, idx)) {
++	while (duk_get_prop_index(ctx, -2, idx)) {
+ 		/* ... listeners callback candidate */
+ 		duk_get_prop_index(ctx, -1, 0);
+ 		duk_get_prop_index(ctx, -2, 1);
+ 		/* ... listeners callback candidate candidatecallback candidateflags */
+-		if (duk_strict_equals(ctx, -1, -3) &&
++		if (duk_strict_equals(ctx, -2, -4) &&
+ 		    duk_get_int(ctx, -1) == (duk_int_t)flags) {
+ 			/* present */
+ 			duk_pop(ctx);
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index c0a2749..6e66c28 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -1246,11 +1246,14 @@ handle_extras:
+ 	duk_push_array(ctx);
+ 	/* ... sublisteners copy */
+ 	idx = 0;
++	{
++	duk_uarridx_t copy_idx = 0;
+ 	while (duk_get_prop_index(ctx, -2, idx)) {
+ 		/* ... sublisteners copy handler */
+ 		duk_get_prop_index(ctx, -1, 1);
+ 		/* ... sublisteners copy handler flags */
+-		if ((event_listener_flags)duk_to_int(ctx, -1) & ELF_ONCE) {
++		bool once = (event_listener_flags)duk_to_int(ctx, -1) & ELF_ONCE;
++		if (once) {
+ 			duk_dup(ctx, -4);
+ 			/* ... subl copy handler flags subl */
+ 			dukky_shuffle_array(ctx, idx);
+@@ -1259,9 +1262,12 @@ handle_extras:
+ 		}
+ 		duk_pop(ctx);
+ 		/* ... sublisteners copy handler */
+-		duk_put_prop_index(ctx, -2, idx);
++		duk_put_prop_index(ctx, -2, copy_idx++);
+ 		/* ... sublisteners copy */
+-		idx++;
++		/* a once listener was removed: the next one is now at idx */
++		if (!once)
++			idx++;
++	}
+ 	}
+ 	/* ... sublisteners copy undefined */
+ 	duk_pop(ctx);
+@@ -1285,8 +1291,10 @@ handle_extras:
+ 		flags = (event_listener_flags)duk_get_int(ctx, -1);
+ 		duk_pop(ctx);
+ 		/* ... copy handler callback */
++		/* at the target both kinds run (once: libdom calls only the
++		 * bubbling registration there, see dukky_capture_event_handler) */
+ 		if (((phase == DOM_CAPTURING_PHASE) && !(flags & ELF_CAPTURE)) ||
+-		    ((phase != DOM_CAPTURING_PHASE) && (flags & ELF_CAPTURE))) {
++		    ((phase == DOM_BUBBLING_PHASE) && (flags & ELF_CAPTURE))) {
+ 			duk_pop_2(ctx);
+ 			/* ... copy */
+ 			continue;
+@@ -1341,6 +1349,19 @@ out:
+ 	dom_string_unref(name);
+ }
+ 
++/* The capturing registration of an element's events: libdom calls it in the
++ * capturing phase, and at the target as well, where the bubbling
++ * registration (dukky_generic_event_handler) already runs every listener */
++static void dukky_capture_event_handler(dom_event *evt, void *pw)
++{
++	dom_event_flow_phase phase;
++
++	if (dom_event_get_event_phase(evt, &phase) != DOM_NO_ERR ||
++	    phase != DOM_CAPTURING_PHASE)
++		return;
++	dukky_generic_event_handler(evt, pw);
++}
++
+ void dukky_register_event_listener_for(duk_context *ctx,
+ 				       struct dom_element *ele,
+ 				       dom_string *name,
+@@ -1385,12 +1406,26 @@ void dukky_register_event_listener_for(duk_context *ctx,
+ 		return;
+ 	}
+ 
+-	/* Otherwise add an event listener to the element */
++	/* Otherwise add event listeners to the element, for the bubbling and
++	 * for the capturing phase: this registration is made once per element
++	 * and event name, whatever the capture flag of the first script
++	 * listener (which used to decide, so that later listeners of the other
++	 * kind never ran) */
++	(void)capture;
+ 	exc = dom_event_listener_create(dukky_generic_event_handler, ctx,
+ 					&listen);
+ 	if (exc != DOM_NO_ERR) return;
+ 	exc = dom_event_target_add_event_listener(
+-		ele, name, listen, capture);
++		ele, name, listen, false);
++	dom_event_listener_unref(listen);
++	if (exc == DOM_NO_ERR) {
++		exc = dom_event_listener_create(dukky_capture_event_handler,
++						ctx, &listen);
++		if (exc != DOM_NO_ERR) return;
++		exc = dom_event_target_add_event_listener(
++			ele, name, listen, true);
++		dom_event_listener_unref(listen);
++	}
+ 	if (exc != DOM_NO_ERR) {
+ 		NSLOG(dukky, DEBUG,
+ 		      "Unable to register listener for %p.%*s", ele,
+@@ -1399,7 +1434,6 @@ void dukky_register_event_listener_for(duk_context *ctx,
+ 		NSLOG(dukky, DEBUG, "have registered listener for %p.%*s",
+ 		      ele, (int)dom_string_length(name), dom_string_data(name));
+ 	}
+-	dom_event_listener_unref(listen);
+ }
+ 
+ /* The sub-listeners are a list of {callback,flags} tuples */
+@@ -1463,8 +1497,9 @@ void dukky_shuffle_array(duk_context *ctx, duk_uarridx_t idx)
+ 		idx++;
+ 	}
+ 	/* ... somearr undefined */
+-	duk_del_prop_index(ctx, -2, idx + 1);
++	/* the last element was moved down to idx - 1: remove its old place */
+ 	duk_pop(ctx);
++	duk_del_prop_index(ctx, -1, idx);
+ }
+ 
+ 

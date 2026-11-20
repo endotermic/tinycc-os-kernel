@@ -10,3 +10,5 @@ upstreamable/0008-framebuffer-show-the-page-title-in-the-window-title.patch
 features/0009-html-show-DOM-changes-made-after-layout-rebuild-the-.patch
 features/0010-html-rebuilt-box-trees-take-over-loaded-objects-refo.patch
 upstreamable/0011-libnsfb-x-framebuffer-resizable-maximizable-window-t.patch
+upstreamable/0012-events-dispatch-to-the-target-once-and-bubble-only-b.patch
+upstreamable/0013-JavaScript-addEventListener-options-objects-several-.patch
