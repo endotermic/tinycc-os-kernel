@@ -35,11 +35,15 @@ Categories:
   and the window's listeners; list indexes, HTMLCollection, fragments; request methods other
   than GET and POST in the fetch layer; libdom's mutation events of removeChild, replaceChild
   and nodeValue; CharacterData's data and editing methods; the framebuffer front end's
-  scheduler running due callbacks in time order) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
+  scheduler running due callbacks in time order; libdom's event targets initialised and
+  referenced; DOMContentLoaded and the target of events at the Window, uncaught errors in
+  listeners and promises reported, timer ids from 1, currentScript, createComment) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
   APIs written in JavaScript, with native helpers in Window.bnd; XMLHttpRequest and fetch;
-  MutationObserver, IntersectionObserver and ResizeObserver)
+  MutationObserver, IntersectionObserver and ResizeObserver; the DOM of Web Components
+  polyfills: traversal, interface objects, template content, MessageChannel, link URLs;
+  NETSURF_JS_PROBE)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

@@ -1,6 +1,6 @@
 # NetSurf: the web APIs a script-built site needs (plan, target youtube.com)
 
-Plan of 2026-11-21 (phases 0, 1, 2 and 3 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
+Plan of 2026-11-21 (phases 0 to 4 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
 nsgenbind bindings are unchanged), redraws DOM changes made after load (0009/0010) and dispatches
 events correctly (0012/0013). youtube.com still shows a blank page. This file lists what it needs,
 in the order planned. Mark a phase done here when it is committed and verified (host and guest,
@@ -305,7 +305,61 @@ The plan as written before the work:
 Done when: test pages pass (including records for script-inserted subtrees and lazy-loading images
 via IntersectionObserver).
 
-## Phase 4: Web Components (large; the decision gate of this plan)
+## Phase 4: Web Components — DONE, route A (2026-11-21)
+
+Patches upstreamable/0026 (libdom) and 0027, features/0028; FIX-LOG C50-C51. Test pages
+`dom-traversal` (30 checks), `dom-interfaces` (45), `events-window` (22), `errors` (3 expected
+uncaught errors); all 22 pages pass on the host, and dom-traversal, dom-interfaces and
+events-window in the x86_64 guest.
+
+Gate reached with route A (YouTube's own polyfills): on the live site `ytd-app` is upgraded and
+has its (ShadyDOM) shadow root, there is no uncaught script error, and the app requests
+`/youtubei/v1/player`. Nothing of the app is stamped into the document yet (no masthead, no
+`ytd-page-manager`, no video list; in one run before importNode existed the masthead appeared):
+finding out why is the first step after this phase. Native Custom Elements (route B) are not
+needed for YouTube.
+
+What the polyfills needed, in the order they failed:
+
+- `TreeWalker`, `NodeIterator`, `NodeFilter` (webapi.js; the spec's algorithms).
+- `window.Comment`/`CDATASection`/`ProcessingInstruction`, `document.createComment` (a stub),
+  constructor links on every interface prototype, the WebIDL constants on the interface objects
+  (`Node.ELEMENT_NODE` was undefined: ShadyDOM's own tree walk matched nothing), `HTMLDocument`.
+- `EventTarget.prototype` is the prototype nodes and the Window inherit (it was a separate one
+  for `new EventTarget()`): ShadyDOM copies `addEventListener` from it and calls it on the window.
+- ShadyDOM (patching mode) replaces `firstChild`, `appendChild` and friends on `Node.prototype`
+  with its logical tree, which it implements with `TreeWalker`: webapi.js takes the bindings' own
+  accessors and methods before page scripts run (kept on `Node.prototype` under a symbol, for the
+  later pages of the heap) and walks the real tree with them (selectors, traversal, serializing,
+  MutationObserver).
+- The Custom Elements polyfill upgrades parsed elements from a `DOMContentLoaded`/`load` listener
+  on the window: `DOMContentLoaded` now reaches the window, and events at the window have a target
+  (C51).
+- `template.content` (and template elements had no `HTMLTemplateElement` prototype),
+  `importNode`, `adoptNode`, `MessageChannel`, the URL members of `<a>`/`<area>`, `script.src`,
+  `document.currentScript` from the script NetSurf is running, timer ids from 1, the load and
+  error events of script elements (scripts added by a script ran, but their `onload` never
+  came), element `onerror`.
+- Crashes: event targets in libdom (C50), `classList.value` without a class attribute, text of a
+  detached node (C50).
+
+Tools: `run.sh --probe JS` (NETSURF_JS_PROBE) runs a script in every page after the web APIs, for
+looking into a live site (a timer that throws an Error carrying the state); uncaught errors in
+listeners and unhandled promise rejections are now counted (BBC: 2 left, both in a third-party
+script). `mirror.py` keeps `=` in paths (YouTube checks its script URL for `/k=`) and gives saved
+scripts and style sheets a `.js`/`.css` name: the saved copy used before served YouTube's app
+script as `application/octet-stream`, so NetSurf never ran it and the phase 1-3 YouTube numbers
+were for the polyfills only. The saved copy cannot follow the app's later module loads; YouTube is
+measured live now.
+
+Not done: `ShadowRoot`/`attachShadow` natively (ShadyDOM provides them), `HTMLSlotElement`,
+customized built-ins, `NodeIterator`'s adjustment when its reference node is removed, the parsed
+`<template>`'s children are rendered until a script reads `content`, `HTMLIFrameElement.contentWindow`
+and `document.all` (both used by YouTube, both still stubs).
+
+The plan as written before the work:
+
+### Phase 4 plan (2026-11-21)
 
 Two routes; try A first because YouTube ships it.
 

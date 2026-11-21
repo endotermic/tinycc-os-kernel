@@ -1,0 +1,1047 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 21:45:05 +0200
+Subject: [PATCH] JavaScript: web APIs for Web Components polyfills;
+ NETSURF_JS_PROBE
+
+webapi.js: TreeWalker, NodeIterator and NodeFilter; the bindings' own
+tree accessors and methods taken before page scripts run, so that
+selectors, traversal and serializing walk the real tree when a polyfill
+(ShadyDOM) replaces firstChild, appendChild and the like; EventTarget's
+prototype is the one nodes and the Window inherit; WebIDL constants on
+the interface objects and constructor links; template.content,
+importNode, adoptNode, CDATASection, HTMLDocument; MessageChannel;
+the URL members of <a> and <area>; script src/async/nonce, Event
+timeStamp, placeholder, element onerror; clearTimeout of any value;
+document.currentScript from Window.bnd's currentScript().
+NETSURF_JS_PROBE names a script run in every page after the web APIs
+(tests/netsurf/run.sh --probe), to look into real sites.
+---
+ .../handlers/javascript/duktape/Window.bnd    |  12 +
+ .../handlers/javascript/duktape/dukky.c       |  32 +
+ .../handlers/javascript/duktape/webapi.js     | 701 +++++++++++++++---
+ 3 files changed, 641 insertions(+), 104 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index df1dcb4..60fdd6d 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -788,6 +788,17 @@ static duk_ret_t native_observe_mutations(duk_context *ctx)
+ 	return 1;
+ }
+ 
++/* currentScript(): the script element running (its source is executing),
++ * or null */
++static duk_ret_t native_current_script(duk_context *ctx)
++{
++	window_private_t *w = native_window(ctx);
++	if (w == NULL || w->htmlc == NULL || w->htmlc->current_script == NULL ||
++	    !dukky_push_node(ctx, w->htmlc->current_script))
++		duk_push_null(ctx);
++	return 1;
++}
++
+ static void native_put(duk_context *ctx, const char *name,
+ 		       duk_c_function fn, duk_idx_t nargs)
+ {
+@@ -1179,6 +1190,7 @@ prototype Window()
+ 	native_put(ctx, "request", native_request, 5);
+ 	native_put(ctx, "abortRequest", native_abort_request, 1);
+ 	native_put(ctx, "observeMutations", native_observe_mutations, 2);
++	native_put(ctx, "currentScript", native_current_script, 0);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index 5477393..bf921e6 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -788,6 +788,38 @@ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **th
+ 	duk_pop(CTX);
+ 	/* ... */
+ 
++	/* A debugging aid: NETSURF_JS_PROBE names a script file run in every
++	 * page after the web APIs (tests/netsurf/run.sh --probe) */
++	{
++		const char *probe = getenv("NETSURF_JS_PROBE");
++		FILE *f = (probe != NULL && *probe != 0) ? fopen(probe, "rb") : NULL;
++		if (f != NULL) {
++			char *buf = NULL;
++			size_t len = 0, got;
++			char chunk[4096];
++			while ((got = fread(chunk, 1, sizeof chunk, f)) > 0) {
++				char *nb = realloc(buf, len + got);
++				if (nb == NULL)
++					break;
++				buf = nb;
++				memcpy(buf + len, chunk, got);
++				len += got;
++			}
++			fclose(f);
++			if (buf != NULL) {
++				duk_push_string(CTX, "probe.js");
++				if (duk_pcompile_lstring_filename(CTX, DUK_COMPILE_EVAL,
++						buf, len) != 0) {
++					dukky_dump_error(CTX);
++				} else if (dukky_pcall(CTX, 0, true) != 0) {
++					/* dukky_pcall reported it */
++				}
++				duk_pop(CTX);
++				free(buf);
++			}
++		}
++	}
++
+ 	dukky_log_stack_frame(CTX, "New thread created");
+ 	NSLOG(dukky, DEBUG, "New thread is %p in heap %p", thread, heap);
+ 	*thread = ret;
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index fed2c64..f0b4f80 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -99,6 +99,40 @@ function report(e) {
+ }
+ 
+ var ElementP = proto("Element"), NodeP = proto("Node");
++
++/* The bindings' own tree accessors and methods, taken before any page
++ * script runs and kept on Node.prototype for the later pages of this heap
++ * (prototypes are shared): polyfills such as ShadyDOM replace firstChild,
++ * appendChild and the like with their own (logical) tree, which the
++ * browser's own algorithms (selectors, TreeWalker, serializing...) must not
++ * see. */
++var NAT = (function () {
++    var key = Symbol.for("netsurf.native.node");
++    if (NodeP && own(NodeP, key)) return NodeP[key];
++    var o = {};
++    function getter(p, k) {
++        var d = p && Object.getOwnPropertyDescriptor(p, k);
++        return d && d.get;
++    }
++    ["firstChild", "lastChild", "nextSibling", "previousSibling", "parentNode"].forEach(function (k) {
++        o[k] = getter(NodeP, k);
++    });
++    ["appendChild", "insertBefore", "removeChild", "replaceChild"].forEach(function (k) {
++        var f = NodeP && NodeP[k];
++        o[k] = (f && f.nsOriginal) || f;
++    });
++    if (NodeP) Object.defineProperty(NodeP, key, { value: o });
++    return o;
++})();
++function nFirst(n) { return NAT.firstChild ? NAT.firstChild.call(n) : n.firstChild; }
++function nLast(n) { return NAT.lastChild ? NAT.lastChild.call(n) : n.lastChild; }
++function nNext(n) { return NAT.nextSibling ? NAT.nextSibling.call(n) : n.nextSibling; }
++function nPrev(n) { return NAT.previousSibling ? NAT.previousSibling.call(n) : n.previousSibling; }
++function nParent(n) { return NAT.parentNode ? NAT.parentNode.call(n) : n.parentNode; }
++function nAppend(p, c) { return NAT.appendChild.call(p, c); }
++function nInsert(p, c, ref) { return NAT.insertBefore.call(p, c, ref); }
++function nRemove(p, c) { return NAT.removeChild.call(p, c); }
++function nReplace(p, c, old) { return NAT.replaceChild.call(p, c, old); }
+ var DocumentP = proto("Document"), FragmentP = proto("DocumentFragment");
+ var CharDataP = proto("CharacterData"), HTMLElementP = proto("HTMLElement");
+ var EventP = proto("Event"), NodeListP = proto("NodeList");
+@@ -285,6 +319,17 @@ def(WindowP, "requestIdleCallback", function (cb) {
+     }, 1);
+ });
+ def(WindowP, "cancelIdleCallback", function (id) { W(this).clearTimeout(id); });
++/* clearTimeout/clearInterval take any value (the binding wanted a number):
++ * a missing or 0 id is no timer */
++["clearTimeout", "clearInterval"].forEach(function (k) {
++    wrap(WindowP, k, function (orig) {
++        return function (id) {
++            id = Number(id);
++            if (!(id > 0) || !orig) return;
++            orig.call(W(this), Math.floor(id));
++        };
++    });
++});
+ def(WindowP, "queueMicrotask", function (cb) {
+     Promise.resolve().then(function () { cb(); }).catch(report);
+ });
+@@ -404,7 +449,7 @@ G.Event = EventCtor;
+ if (!("composedPath" in NativeEventP)) {
+     def(NativeEventP, "composedPath", function () {
+         var path = [];
+-        for (var n = this.target; n; n = n.parentNode) path.push(n);
++        for (var n = this.target; n; n = nParent(n)) path.push(n);
+         if (path.length) path.push(G);
+         return path;
+     });
+@@ -557,73 +602,89 @@ function listenersOf(t) {
+ function captureOf(o) {
+     return typeof o === "boolean" ? o : !!(o && o.capture);
+ }
++/* EventTarget: constructible, and its prototype is the bindings' EventTarget
++ * prototype, which nodes and the window inherit (polyfills copy its
++ * methods from EventTarget.prototype and apply them to nodes).  Its three
++ * methods run the native code for nodes and windows and the JavaScript
++ * below for other targets (new EventTarget(), subclasses, XMLHttpRequest,
++ * AbortSignal...) */
+ function JsEventTarget() {
+-    if (!(this instanceof JsEventTarget) && !new.target)
+-        throw new TypeError("EventTarget: use new");
+-}
+-JsEventTarget.prototype = Object.create(NativeETP || Object.prototype);
+-def(JsEventTarget.prototype, "constructor", JsEventTarget);
+-def(JsEventTarget.prototype, "addEventListener", function (type, cb, opts) {
+-    if (cb === null || cb === undefined) return;
+-    var l = listenersOf(this), list = l[type] || (l[type] = []);
+-    var capture = captureOf(opts);
+-    for (var i = 0; i < list.length; i++)
+-        if (list[i].cb === cb && list[i].capture === capture) return;
+-    var entry = { cb: cb, capture: capture, once: !!(opts && opts.once) };
+-    list.push(entry);
+-    if (opts && opts.signal && typeof opts.signal.addEventListener === "function") {
++    if (!new.target) throw new TypeError("EventTarget: use new");
++}
++function nativeTarget(t) {
++    return t !== null && typeof t === "object" &&
++        (typeof t.nodeType === "number" || t.window === t);
++}
++var jsTargetMethods = {
++    addEventListener: function (type, cb, opts) {
++        if (cb === null || cb === undefined) return;
++        var l = listenersOf(this), list = l[type] || (l[type] = []);
++        var capture = captureOf(opts);
++        for (var i = 0; i < list.length; i++)
++            if (list[i].cb === cb && list[i].capture === capture) return;
++        var entry = { cb: cb, capture: capture, once: !!(opts && opts.once) };
++        list.push(entry);
++        if (opts && opts.signal && typeof opts.signal.addEventListener === "function") {
++            var self = this;
++            opts.signal.addEventListener("abort", function () {
++                self.removeEventListener(type, cb, opts);
++            });
++        }
++    },
++    removeEventListener: function (type, cb, opts) {
++        var list = listenersOf(this)[type];
++        if (!list) return;
++        var capture = captureOf(opts);
++        for (var i = 0; i < list.length; i++) {
++            if (list[i].cb === cb && list[i].capture === capture) {
++                list[i].removed = true;
++                list.splice(i, 1);
++                return;
++            }
++        }
++    },
++    dispatchEvent: function (e) {
++        var list = (listenersOf(this)[e.type] || []).slice();
+         var self = this;
+-        opts.signal.addEventListener("abort", function () {
+-            self.removeEventListener(type, cb, opts);
++        Object.defineProperty(e, "target", { value: this, configurable: true });
++        Object.defineProperty(e, "currentTarget", { value: this, configurable: true });
++        Object.defineProperty(e, "eventPhase", { value: 2, configurable: true });
++        list.forEach(function (entry) {
++            if (entry.removed) return;
++            if (entry.once) self.removeEventListener(e.type, entry.cb, entry);
++            try {
++                if (typeof entry.cb === "function") entry.cb.call(self, e);
++                else if (entry.cb && typeof entry.cb.handleEvent === "function") entry.cb.handleEvent(e);
++            } catch (x) { report(x); }
+         });
+-    }
+-});
+-def(JsEventTarget.prototype, "removeEventListener", function (type, cb, opts) {
+-    var list = listenersOf(this)[type];
+-    if (!list) return;
+-    var capture = captureOf(opts);
+-    for (var i = 0; i < list.length; i++) {
+-        if (list[i].cb === cb && list[i].capture === capture) {
+-            list[i].removed = true;
+-            list.splice(i, 1);
+-            return;
++        var h = this["on" + e.type];
++        if (typeof h === "function") {
++            try { h.call(this, e); } catch (x) { report(x); }
+         }
++        return !e.defaultPrevented;
+     }
+-});
+-def(JsEventTarget.prototype, "dispatchEvent", function (e) {
+-    var list = (listenersOf(this)[e.type] || []).slice();
+-    var self = this;
+-    Object.defineProperty(e, "target", { value: this, configurable: true });
+-    Object.defineProperty(e, "currentTarget", { value: this, configurable: true });
+-    Object.defineProperty(e, "eventPhase", { value: 2, configurable: true });
+-    list.forEach(function (entry) {
+-        if (entry.removed) return;
+-        if (entry.once) self.removeEventListener(e.type, entry.cb, entry);
+-        try {
+-            if (typeof entry.cb === "function") entry.cb.call(self, e);
+-            else if (entry.cb && typeof entry.cb.handleEvent === "function") entry.cb.handleEvent(e);
+-        } catch (x) { report(x); }
+-    });
+-    var h = this["on" + e.type];
+-    if (typeof h === "function") {
+-        try { h.call(this, e); } catch (x) { report(x); }
+-    }
+-    return !e.defaultPrevented;
+-});
++};
+ if (NativeETP) {
+-    Object.defineProperty(JsEventTarget, Symbol.hasInstance, {
+-        value: function (x) {
+-            return x !== null && typeof x === "object" && NativeETP.isPrototypeOf(x);
+-        }
++    JsEventTarget.prototype = NativeETP;
++    Object.keys(jsTargetMethods).forEach(function (k) {
++        wrap(NativeETP, k, function (orig) {
++            return function () {
++                if (nativeTarget(this) && orig) return orig.apply(this, arguments);
++                return jsTargetMethods[k].apply(this, arguments);
++            };
++        });
+     });
++} else {
++    Object.keys(jsTargetMethods).forEach(function (k) { def(JsEventTarget.prototype, k, jsTargetMethods[k]); });
+ }
++def(JsEventTarget.prototype, "constructor", JsEventTarget);
+ JsEventTarget.nsOriginal = NativeET;
+ G.EventTarget = JsEventTarget;
+ 
+ /* a non-DOM event target, given the methods of JsEventTarget */
+ function targetize(o) {
+     ["addEventListener", "removeEventListener", "dispatchEvent"].forEach(function (k) {
+-        def(o, k, JsEventTarget.prototype[k]);
++        def(o, k, jsTargetMethods[k]);
+     });
+     return o;
+ }
+@@ -707,7 +768,7 @@ nodeCtor("DocumentFragment", function () { return doc().createDocumentFragment()
+     if (optP) {
+         var Option = function Option(text, value, defaultSelected, selected) {
+             var o = doc().createElement("option");
+-            if (text !== undefined) o.appendChild(doc().createTextNode(String(text)));
++            if (text !== undefined) nAppend(o, doc().createTextNode(String(text)));
+             if (value !== undefined) o.setAttribute("value", String(value));
+             if (defaultSelected) o.setAttribute("selected", "");
+             if (selected) o.selected = true;
+@@ -1019,19 +1080,19 @@ function parseSelectorList(text) {
+ }
+ 
+ function parentElement(el) {
+-    var p = el.parentNode;
++    var p = nParent(el);
+     return (p && p.nodeType === 1) ? p : null;
+ }
+ function prevElement(el) {
+-    for (var n = el.previousSibling; n; n = n.previousSibling) if (n.nodeType === 1) return n;
++    for (var n = nPrev(el); n; n = nPrev(n)) if (n.nodeType === 1) return n;
+     return null;
+ }
+ function nextElement(el) {
+-    for (var n = el.nextSibling; n; n = n.nextSibling) if (n.nodeType === 1) return n;
++    for (var n = nNext(el); n; n = nNext(n)) if (n.nodeType === 1) return n;
+     return null;
+ }
+ function firstElement(el) {
+-    for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) return n;
++    for (var n = nFirst(el); n; n = nNext(n)) if (n.nodeType === 1) return n;
+     return null;
+ }
+ 
+@@ -1080,8 +1141,8 @@ function matchesPseudo(el, p, scope) {
+     case "is": case "where": case "matches": case "-webkit-any": case "-moz-any":
+         return matchesList(el, p.arg, scope);
+     case "has": return hasMatch(el, p.arg, scope);
+-    case "root": n = el.parentNode; return !!n && n.nodeType === 9;
+-    case "scope": return scope ? el === scope : (el.parentNode && el.parentNode.nodeType === 9);
++    case "root": n = nParent(el); return !!n && n.nodeType === 9;
++    case "scope": return scope ? el === scope : (nParent(el) && nParent(el).nodeType === 9);
+     case "first-child": return !prevElement(el);
+     case "last-child": return !nextElement(el);
+     case "only-child": return !prevElement(el) && !nextElement(el);
+@@ -1095,7 +1156,7 @@ function matchesPseudo(el, p, scope) {
+     case "nth-of-type": return nthMatch(p.arg, siblingIndex(el, false, true));
+     case "nth-last-of-type": return nthMatch(p.arg, siblingIndex(el, true, true));
+     case "empty":
+-        for (n = el.firstChild; n; n = n.nextSibling) {
++        for (n = nFirst(el); n; n = nNext(n)) {
+             if (n.nodeType === 1 || ((n.nodeType === 3 || n.nodeType === 4) && n.nodeValue !== "")) return false;
+         }
+         return true;
+@@ -1113,7 +1174,7 @@ function matchesPseudo(el, p, scope) {
+     case "placeholder-shown":
+         return attrValue(el, "placeholder") !== null && !el.value;
+     case "lang":
+-        for (n = el; n && n.nodeType === 1; n = n.parentNode) {
++        for (n = el; n && n.nodeType === 1; n = nParent(n)) {
+             var l = attrValue(n, "lang");
+             if (l !== null) {
+                 l = l.toLowerCase();
+@@ -1210,14 +1271,14 @@ function hasMatch(el, arg, scope) {
+ 
+ /* every element under root, in document order, until fn returns true */
+ function walk(root, fn) {
+-    var n = root.firstChild;
++    var n = nFirst(root);
+     while (n) {
+         if (n.nodeType === 1 && fn(n)) return true;
+-        var down = n.firstChild;
++        var down = nFirst(n);
+         if (down) { n = down; continue; }
+-        while (n && n !== root && !n.nextSibling) n = n.parentNode;
++        while (n && n !== root && !nNext(n)) n = nParent(n);
+         if (!n || n === root) return false;
+-        n = n.nextSibling;
++        n = nNext(n);
+     }
+     return false;
+ }
+@@ -1266,7 +1327,7 @@ if (ElementP) {
+     def(ElementP, "mozMatchesSelector", ElementP.matches);
+     def(ElementP, "closest", function (sel) {
+         var list = parseSelectorList(sel);
+-        for (var el = this; el && el.nodeType === 1; el = el.parentNode) {
++        for (var el = this; el && el.nodeType === 1; el = nParent(el)) {
+             if (matchesList(el, list, this)) return el;
+         }
+         return null;
+@@ -1292,7 +1353,7 @@ function byClassName(root, names) {
+ 
+ function elementChildren(node) {
+     var out = [];
+-    for (var n = node.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) out.push(n);
++    for (var n = nFirst(node); n; n = nNext(n)) if (n.nodeType === 1) out.push(n);
+     return staticList(out);
+ }
+ 
+@@ -1303,46 +1364,46 @@ function toNode(x) {
+ function nodesFrom(args) {
+     if (args.length === 1) return toNode(args[0]);
+     var f = doc().createDocumentFragment();
+-    for (var i = 0; i < args.length; i++) f.appendChild(toNode(args[i]));
++    for (var i = 0; i < args.length; i++) nAppend(f, toNode(args[i]));
+     return f;
+ }
+ function insert(parent, node, ref) {
+-    if (ref) parent.insertBefore(node, ref);
+-    else parent.appendChild(node);
++    if (ref) nInsert(parent, node, ref);
++    else nAppend(parent, node);
+ }
+ 
+ var parentNodeMethods = {
+     append: function () {
+-        if (arguments.length) this.appendChild(nodesFrom(arguments));
++        if (arguments.length) nAppend(this, nodesFrom(arguments));
+     },
+     prepend: function () {
+-        if (arguments.length) insert(this, nodesFrom(arguments), this.firstChild);
++        if (arguments.length) insert(this, nodesFrom(arguments), nFirst(this));
+     },
+     replaceChildren: function () {
+         var node = arguments.length ? nodesFrom(arguments) : null;
+-        while (this.firstChild) this.removeChild(this.firstChild);
+-        if (node) this.appendChild(node);
++        while (nFirst(this)) nRemove(this, nFirst(this));
++        if (node) nAppend(this, node);
+     }
+ };
+ var childNodeMethods = {
+     remove: function () {
+-        if (this.parentNode) this.parentNode.removeChild(this);
++        if (nParent(this)) nRemove(nParent(this), this);
+     },
+     before: function () {
+-        var p = this.parentNode;
++        var p = nParent(this);
+         if (p && arguments.length) insert(p, nodesFrom(arguments), this);
+     },
+     after: function () {
+-        var p = this.parentNode;
+-        if (p && arguments.length) insert(p, nodesFrom(arguments), this.nextSibling);
++        var p = nParent(this);
++        if (p && arguments.length) insert(p, nodesFrom(arguments), nNext(this));
+     },
+     replaceWith: function () {
+-        var p = this.parentNode;
++        var p = nParent(this);
+         if (!p) return;
+-        if (!arguments.length) { p.removeChild(this); return; }
++        if (!arguments.length) { nRemove(p, this); return; }
+         var node = nodesFrom(arguments);
+         if (node === this) return;
+-        p.replaceChild(node, this);
++        nReplace(p, node, this);
+     }
+ };
+ [DocumentP, ElementP, FragmentP].forEach(function (p) {
+@@ -1352,12 +1413,12 @@ var childNodeMethods = {
+     if (p === ElementP) return; /* the rest are native there */
+     acc(p, "firstElementChild", function () { return firstElement(this); });
+     acc(p, "lastElementChild", function () {
+-        for (var n = this.lastChild; n; n = n.previousSibling) if (n.nodeType === 1) return n;
++        for (var n = nLast(this); n; n = nPrev(n)) if (n.nodeType === 1) return n;
+         return null;
+     });
+     acc(p, "childElementCount", function () {
+         var c = 0;
+-        for (var n = this.firstChild; n; n = n.nextSibling) if (n.nodeType === 1) c++;
++        for (var n = nFirst(this); n; n = nNext(n)) if (n.nodeType === 1) c++;
+         return c;
+     });
+ });
+@@ -1372,12 +1433,12 @@ if (CharDataP) {
+ 
+ if (NodeP) {
+     acc(NodeP, "isConnected", function () {
+-        for (var n = this; n; n = n.parentNode) if (n.nodeType === 9) return true;
++        for (var n = this; n; n = nParent(n)) if (n.nodeType === 9) return true;
+         return false;
+     });
+     def(NodeP, "getRootNode", function () {
+         var n = this;
+-        while (n.parentNode) n = n.parentNode;
++        while (nParent(n)) n = nParent(n);
+         return n;
+     });
+     def(NodeP, "isSameNode", function (other) { return this === other; });
+@@ -1419,16 +1480,16 @@ if (ElementP) {
+         var t = doc().createElement("div");
+         t.innerHTML = String(html);
+         var f = doc().createDocumentFragment();
+-        while (t.firstChild) f.appendChild(t.firstChild);
++        while (nFirst(t)) nAppend(f, nFirst(t));
+         insertAdjacent(this, where, f);
+     });
+     acc(ElementP, "outerHTML", function () {
+-        return serializeNode(this, this.parentNode);
++        return serializeNode(this, nParent(this));
+     }, function (html) {
+-        var p = this.parentNode;
++        var p = nParent(this);
+         if (!p) return;
+         this.insertAdjacentHTML("afterend", html);
+-        p.removeChild(this);
++        nRemove(p, this);
+     });
+     def(ElementP, "scrollIntoView", function () {});
+     def(ElementP, "scrollTo", function () {});
+@@ -1456,7 +1517,7 @@ function escapeAttr(s) {
+ }
+ function serializeChildren(node) {
+     var out = "";
+-    for (var n = node.firstChild; n; n = n.nextSibling) out += serializeNode(n, node);
++    for (var n = nFirst(node); n; n = nNext(n)) out += serializeNode(n, node);
+     return out;
+ }
+ function serializeNode(n, parent) {
+@@ -1501,12 +1562,12 @@ if (FragmentP) {
+ }
+ 
+ function insertAdjacent(el, where, node) {
+-    var p = el.parentNode;
++    var p = nParent(el);
+     switch (String(where).toLowerCase()) {
+-    case "beforebegin": if (!p) return false; p.insertBefore(node, el); return true;
+-    case "afterbegin": insert(el, node, el.firstChild); return true;
+-    case "beforeend": el.appendChild(node); return true;
+-    case "afterend": if (!p) return false; insert(p, node, el.nextSibling); return true;
++    case "beforebegin": if (!p) return false; nInsert(p, node, el); return true;
++    case "afterbegin": insert(el, node, nFirst(el)); return true;
++    case "beforeend": nAppend(el, node); return true;
++    case "afterend": if (!p) return false; insert(p, node, nNext(el)); return true;
+     }
+     throw domError("SyntaxError", "insertAdjacent: bad position '" + where + "'");
+ }
+@@ -1751,7 +1812,7 @@ if (HTMLElementP) {
+     });
+     acc(HTMLElementP, "offsetParent", function () {
+         if (!boxOf(this)) return null;
+-        for (var n = this.parentNode; n && n.nodeType === 1; n = n.parentNode) {
++        for (var n = nParent(this); n && n.nodeType === 1; n = nParent(n)) {
+             if (n.nodeName === "BODY") return n;
+             var cs = N.style ? N.style(n) : null;
+             if (cs && cs.position && cs.position !== "static") return n;
+@@ -1912,6 +1973,7 @@ if (DocumentP) {
+     acc(DocumentP, "referrer", function () { return ""; });
+     acc(DocumentP, "domain", function () { return G.location ? G.location.hostname : ""; }, function () {});
+     acc(DocumentP, "currentScript", function () {
++        if (N.currentScript) return N.currentScript();
+         var s = this.getElementsByTagName("script");
+         return s.length ? s.item(s.length - 1) : null;
+     });
+@@ -1929,7 +1991,7 @@ if (DocumentP) {
+             var head = this.head;
+             if (!head) return;
+             el = this.createElement("title");
+-            head.appendChild(el);
++            nAppend(head, el);
+         }
+         el.textContent = String(v);
+     });
+@@ -3014,7 +3076,7 @@ function moState() {
+ }
+ 
+ function isAncestorOf(a, n) {
+-    for (n = n.parentNode; n; n = n.parentNode) if (n === a) return true;
++    for (n = nParent(n); n; n = nParent(n)) if (n === a) return true;
+     return false;
+ }
+ 
+@@ -3076,7 +3138,7 @@ function moSchedule(nested) {
+  * mutation record"); fill(record) sets the type-specific members */
+ function moQueue(type, target, name, oldValue, merge, fill) {
+     var m = moState(), interested = new Map();
+-    for (var n = target; n; n = n.parentNode) {
++    for (var n = target; n; n = nParent(n)) {
+         var regs = m.regs.get(n);
+         if (!regs) continue;
+         for (var i = 0; i < regs.length; i++) {
+@@ -3113,13 +3175,13 @@ function mutationHook(kind, target, current, related, name, prev, now, change, n
+     var m = moState(), queued = false;
+     /* handled once, at the topmost observed node */
+     if (m.hooked.size > 1) {
+-        for (var a = current.parentNode; a; a = a.parentNode)
++        for (var a = nParent(current); a; a = nParent(a))
+             if (m.hooked.has(a)) return;
+     }
+     if (kind === 1 || kind === 2) {
+-        var parent = related || target.parentNode;
++        var parent = related || nParent(target);
+         if (!parent) return;
+-        var ps = target.previousSibling, ns = target.nextSibling;
++        var ps = nPrev(target), ns = nNext(target);
+         queued = moQueue("childList", parent, null, null, function (r) {
+             (kind === 1 ? r._added : r._removed).push(target);
+             r.nextSibling = ns;
+@@ -3466,4 +3528,435 @@ G.ResizeObserver = ResizeObserver;
+ G.ResizeObserverEntry = ResizeObserverEntry;
+ G.ResizeObserverSize = ResizeObserverSize;
+ 
++
++
++
++/* ------------------------------------------------------------------ */
++/* MessageChannel and MessagePort (within the page: messages are a      */
++/* clone of the data, delivered from a 0 ms timer)                      */
++
++function MessagePort() { throw new TypeError("Illegal constructor"); }
++MessagePort.prototype = Object.create(JsEventTarget.prototype);
++def(MessagePort.prototype, "constructor", MessagePort);
++function newPort() {
++    var p = Object.create(MessagePort.prototype);
++    def(p, "_other", null);
++    def(p, "_queue", []);
++    def(p, "_started", false);
++    def(p, "_closed", false);
++    def(p, "_handler", null);
++    return p;
++}
++function portFlush(p) {
++    if (!p._started || p._closed || p._flushing) return;
++    def(p, "_flushing", true);
++    G.setTimeout(function () {
++        p._flushing = false;
++        var q = p._queue.splice(0);
++        q.forEach(function (data) {
++            if (p._closed) return;
++            var e = makeEvent("message", { data: data }, MessageEventProto(), eventTypes.MessageEvent);
++            p.dispatchEvent(e);
++        });
++    }, 0);
++}
++def(MessagePort.prototype, "postMessage", function (data) {
++    var o = this._other;
++    if (!o || this._closed || o._closed) return;
++    o._queue.push(clone(data, new Map()));
++    portFlush(o);
++});
++def(MessagePort.prototype, "start", function () {
++    this._started = true;
++    portFlush(this);
++});
++def(MessagePort.prototype, "close", function () {
++    this._closed = true;
++    if (this._other) this._other._other = null;
++});
++acc(MessagePort.prototype, "onmessage", function () { return this._handler; },
++    function (h) {
++        /* dispatchEvent calls this["on" + type] after the listeners */
++        this._handler = typeof h === "function" ? h : null;
++        if (this._handler) this.start();
++    });
++acc(MessagePort.prototype, "onmessageerror", function () { return null; }, function () {});
++function MessageChannel() {
++    if (!new.target) throw new TypeError("Constructor MessageChannel requires 'new'");
++    var a = newPort(), b = newPort();
++    a._other = b;
++    b._other = a;
++    Object.defineProperty(this, "port1", { value: a, enumerable: true });
++    Object.defineProperty(this, "port2", { value: b, enumerable: true });
++}
++G.MessageChannel = MessageChannel;
++G.MessagePort = MessagePort;
++
++/* ------------------------------------------------------------------ */
++/* Interface objects: constructor links, missing names, template       */
++
++/* WebIDL: every interface prototype has a constructor property (the
++ * bindings' prototypes had none, so x.constructor was Object) */
++[G, WindowP].forEach(function (o) {
++    if (!o) return;
++    Object.getOwnPropertyNames(o).forEach(function (name) {
++        var d = Object.getOwnPropertyDescriptor(o, name);
++        var f = d && d.value;
++        if (typeof f !== "function" || !/^[A-Z]/.test(name)) return;
++        var p = f.prototype;
++        if (p && typeof p === "object" && !own(p, "constructor")) def(p, "constructor", f);
++    });
++});
++/* WebIDL constants are on the interface object as well as on its prototype
++ * (the bindings put them on the prototype only: Node.ELEMENT_NODE was
++ * undefined); and Node's DOCUMENT_POSITION_* were missing */
++if (NodeP) {
++    var positions = { DOCUMENT_POSITION_DISCONNECTED: 1, DOCUMENT_POSITION_PRECEDING: 2,
++        DOCUMENT_POSITION_FOLLOWING: 4, DOCUMENT_POSITION_CONTAINS: 8,
++        DOCUMENT_POSITION_CONTAINED_BY: 16, DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 32 };
++    Object.keys(positions).forEach(function (k) {
++        if (!(k in NodeP)) Object.defineProperty(NodeP, k, { value: positions[k], enumerable: true });
++    });
++}
++[G, WindowP].forEach(function (o) {
++    if (!o) return;
++    Object.getOwnPropertyNames(o).forEach(function (name) {
++        var d = Object.getOwnPropertyDescriptor(o, name);
++        var f = d && d.value;
++        if (typeof f !== "function" || !/^[A-Z]/.test(name) || !f.prototype) return;
++        Object.getOwnPropertyNames(f.prototype).forEach(function (k) {
++            if (!/^[A-Z][A-Z0-9_]+$/.test(k) || own(f, k)) return;
++            var c = Object.getOwnPropertyDescriptor(f.prototype, k);
++            if (c && typeof c.value === "number")
++                Object.defineProperty(f, k, { value: c.value, enumerable: true });
++        });
++    });
++});
++if (!G.CDATASection && G.Text) {
++    G.CDATASection = function CDATASection() { throw new TypeError("Illegal constructor"); };
++    G.CDATASection.prototype = Object.create(G.Text.prototype);
++    def(G.CDATASection.prototype, "constructor", G.CDATASection);
++}
++if (!G.HTMLDocument && G.Document) G.HTMLDocument = G.Document;
++
++/* template.content: libdom parses a template's children as ordinary
++ * children; the first look at content (and every later one) moves them
++ * into the template's fragment */
++(function () {
++    var TP = proto("HTMLTemplateElement");
++    if (!TP) return;
++    var CONTENT = Symbol("netsurf.template");
++    acc(TP, "content", function () {
++        var f = this[CONTENT];
++        if (!f) {
++            f = (this.ownerDocument || doc()).createDocumentFragment();
++            Object.defineProperty(this, CONTENT, { value: f, configurable: true });
++        }
++        while (nFirst(this)) nAppend(f, nFirst(this));
++        return f;
++    });
++})();
++
++
++/* ------------------------------------------------------------------ */
++/* <a> and <area>: the URL members (HTMLHyperlinkElementUtils)         */
++
++(function () {
++    function linkURL(el) {
++        var h = el.getAttribute("href");
++        if (h === null) return null;
++        var bases = [el.ownerDocument && el.ownerDocument.baseURI, G.location && G.location.href];
++        for (var i = 0; i < bases.length; i++) {
++            if (!bases[i]) continue;
++            try { return new URLCtor(h, String(bases[i])); } catch (e) { /* the next base */ }
++        }
++        return null;
++    }
++    var parts = ["protocol", "username", "password", "host", "hostname", "port",
++                 "pathname", "search", "hash"];
++    [proto("HTMLAnchorElement"), proto("HTMLAreaElement")].forEach(function (p) {
++        if (!p) return;
++        acc(p, "href", function () {
++            var u = linkURL(this);
++            if (u) return u.href;
++            var h = this.getAttribute("href");
++            return h === null ? "" : h;
++        }, function (v) { this.setAttribute("href", String(v)); });
++        acc(p, "origin", function () {
++            var u = linkURL(this);
++            return u ? u.origin : "";
++        });
++        parts.forEach(function (k) {
++            acc(p, k, function () {
++                var u = linkURL(this);
++                return u ? u[k] : "";
++            }, function (v) {
++                var u = linkURL(this);
++                if (!u) return;
++                u[k] = v;
++                this.setAttribute("href", u.href);
++            });
++        });
++        def(p, "toString", function () { return this.href; });
++    });
++})();
++
++/* importNode / adoptNode (one document per page: a deep or shallow clone,
++ * the node taken out of its parent) */
++if (DocumentP) {
++    def(DocumentP, "importNode", function (node, deep) {
++        if (!node || typeof node.nodeType !== "number")
++            throw new TypeError("importNode: not a Node");
++        if (node.nodeType === 9) throw domError("NotSupportedError", "a document can not be imported");
++        return node.cloneNode(!!deep);
++    });
++    def(DocumentP, "adoptNode", function (node) {
++        if (!node || typeof node.nodeType !== "number")
++            throw new TypeError("adoptNode: not a Node");
++        if (node.nodeType === 9) throw domError("NotSupportedError", "a document can not be adopted");
++        var p = nParent(node);
++        if (p) nRemove(p, node);
++        return node;
++    });
++}
++/* Event.timeStamp: the time of the first look (events carry no creation
++ * time) */
++(function () {
++    var TS = Symbol("netsurf.timeStamp");
++    acc(NativeEventP, "timeStamp", function () {
++        if (!own(this, TS))
++            Object.defineProperty(this, TS, { value: G.performance ? G.performance.now() : Date.now() });
++        return this[TS];
++    });
++})();
++/* placeholder of <input> and <textarea> reflects its attribute */
++[proto("HTMLInputElement"), proto("HTMLTextAreaElement")].forEach(function (p) {
++    if (!p) return;
++    acc(p, "placeholder", function () { return this.getAttribute("placeholder") || ""; },
++        function (v) { this.setAttribute("placeholder", String(v)); });
++});
++
++/* element.onerror (the bindings have none: its WebIDL type is
++ * OnErrorEventHandler): a listener that calls the handler set */
++if (HTMLElementP) {
++    (function () {
++        var H = Symbol("netsurf.onerror");
++        acc(HTMLElementP, "onerror", function () { return this[H] || null; }, function (f) {
++            if (!own(this, H)) {
++                var el = this;
++                this.addEventListener("error", function (e) {
++                    var h = el[H];
++                    if (typeof h === "function") h.call(el, e);
++                });
++            }
++            Object.defineProperty(this, H, { value: typeof f === "function" ? f : null,
++                                             configurable: true, writable: true });
++        });
++    })();
++}
++
++/* <script>: src is the resolved URL or "" (the binding gave null without
++ * the attribute); async and nonce reflect their attributes */
++(function () {
++    var SP = proto("HTMLScriptElement");
++    if (!SP) return;
++    acc(SP, "src", function () {
++        var v = this.getAttribute("src");
++        if (v === null) return "";
++        try { return resolveURL(v); } catch (e) { return v; }
++    }, function (v) { this.setAttribute("src", String(v)); });
++    acc(SP, "async", function () { return this.hasAttribute("async"); },
++        function (v) { if (v) this.setAttribute("async", ""); else this.removeAttribute("async"); });
++    acc(SP, "nonce", function () { return this.getAttribute("nonce") || ""; },
++        function (v) { this.setAttribute("nonce", String(v)); });
++})();
++
++/* ------------------------------------------------------------------ */
++/* TreeWalker, NodeIterator, NodeFilter (the DOM spec's traversal)     */
++
++var NodeFilter = {
++    FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3,
++    SHOW_ALL: 0xFFFFFFFF, SHOW_ELEMENT: 0x1, SHOW_ATTRIBUTE: 0x2, SHOW_TEXT: 0x4,
++    SHOW_CDATA_SECTION: 0x8, SHOW_ENTITY_REFERENCE: 0x10, SHOW_ENTITY: 0x20,
++    SHOW_PROCESSING_INSTRUCTION: 0x40, SHOW_COMMENT: 0x80, SHOW_DOCUMENT: 0x100,
++    SHOW_DOCUMENT_TYPE: 0x200, SHOW_DOCUMENT_FRAGMENT: 0x400, SHOW_NOTATION: 0x800
++};
++G.NodeFilter = NodeFilter;
++
++/* the spec's "filter" a node: FILTER_ACCEPT, _REJECT or _SKIP */
++function traversalFilter(t, node) {
++    if (t._active) throw domError("InvalidStateError", "the filter is already running");
++    var bit = 1 << (node.nodeType - 1);
++    if (!((t.whatToShow >>> 0) & bit)) return 3;
++    var f = t.filter;
++    if (f === null || f === undefined) return 1;
++    t._active = true;
++    try {
++        var r = typeof f === "function" ? f.call(undefined, node) : f.acceptNode(node);
++        return Number(r) >>> 0 & 0xFFFF;
++    } finally {
++        t._active = false;
++    }
++}
++
++function TreeWalker() { throw new TypeError("Illegal constructor"); }
++function makeTraversal(P, root, what, filter) {
++    if (!root || typeof root.nodeType !== "number")
++        throw new TypeError("createTreeWalker: root is not a Node");
++    var t = Object.create(P);
++    Object.defineProperty(t, "root", { value: root, enumerable: true });
++    Object.defineProperty(t, "whatToShow", { value: what === undefined ? 0xFFFFFFFF : what >>> 0, enumerable: true });
++    Object.defineProperty(t, "filter", { value: filter === undefined ? null : filter, enumerable: true });
++    def(t, "_active", false);
++    return t;
++}
++acc(TreeWalker.prototype, "currentNode", function () { return this._current; },
++    function (n) {
++        if (!n || typeof n.nodeType !== "number") throw new TypeError("currentNode: not a Node");
++        this._current = n;
++    });
++def(TreeWalker.prototype, "parentNode", function () {
++    var n = this._current;
++    while (n && n !== this.root) {
++        n = nParent(n);
++        if (n && traversalFilter(this, n) === 1) { this._current = n; return n; }
++    }
++    return null;
++});
++function walkChildren(t, first) {
++    var n = first ? nFirst(t._current) : nLast(t._current);
++    while (n) {
++        var r = traversalFilter(t, n);
++        if (r === 1) { t._current = n; return n; }
++        if (r === 3) {
++            var c = first ? nFirst(n) : nLast(n);
++            if (c) { n = c; continue; }
++        }
++        while (n) {
++            var sib = first ? nNext(n) : nPrev(n);
++            if (sib) { n = sib; break; }
++            var p = nParent(n);
++            if (!p || p === t.root || p === t._current) return null;
++            n = p;
++        }
++    }
++    return null;
++}
++def(TreeWalker.prototype, "firstChild", function () { return walkChildren(this, true); });
++def(TreeWalker.prototype, "lastChild", function () { return walkChildren(this, false); });
++function walkSiblings(t, next) {
++    var node = t._current;
++    if (node === t.root) return null;
++    for (;;) {
++        var sib = next ? nNext(node) : nPrev(node);
++        while (sib) {
++            node = sib;
++            var r = traversalFilter(t, node);
++            if (r === 1) { t._current = node; return node; }
++            sib = next ? nFirst(node) : nLast(node);
++            if (r === 2 || !sib) sib = next ? nNext(node) : nPrev(node);
++        }
++        node = nParent(node);
++        if (!node || node === t.root) return null;
++        if (traversalFilter(t, node) === 1) return null;
++    }
++}
++def(TreeWalker.prototype, "nextSibling", function () { return walkSiblings(this, true); });
++def(TreeWalker.prototype, "previousSibling", function () { return walkSiblings(this, false); });
++def(TreeWalker.prototype, "previousNode", function () {
++    var node = this._current;
++    while (node !== this.root) {
++        var sib = nPrev(node);
++        while (sib) {
++            node = sib;
++            var r = traversalFilter(this, node);
++            while (r !== 2 && nLast(node)) {
++                node = nLast(node);
++                r = traversalFilter(this, node);
++            }
++            if (r === 1) { this._current = node; return node; }
++            sib = nPrev(node);
++        }
++        if (node === this.root || !nParent(node)) return null;
++        node = nParent(node);
++        if (traversalFilter(this, node) === 1) { this._current = node; return node; }
++    }
++    return null;
++});
++def(TreeWalker.prototype, "nextNode", function () {
++    var node = this._current, r = 1;
++    for (;;) {
++        while (r !== 2 && nFirst(node)) {
++            node = nFirst(node);
++            r = traversalFilter(this, node);
++            if (r === 1) { this._current = node; return node; }
++        }
++        var sib = null, tmp = node;
++        while (tmp) {
++            if (tmp === this.root) return null;
++            sib = nNext(tmp);
++            if (sib) break;
++            tmp = nParent(tmp);
++        }
++        if (!sib) return null;
++        node = sib;
++        r = traversalFilter(this, node);
++        if (r === 1) { this._current = node; return node; }
++    }
++});
++G.TreeWalker = TreeWalker;
++
++function NodeIterator() { throw new TypeError("Illegal constructor"); }
++acc(NodeIterator.prototype, "referenceNode", function () { return this._ref; });
++acc(NodeIterator.prototype, "pointerBeforeReferenceNode", function () { return this._before; });
++function following(n, root) {
++    if (nFirst(n)) return nFirst(n);
++    for (; n; n = nParent(n)) {
++        if (n === root) return null;
++        if (nNext(n)) return nNext(n);
++    }
++    return null;
++}
++function preceding(n, root) {
++    if (n === root) return null;
++    var p = nPrev(n);
++    if (!p) return nParent(n);
++    while (nLast(p)) p = nLast(p);
++    return p;
++}
++function iterate(it, next) {
++    var node = it._ref, before = it._before;
++    for (;;) {
++        if (next) {
++            if (!before) { node = following(node, it.root); if (!node) return null; }
++            else before = false;
++        } else {
++            if (before) { node = preceding(node, it.root); if (!node) return null; }
++            else before = true;
++        }
++        if (traversalFilter(it, node) === 1) break;
++    }
++    it._ref = node;
++    it._before = before;
++    return node;
++}
++def(NodeIterator.prototype, "nextNode", function () { return iterate(this, true); });
++def(NodeIterator.prototype, "previousNode", function () { return iterate(this, false); });
++def(NodeIterator.prototype, "detach", function () {});
++G.NodeIterator = NodeIterator;
++
++if (DocumentP) {
++    def(DocumentP, "createTreeWalker", function (root, what, filter) {
++        var t = makeTraversal(TreeWalker.prototype, root, what, filter);
++        def(t, "_current", root);
++        return t;
++    });
++    def(DocumentP, "createNodeIterator", function (root, what, filter) {
++        var t = makeTraversal(NodeIterator.prototype, root, what, filter);
++        def(t, "_ref", root);
++        def(t, "_before", true);
++        return t;
++    });
++}
++
+ })(globalThis);

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # tests/netsurf/run.sh: runs NetSurf's self-checking test pages on the host and reports.
 #
-#   tests/netsurf/run.sh [--arch x86_64|i386] [--binary PATH] [--timeout S] [--keep] [PAGE...]
+#   tests/netsurf/run.sh [--arch x86_64|i386] [--binary PATH] [--timeout S] [--keep] [--probe JS] [PAGE...]
 #
 # Each page (tests/netsurf/pages/*.html, or the PAGEs given: names there, paths or URLs)
 # is opened by the built browser (build/<arch>/netsurf/stage/usr/bin/netsurf-fb) with the
@@ -23,6 +23,9 @@
 # how a saved copy of a real site is measured (served by python3 -m http.server).
 # Pages with <meta name="test-server"> are opened from tests/netsurf/server.py, started on
 # 127.0.0.1 ports 18537 and 18538 (NETSURF_TEST_PORT sets the first).
+# --probe JS runs the script file JS in every page after NetSurf's web APIs
+# (NETSURF_JS_PROBE): a look into a real site, e.g. a setTimeout that throws an Error
+# carrying the state it found, which the URL report then lists.
 # Memory is capped with a systemd-run scope where one is available (1 GB per page).
 # Exit status: 0 when every page passed.
 set -u
@@ -32,6 +35,7 @@ arch=x86_64
 binary=
 timeout=30
 keep=0
+probe=
 pages=()
 while [ $# -gt 0 ]; do
     case $1 in
@@ -39,7 +43,8 @@ while [ $# -gt 0 ]; do
         --binary) binary=$2; shift 2 ;;
         --timeout) timeout=$2; shift 2 ;;
         --keep) keep=1; shift ;;
-        -h|--help) sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --probe) probe=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift 2 ;;
+        -h|--help) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "run.sh: unknown option $1" >&2; exit 2 ;;
         *) pages+=("$1"); shift ;;
     esac
@@ -115,7 +120,7 @@ for page in "${pages[@]}"; do
     log=$out/$name.log
     : > "$log"
     start=$(date +%s.%N)
-    NETSURFRES=$res HOME=$tmp/home NETSURF_JS_TRACE=1 \
+    NETSURFRES=$res HOME=$tmp/home NETSURF_JS_TRACE=1 NETSURF_JS_PROBE=$probe \
         "${cap[@]}" "${ssl[@]}" timeout -k 2 "$timeout" "$binary" -v -f ram "$url" > "$log" 2>&1 &
     pid=$!
     # wait for the end line (or the browser's exit), then stop it

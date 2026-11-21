@@ -33,9 +33,9 @@ class Refs(html.parser.HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
         if tag == "script" and a.get("src"):
-            self.refs.append(a["src"])
+            self.refs.append((a["src"], ".js"))
         elif tag == "link" and a.get("href") and "stylesheet" in (a.get("rel") or "").lower():
-            self.refs.append(a["href"])
+            self.refs.append((a["href"], ".css"))
 
 
 def fetch(url, ua):
@@ -44,12 +44,17 @@ def fetch(url, ua):
         return r.read()
 
 
-def local_name(url):
+def local_name(url, ext):
+    """the file name of a saved URL; it ends in ext (.js, .css), so that
+    python3 -m http.server sends a type the browser accepts as a script or a
+    style sheet (YouTube's app script has no extension)"""
     p = urllib.parse.urlsplit(url)
     path = p.netloc + p.path
     if p.query:
         path += "_" + re.sub(r"[^A-Za-z0-9._-]", "_", p.query)[:80]
-    return re.sub(r"[^A-Za-z0-9._/-]", "_", path).strip("/")
+    # "=" stays: YouTube checks its script URL for "/k=" (its module paths)
+    name = re.sub(r"[^A-Za-z0-9._/=-]", "_", path).strip("/")
+    return name if name.endswith(ext) else name + ext
 
 
 def main():
@@ -67,11 +72,11 @@ def main():
     parser = Refs()
     parser.feed(page)
     done = {}
-    for ref in parser.refs:
+    for ref, ext in parser.refs:
         absolute = urllib.parse.urljoin(url, html.unescape(ref))
         if absolute in done or not absolute.startswith("http"):
             continue
-        name = local_name(absolute)
+        name = local_name(absolute, ext)
         dest = os.path.join(out, name)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         try:
@@ -83,7 +88,7 @@ def main():
             f.write(data)
         done[absolute] = "http://127.0.0.1:%s/%s" % (port, name)
         print("%9d %s" % (len(data), name))
-    for ref in set(parser.refs):
+    for ref, _ in set(parser.refs):
         absolute = urllib.parse.urljoin(url, html.unescape(ref))
         if absolute in done:
             for spelling in (ref, html.escape(ref)):

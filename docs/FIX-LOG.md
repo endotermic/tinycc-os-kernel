@@ -1848,6 +1848,30 @@ C49. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0025), found by observe
     built here). Verification: timers.html (new check "0 ms timeouts in order", failed before:
     "c,b,a"), observe-mutation.html in the guest.
 
+C50. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0026), found running YouTube (phase 4 of
+    docs/NETSURF-JS.md; a crash right after DOMContentLoaded, backtrace from a dev binary linked
+    with tcc -g, which keeps the symbol table): libdom's _dom_event_initialise never set an event's
+    target and current target, and dispatch stored them as plain pointers. event.target of an event
+    a script made and dispatched at the Window read garbage (a jump into the heap), and an event
+    kept after its node was freed pointed at freed memory. Both start as NULL and hold a node
+    reference now. Same patch: changing the data of a text node without a parent dispatched
+    DOMSubtreeModified at NULL (textContent or data of a detached text node crashed).
+    Verification: events-window.html, observe-mutation.html (new checks; the old build crashed).
+
+C51. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0027), found by YouTube's Web Components
+    polyfill (phase 4): DOMContentLoaded never reached the Window's listeners (fired at the
+    Document only, and libdom's tree ends there), events at the Window had no target (the polyfill's
+    listener wrappers dropped load), document.currentScript was approximated by the last <script>
+    of the document (BBC's chunk loader read another script's src), errors thrown in event listeners
+    were logged at DEBUG level only and promises rejected without a handler were dropped by the
+    QuickJS layer (the BBC page had 45 such rejections, all from the currentScript error),
+    timer handles started at 0 so clearTimeout(0) cancelled the first timer, script elements
+    never got their load or error event (a loader waiting for onload stalled), and
+    classList.value of an element without a class attribute read a NULL dom_string (a crash).
+    All fixed; createComment and createProcessingInstruction implemented, template elements get
+    HTMLTemplateElement's prototype, doctypes DocumentType's. Verification: events-window.html,
+    errors.html (3 expected uncaught errors), timers.html, dom-interfaces.html.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

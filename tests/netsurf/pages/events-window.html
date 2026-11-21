@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>events-window</title><script src="harness.js"></script>
+<script>
+// events at the Window: DOMContentLoaded bubbles to it, load has the Document as its
+// target, EventTarget.prototype's methods work on nodes and the Window, script events
+// dispatched at the Window have it as target; MessageChannel
+var order = [], dclTarget = null, loadTarget = null, loadCurrent = null;
+window.addEventListener("DOMContentLoaded", function (e) { order.push("window-DCL"); dclTarget = e.target; });
+document.addEventListener("DOMContentLoaded", function () { order.push("document-DCL"); });
+window.addEventListener("load", function (e) { order.push("load"); loadTarget = e.target; loadCurrent = e.currentTarget; });
+</script></head><body>
+<div id="host"></div>
+<script>
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+    await sleep(100);
+    T.eq("DOMContentLoaded: document, then window, then load", order.join(","), "document-DCL,window-DCL,load");
+    T.eq("window DOMContentLoaded target", dclTarget, document);
+    T.eq("load target is the document", loadTarget, document);
+    T.eq("load currentTarget is the window", loadCurrent, window);
+
+    // EventTarget.prototype is what nodes and the window inherit
+    T.ok("node inherits EventTarget.prototype", EventTarget.prototype.isPrototypeOf(document.body));
+    T.ok("window instanceof EventTarget", window instanceof EventTarget);
+    let n = 0;
+    const host = document.getElementById("host");
+    EventTarget.prototype.addEventListener.call(host, "ping", () => n++);
+    host.dispatchEvent(new Event("ping"));
+    EventTarget.prototype.dispatchEvent.call(host, new Event("ping"));
+    T.eq("EventTarget.prototype methods on a node", n, 2);
+    const saved = Object.getOwnPropertyDescriptor(EventTarget.prototype, "addEventListener").value;
+    let w = 0;
+    saved.call(window, "wping", () => w++);
+    window.dispatchEvent(new Event("wping"));
+    T.eq("saved addEventListener on the window", w, 1);
+
+    // a script event at the window: target and currentTarget are the window
+    let tgt = null, cur = null;
+    window.addEventListener("custom", e => { tgt = e.target; cur = e.currentTarget; });
+    window.dispatchEvent(new CustomEvent("custom", { detail: 1 }));
+    T.eq("window event target", tgt, window);
+    T.eq("window event currentTarget", cur, window);
+
+    // new EventTarget and subclasses
+    class Bus extends EventTarget {}
+    const bus = new Bus();
+    let got = null;
+    bus.addEventListener("msg", e => { got = e.target; });
+    bus.dispatchEvent(new Event("msg"));
+    T.eq("EventTarget subclass", got, bus);
+    T.ok("subclass instance", bus instanceof EventTarget && bus instanceof Bus);
+
+    // an event kept after its target is gone (it read freed memory)
+    let kept = null;
+    const tmp = document.createElement("span");
+    host.appendChild(tmp);
+    tmp.addEventListener("x", e => { kept = e; });
+    tmp.dispatchEvent(new Event("x"));
+    tmp.remove();
+    for (let i = 0; i < 50; i++) host.appendChild(document.createElement("i")).remove();
+    T.eq("kept event's target", kept && kept.target, tmp);
+    const fresh = new Event("never");
+    T.eq("target of an event never dispatched", fresh.target, null);
+
+    // load and error events of scripts added by a script
+    const loaded = [];
+    const ok = document.createElement("script");
+    ok.src = "script-ok.js";
+    ok.onload = () => loaded.push("onload");
+    ok.addEventListener("load", () => loaded.push("listener"));
+    document.head.appendChild(ok);
+    const bad = document.createElement("script");
+    bad.src = "no-such-file.js";
+    bad.onerror = () => loaded.push("onerror");
+    document.head.appendChild(bad);
+    await sleep(300);
+    T.eq("script load and error events", loaded.sort().join(","), "listener,onerror,onload");
+    T.ok("the added script ran", window.scriptOkRan === true);
+
+    // MessageChannel
+    const ch = new MessageChannel(), msgs = [];
+    ch.port2.onmessage = e => msgs.push(e.data);
+    ch.port1.postMessage({ a: 1 });
+    ch.port1.postMessage("two");
+    T.eq("postMessage is asynchronous", msgs.length, 0);
+    await sleep(20);
+    T.eq("messages in order", JSON.stringify(msgs), '[{"a":1},"two"]');
+    const ch2 = new MessageChannel(), m2 = [];
+    ch2.port1.addEventListener("message", e => m2.push(e.data));
+    ch2.port2.postMessage(1);
+    await sleep(20);
+    T.eq("addEventListener needs start()", m2.length, 0);
+    ch2.port1.start();
+    await sleep(20);
+    T.eq("start() delivers the queue", m2.join(), "1");
+    ch2.port1.close();
+    ch2.port2.postMessage(2);
+    await sleep(20);
+    T.eq("close() stops delivery", m2.join(), "1");
+    T.ok("MessagePort instance", ch.port1 instanceof MessagePort);
+    T.done();
+})();
+</script></body></html>

@@ -24,3 +24,6 @@ upstreamable/0022-libdom-mutation-events-of-removeChild-once-of-replac.patch
 upstreamable/0023-JavaScript-CharacterData-data-length-and-editing-met.patch
 features/0024-JavaScript-MutationObserver-IntersectionObserver-and.patch
 upstreamable/0025-framebuffer-run-due-callbacks-in-time-order.patch
+upstreamable/0026-libdom-event-targets-set-and-referenced-no-DOMSubtre.patch
+upstreamable/0027-JavaScript-Window-events-uncaught-errors-timer-ids-a.patch
+features/0028-JavaScript-web-APIs-for-Web-Components-polyfills-NET.patch

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>dom-traversal</title><script src="harness.js"></script></head><body>
+<div id="root"><p id="p1">one<b id="b1">bold</b></p><!--c1--><p id="p2"><i id="i1">it</i></p>text<span id="s1"></span></div>
+<script>
+// TreeWalker, NodeIterator and NodeFilter; they walk the real tree even when a script
+// (a polyfill such as ShadyDOM) replaces Node.prototype's accessors
+const root = document.getElementById("root");
+const name = n => n ? (n.id || (n.nodeType === 3 ? "#" + n.data : n.nodeType === 8 ? "!" + n.data : n.nodeName)) : "null";
+const all = (w, step) => { const out = []; let n; while ((n = w[step]())) out.push(name(n)); return out.join(","); };
+
+T.eq("NodeFilter.SHOW_ALL", NodeFilter.SHOW_ALL, 0xFFFFFFFF);
+T.eq("NodeFilter.SHOW_ELEMENT", NodeFilter.SHOW_ELEMENT, 1);
+T.eq("NodeFilter.FILTER_SKIP", NodeFilter.FILTER_SKIP, 3);
+
+let w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+T.eq("root and currentNode", w.root === root && w.currentNode === root, true);
+T.eq("whatToShow kept", w.whatToShow, 1);
+T.eq("nextNode over elements", all(w, "nextNode"), "p1,b1,p2,i1,s1");
+T.eq("previousNode back", all(w, "previousNode"), "i1,p2,b1,p1,root");
+
+w = document.createTreeWalker(root, NodeFilter.SHOW_ALL);
+T.eq("SHOW_ALL", all(w, "nextNode"), "p1,#one,b1,#bold,!c1,p2,i1,#it,#text,s1");
+w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_COMMENT);
+T.eq("SHOW_TEXT | SHOW_COMMENT", all(w, "nextNode"), "#one,#bold,!c1,#it,#text");
+
+w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+T.eq("firstChild", name(w.firstChild()), "p1");
+T.eq("nextSibling", name(w.nextSibling()), "p2");
+T.eq("lastChild", name(w.lastChild()), "i1");
+T.eq("parentNode", name(w.parentNode()), "p2");
+T.eq("previousSibling", name(w.previousSibling()), "p1");
+T.eq("parentNode stops at root", name(w.parentNode()) + "," + name(w.parentNode()), "root,null");
+
+// a filter: function or object, SKIP keeps the children, REJECT drops them
+w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT,
+    n => n.localName === "p" ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+T.eq("FILTER_SKIP", all(w, "nextNode"), "b1,i1,s1");
+w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT,
+    { acceptNode: n => n.localName === "p" ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+T.eq("FILTER_REJECT (object filter)", all(w, "nextNode"), "s1");
+w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT,
+    n => n.localName === "p" ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT);
+T.eq("firstChild through a skipped node", name(w.firstChild()), "b1");
+w.currentNode = document.getElementById("b1");
+T.eq("currentNode settable", name(w.nextNode()), "i1");
+
+// NodeIterator
+const it = document.createNodeIterator(root, NodeFilter.SHOW_ELEMENT);
+T.eq("NodeIterator nextNode includes the root", all(it, "nextNode"), "root,p1,b1,p2,i1,s1");
+T.eq("NodeIterator previousNode", all(it, "previousNode"), "s1,i1,p2,b1,p1,root");
+T.eq("referenceNode", name(it.referenceNode), "root");
+T.eq("pointerBeforeReferenceNode", it.pointerBeforeReferenceNode, true);
+T.ok("instances", w instanceof TreeWalker && it instanceof NodeIterator);
+
+// a filter that walks again: InvalidStateError
+let inner = "none";
+const rw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, () => {
+    try { rw.nextNode(); } catch (e) { inner = e.name; }
+    return NodeFilter.FILTER_ACCEPT;
+});
+rw.nextNode();
+T.eq("recursive filter", inner, "InvalidStateError");
+
+// the real tree, whatever a script did to Node.prototype
+const desc = {};
+["firstChild", "nextSibling", "parentNode", "lastChild", "previousSibling"].forEach(k => {
+    desc[k] = Object.getOwnPropertyDescriptor(Node.prototype, k);
+    Object.defineProperty(Node.prototype, k, { get() { return null; }, configurable: true });
+});
+const before = document.body.firstChild;
+w = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+const walked = all(w, "nextNode");
+const found = document.querySelector("#i1"), byClass = document.querySelectorAll("p").length;
+Object.keys(desc).forEach(k => Object.defineProperty(Node.prototype, k, desc[k]));
+T.eq("patched accessor seen by scripts", before, null);
+T.eq("TreeWalker ignores patched accessors", walked, "p1,b1,p2,i1,s1");
+T.eq("querySelector ignores patched accessors", found && found.id, "i1");
+T.eq("querySelectorAll ignores patched accessors", byClass, 2);
+T.eq("accessors restored", name(document.getElementById("p1").firstChild), "#one");
+T.done();
+</script></body></html>

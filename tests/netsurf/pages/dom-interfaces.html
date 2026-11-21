@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>dom-interfaces</title><script src="harness.js"></script></head><body>
+<template id="tpl"><p class="in">inside</p><b>two</b></template>
+<a id="link" href="/path/page.html?q=1#frag">link</a>
+<div id="noclass"></div>
+<script id="first">var firstCurrent = document.currentScript;</script>
+<script id="second">var secondCurrent = document.currentScript;</script>
+<script>
+// interface objects, constants, template.content, comments, link URL members,
+// the class list of an element without a class attribute
+const thrown = f => { try { f(); return "none"; } catch (e) { return e.name; } };
+
+// constants on the interface object and on instances
+T.eq("Node.ELEMENT_NODE", Node.ELEMENT_NODE, 1);
+T.eq("Node.TEXT_NODE", Node.TEXT_NODE, 3);
+T.eq("element.ELEMENT_NODE", document.body.ELEMENT_NODE, 1);
+T.eq("Node.DOCUMENT_POSITION_CONTAINED_BY", Node.DOCUMENT_POSITION_CONTAINED_BY, 16);
+T.eq("Event.AT_TARGET", Event.AT_TARGET, 2);
+
+// constructor links
+T.eq("Element.prototype.constructor", Element.prototype.constructor, Element);
+T.eq("HTMLElement.prototype.constructor", HTMLElement.prototype.constructor, HTMLElement);
+T.eq("text node constructor", document.createTextNode("x").constructor, Text);
+T.ok("HTMLDocument", typeof HTMLDocument === "function" && document instanceof HTMLDocument);
+T.ok("CDATASection", typeof CDATASection === "function" && CDATASection.prototype instanceof Text);
+
+// comments, processing instructions, the doctype
+const c = document.createComment("note");
+T.eq("createComment", c.nodeType + ":" + c.data, "8:note");
+T.ok("Comment instance", c instanceof Comment);
+document.body.appendChild(c);
+T.eq("comment in the tree", document.body.lastChild, c);
+c.remove();
+const pi = document.createProcessingInstruction("xml-stylesheet", "href='a.css'");
+T.eq("createProcessingInstruction", pi && pi.nodeType, 7);
+T.ok("doctype is a DocumentType", document.doctype ? document.doctype instanceof DocumentType : document.firstChild instanceof DocumentType);
+
+// template.content
+const tpl = document.getElementById("tpl");
+T.ok("template element interface", tpl instanceof HTMLTemplateElement);
+T.ok("content is a fragment", tpl.content instanceof DocumentFragment);
+T.eq("content holds the children", tpl.content.childNodes.length, 2);
+T.eq("the template itself has none", tpl.childNodes.length, 0);
+T.eq("same fragment each time", tpl.content, tpl.content);
+T.eq("cloning the content", document.importNode ? tpl.content.cloneNode(true).firstChild.className : tpl.content.cloneNode(true).firstChild.className, "in");
+const imported = document.importNode(tpl.content, true);
+T.eq("importNode of a template's content", imported.nodeType + ":" + imported.childNodes.length, "11:2");
+T.ok("importNode copies", imported.firstChild !== tpl.content.firstChild);
+const moved = document.createElement("i");
+document.body.appendChild(moved);
+T.eq("adoptNode takes the node out", document.adoptNode(moved) === moved && moved.parentNode, null);
+const made = document.createElement("template");
+made.innerHTML = "<i>x</i><i>y</i>";
+T.eq("createElement('template') content", made.content.childNodes.length, 2);
+
+// <a>: the URL members
+const a = document.getElementById("link");
+const base = location.href;
+T.eq("href resolved", a.href, new URL("/path/page.html?q=1#frag", base).href);
+T.eq("pathname", a.pathname, "/path/page.html");
+T.eq("search", a.search, "?q=1");
+T.eq("hash", a.hash, "#frag");
+T.eq("protocol", a.protocol, new URL(base).protocol);
+a.hash = "other";
+T.eq("setting hash changes href", a.getAttribute("href").endsWith("#other"), true);
+a.href = "http://example.com:8080/x?y#z";
+T.eq("host", a.host, "example.com:8080");
+T.eq("hostname and port", a.hostname + " " + a.port, "example.com 8080");
+T.eq("origin", a.origin, "http://example.com:8080");
+a.pathname = "/new";
+T.eq("setting pathname", a.href, "http://example.com:8080/new?y#z");
+T.eq("String(a)", String(a), "http://example.com:8080/new?y#z");
+const bare = document.createElement("a");
+T.eq("no href", bare.href + "|" + bare.pathname, "|");
+
+// <script>: src resolved or "", async and nonce
+const sc = document.createElement("script");
+T.eq("script.src without the attribute", sc.src, "");
+sc.setAttribute("src", "lib/x.js");
+T.eq("script.src resolved", sc.src, new URL("lib/x.js", location.href).href);
+sc.async = true; sc.nonce = "n1";
+T.eq("script.async and nonce", sc.hasAttribute("async") + " " + sc.getAttribute("nonce"), "true n1");
+
+// document.currentScript: the script element running, null outside
+T.eq("currentScript of the first script", firstCurrent && firstCurrent.id, "first");
+T.eq("currentScript of the second", secondCurrent && secondCurrent.id, "second");
+let inTimer = "unset";
+setTimeout(() => { inTimer = document.currentScript; }, 0);
+
+// class list of an element without class: value is "" (it crashed)
+const nc = document.getElementById("noclass");
+T.eq("classList.value without class", nc.classList.value, "");
+nc.classList.add("k");
+T.eq("classList.value after add", nc.classList.value, "k");
+setTimeout(() => {
+    T.eq("currentScript in a timer", inTimer, null);
+    T.done();
+}, 50);
+</script></body></html>

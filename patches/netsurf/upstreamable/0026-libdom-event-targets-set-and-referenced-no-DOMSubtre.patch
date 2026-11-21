@@ -1,0 +1,140 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 21:45:05 +0200
+Subject: [PATCH] libdom: event targets set and referenced; no
+ DOMSubtreeModified at no parent
+
+An event's target and current target were left uninitialised until a
+dispatch and were plain pointers afterwards: reading event.target of an
+event a script made and dispatched at the Window read garbage, and an
+event kept after its target node was freed pointed at freed memory
+(both crashed).  They start as NULL now and hold a node reference.
+Changing the data of a text node without a parent dispatched
+DOMSubtreeModified at NULL, which crashed (textContent or data of a
+detached text node).
+---
+ libdom/src/core/node.c           |  4 ++--
+ libdom/src/events/dispatch.c     |  6 ++++++
+ libdom/src/events/event.c        | 26 ++++++++++++++++++++++++++
+ libdom/src/events/event.h        |  4 ++++
+ libdom/src/events/event_target.c |  2 +-
+ 5 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/libdom/src/core/node.c b/libdom/src/core/node.c
+index f4cafdc..b07de1d 100644
+--- a/libdom/src/core/node.c
++++ b/libdom/src/core/node.c
+@@ -2533,7 +2533,7 @@ dom_exception _dom_node_dispatch_event(dom_event_target *et,
+ 	}
+ 
+ 	/* Fill the target of the event */
+-	evt->target = et;
++	_dom_event_set_target(evt, et);
+ 	evt->phase = DOM_CAPTURING_PHASE;
+ 
+ 	/* The started callback of default action */
+@@ -2566,7 +2566,7 @@ dom_exception _dom_node_dispatch_event(dom_event_target *et,
+ 
+ 	/* Target phase */
+ 	evt->phase = DOM_AT_TARGET;
+-	evt->current = et;
++	_dom_event_set_current(evt, et);
+ 	err = _dom_event_target_dispatch(et, &((dom_node_internal *) et)->eti,
+ 			evt, DOM_AT_TARGET, success);
+ 	if (err != DOM_NO_ERR) {
+diff --git a/libdom/src/events/dispatch.c b/libdom/src/events/dispatch.c
+index a8b8ad7..63bb317 100644
+--- a/libdom/src/events/dispatch.c
++++ b/libdom/src/events/dispatch.c
+@@ -208,6 +208,12 @@ dom_exception __dom_dispatch_subtree_modified_event(dom_document *doc,
+ 	dom_string *type = NULL;
+ 	dom_exception err;
+ 
++	/* a change to a node without a parent (character data of a detached
++	 * text node) has no subtree to report it to; it was dispatched at
++	 * NULL */
++	if (et == NULL)
++		return DOM_NO_ERR;
++
+ 	err = _dom_mutation_event_create(&evt);
+ 	if (err != DOM_NO_ERR)
+ 		return err;
+diff --git a/libdom/src/events/event.c b/libdom/src/events/event.c
+index 26b245e..0ad5577 100644
+--- a/libdom/src/events/event.c
++++ b/libdom/src/events/event.c
+@@ -54,6 +54,12 @@ dom_exception _dom_event_initialise(dom_event *evt)
+ 
+ 	evt->namespace = NULL;
+ 
++	/* the targets were left uninitialised until a dispatch: an event
++	 * created by a script and never dispatched by libdom read a garbage
++	 * pointer as its target */
++	evt->target = NULL;
++	evt->current = NULL;
++
+ 	evt->refcnt = 1;
+ 	evt->in_dispatch = false;
+ 	evt->is_initialised = false;
+@@ -62,6 +68,24 @@ dom_exception _dom_event_initialise(dom_event *evt)
+ 	return DOM_NO_ERR;
+ }
+ 
++/* The target and the current target hold a reference on their node: a
++ * script may keep the event after the dispatch and after the node is gone */
++void _dom_event_set_target(dom_event *evt, dom_event_target *et)
++{
++	dom_node_ref(et);
++	if (evt->target != NULL)
++		dom_node_unref(evt->target);
++	evt->target = et;
++}
++
++void _dom_event_set_current(dom_event *evt, dom_event_target *et)
++{
++	dom_node_ref(et);
++	if (evt->current != NULL)
++		dom_node_unref(evt->current);
++	evt->current = et;
++}
++
+ /* Finalise function */
+ void _dom_event_finalise(dom_event *evt)
+ {
+@@ -69,6 +93,8 @@ void _dom_event_finalise(dom_event *evt)
+ 		dom_string_unref(evt->type);
+ 	if (evt->namespace != NULL)
+ 		dom_string_unref(evt->namespace);
++	_dom_event_set_target(evt, NULL);
++	_dom_event_set_current(evt, NULL);
+ 	
+ 	evt->stop = false;
+ 	evt->stop_now = false;
+diff --git a/libdom/src/events/event.h b/libdom/src/events/event.h
+index 7cada7b..c647c21 100644
+--- a/libdom/src/events/event.h
++++ b/libdom/src/events/event.h
+@@ -61,6 +61,10 @@ dom_exception _dom_event_initialise(dom_event *evt);
+ /* Finalise function */
+ void _dom_event_finalise(dom_event *evt);
+ 
++/* Set the target or the current target (each holds a node reference) */
++void _dom_event_set_target(dom_event *evt, dom_event_target *et);
++void _dom_event_set_current(dom_event *evt, dom_event_target *et);
++
+ 
+ static inline void dom_event_destroy(dom_event *evt)
+ {
+diff --git a/libdom/src/events/event_target.c b/libdom/src/events/event_target.c
+index 4592fee..3a2e2f3 100644
+--- a/libdom/src/events/event_target.c
++++ b/libdom/src/events/event_target.c
+@@ -221,7 +221,7 @@ dom_exception _dom_event_target_dispatch(dom_event_target *et,
+ 	if (eti->listeners != NULL) {
+ 		struct listener_entry *le = eti->listeners;
+ 
+-		evt->current = et;
++		_dom_event_set_current(evt, et);
+ 
+ 		do {
+ 			if (dom_string_isequal(le->type, evt->type)) {

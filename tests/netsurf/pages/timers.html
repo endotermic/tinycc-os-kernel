@@ -5,6 +5,11 @@
 // setTimeout ordering (also of timeouts due together), setInterval with clearInterval, clearTimeout, await on a timer
 const log = [];
 const zero = [];
+// a timer id is never 0: clearTimeout(0) and clearTimeout(undefined) mean "no timer"
+let first = "no";
+const firstId = setTimeout(() => { first = "ran"; }, 10);
+clearTimeout(0);
+clearTimeout(undefined);
 // timeouts due at the same time run in the order they were set
 setTimeout(() => zero.push("a"), 0);
 setTimeout(() => zero.push("b"), 0);
@@ -24,6 +29,8 @@ setTimeout(() => {
     T.eq("timer order", log.join(","), "args xy,t20,await40,t60");
     T.eq("interval ran 3 times", n, 3);
     T.eq("0 ms timeouts in order", zero.join(","), "a,b,c");
+    T.ok("timer ids are not 0", firstId > 0, "got " + firstId);
+    T.eq("clearTimeout(0) and (undefined) cancel nothing", first, "ran");
     T.done();
 }, 300);
 </script></body></html>

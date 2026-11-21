@@ -1,0 +1,666 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 21:45:05 +0200
+Subject: [PATCH] JavaScript: Window events, uncaught errors, timer ids and
+ binding fixes
+
+- DOMContentLoaded reaches the Window's listeners (it bubbles there from
+  the Document); events NetSurf dispatches at the Window have the
+  Window as currentTarget and, without a libdom target, as target; the
+  target of load and DOMContentLoaded at the Window is the Document.
+- Errors thrown in event listeners were logged at DEBUG level and
+  promises rejected without a handler were dropped by the QuickJS
+  layer; both are reported as uncaught errors now.
+- Timer handles start at 1: clearTimeout(0) cancelled the first timer.
+- The running script element is recorded (html_script.node,
+  current_script) for document.currentScript; external scripts' elements
+  get the load event after running and the error event when the fetch
+  fails (script loaders wait for them).
+- createComment and createProcessingInstruction; template elements
+  get HTMLTemplateElement's prototype, doctypes DocumentType's, CDATA
+  sections Text's; classList.value of an element without class read a
+  NULL string.
+---
+ netsurf/content/handlers/html/html.c          |   3 +
+ netsurf/content/handlers/html/html.h          |   2 +
+ netsurf/content/handlers/html/private.h       |   2 +
+ netsurf/content/handlers/html/script.c        |  61 ++++++++--
+ .../duktape/DOMSettableTokenList.bnd          |   6 +
+ .../handlers/javascript/duktape/Document.bnd  |  44 +++++++
+ .../handlers/javascript/duktape/Window.bnd    |   6 +-
+ .../handlers/javascript/duktape/duk_quickjs.c |  83 ++++++++++++++
+ .../handlers/javascript/duktape/duk_quickjs.h |   4 +
+ .../handlers/javascript/duktape/dukky.c       | 107 ++++++++++++++++--
+ netsurf/utils/corestringlist.h                |   1 +
+ 11 files changed, 300 insertions(+), 19 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index 0c0927d..b7be015 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -907,6 +907,9 @@ html_begin_conversion(html_content *htmlc)
+ 					true, false);
+ 			dom_string_unref(dcl);
+ 		}
++		/* and its bubbling on to the Window */
++		js_fire_event(htmlc->jsthread, "DOMContentLoaded",
++			      htmlc->document, NULL);
+ 	}
+ 
+ 	/* get encoding */
+diff --git a/netsurf/content/handlers/html/html.h b/netsurf/content/handlers/html/html.h
+index 8d1c779..91256a0 100644
+--- a/netsurf/content/handlers/html/html.h
++++ b/netsurf/content/handlers/html/html.h
+@@ -84,6 +84,8 @@ struct html_script {
+ 	bool ready_exec;
+ 	bool async;
+ 	bool defer;
++	/** The script element (referenced): document.currentScript */
++	struct dom_node *node;
+ };
+ 
+ 
+diff --git a/netsurf/content/handlers/html/private.h b/netsurf/content/handlers/html/private.h
+index cc6bdc8..a7306a7 100644
+--- a/netsurf/content/handlers/html/private.h
++++ b/netsurf/content/handlers/html/private.h
+@@ -162,6 +162,8 @@ typedef struct html_content {
+ 	struct html_script *scripts;
+ 	/** javascript thread in use */
+ 	struct jsthread *jsthread;
++	/** The script element running (document.currentScript), or NULL */
++	struct dom_node *current_script;
+ 
+ 	/** Number of entries in stylesheet_content. */
+ 	unsigned int stylesheet_count;
+diff --git a/netsurf/content/handlers/html/script.c b/netsurf/content/handlers/html/script.c
+index 962386d..2f2723f 100644
+--- a/netsurf/content/handlers/html/script.c
++++ b/netsurf/content/handlers/html/script.c
+@@ -55,6 +55,31 @@ static script_handler_t *select_script_handler(content_type ctype)
+ }
+ 
+ 
++/* run a script with its element as document.currentScript */
++static void run_script(html_content *c, dom_node *node,
++		       script_handler_t *script_handler,
++		       const uint8_t *data, size_t size, const char *name)
++{
++	dom_node *saved = c->current_script;
++	c->current_script = node;
++	script_handler(c->jsthread, data, size, name);
++	c->current_script = saved;
++}
++
++/* the load or error event of an external script's element (script
++ * loaders wait for it) */
++static void script_element_event(dom_node *node, dom_string *type)
++{
++	dom_string *src = NULL;
++	if (node == NULL)
++		return;
++	if (dom_element_get_attribute(node, corestring_dom_src, &src) !=
++	    DOM_NO_ERR || src == NULL)
++		return;
++	dom_string_unref(src);
++	fire_generic_dom_event(type, node, false, false);
++}
++
+ /* exported internal interface documented in html/html_internal.h */
+ nserror html_script_exec(html_content *c, bool allow_defer)
+ {
+@@ -96,8 +121,12 @@ nserror html_script_exec(html_content *c, bool allow_defer)
+ 				size_t size;
+ 				data = content_get_source_data(
+ 						s->data.handle, &size );
+-				script_handler(c->jsthread, data, size,
+-					       nsurl_access(hlcache_handle_get_url(s->data.handle)));
++				/* (s may move while the script runs) */
++				dom_node *node = dom_node_ref(s->node);
++				run_script(c, node, script_handler, data, size,
++					   nsurl_access(hlcache_handle_get_url(s->data.handle)));
++				script_element_event(node, corestring_dom_load);
++				dom_node_unref(node);
+ 				have_run_something = true;
+ 				/* We have to re-acquire this here since the
+ 				 * c->scripts array may have been reallocated
+@@ -121,6 +150,7 @@ nserror html_script_exec(html_content *c, bool allow_defer)
+ /* create new html script entry */
+ static struct html_script *
+ html_process_new_script(html_content *c,
++			dom_node *node,
+ 			dom_string *mimetype,
+ 			enum html_script_type type)
+ {
+@@ -148,6 +178,7 @@ html_process_new_script(html_content *c,
+ 	nscript->type = type;
+ 
+ 	nscript->mimetype = dom_string_ref(mimetype); /* reference mimetype */
++	nscript->node = dom_node_ref(node);
+ 
+ 	return nscript;
+ }
+@@ -195,6 +226,7 @@ convert_script_async_cb(hlcache_handle *script,
+ 		hlcache_handle_release(script);
+ 		s->data.handle = NULL;
+ 		parent->base.active--;
++		script_element_event(s->node, corestring_dom_error);
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
+ 
+ 		break;
+@@ -258,6 +290,7 @@ convert_script_defer_cb(hlcache_handle *script,
+ 		hlcache_handle_release(script);
+ 		s->data.handle = NULL;
+ 		parent->base.active--;
++		script_element_event(s->node, corestring_dom_error);
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
+ 
+ 		break;
+@@ -323,8 +356,12 @@ convert_script_sync_cb(hlcache_handle *script,
+ 			const uint8_t *data;
+ 			size_t size;
+ 			data = content_get_source_data(s->data.handle, &size );
+-			script_handler(parent->jsthread, data, size,
+-				       nsurl_access(hlcache_handle_get_url(s->data.handle)));
++			/* (s may move while the script runs) */
++			dom_node *node = dom_node_ref(s->node);
++			run_script(parent, node, script_handler, data, size,
++				   nsurl_access(hlcache_handle_get_url(s->data.handle)));
++			script_element_event(node, corestring_dom_load);
++			dom_node_unref(node);
+ 		}
+ 
+ 		/* continue parse */
+@@ -345,6 +382,7 @@ convert_script_sync_cb(hlcache_handle *script,
+ 		hlcache_handle_release(script);
+ 		s->data.handle = NULL;
+ 		parent->base.active--;
++		script_element_event(s->node, corestring_dom_error);
+ 
+ 		NSLOG(netsurf, INFO, "%d fetches active", parent->base.active);
+ 
+@@ -456,7 +494,7 @@ exec_src_script(html_content *c,
+ 		}
+ 	}
+ 
+-	nscript = html_process_new_script(c, mimetype, script_type);
++	nscript = html_process_new_script(c, node, mimetype, script_type);
+ 	if (nscript == NULL) {
+ 		nsurl_unref(joined);
+ 		content_broadcast_error(&c->base, NSERROR_NOMEM, NULL);
+@@ -525,7 +563,7 @@ exec_inline_script(html_content *c, dom_node *node, dom_string *mimetype)
+ 		return DOM_HUBBUB_OK; /* no contents, skip */
+ 	}
+ 
+-	nscript = html_process_new_script(c, mimetype, HTML_SCRIPT_INLINE);
++	nscript = html_process_new_script(c, node, mimetype, HTML_SCRIPT_INLINE);
+ 	if (nscript == NULL) {
+ 		dom_string_unref(script);
+ 
+@@ -547,10 +585,10 @@ exec_inline_script(html_content *c, dom_node *node, dom_string *mimetype)
+ 	lwc_string_unref(lwcmimetype);
+ 
+ 	if (script_handler != NULL) {
+-		script_handler(c->jsthread,
+-			       (const uint8_t *)dom_string_data(script),
+-			       dom_string_byte_length(script),
+-			       "?inline script?");
++		run_script(c, node, script_handler,
++			   (const uint8_t *)dom_string_data(script),
++			   dom_string_byte_length(script),
++			   "?inline script?");
+ 	}
+ 	return DOM_HUBBUB_OK;
+ }
+@@ -640,6 +678,9 @@ nserror html_script_free(html_content *html)
+ 		if (html->scripts[i].mimetype != NULL) {
+ 			dom_string_unref(html->scripts[i].mimetype);
+ 		}
++		if (html->scripts[i].node != NULL) {
++			dom_node_unref(html->scripts[i].node);
++		}
+ 
+ 		switch (html->scripts[i].type) {
+ 		case HTML_SCRIPT_INLINE:
+diff --git a/netsurf/content/handlers/javascript/duktape/DOMSettableTokenList.bnd b/netsurf/content/handlers/javascript/duktape/DOMSettableTokenList.bnd
+index ac5c706..00be926 100644
+--- a/netsurf/content/handlers/javascript/duktape/DOMSettableTokenList.bnd
++++ b/netsurf/content/handlers/javascript/duktape/DOMSettableTokenList.bnd
+@@ -21,6 +21,12 @@ getter DOMSettableTokenList::value()
+ 	exc = dom_tokenlist_get_value(priv->parent.tokens, &value);
+ 	if (exc != DOM_NO_ERR) return 0; /* coerced to undefined */
+ 
++	/* no attribute (no class="..."): the empty string; it was a NULL
++	 * dom_string read */
++	if (value == NULL) {
++		duk_push_string(ctx, "");
++		return 1;
++	}
+ 	duk_push_lstring(ctx, dom_string_data(value), dom_string_length(value));
+ 	dom_string_unref(value);
+ 
+diff --git a/netsurf/content/handlers/javascript/duktape/Document.bnd b/netsurf/content/handlers/javascript/duktape/Document.bnd
+index a6a96cf..fb42fda 100644
+--- a/netsurf/content/handlers/javascript/duktape/Document.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Document.bnd
+@@ -118,6 +118,50 @@ method Document::createTextNode()
+ 	return 1;
+ %}
+ 
++method Document::createComment()
++%{
++	dom_comment *newnode;
++	dom_exception err;
++	duk_size_t text_len;
++	const char *text = duk_safe_to_lstring(ctx, 0, &text_len);
++	dom_string *text_str;
++
++	err = dom_string_create((const uint8_t*)text, text_len, &text_str);
++	if (err != DOM_NO_ERR) return 0;
++	err = dom_document_create_comment(priv->parent.node, text_str, &newnode);
++	dom_string_unref(text_str);
++	if (err != DOM_NO_ERR) return 0;
++	dukky_push_node(ctx, (dom_node *)newnode);
++	dom_node_unref(newnode);
++	return 1;
++%}
++
++method Document::createProcessingInstruction()
++%{
++	dom_processing_instruction *newnode;
++	dom_exception err;
++	duk_size_t target_len, data_len;
++	const char *target = duk_safe_to_lstring(ctx, 0, &target_len);
++	const char *data = duk_safe_to_lstring(ctx, 1, &data_len);
++	dom_string *target_str, *data_str;
++
++	err = dom_string_create((const uint8_t*)target, target_len, &target_str);
++	if (err != DOM_NO_ERR) return 0;
++	err = dom_string_create((const uint8_t*)data, data_len, &data_str);
++	if (err != DOM_NO_ERR) {
++		dom_string_unref(target_str);
++		return 0;
++	}
++	err = dom_document_create_processing_instruction(priv->parent.node,
++			target_str, data_str, &newnode);
++	dom_string_unref(target_str);
++	dom_string_unref(data_str);
++	if (err != DOM_NO_ERR) return 0;
++	dukky_push_node(ctx, (dom_node *)newnode);
++	dom_node_unref(newnode);
++	return 1;
++%}
++
+ method Document::createElement()
+ %{
+ 	dom_node *newnode;
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index e87554d..df1dcb4 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -38,7 +38,9 @@ class Window {
+ #define HANDLER_MAGIC MAGIC(HANDLER_MAP)
+ #define WINDOW_REQUESTS MAGIC(WindowRequests)
+ 
+-static size_t next_handle = 0;
++/* timer handles start at 1: scripts clear 0 (or an unset id, which
++ * becomes 0) to mean "no timer", which cancelled the first timer */
++static size_t next_handle = 1;
+ 
+ /*
+  * The native helpers of polyfill.js (window.__netsurf_native, set on the
+@@ -902,6 +904,8 @@ window_alloc_new_callback(duk_context *ctx,
+ 			  int timeout)
+ {
+ 	size_t new_handle = next_handle++;
++	if (next_handle > 0x7fffffff)
++		next_handle = 1;
+ 	window_schedule_t *sched = calloc(sizeof *sched, 1);
+ 	if (sched == NULL) {
+ 		return new_handle;
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index 8e4551b..bf7af09 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -133,6 +133,11 @@ struct duk_heap {
+ 	duk_pending *pending, **pending_tail;
+ 	int running_fin;
+ 	int depth;		/* nesting of calls into JavaScript */
++	/* promises rejected without a handler, reported once the promise
++	 * jobs have run (a handler attached by then takes them out) */
++	JSValue rej_promise[32], rej_reason[32];
++	int nrej;
++	void (*rej_fn)(void *udata, const char *msg);
+ };
+ 
+ static JSClassID duk_obj_class_id;
+@@ -497,6 +502,80 @@ static JSClassDef duk__thread_class = {
+  * finalizers and promise jobs
+  */
+ 
++static void duk__rejection_tracker(JSContext *ctx, JSValueConst promise,
++				   JSValueConst reason, JS_BOOL is_handled,
++				   void *opaque)
++{
++	duk_heap *heap = opaque;
++	int i;
++
++	if (is_handled) {
++		for (i = 0; i < heap->nrej; i++) {
++			if (JS_VALUE_GET_PTR(heap->rej_promise[i]) ==
++			    JS_VALUE_GET_PTR(promise)) {
++				JS_FreeValue(ctx, heap->rej_promise[i]);
++				JS_FreeValue(ctx, heap->rej_reason[i]);
++				heap->nrej--;
++				heap->rej_promise[i] = heap->rej_promise[heap->nrej];
++				heap->rej_reason[i] = heap->rej_reason[heap->nrej];
++				return;
++			}
++		}
++		return;
++	}
++	if (heap->nrej < 32) {
++		heap->rej_promise[heap->nrej] = JS_DupValue(ctx, promise);
++		heap->rej_reason[heap->nrej] = JS_DupValue(ctx, reason);
++		heap->nrej++;
++	}
++}
++
++/* report (when a handler is set) and forget the unhandled rejections */
++static void duk__report_rejections(duk_heap *heap, int report)
++{
++	JSContext *ctx = heap->ctx;
++	int i;
++
++	for (i = 0; i < heap->nrej; i++) {
++		JSValue r = heap->rej_reason[i];
++		if (report && heap->rej_fn != NULL) {
++			const char *msg = JS_ToCString(ctx, r);
++			const char *stack = NULL;
++			JSValue st = JS_UNDEFINED;
++			char *buf;
++			size_t len;
++			if (msg == NULL)
++				JS_FreeValue(ctx, JS_GetException(ctx));
++			if (JS_IsObject(r)) {
++				st = JS_GetPropertyStr(ctx, r, "stack");
++				if (JS_IsString(st))
++					stack = JS_ToCString(ctx, st);
++			}
++			len = (msg ? strlen(msg) : 0) + (stack ? strlen(stack) : 0) + 32;
++			buf = malloc(len);
++			if (buf != NULL) {
++				snprintf(buf, len, "(in promise) %s%s%s",
++					 msg ? msg : "?", stack ? "\n" : "",
++					 stack ? stack : "");
++				heap->rej_fn(heap->udata, buf);
++				free(buf);
++			}
++			if (stack) JS_FreeCString(ctx, stack);
++			if (msg) JS_FreeCString(ctx, msg);
++			JS_FreeValue(ctx, st);
++		}
++		JS_FreeValue(ctx, heap->rej_promise[i]);
++		JS_FreeValue(ctx, r);
++	}
++	heap->nrej = 0;
++}
++
++void duk_netsurf_rejection_handler(duk_context *ctx,
++				   void (*fn)(void *udata, const char *msg))
++{
++	ctx->heap->rej_fn = fn;
++}
++
+ static void duk__run_pending(duk_heap *heap)
+ {
+ 	duk_context *thr = heap->main, *saved = heap->cur;
+@@ -513,6 +592,8 @@ static void duk__run_pending(duk_heap *heap)
+ 			JS_FreeValue(jctx, e);
+ 		}
+ 	}
++	if (heap->nrej > 0)
++		duk__report_rejections(heap, 1);
+ 	while (heap->pending != NULL) {
+ 		duk_pending *p = heap->pending;
+ 		int t = thr->top, ob = thr->bottom, i;
+@@ -609,6 +690,7 @@ duk_context *duk_create_heap(duk_alloc_function alloc_func,
+ 		return NULL;
+ 	}
+ 	JS_SetRuntimeOpaque(heap->rt, heap);
++	JS_SetHostPromiseRejectionTracker(heap->rt, duk__rejection_tracker, heap);
+ 	if (duk_obj_class_id == 0)
+ 		JS_NewClassID(&duk_obj_class_id);
+ 	if (duk_thread_class_id == 0)
+@@ -644,6 +726,7 @@ void duk_destroy_heap(duk_context *ctx)
+ 	duk__unwind(m, 0);
+ 	m->bottom = 0;
+ 	duk__run_pending(heap);
++	duk__report_rejections(heap, 0);
+ 	/* the context goes; objects freed with it queue their finalizers,
+ 	 * which then run in a second context of the same runtime */
+ 	JS_FreeValue(heap->ctx, m->global);
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+index 245e4da..808dbbe 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -193,6 +193,10 @@ duk_bool_t duk_check_type(duk_context *ctx, duk_idx_t idx, duk_int_t type);
+ duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx);
+ /* NetSurf: how deep the current call into JavaScript is nested (0: none) */
+ int duk_netsurf_call_depth(duk_context *ctx);
++/* NetSurf: fn(udata, message) is told of each promise rejected without a
++ * handler, once the promise jobs of a call into JavaScript have run */
++void duk_netsurf_rejection_handler(duk_context *ctx,
++				   void (*fn)(void *udata, const char *msg));
+ duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index 44c93ef..5477393 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -387,6 +387,9 @@ static void dukky_html_element_class_from_tag_type(dom_html_element_type type,
+ 	case DOM_HTML_ELEMENT_TYPE_CANVAS:
+ 		SET_HTML_CLASS(CANVAS)
+ 		break;
++	case DOM_HTML_ELEMENT_TYPE_TEMPLATE:
++		SET_HTML_CLASS(TEMPLATE)
++		break;
+ 	case DOM_HTML_ELEMENT_TYPE__COUNT:
+ 		assert(type != DOM_HTML_ELEMENT_TYPE__COUNT);
+ 		/* fallthrough */
+@@ -472,13 +475,20 @@ dukky_push_node_klass(duk_context *ctx, struct dom_node *node)
+ 		/* its init is Node's: querySelector, append and the like */
+ 		duk_push_string(ctx, PROTO_NAME(DOCUMENTFRAGMENT));
+ 		break;
++	case DOM_CDATA_SECTION_NODE:
++		/* a libdom text node (there is no CDATASection interface) */
++		duk_push_string(ctx, PROTO_NAME(TEXT));
++		break;
++	case DOM_DOCUMENT_TYPE_NODE:
++		duk_push_string(ctx, PROTO_NAME(DOCUMENTTYPE));
++		break;
+ 	case DOM_ATTRIBUTE_NODE:
+ 	case DOM_PROCESSING_INSTRUCTION_NODE:
+-	case DOM_DOCUMENT_TYPE_NODE:
++		/* (not libdom character data: CharacterData's members would
++		 * not work on it) */
+ 	case DOM_NOTATION_NODE:
+ 	case DOM_ENTITY_REFERENCE_NODE:
+ 	case DOM_ENTITY_NODE:
+-	case DOM_CDATA_SECTION_NODE:
+ 	default:
+ 		/* Oh bum, just node then */
+ 		duk_push_string(ctx, PROTO_NAME(NODE));
+@@ -601,6 +611,12 @@ void js_finalise(void)
+ 
+ 
+ /* exported interface documented in js.h */
++static void dukky_report_rejection(void *udata, const char *msg)
++{
++	(void)udata;
++	NSLOG(jserrors, WARNING, "Uncaught error in JS: %s", msg);
++}
++
+ nserror
+ js_newheap(int timeout, jsheap **heap)
+ {
+@@ -616,6 +632,8 @@ js_newheap(int timeout, jsheap **heap)
+ 		ret,
+ 		NULL);
+ 	if (ret->ctx == NULL) { free(ret); return NSERROR_NOMEM; }
++	/* promises rejected with no handler are reported like other errors */
++	duk_netsurf_rejection_handler(ctx, dukky_report_rejection);
+ 	/* Create the prototype stuffs */
+ 	duk_push_global_object(ctx);
+ 	duk_push_boolean(ctx, true);
+@@ -653,6 +671,8 @@ void js_destroyheap(jsheap *heap)
+ /* Just for here, the CTX is in ret, not thread */
+ #define CTX (ret->ctx)
+ 
++static void dukky_dump_error(duk_context *ctx);
++
+ /* exported interface documented in js.h */
+ nserror js_newthread(jsheap *heap, void *win_priv, void *doc_priv, jsthread **thread)
+ {
+@@ -1235,9 +1255,10 @@ static void dukky_generic_event_handler(dom_event *evt, void *pw)
+ 		duk_get_prop_string(ctx, -4, "lineNumber");
+ 		duk_get_prop_string(ctx, -5, "stack");
+ 		/* ... err name message fileName lineNumber stack */
+-		NSLOG(dukky, DEBUG, "Uncaught error in JS: %s: %s",
++		NSLOG(jserrors, WARNING, "Uncaught error in JS: %s: %s\n%s",
+ 		      duk_safe_to_string(ctx, -5),
+-		      duk_safe_to_string(ctx, -4));
++		      duk_safe_to_string(ctx, -4),
++		      duk_safe_to_string(ctx, -1));
+ 		NSLOG(dukky, INFO, "              was at: %s line %s",
+ 		      duk_safe_to_string(ctx, -3),
+ 		      duk_safe_to_string(ctx, -2));
+@@ -1342,9 +1363,10 @@ handle_extras:
+ 			duk_get_prop_string(ctx, -4, "lineNumber");
+ 			duk_get_prop_string(ctx, -5, "stack");
+ 			/* ... err name message fileName lineNumber stack */
+-			NSLOG(dukky, DEBUG, "Uncaught error in JS: %s: %s",
++			NSLOG(jserrors, WARNING, "Uncaught error in JS: %s: %s\n%s",
+ 			      duk_safe_to_string(ctx, -5),
+-			      duk_safe_to_string(ctx, -4));
++			      duk_safe_to_string(ctx, -4),
++			      duk_safe_to_string(ctx, -1));
+ 			NSLOG(dukky, DEBUG,
+ 			      "              was at: %s line %s",
+ 			      duk_safe_to_string(ctx, -3),
+@@ -1544,6 +1566,35 @@ void dukky_dispatch_to_object(duk_context *ctx, duk_idx_t obj_idx,
+ 		duk_pop(ctx);
+ 		return;
+ 	}
++	/* ... sublisteners: the event's currentTarget is the object, and its
++	 * target too when libdom has none (an event made by a script, or one
++	 * NetSurf fires at the Window): libdom's targets are nodes only */
++	{
++		dom_event_target *t = NULL;
++		dukky_push_event(ctx, evt);
++		/* ... sublisteners event */
++		if (dom_event_get_target(evt, &t) == DOM_NO_ERR && t != NULL) {
++			dom_node_unref(t);
++		} else {
++			duk_int_t ty;
++			duk_get_prop_string(ctx, -1, "target");
++			ty = duk_get_type(ctx, -1);
++			duk_pop(ctx);
++			if (ty == DUK_TYPE_NULL || ty == DUK_TYPE_UNDEFINED) {
++			duk_push_string(ctx, "target");
++			duk_dup(ctx, obj_idx);
++			duk_def_prop(ctx, -3, DUK_DEFPROP_HAVE_VALUE |
++				     DUK_DEFPROP_HAVE_CONFIGURABLE |
++				     DUK_DEFPROP_CONFIGURABLE);
++			}
++		}
++		duk_push_string(ctx, "currentTarget");
++		duk_dup(ctx, obj_idx);
++		duk_def_prop(ctx, -3, DUK_DEFPROP_HAVE_VALUE |
++			     DUK_DEFPROP_HAVE_CONFIGURABLE |
++			     DUK_DEFPROP_CONFIGURABLE);
++		duk_pop(ctx);
++	}
+ 	/* ... sublisteners: copy them (a listener may add or remove
+ 	 * listeners), dropping the once listeners from the original */
+ 	duk_push_array(ctx);
+@@ -1705,6 +1756,36 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
+ 		/* Swallow non-Window-targetted events quietly */
+ 		return true;
+ 
++	if (strcmp(type, "DOMContentLoaded") == 0) {
++		/* the Window's part of DOMContentLoaded, which bubbles from the
++		 * Document (libdom's tree ends at the Document): its listeners,
++		 * with the Document as the target */
++		exc = dom_event_create(&evt);
++		if (exc != DOM_NO_ERR) return true;
++		exc = dom_event_init(evt, corestring_dom_DOMContentLoaded,
++				     true, false);
++		if (exc != DOM_NO_ERR) {
++			dom_event_unref(evt);
++			return true;
++		}
++		dukky_enter_thread(thread);
++		dukky_push_event(CTX, evt);
++		duk_push_string(CTX, "target");
++		if (!dukky_push_node(CTX, (struct dom_node *)doc))
++			duk_push_null(CTX);
++		duk_def_prop(CTX, -3, DUK_DEFPROP_HAVE_VALUE |
++			     DUK_DEFPROP_HAVE_CONFIGURABLE |
++			     DUK_DEFPROP_CONFIGURABLE);
++		duk_pop(CTX);
++		duk_push_global_object(CTX);
++		dukky_dispatch_to_object(CTX, -1, evt);
++		duk_pop(CTX);
++		js_event_cleanup(thread, evt);
++		dom_event_unref(evt);
++		dukky_leave_thread(thread);
++		return true;
++	}
++
+ 	if (strcmp(type, "load") != 0)
+ 		/* Swallow non-load events quietly */
+ 		return true;
+@@ -1724,6 +1805,15 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
+ 		return true;
+ 	}
+ 	dukky_enter_thread(thread);
++	/* the target of the Window's load event is the Document */
++	dukky_push_event(CTX, evt);
++	duk_push_string(CTX, "target");
++	if (!dukky_push_node(CTX, (struct dom_node *)doc))
++		duk_push_null(CTX);
++	duk_def_prop(CTX, -3, DUK_DEFPROP_HAVE_VALUE |
++		     DUK_DEFPROP_HAVE_CONFIGURABLE |
++		     DUK_DEFPROP_CONFIGURABLE);
++	duk_pop(CTX);
+ 	/* the listeners added with addEventListener on the Window */
+ 	duk_push_global_object(CTX);
+ 	dukky_dispatch_to_object(CTX, -1, evt);
+@@ -1784,9 +1874,10 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
+ 		duk_get_prop_string(CTX, -4, "lineNumber");
+ 		duk_get_prop_string(CTX, -5, "stack");
+ 		/* ... err name message fileName lineNumber stack */
+-		NSLOG(dukky, DEBUG, "Uncaught error in JS: %s: %s",
++		NSLOG(jserrors, WARNING, "Uncaught error in JS: %s: %s\n%s",
+ 		      duk_safe_to_string(CTX, -5),
+-		      duk_safe_to_string(CTX, -4));
++		      duk_safe_to_string(CTX, -4),
++		      duk_safe_to_string(CTX, -1));
+ 		NSLOG(dukky, DEBUG, "              was at: %s line %s",
+ 		      duk_safe_to_string(CTX, -3),
+ 		      duk_safe_to_string(CTX, -2));
+diff --git a/netsurf/utils/corestringlist.h b/netsurf/utils/corestringlist.h
+index ff8e49a..c020422 100644
+--- a/netsurf/utils/corestringlist.h
++++ b/netsurf/utils/corestringlist.h
+@@ -228,6 +228,7 @@ CORESTRING_DOM_STRING(dblclick);
+ CORESTRING_DOM_STRING(defer);
+ CORESTRING_DOM_STRING(DOMAttrModified);
+ CORESTRING_DOM_STRING(DOMCharacterDataModified);
++CORESTRING_DOM_STRING(DOMContentLoaded);
+ CORESTRING_DOM_STRING(DOMNodeInserted);
+ CORESTRING_DOM_STRING(DOMNodeInsertedIntoDocument);
+ CORESTRING_DOM_STRING(DOMNodeRemoved);

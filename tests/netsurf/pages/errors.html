@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>errors</title><script src="harness.js"></script>
+<meta name="expect-uncaught" content="3"></head><body>
+<button id="b">b</button>
+<script>
+// errors that must be reported as uncaught (run.sh counts them: 3 expected):
+// one thrown in an event listener, one in a timer, one promise rejected without a
+// handler; a rejection handled later in the same job is not reported
+const b = document.getElementById("b");
+b.addEventListener("click", () => { throw new Error("from a listener"); });
+let after = false;
+b.addEventListener("click", () => { after = true; });
+b.dispatchEvent(new MouseEvent("click"));
+T.ok("the next listener still runs", after);
+
+setTimeout(() => { throw new Error("from a timer"); }, 0);
+
+Promise.reject(new Error("rejected without a handler"));
+const later = Promise.reject(new Error("handled"));
+later.catch(() => {});
+(async () => { try { await Promise.reject(new Error("caught by await")); } catch (e) {} })();
+
+setTimeout(() => T.done(), 100);
+</script></body></html>

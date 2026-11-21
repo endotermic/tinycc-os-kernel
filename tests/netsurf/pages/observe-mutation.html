@@ -234,6 +234,13 @@ const ids = list => Array.prototype.map.call(list, n => n.id || n.nodeName).join
     T.eq("substringData", tx.substringData(1, 2), "bc");
     vo.disconnect();
 
+    // text of a node without a parent (crashed: the change was reported to a NULL parent)
+    const loose = document.createTextNode("a");
+    loose.textContent = "b";
+    loose.data = "c";
+    loose.nodeValue = "d";
+    T.eq("text of a detached node", loose.data, "d");
+
     // errors
     const thrown = f => { try { f(); return "none"; } catch (e) { return e.name; } };
     T.eq("no options", thrown(() => new MutationObserver(() => {}).observe(box)), "TypeError");
