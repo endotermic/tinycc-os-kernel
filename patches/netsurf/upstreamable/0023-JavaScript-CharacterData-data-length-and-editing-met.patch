@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 19:04:12 +0200
+Subject: [PATCH] JavaScript: CharacterData data, length and editing methods
+
+Text and Comment nodes had only the generated stubs for data, length,
+substringData, appendData, insertData, deleteData and replaceData; they
+now call libdom's characterdata functions, which dispatch
+DOMCharacterDataModified.
+---
+ .../javascript/duktape/CharacterData.bnd      | 118 ++++++++++++++++++
+ .../handlers/javascript/duktape/netsurf.bnd   |   1 +
+ 2 files changed, 119 insertions(+)
+ create mode 100644 netsurf/content/handlers/javascript/duktape/CharacterData.bnd
+
+diff --git a/netsurf/content/handlers/javascript/duktape/CharacterData.bnd b/netsurf/content/handlers/javascript/duktape/CharacterData.bnd
+new file mode 100644
+index 0000000..12430c1
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/CharacterData.bnd
+@@ -0,0 +1,118 @@
++/* CharacterData binding for browser using duktape and libdom
++ *
++ * Copyright 2026 Nikolajs Agafonovs
++ *
++ * This file is part of NetSurf, http://www.netsurf-browser.org/
++ *
++ * Released under the terms of the MIT License,
++ *         http://www.opensource.org/licenses/mit-license
++ */
++
++/* data, length and the editing methods of Text, Comment and CDATASection
++ * nodes, through libdom's characterdata calls (which dispatch the
++ * DOMCharacterDataModified event that MutationObserver and the redraw of
++ * changed text rely on); offsets count characters */
++
++class CharacterData {
++	prologue %{
++static duk_ret_t chardata_push(duk_context *ctx, dom_string *s)
++{
++	if (s == NULL) {
++		duk_push_string(ctx, "");
++		return 1;
++	}
++	duk_push_lstring(ctx, dom_string_data(s), dom_string_length(s));
++	dom_string_unref(s);
++	return 1;
++}
++
++/* argument idx as a dom_string (null is the empty string) */
++static dom_string *chardata_arg(duk_context *ctx, duk_idx_t idx)
++{
++	dom_string *s = NULL;
++	duk_size_t slen = 0;
++	const char *str = "";
++	if (!duk_is_null(ctx, idx) && !duk_is_undefined(ctx, idx))
++		str = duk_safe_to_lstring(ctx, idx, &slen);
++	if (dom_string_create((const uint8_t *)str, slen, &s) != DOM_NO_ERR)
++		return NULL;
++	return s;
++}
++%};
++};
++
++getter CharacterData::data()
++%{
++	dom_string *s = NULL;
++	if (dom_characterdata_get_data(priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return chardata_push(ctx, s);
++%}
++
++setter CharacterData::data()
++%{
++	dom_string *s = chardata_arg(ctx, 0);
++	if (s == NULL)
++		return 0;
++	dom_characterdata_set_data(priv->parent.node, s);
++	dom_string_unref(s);
++	return 0;
++%}
++
++getter CharacterData::length()
++%{
++	uint32_t len = 0;
++	if (dom_characterdata_get_length(priv->parent.node, &len) != DOM_NO_ERR)
++		return 0;
++	duk_push_uint(ctx, len);
++	return 1;
++%}
++
++method CharacterData::substringData()
++%{
++	dom_string *s = NULL;
++	if (dom_characterdata_substring_data(priv->parent.node,
++			duk_to_uint32(ctx, 0), duk_to_uint32(ctx, 1), &s)
++	    != DOM_NO_ERR)
++		return 0;
++	return chardata_push(ctx, s);
++%}
++
++method CharacterData::appendData()
++%{
++	dom_string *s = chardata_arg(ctx, 0);
++	if (s == NULL)
++		return 0;
++	dom_characterdata_append_data(priv->parent.node, s);
++	dom_string_unref(s);
++	return 0;
++%}
++
++method CharacterData::insertData()
++%{
++	dom_string *s = chardata_arg(ctx, 1);
++	if (s == NULL)
++		return 0;
++	dom_characterdata_insert_data(priv->parent.node,
++			duk_to_uint32(ctx, 0), s);
++	dom_string_unref(s);
++	return 0;
++%}
++
++method CharacterData::deleteData()
++%{
++	dom_characterdata_delete_data(priv->parent.node,
++			duk_to_uint32(ctx, 0), duk_to_uint32(ctx, 1));
++	return 0;
++%}
++
++method CharacterData::replaceData()
++%{
++	dom_string *s = chardata_arg(ctx, 2);
++	if (s == NULL)
++		return 0;
++	dom_characterdata_replace_data(priv->parent.node,
++			duk_to_uint32(ctx, 0), duk_to_uint32(ctx, 1), s);
++	dom_string_unref(s);
++	return 0;
++%}
+diff --git a/netsurf/content/handlers/javascript/duktape/netsurf.bnd b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+index 483f347..dea931f 100644
+--- a/netsurf/content/handlers/javascript/duktape/netsurf.bnd
++++ b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+@@ -59,6 +59,7 @@ struct dom_html_br_element;
+ #include "Window.bnd"
+ #include "Document.bnd"
+ #include "Node.bnd"
++#include "CharacterData.bnd"
+ #include "NodeList.bnd"
+ #include "DOMTokenList.bnd"
+ #include "DOMSettableTokenList.bnd"

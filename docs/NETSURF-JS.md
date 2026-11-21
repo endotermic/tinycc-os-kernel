@@ -1,6 +1,6 @@
 # NetSurf: the web APIs a script-built site needs (plan, target youtube.com)
 
-Plan of 2026-11-21 (phases 0, 1 and 2 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
+Plan of 2026-11-21 (phases 0, 1, 2 and 3 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
 nsgenbind bindings are unchanged), redraws DOM changes made after load (0009/0010) and dispatches
 events correctly (0012/0013). youtube.com still shows a blank page. This file lists what it needs,
 in the order planned. Mark a phase done here when it is committed and verified (host and guest,
@@ -250,7 +250,48 @@ Risk: curl in the guest lacks eventfd (built with `ac_cv_func_eventfd=no`); the 
 loop is used, so no change, but many parallel requests may expose fetcher limits
 (`max_fetchers`).
 
-## Phase 3: observers (medium)
+## Phase 3: observers — DONE (2026-11-21)
+
+Patches upstreamable/0022 (libdom), 0023 (CharacterData) and 0025 (scheduler), features/0024;
+FIX-LOG C47-C49. Test pages `observe-mutation` (57 checks) and `observe-geometry` (45); all 18
+pages pass on the host and both observer pages in the x86_64 guest.
+
+- `MutationObserver` (0024): `__netsurf_native.observeMutations(node, hook)` (Window.bnd) adds
+  capturing libdom listeners for DOMNodeInserted, DOMNodeRemoved, DOMAttrModified and
+  DOMCharacterDataModified to each observed node; the C listener calls one JavaScript hook with
+  the event's target, related node, attribute name, old and new values and whether a script is
+  running (`duk_netsurf_call_depth`, the QuickJS layer's call nesting). `webapi.js` keeps the
+  registrations per page and queues the records as the spec does (childList, attributes,
+  characterData, subtree, old values, attributeFilter; one record per observer when it observes a
+  node and its ancestor; `takeRecords`, `disconnect`, re-`observe` replaces the options). Delivery
+  is a microtask when a script made the change and a 0 ms timer for the parser's insertions
+  (outside any script). innerHTML, textContent, outerHTML, append/prepend/replaceChildren,
+  before/after/replaceWith, insertAdjacentHTML and the insertion of a fragment make one record per
+  parent, as in browsers; plain DOM calls make one each.
+- libdom (0022): `removeChild` reported every removal twice, `replaceChild` reported nothing,
+  `nodeValue` of text changed it silently (C47). CharacterData's `data`, `length` and editing
+  methods were empty stubs (0023, C48).
+- `IntersectionObserver` and `ResizeObserver` (0024, `webapi.js`): computed from the last layout's
+  boxes (`box()` now also gives the content box and the padding) soon after `observe()` and then
+  every 100 ms while something is observed, never before the first layout; NetSurf tells scripts
+  of no reflow and no scrolling, so they poll. Intersection: root = viewport or an element (its
+  border box), `rootMargin` in px or %, thresholds, the first entry for every target; clipping by
+  scrolling ancestors is not looked at. Resize: content-box and border-box sizes, no entry for an
+  element that stays 0x0.
+- The framebuffer scheduler ran timeouts due in the same main-loop run newest first (0025, C49):
+  seen in the guest only, where the X surface polls less often than the ram surface of the tests.
+
+Not done: transient registrations (changes inside a subtree removed from an observed node are not
+reported until it is observed again), records for the children taken out of an inserted fragment,
+`attributeNamespace` (always null). YouTube's saved copy: the Custom Elements polyfill now gets past
+`new MutationObserver` and stops at `document.createTreeWalker(document, NodeFilter.SHOW_ALL, ...)`
+(no `NodeFilter` constants, no TreeWalker; phase 4 lists both). The milestone "first
+`/youtubei/v1/` request" moves to phase 4, which starts with that polyfill. The BBC start page:
+3 uncaught errors (unchanged).
+
+The plan as written before the work:
+
+### Phase 3 plan (2026-11-21)
 
 - `MutationObserver`: native registration list per heap; libdom mutation event listeners
   (registered once per document by dukky) append `MutationRecord`s (childList, attributes with

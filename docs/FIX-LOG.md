@@ -1823,6 +1823,31 @@ C46. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0016): nsgenbind define
     found: Element.innerHTML's getter returned "" and HTMLElement.style a new empty object on every
     read (both now in webapi.js). Verification: tests/netsurf/run.sh, 14 pages.
 
+C47. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0022), found writing MutationObserver
+    (phase 3 of docs/NETSURF-JS.md) on libdom's mutation events: removeChild dispatched
+    DOMNodeRemoved itself and again through _dom_node_detach (every removal reported twice);
+    replaceChild dispatched no mutation event at all (_dom_node_replace relinks the nodes
+    directly); nodeValue of a Text, Comment or CDATASection node set the value without
+    DOMCharacterDataModified. removeChild now leaves the event to the detach, replaceChild
+    dispatches the removal and an insertion per new node, and nodeValue goes through
+    dom_characterdata_set_data. Verification: observe-mutation.html.
+
+C48. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0023), found by observe-mutation.html:
+    CharacterData's data, length, substringData, appendData, insertData, deleteData and
+    replaceData were nsgenbind's empty stubs (text.data read undefined, writes were lost; the
+    NETSURF_JS_TRACE line named them). CharacterData.bnd binds them to libdom's characterdata
+    calls. Verification: observe-mutation.html.
+
+C49. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0025), found by observe-mutation.html in
+    the x86_64 guest (passed on the host): the framebuffer front end's scheduler added each
+    callback at the front of its list and ran the due ones from the front, so callbacks due in the
+    same run ran newest first (setTimeout(a, 0); setTimeout(b, 0) ran b, then a). Under X the main
+    loop polls less often than with the ram surface, and MutationObserver's delivery timer for the
+    parser's records ran after a later script's timer. The list is kept in time order now, equal
+    times in the order added (the windows, atari and monkey front ends have the same code; not
+    built here). Verification: timers.html (new check "0 ms timeouts in order", failed before:
+    "c,b,a"), observe-mutation.html in the guest.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

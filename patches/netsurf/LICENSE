@@ -13,7 +13,9 @@ WHATWG DOM specification's IDL), 0014 under MIT for its nsgenbind hunk and GPL-2
 dukky.c/dukky.h, 0016 (nsgenbind) under MIT, 0017, 0018 and 0019 under GPL-2.0-only for their
 browser files (html.c, dukky.c, duk_quickjs.c, generics.js, the duktape Makefile, the new
 webapi.js) and MIT for the binding files (*.bnd), 0021 likewise (webapi.js GPL-2.0-only,
-Window.bnd MIT), the others under GPL-2.0-only
+Window.bnd MIT), 0022 (libdom) and 0023 (CharacterData.bnd, netsurf.bnd) under MIT, 0024 under
+GPL-2.0-only (webapi.js, duk_quickjs.c/.h, corestringlist.h) and MIT (Window.bnd), the others
+under GPL-2.0-only
 (../../LICENSES/GPL-2.0-only.txt); 0006 adds GPL-2.0-only files to NetSurf's JavaScript
 directory, and its three-line hunk in Duktape's duktape.h (MIT) is under MIT as well.  They
 are not part of the BSD-2-Clause license of the rest of this repository (see

@@ -33,10 +33,13 @@ Categories:
   libdom's target phase and non-bubbling events; local `.js` files typed as scripts in the
   framebuffer front end; WebIDL members writable and configurable in nsgenbind; DOMContentLoaded
   and the window's listeners; list indexes, HTMLCollection, fragments; request methods other
-  than GET and POST in the fetch layer) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
+  than GET and POST in the fetch layer; libdom's mutation events of removeChild, replaceChild
+  and nodeValue; CharacterData's data and editing methods; the framebuffer front end's
+  scheduler running due callbacks in time order) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
-  APIs written in JavaScript, with native helpers in Window.bnd; XMLHttpRequest and fetch)
+  APIs written in JavaScript, with native helpers in Window.bnd; XMLHttpRequest and fetch;
+  MutationObserver, IntersectionObserver and ResizeObserver)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

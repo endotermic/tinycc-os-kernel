@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 19:23:02 +0200
+Subject: [PATCH] framebuffer: run due callbacks in time order
+
+framebuffer_schedule put each callback at the front of the list and
+schedule_run runs the due ones from the front, so callbacks due in the
+same run ran newest first: setTimeout(a, 0); setTimeout(b, 0) ran b
+before a whenever the main loop had not polled in between (always under
+X, where MutationObserver's delivery timer for the parser's records then
+ran after a script's later timer).  The list is now kept in time order,
+equal times in the order they were added.
+---
+ netsurf/frontends/framebuffer/schedule.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/netsurf/frontends/framebuffer/schedule.c b/netsurf/frontends/framebuffer/schedule.c
+index 6d17112..2ae4e00 100644
+--- a/netsurf/frontends/framebuffer/schedule.c
++++ b/netsurf/frontends/framebuffer/schedule.c
+@@ -117,9 +117,16 @@ nserror framebuffer_schedule(int tival, void (*callback)(void *p), void *p)
+ 	nscb->callback = callback;
+ 	nscb->p = p;
+ 
+-        /* add to list front */
+-        nscb->next = schedule_list;
+-        schedule_list = nscb;
++	/* keep the list in time order, after callbacks due at the same time
++	 * (schedule_run runs the due ones from the front: added at the
++	 * front, two timeouts due in the same run ran newest first) */
++	{
++		struct nscallback **pp = &schedule_list;
++		while (*pp != NULL && !timercmp(&(*pp)->tv, &nscb->tv, >))
++			pp = &(*pp)->next;
++		nscb->next = *pp;
++		*pp = nscb;
++	}
+ 
+ 	return NSERROR_OK;
+ }

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>observe-geometry</title><script src="harness.js"></script>
+<style>
+body { margin: 0; }
+.sq { width: 100px; height: 100px; background: #ccc; }
+#spacer { height: 3000px; }
+#root { height: 50px; padding-top: 50px; width: 300px; background: #eee; }
+#half { width: 100px; height: 100px; background: #999; }
+#rs { width: 200px; height: 50px; padding: 10px; background: #ddd; }
+#hidden { display: none; }
+</style></head><body>
+<div id="top" class="sq"></div>
+<div id="root"><div id="half"></div></div>
+<div id="outside" class="sq"></div>
+<div id="rs"></div>
+<div id="hidden" class="sq"></div>
+<div id="spacer"></div>
+<div id="below" class="sq"></div>
+<img id="lazy" data-src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" width="10" height="10" alt="">
+<script>
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(cond, ms) {
+    for (let t = 0; t < ms; t += 50) { if (cond()) return true; await sleep(50); }
+    return cond();
+}
+const thrown = f => { try { f(); return "none"; } catch (e) { return e.name; } };
+
+(async () => {
+    // viewport observer: initial entries for every target
+    const seen = new Map(), calls = [];
+    const io = new IntersectionObserver((entries, o) => {
+        calls.push(o);
+        entries.forEach(e => seen.set(e.target.id, e));
+    });
+    io.observe($("top"));
+    io.observe($("below"));
+    io.observe($("hidden"));
+    T.ok("asynchronous first entries", seen.size === 0);
+    T.ok("first entries arrive", await waitFor(() => seen.size === 3, 3000), "got " + [...seen.keys()]);
+    T.eq("callback second argument", calls[0], io);
+    const top = seen.get("top"), below = seen.get("below"), hidden = seen.get("hidden");
+    T.eq("top: intersecting", top && top.isIntersecting, true);
+    T.eq("top: ratio", top && top.intersectionRatio, 1);
+    T.eq("top: boundingClientRect", top && [top.boundingClientRect.width, top.boundingClientRect.height].join("x"), "100x100");
+    T.eq("top: rootBounds is the viewport", top && top.rootBounds.width, window.innerWidth);
+    T.ok("entry instance", top instanceof IntersectionObserverEntry);
+    T.ok("entry time", top && typeof top.time === "number");
+    T.eq("below: not intersecting", below && below.isIntersecting, false);
+    T.eq("below: ratio", below && below.intersectionRatio, 0);
+    T.eq("display:none: not intersecting", hidden && hidden.isIntersecting, false);
+
+    // no change, no entry; a layout change brings the element in
+    seen.clear();
+    await sleep(300);
+    T.eq("no entries without a change", seen.size, 0);
+    $("spacer").style.height = "10px";
+    T.ok("layout change: entry for the element now visible",
+         await waitFor(() => seen.has("below"), 3000));
+    T.eq("below: now intersecting", seen.get("below") && seen.get("below").isIntersecting, true);
+    T.ok("unchanged targets get no entry", !seen.has("top"));
+
+    // disconnect
+    io.disconnect();
+    seen.clear();
+    $("spacer").style.height = "3000px";
+    await sleep(400);
+    T.eq("disconnect: no entries", seen.size, 0);
+    T.eq("takeRecords", io.takeRecords().length, 0);
+
+    // an element as the root, thresholds
+    let half = null, out = null;
+    const ro = new IntersectionObserver(entries => entries.forEach(e => {
+        if (e.target.id === "half") half = e; else out = e;
+    }), { root: $("root"), threshold: [0, 0.25, 0.5, 0.75, 1] });
+    ro.observe($("half"));
+    ro.observe($("outside"));
+    T.ok("root: entries arrive", await waitFor(() => half && out, 3000));
+    T.eq("root: half the target inside", half && half.intersectionRatio, 0.5);
+    T.eq("root: intersectionRect height", half && half.intersectionRect.height, 50);
+    T.eq("root: rootBounds", half && half.rootBounds.height, 100);
+    T.eq("root: not a descendant, not intersecting", out && out.isIntersecting, false);
+    T.eq("thresholds sorted and kept", ro.thresholds.join(","), "0,0.25,0.5,0.75,1");
+    T.eq("root kept", ro.root, $("root"));
+    ro.disconnect();
+
+    // lazy loading: src set when the image comes into view
+    const lazy = $("lazy");
+    const lo = new IntersectionObserver(entries => entries.forEach(e => {
+        if (e.isIntersecting) { e.target.src = e.target.dataset.src; lo.unobserve(e.target); }
+    }), { rootMargin: "50px" });
+    lo.observe(lazy);
+    await sleep(400);
+    T.ok("lazy image below the fold: not loaded", !lazy.getAttribute("src"));
+    $("spacer").style.height = "0px";
+    T.ok("lazy image in view: loaded", await waitFor(() => !!lazy.getAttribute("src"), 3000));
+    lo.disconnect();
+
+    // options
+    T.eq("rootMargin normalised", new IntersectionObserver(() => {}, { rootMargin: "10px 20%" }).rootMargin,
+         "10px 20% 10px 20%");
+    T.eq("default rootMargin", new IntersectionObserver(() => {}).rootMargin, "0px 0px 0px 0px");
+    T.eq("default thresholds", new IntersectionObserver(() => {}).thresholds.join(","), "0");
+    T.eq("threshold out of range", thrown(() => new IntersectionObserver(() => {}, { threshold: 2 })), "RangeError");
+    T.eq("rootMargin in em", thrown(() => new IntersectionObserver(() => {}, { rootMargin: "1em" })), "SyntaxError");
+    T.eq("observe a non-element", thrown(() => new IntersectionObserver(() => {}).observe({})), "TypeError");
+
+    // ResizeObserver
+    const sizes = [];
+    const rz = new ResizeObserver((entries, o) => entries.forEach(e => sizes.push(e)));
+    rz.observe($("rs"));
+    rz.observe($("hidden"));
+    T.ok("resize: first entry", await waitFor(() => sizes.length >= 1, 3000));
+    await sleep(200);
+    const e0 = sizes[0];
+    T.eq("resize: no entry for a 0x0 element", sizes.length, 1);
+    T.eq("resize: target", e0 && e0.target, $("rs"));
+    T.eq("resize: contentRect", e0 && [e0.contentRect.x, e0.contentRect.y, e0.contentRect.width, e0.contentRect.height].join(","),
+         "10,10,200,50");
+    T.eq("resize: contentBoxSize", e0 && e0.contentBoxSize[0].inlineSize + "x" + e0.contentBoxSize[0].blockSize, "200x50");
+    T.eq("resize: borderBoxSize", e0 && e0.borderBoxSize[0].inlineSize + "x" + e0.borderBoxSize[0].blockSize, "220x70");
+    $("rs").style.width = "300px";
+    T.ok("resize: entry after a change", await waitFor(() => sizes.length >= 2, 3000));
+    T.eq("resize: new width", sizes[1] && sizes[1].contentRect.width, 300);
+    rz.unobserve($("rs"));
+    $("rs").style.width = "250px";
+    await sleep(400);
+    T.eq("resize: unobserve", sizes.length, 2);
+    const bb = [];
+    const rb = new ResizeObserver(entries => entries.forEach(e => bb.push(e)));
+    rb.observe($("rs"), { box: "border-box" });
+    T.ok("resize: border-box entry", await waitFor(() => bb.length >= 1, 3000));
+    T.eq("resize: border-box size", bb[0] && bb[0].borderBoxSize[0].inlineSize, 270);
+    rb.disconnect();
+    T.eq("resize: unknown box", thrown(() => new ResizeObserver(() => {}).observe($("rs"), { box: "x" })), "TypeError");
+    T.done();
+})();
+</script></body></html>

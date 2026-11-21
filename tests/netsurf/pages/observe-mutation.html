@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>observe-mutation</title>
+<script>
+// the parser's insertions after this script are reported to an observer of the document
+// (before harness.js: an inline script after an external one may run late)
+var parsed = [];
+var parserObserver = new MutationObserver(function (recs) {
+    recs.forEach(function (r) {
+        for (var i = 0; i < r.addedNodes.length; i++)
+            if (r.addedNodes[i].id) parsed.push(r.addedNodes[i].id);
+    });
+});
+parserObserver.observe(document, { childList: true, subtree: true });
+</script><script src="harness.js"></script></head><body>
+<div id="late1"><p id="late2">parsed</p></div>
+<div id="box"><span id="s1">one</span><span id="s2">two</span></div>
+<script>
+const tick = () => new Promise(r => setTimeout(r, 0));
+const ids = list => Array.prototype.map.call(list, n => n.id || n.nodeName).join(",");
+
+(async () => {
+    await tick();
+    T.ok("parser insertions reported", parsed.indexOf("late1") >= 0 && parsed.indexOf("box") >= 0,
+         "got " + parsed.join(","));
+    T.ok("parser insertions of children", parsed.indexOf("late2") >= 0 || parsed.indexOf("s1") >= 0,
+         "got " + parsed.join(","));
+    parserObserver.disconnect();
+
+    const box = document.getElementById("box");
+    let calls = 0, got = [], self = null, second = null;
+    const mo = new MutationObserver(function (recs, o) { calls++; got = got.concat(recs); self = this; second = o; });
+    mo.observe(box, { childList: true });
+
+    // one insertion
+    const a = document.createElement("b"); a.id = "a";
+    box.appendChild(a);
+    T.eq("no synchronous delivery", calls, 0);
+    await null; await null;
+    T.eq("delivered as a microtask", calls, 1);
+    T.eq("callback this", self, mo);
+    T.eq("callback second argument", second, mo);
+    T.eq("one record", got.length, 1);
+    T.eq("record type", got[0].type, "childList");
+    T.eq("record target", got[0].target, box);
+    T.eq("addedNodes", ids(got[0].addedNodes), "a");
+    T.eq("removedNodes empty", got[0].removedNodes.length, 0);
+    T.eq("previousSibling", got[0].previousSibling && got[0].previousSibling.id, "s2");
+    T.eq("nextSibling", got[0].nextSibling, null);
+    T.ok("MutationRecord instance", got[0] instanceof MutationRecord);
+
+    // several calls in one script: one callback, a record each
+    calls = 0; got = [];
+    for (let i = 0; i < 3; i++) box.appendChild(document.createElement("i"));
+    await tick();
+    T.eq("three insertions, one callback", calls, 1);
+    T.eq("three insertions, three records", got.length, 3);
+
+    // removal
+    calls = 0; got = [];
+    const s1 = document.getElementById("s1");
+    box.removeChild(s1);
+    await tick();
+    T.eq("removal record", got.length === 1 && ids(got[0].removedNodes), "s1");
+    T.eq("removal nextSibling", got[0] && got[0].nextSibling && got[0].nextSibling.id, "s2");
+    T.eq("removal previousSibling", got[0] && got[0].previousSibling, null);
+
+    // innerHTML: one record with the old children removed and the new added
+    calls = 0; got = [];
+    box.innerHTML = '<em id="e1">1</em><em id="e2">2</em><em id="e3">3</em>';
+    await tick();
+    T.eq("innerHTML: one record", got.length, 1);
+    T.eq("innerHTML: removed", got[0] && got[0].removedNodes.length, 5);
+    T.eq("innerHTML: added", got[0] && ids(got[0].addedNodes), "e1,e2,e3");
+
+    // textContent
+    calls = 0; got = [];
+    box.textContent = "plain";
+    await tick();
+    T.eq("textContent: one record", got.length, 1);
+    T.eq("textContent: removed 3, added 1", got[0] && got[0].removedNodes.length + "/" + got[0].addedNodes.length, "3/1");
+
+    // a fragment and append()
+    calls = 0; got = [];
+    const f = document.createDocumentFragment();
+    ["f1", "f2"].forEach(id => { const e = document.createElement("u"); e.id = id; f.appendChild(e); });
+    box.appendChild(f);
+    box.append("x", document.createElement("hr"));
+    await tick();
+    T.eq("fragment and append(): two records", got.length, 2);
+    T.eq("fragment record", got[0] && ids(got[0].addedNodes), "f1,f2");
+    T.eq("append() record", got[1] && got[1].addedNodes.length, 2);
+
+    // takeRecords and disconnect
+    calls = 0; got = [];
+    box.appendChild(document.createElement("i"));
+    const taken = mo.takeRecords();
+    await tick();
+    T.eq("takeRecords returns the queue", taken.length, 1);
+    T.eq("takeRecords: no callback", calls, 0);
+    mo.disconnect();
+    box.appendChild(document.createElement("i"));
+    await tick();
+    T.eq("disconnect: no callback", calls, 0);
+
+    // attributes, old values, filter, native setters
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    let arecs = [];
+    const ao = new MutationObserver(r => { arecs = arecs.concat(r); });
+    ao.observe(el, { attributeOldValue: true });
+    el.setAttribute("title", "a");
+    el.setAttribute("title", "b");
+    el.removeAttribute("title");
+    el.id = "idset";
+    el.className = "c1";
+    el.classList.add("c2");
+    await tick();
+    T.eq("attribute records", arecs.map(r => r.type + ":" + r.attributeName).join(","),
+         "attributes:title,attributes:title,attributes:title,attributes:id,attributes:class,attributes:class");
+    T.eq("attribute old values", arecs.slice(0, 3).map(r => String(r.oldValue)).join(","), "null,a,b");
+    T.eq("attribute record target", arecs[0] && arecs[0].target, el);
+    ao.disconnect();
+    arecs = [];
+    ao.observe(el, { attributes: true, attributeFilter: ["data-x"] });
+    el.setAttribute("title", "ignored");
+    el.setAttribute("data-x", "1");
+    await tick();
+    T.eq("attributeFilter", arecs.map(r => r.attributeName).join(","), "data-x");
+    T.eq("no old value unless asked", arecs[0] && arecs[0].oldValue, null);
+    ao.disconnect();
+
+    // characterData
+    const t = document.createTextNode("old");
+    el.appendChild(t);
+    let crecs = [];
+    const co = new MutationObserver(r => { crecs = crecs.concat(r); });
+    co.observe(el, { characterData: true, characterDataOldValue: true, subtree: true });
+    t.data = "new";
+    t.appendData("er");
+    await tick();
+    T.eq("characterData records", crecs.map(r => r.type + ":" + r.oldValue).join(","),
+         "characterData:old,characterData:new");
+    T.eq("characterData target", crecs[0] && crecs[0].target, t);
+    co.disconnect();
+
+    // subtree or not
+    const outer = document.createElement("div"), inner = document.createElement("p");
+    outer.appendChild(inner);
+    document.body.appendChild(outer);
+    let deep = 0, flat = 0;
+    const so = new MutationObserver(r => { deep += r.length; });
+    const fo = new MutationObserver(r => { flat += r.length; });
+    so.observe(outer, { childList: true, subtree: true, attributes: true });
+    fo.observe(outer, { childList: true, attributes: true });
+    inner.appendChild(document.createElement("i"));
+    inner.setAttribute("x", "1");
+    await tick();
+    T.eq("subtree: grandchild changes seen", deep, 2);
+    T.eq("no subtree: grandchild changes not seen", flat, 0);
+
+    // one observer on a node and on its ancestor: a record once; two observers: one each
+    let both = 0;
+    const bo = new MutationObserver(r => { both += r.length; });
+    bo.observe(document.body, { childList: true, subtree: true });
+    bo.observe(inner, { childList: true });
+    inner.appendChild(document.createElement("i"));
+    await tick();
+    T.eq("ancestor and node: one record", both, 1);
+    T.eq("second observer also told", deep, 3);
+    bo.disconnect(); so.disconnect(); fo.disconnect();
+
+    // a detached node can be observed
+    const d = document.createElement("div");
+    let det = 0;
+    const dob = new MutationObserver(r => { det += r.length; });
+    dob.observe(d, { childList: true });
+    d.appendChild(document.createElement("i"));
+    await tick();
+    T.eq("detached node observed", det, 1);
+    dob.disconnect();
+
+    // order of callbacks: creation order; changes made in a callback are delivered too
+    const order = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const o1 = new MutationObserver(() => { order.push("o1"); if (order.length < 3) host.setAttribute("y", "2"); });
+    const o2 = new MutationObserver(() => order.push("o2"));
+    o2.observe(host, { attributes: true });
+    o1.observe(host, { attributes: true });
+    host.setAttribute("y", "1");
+    await tick();
+    T.eq("creation order, then the callback's own change", order.join(","), "o1,o2,o1");
+    o1.disconnect(); o2.disconnect();
+
+    // re-observing replaces the options
+    let re = 0;
+    const ro = new MutationObserver(r => { re += r.length; });
+    ro.observe(host, { attributes: true });
+    ro.observe(host, { childList: true });
+    host.setAttribute("z", "1");
+    host.appendChild(document.createElement("i"));
+    await tick();
+    T.eq("observe() again replaces the options", re, 1);
+    ro.disconnect();
+
+    // replaceChild: one record per change (the removal, the insertion)
+    let rrecs = [];
+    const rpo = new MutationObserver(r => { rrecs = rrecs.concat(r); });
+    const rp = document.createElement("div"), oldc = document.createElement("i"), newc = document.createElement("b");
+    oldc.id = "oldc"; newc.id = "newc";
+    rp.appendChild(oldc);
+    rpo.observe(rp, { childList: true });
+    T.eq("replaceChild returns the old node", rp.replaceChild(newc, oldc), oldc);
+    await tick();
+    T.eq("replaceChild records", rrecs.map(r => ids(r.removedNodes) + "/" + ids(r.addedNodes)).join(" "), "oldc/ /newc");
+    T.eq("replaceChild result", ids(rp.childNodes), "newc");
+    rpo.disconnect();
+
+    // nodeValue and the CharacterData methods report the change too
+    const tx = document.createTextNode("abc");
+    el.appendChild(tx);
+    let vrecs = [];
+    const vo = new MutationObserver(r => { vrecs = vrecs.concat(r); });
+    vo.observe(tx, { characterData: true, characterDataOldValue: true });
+    tx.nodeValue = "abcd";
+    tx.insertData(0, "<");
+    tx.deleteData(1, 1);
+    tx.replaceData(0, 1, "[");
+    await tick();
+    T.eq("nodeValue and editing records", vrecs.map(r => r.oldValue).join(","), "abc,abcd,<abcd,<bcd");
+    T.eq("data after editing", tx.data, "[bcd");
+    T.eq("CharacterData length", tx.length, 4);
+    T.eq("substringData", tx.substringData(1, 2), "bc");
+    vo.disconnect();
+
+    // errors
+    const thrown = f => { try { f(); return "none"; } catch (e) { return e.name; } };
+    T.eq("no options", thrown(() => new MutationObserver(() => {}).observe(box)), "TypeError");
+    T.eq("attributeOldValue without attributes",
+         thrown(() => new MutationObserver(() => {}).observe(box, { attributes: false, attributeOldValue: true })), "TypeError");
+    T.eq("target not a node", thrown(() => new MutationObserver(() => {}).observe({}, { childList: true })), "TypeError");
+    T.eq("callback not a function", thrown(() => new MutationObserver(5)), "TypeError");
+    T.eq("without new", thrown(() => MutationObserver(() => {})), "TypeError");
+    T.ok("WebKitMutationObserver alias", window.WebKitMutationObserver === MutationObserver);
+    T.done();
+})();
+</script></body></html>

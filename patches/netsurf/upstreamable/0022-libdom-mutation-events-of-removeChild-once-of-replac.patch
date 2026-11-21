@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 19:04:12 +0200
+Subject: [PATCH] libdom: mutation events of removeChild once, of replaceChild
+ and of nodeValue
+
+removeChild dispatched DOMNodeRemoved itself and again through
+_dom_node_detach, so every removal was reported twice; replaceChild
+reported neither the removal of the old child nor the insertion of the
+new ones; setting nodeValue of a Text, Comment or CDATASection node
+changed the value without the DOMCharacterDataModified event (it now goes
+through dom_characterdata_set_data, as Attr goes through
+dom_attr_set_value).
+---
+ libdom/src/core/node.c | 52 +++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 44 insertions(+), 8 deletions(-)
+
+diff --git a/libdom/src/core/node.c b/libdom/src/core/node.c
+index 9fc6a31..f4cafdc 100644
+--- a/libdom/src/core/node.c
++++ b/libdom/src/core/node.c
+@@ -456,6 +456,13 @@ dom_exception _dom_node_set_node_value(dom_node_internal *node,
+ 	if (node->type == DOM_ATTRIBUTE_NODE)
+ 		return dom_attr_set_value((struct dom_attr *) node, value);
+ 
++	/* and for character data, so that the change is reported (the
++	 * DOMCharacterDataModified event) */
++	if (node->type == DOM_TEXT_NODE ||
++			node->type == DOM_CDATA_SECTION_NODE ||
++			node->type == DOM_COMMENT_NODE)
++		return dom_characterdata_set_data(node, value);
++
+ 	if (node->value != NULL)
+ 		dom_string_unref(node->value);
+ 
+@@ -869,7 +876,9 @@ dom_exception _dom_node_replace_child(dom_node_internal *node,
+ 		dom_node_internal *new_child, dom_node_internal *old_child,
+ 		dom_node_internal **result)
+ {
+-	dom_node_internal *n;
++	dom_node_internal *n, *first, *last;
++	dom_exception err;
++	bool success = true;
+ 
+ 	/* We don't support replacement of DocumentType or root Elements */
+ 	if (node->type == DOM_DOCUMENT_NODE && 
+@@ -933,9 +942,41 @@ dom_exception _dom_node_replace_child(dom_node_internal *node,
+ 	 * list */
+ 	dom_node_remove_pending(new_child);
+ 
++	/* Dispatch a DOMNodeRemoved event for old_child */
++	err = dom_node_dispatch_node_change_event(node->owner, old_child, node,
++			DOM_MUTATION_REMOVAL, &success);
++	if (err != DOM_NO_ERR)
++		return err;
++	if (old_child->parent != node)
++		return DOM_NOT_FOUND_ERR;
++
++	/* The nodes that replace it */
++	if (new_child->type == DOM_DOCUMENT_FRAGMENT_NODE) {
++		first = new_child->first_child;
++		last = new_child->last_child;
++	} else {
++		first = last = new_child;
++	}
++
+ 	/* Perform the replacement */
+ 	_dom_node_replace(old_child, new_child);
+ 
++	/* Dispatch a DOMNodeInserted event for each of them (the replacement
++	 * reported no mutation events) */
++	for (n = first; n != NULL; n = n->next) {
++		err = dom_node_dispatch_node_change_event(node->owner, n, node,
++				DOM_MUTATION_ADDITION, &success);
++		if (err != DOM_NO_ERR)
++			return err;
++		if (n == last)
++			break;
++	}
++	success = true;
++	err = _dom_dispatch_subtree_modified_event(node->owner, node,
++			&success);
++	if (err != DOM_NO_ERR)
++		return err;
++
+ 	/* Sort out the return value */
+ 	dom_node_ref(old_child);
+ 	/* The replaced node should be marded pending */
+@@ -984,13 +1025,8 @@ dom_exception _dom_node_remove_child(dom_node_internal *node,
+ 	if (_dom_node_readonly(node))
+ 		return DOM_NO_MODIFICATION_ALLOWED_ERR;
+ 
+-	/* Dispatch a DOMNodeRemoval event */
+-	err = dom_node_dispatch_node_change_event(node->owner, old_child, node,
+-			DOM_MUTATION_REMOVAL, &success);
+-	if (err != DOM_NO_ERR)
+-		return err;
+-
+-	/* Detach the node */
++	/* Detach the node (this dispatches the DOMNodeRemoved event; it was
++	 * also dispatched here, so that every removal was reported twice) */
+ 	_dom_node_detach(old_child);
+ 
+ 	/* When a Node is removed, it should be destroy. When its refcnt is not 

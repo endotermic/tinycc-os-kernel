@@ -2,8 +2,13 @@
 <!-- SPDX-License-Identifier: BSD-2-Clause -->
 <html><head><title>timers</title><script src="harness.js"></script></head><body>
 <script>
-// setTimeout ordering, setInterval with clearInterval, clearTimeout, await on a timer
+// setTimeout ordering (also of timeouts due together), setInterval with clearInterval, clearTimeout, await on a timer
 const log = [];
+const zero = [];
+// timeouts due at the same time run in the order they were set
+setTimeout(() => zero.push("a"), 0);
+setTimeout(() => zero.push("b"), 0);
+setTimeout(() => zero.push("c"), 0);
 setTimeout(() => log.push("t60"), 60);
 setTimeout(() => log.push("t20"), 20);
 const cancelled = setTimeout(() => log.push("cancelled"), 30);
@@ -18,6 +23,7 @@ setTimeout((a, b) => log.push("args " + a + b), 5, "x", "y");
 setTimeout(() => {
     T.eq("timer order", log.join(","), "args xy,t20,await40,t60");
     T.eq("interval ran 3 times", n, 3);
+    T.eq("0 ms timeouts in order", zero.join(","), "a,b,c");
     T.done();
 }, 300);
 </script></body></html>

@@ -1,0 +1,748 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 19:04:12 +0200
+Subject: [PATCH] JavaScript: MutationObserver, IntersectionObserver and
+ ResizeObserver
+
+window.__netsurf_native.observeMutations(node, hook) adds capturing
+libdom listeners for the mutation events to a node and calls hook for
+each insertion, removal, attribute and character data change, with
+whether a script is running (duk_netsurf_call_depth in the QuickJS
+layer).  webapi.js builds MutationObserver on it (records per observer,
+childList/attributes/characterData, subtree, old values,
+attributeFilter, takeRecords, disconnect; delivered as a microtask, or
+from a 0 ms timer for the parser's insertions; multi-node operations
+merged into one record) and IntersectionObserver and ResizeObserver on
+the layout boxes (box() now also gives the content box and padding),
+checked every 100 ms while something is observed.
+---
+ .../handlers/javascript/duktape/Window.bnd    | 139 ++++-
+ .../handlers/javascript/duktape/duk_quickjs.c |   5 +
+ .../handlers/javascript/duktape/duk_quickjs.h |   2 +
+ .../handlers/javascript/duktape/webapi.js     | 485 +++++++++++++++++-
+ netsurf/utils/corestringlist.h                |   2 +
+ 5 files changed, 630 insertions(+), 3 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index 0a2068a..e87554d 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -76,7 +76,8 @@ static struct box *native_box(duk_context *ctx, duk_idx_t idx)
+ }
+ 
+ /* box(el): [x, y, width, height] of the border box in page coordinates,
+- * then [width, height] of the padding box, or null without a box */
++ * then [width, height] of the padding box, [width, height] of the content
++ * box and the left and top padding, or null without a box */
+ static duk_ret_t native_box_geometry(duk_context *ctx)
+ {
+ 	struct box *box = native_box(ctx, 0);
+@@ -101,6 +102,14 @@ static duk_ret_t native_box_geometry(duk_context *ctx)
+ 	duk_put_prop_index(ctx, -2, 4);
+ 	duk_push_int(ctx, ph);
+ 	duk_put_prop_index(ctx, -2, 5);
++	duk_push_int(ctx, box->width);
++	duk_put_prop_index(ctx, -2, 6);
++	duk_push_int(ctx, box->height);
++	duk_put_prop_index(ctx, -2, 7);
++	duk_push_int(ctx, box->padding[LEFT]);
++	duk_put_prop_index(ctx, -2, 8);
++	duk_push_int(ctx, box->padding[TOP]);
++	duk_put_prop_index(ctx, -2, 9);
+ 	return 1;
+ }
+ 
+@@ -650,6 +659,133 @@ static void window_requests_end(window_private_t *w)
+ 		window_request_cancel(w, w->request_ring);
+ }
+ 
++/*
++ * MutationObserver support: observeMutations(node, hook) adds capturing
++ * libdom listeners for the mutation events (DOMNodeInserted, DOMNodeRemoved,
++ * DOMAttrModified, DOMCharacterDataModified) to node; each event at node or
++ * under it calls
++ *   hook(kind, target, current, related, attrName, prevValue, newValue,
++ *        attrChange, nested)
++ * kind 1 inserted, 2 removed (before the removal), 3 attribute, 4 character
++ * data; current is node; nested is true when a script is running (records
++ * then go out as a microtask, else from the scheduler: the parser's
++ * insertions).  The hook is kept on the global object (one per page).
++ */
++#define MUTATION_HOOK MAGIC(MutationHook)
++
++static void native_push_string_or_null(duk_context *ctx, dom_string *s)
++{
++	if (s == NULL)
++		duk_push_null(ctx);
++	else
++		duk_push_lstring(ctx, dom_string_data(s), dom_string_length(s));
++}
++
++static void native_mutation_event(dom_event *evt, void *pw)
++{
++	duk_context *ctx = pw;
++	dom_string *type = NULL, *name = NULL, *prev = NULL, *now = NULL;
++	dom_event_target *target = NULL, *current = NULL;
++	dom_node *related = NULL;
++	dom_node_type ntype;
++	unsigned short change = 0;
++	int kind = 0;
++	duk_idx_t top;
++
++	if (dom_event_get_type(evt, &type) != DOM_NO_ERR || type == NULL)
++		return;
++	if (dom_string_isequal(type, corestring_dom_DOMNodeInserted))
++		kind = 1;
++	else if (dom_string_isequal(type, corestring_dom_DOMNodeRemoved))
++		kind = 2;
++	else if (dom_string_isequal(type, corestring_dom_DOMAttrModified))
++		kind = 3;
++	else if (dom_string_isequal(type, corestring_dom_DOMCharacterDataModified))
++		kind = 4;
++	dom_string_unref(type);
++	if (kind == 0)
++		return;
++	if (dom_event_get_target(evt, &target) != DOM_NO_ERR || target == NULL)
++		return;
++	if (dom_event_get_current_target(evt, &current) != DOM_NO_ERR ||
++	    current == NULL)
++		goto out;
++	/* an attribute node inserted into or removed from its element is
++	 * reported as the attribute change */
++	if (kind <= 2 && (dom_node_get_node_type((dom_node *)target, &ntype)
++			  != DOM_NO_ERR || ntype == DOM_ATTRIBUTE_NODE))
++		goto out;
++	dom_mutation_event_get_related_node(evt, &related);
++	dom_mutation_event_get_attr_name(evt, &name);
++	dom_mutation_event_get_prev_value(evt, &prev);
++	dom_mutation_event_get_new_value(evt, &now);
++	dom_mutation_event_get_attr_change(evt, &change);
++
++	top = duk_get_top(ctx);
++	duk_push_global_object(ctx);
++	duk_get_prop_string(ctx, -1, MUTATION_HOOK);
++	if (duk_is_object(ctx, -1) &&
++	    dukky_push_node(ctx, (dom_node *)target) &&
++	    dukky_push_node(ctx, (dom_node *)current)) {
++		duk_int_t depth = duk_netsurf_call_depth(ctx);
++		duk_push_int(ctx, kind);
++		duk_insert(ctx, -3);
++		if (related == NULL)
++			duk_push_null(ctx);
++		else if (!dukky_push_node(ctx, related))
++			duk_push_null(ctx);
++		native_push_string_or_null(ctx, name);
++		native_push_string_or_null(ctx, prev);
++		native_push_string_or_null(ctx, now);
++		duk_push_int(ctx, change);
++		duk_push_boolean(ctx, depth > 0);
++		dukky_pcall(ctx, 9, false);
++	}
++	duk_set_top(ctx, top);
++out:
++	if (related != NULL) dom_node_unref(related);
++	if (name != NULL) dom_string_unref(name);
++	if (prev != NULL) dom_string_unref(prev);
++	if (now != NULL) dom_string_unref(now);
++	if (current != NULL) dom_node_unref(current);
++	dom_node_unref(target);
++}
++
++static duk_ret_t native_observe_mutations(duk_context *ctx)
++{
++	static dom_string **const types[] = {
++		&corestring_dom_DOMNodeInserted,
++		&corestring_dom_DOMNodeRemoved,
++		&corestring_dom_DOMAttrModified,
++		&corestring_dom_DOMCharacterDataModified,
++	};
++	node_private_t *np;
++	size_t i;
++
++	if (!duk_is_object(ctx, 0) || !duk_is_object(ctx, 1))
++		return 0;
++	duk_get_prop_string(ctx, 0, PRIVATE_MAGIC);
++	np = duk_get_pointer(ctx, -1);
++	duk_pop(ctx);
++	if (np == NULL || np->node == NULL)
++		return 0;
++	duk_push_global_object(ctx);
++	duk_dup(ctx, 1);
++	duk_put_prop_string(ctx, -2, MUTATION_HOOK);
++	duk_pop(ctx);
++	for (i = 0; i < sizeof types / sizeof types[0]; i++) {
++		dom_event_listener *listen = NULL;
++		if (dom_event_listener_create(native_mutation_event, ctx,
++					      &listen) != DOM_NO_ERR)
++			return 0;
++		dom_event_target_add_event_listener(np->node, *types[i],
++						    listen, true);
++		dom_event_listener_unref(listen);
++	}
++	duk_push_boolean(ctx, true);
++	return 1;
++}
++
+ static void native_put(duk_context *ctx, const char *name,
+ 		       duk_c_function fn, duk_idx_t nargs)
+ {
+@@ -1038,6 +1174,7 @@ prototype Window()
+ 	native_put(ctx, "storageWrite", native_storage_write, 1);
+ 	native_put(ctx, "request", native_request, 5);
+ 	native_put(ctx, "abortRequest", native_abort_request, 1);
++	native_put(ctx, "observeMutations", native_observe_mutations, 2);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index 9e88598..8e4551b 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -1189,6 +1189,11 @@ duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx)
+ 	return s != NULL && JS_IsUndefined(s->v);
+ }
+ 
++int duk_netsurf_call_depth(duk_context *ctx)
++{
++	return ctx->heap->depth;
++}
++
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx)
+ {
+ 	return duk_get_type(ctx, idx) == DUK_TYPE_NULL;
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+index 730ad75..245e4da 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -191,6 +191,8 @@ void duk_push_context_dump(duk_context *ctx);
+ duk_int_t duk_get_type(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_check_type(duk_context *ctx, duk_idx_t idx, duk_int_t type);
+ duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx);
++/* NetSurf: how deep the current call into JavaScript is nested (0: none) */
++int duk_netsurf_call_depth(duk_context *ctx);
+ duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 8367d73..fed2c64 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -32,7 +32,8 @@
+  * that a second run does not wrap the wrapper.
+  *
+  * window.__netsurf_native holds the helpers only the browser can answer
+- * (Window.bnd): box(el), viewport(), style(el), storageRead/Write().
++ * (Window.bnd): box(el), viewport(), style(el), storageRead/Write(),
++ * request(), abortRequest(), observeMutations().
+  */
+ 
+ (function (G) {
+@@ -1488,7 +1489,8 @@ if (ElementP) {
+         var d = Object.getOwnPropertyDescriptor(ElementP, "innerHTML");
+         var nativeSet = d && d.set && (d.set.nsOriginal || d.set);
+         var set = function (v) {
+-            if (nativeSet) nativeSet.call(this, v === null ? "" : String(v));
++            var self = this;
++            if (nativeSet) moBatch(function () { nativeSet.call(self, v === null ? "" : String(v)); });
+         };
+         set.nsOriginal = nativeSet;
+         acc(ElementP, "innerHTML", function () { return serializeChildren(this); }, set);
+@@ -2985,4 +2987,483 @@ if (NavigatorP) {
+     });
+ }
+ 
++
++/* ------------------------------------------------------------------ */
++/* MutationObserver                                                    */
++/*
++ * The records come from libdom's mutation events: N.observeMutations(node,
++ * hook) puts capturing listeners on each observed node, and hook() is called
++ * for every insertion, removal (before it happens), attribute change and
++ * text change at the node or under it.  A mutation reaches every observed
++ * ancestor; only the topmost one handles it.  Records go out as a microtask
++ * when a script made the change, and from a 0 ms timer when the parser did
++ * (the parser runs outside any script, between its insertions there is no
++ * point where a microtask would run in a browser either).
++ * Multi-node operations of this file (innerHTML, textContent, append, a
++ * fragment's insertion...) run as a batch: their childList records on one
++ * parent merge into one record, as a browser makes them.
++ */
++
++function moState() {
++    var s = state();
++    if (!s.mo) {
++        s.mo = { hooked: new Set(), regs: new WeakMap(), observers: [], ids: 0,
++                 micro: false, timer: 0, batch: null, depth: 0 };
++    }
++    return s.mo;
++}
++
++function isAncestorOf(a, n) {
++    for (n = n.parentNode; n; n = n.parentNode) if (n === a) return true;
++    return false;
++}
++
++/* run fn(), merging its childList records per parent */
++function moBatch(fn) {
++    var m = moState();
++    if (m.depth++ === 0) m.batch = {};
++    try { return fn(); }
++    finally { if (--m.depth === 0) m.batch = null; }
++}
++
++function MutationRecord() { throw new TypeError("Illegal constructor"); }
++function makeRecord(type, target) {
++    var r = Object.create(MutationRecord.prototype);
++    r.type = type; r.target = target;
++    r._added = []; r._removed = [];
++    r.previousSibling = null; r.nextSibling = null;
++    r.attributeName = null; r.attributeNamespace = null; r.oldValue = null;
++    return r;
++}
++function finishRecord(r) {
++    if (r._added) {
++        r.addedNodes = staticList(r._added);
++        r.removedNodes = staticList(r._removed);
++        delete r._added; delete r._removed; delete r._batch;
++    }
++    return r;
++}
++
++function moDeliver() {
++    var m = moState();
++    m.micro = false;
++    if (m.timer) { G.clearTimeout(m.timer); m.timer = 0; }
++    for (var guard = 0; guard < 100; guard++) {
++        var list = m.observers.filter(function (o) { return o._queue.length; });
++        if (!list.length) return;
++        list.sort(function (a, b) { return a._id - b._id; });
++        list.forEach(function (o) {
++            var recs = o._queue.splice(0).map(finishRecord);
++            if (!recs.length) return;
++            try { o._cb.call(o, recs, o); } catch (e) { report(e); }
++        });
++    }
++}
++
++function moSchedule(nested) {
++    var m = moState();
++    if (nested) {
++        if (!m.micro) {
++            m.micro = true;
++            Promise.resolve().then(moDeliver);
++        }
++    } else if (!m.micro && !m.timer) {
++        m.timer = G.setTimeout(function () { m.timer = 0; moDeliver(); }, 0);
++    }
++}
++
++/* queue a record for every interested observer (the spec's "queue a
++ * mutation record"); fill(record) sets the type-specific members */
++function moQueue(type, target, name, oldValue, merge, fill) {
++    var m = moState(), interested = new Map();
++    for (var n = target; n; n = n.parentNode) {
++        var regs = m.regs.get(n);
++        if (!regs) continue;
++        for (var i = 0; i < regs.length; i++) {
++            var o = regs[i].options;
++            if (n !== target && !o.subtree) continue;
++            if (type === "attributes" && (!o.attributes ||
++                (o.attributeFilter && o.attributeFilter.indexOf(name) < 0))) continue;
++            if (type === "characterData" && !o.characterData) continue;
++            if (type === "childList" && !o.childList) continue;
++            var ob = regs[i].observer;
++            if (!interested.has(ob)) interested.set(ob, null);
++            if ((type === "attributes" && o.attributeOldValue) ||
++                (type === "characterData" && o.characterDataOldValue))
++                interested.set(ob, oldValue);
++        }
++    }
++    interested.forEach(function (old, ob) {
++        var q = ob._queue, last = q[q.length - 1];
++        if (merge && m.batch && last && last._batch === m.batch && last.target === target) {
++            merge(last);
++            return;
++        }
++        var r = makeRecord(type, target);
++        if (type === "attributes") r.attributeName = name;
++        r.oldValue = old;
++        if (m.batch && type === "childList") r._batch = m.batch;
++        fill(r);
++        q.push(r);
++    });
++    return interested.size > 0;
++}
++
++function mutationHook(kind, target, current, related, name, prev, now, change, nested) {
++    var m = moState(), queued = false;
++    /* handled once, at the topmost observed node */
++    if (m.hooked.size > 1) {
++        for (var a = current.parentNode; a; a = a.parentNode)
++            if (m.hooked.has(a)) return;
++    }
++    if (kind === 1 || kind === 2) {
++        var parent = related || target.parentNode;
++        if (!parent) return;
++        var ps = target.previousSibling, ns = target.nextSibling;
++        queued = moQueue("childList", parent, null, null, function (r) {
++            (kind === 1 ? r._added : r._removed).push(target);
++            r.nextSibling = ns;
++        }, function (r) {
++            (kind === 1 ? r._added : r._removed).push(target);
++            r.previousSibling = ps;
++            r.nextSibling = ns;
++        });
++    } else if (kind === 3) {
++        queued = moQueue("attributes", target, name, change === 2 ? null : prev, null,
++                         function () {});
++    } else if (kind === 4) {
++        queued = moQueue("characterData", target, null, prev, null, function () {});
++    }
++    if (queued) moSchedule(nested);
++}
++
++function MutationObserver(callback) {
++    if (!new.target) throw new TypeError("Constructor MutationObserver requires 'new'");
++    if (typeof callback !== "function")
++        throw new TypeError("MutationObserver: the callback is not a function");
++    var m = moState();
++    this._cb = callback;
++    this._queue = [];
++    this._nodes = [];
++    this._id = ++m.ids;
++    m.observers.push(this);
++}
++def(MutationObserver.prototype, "observe", function (target, options) {
++    if (!target || typeof target.nodeType !== "number")
++        throw new TypeError("MutationObserver.observe: target is not a Node");
++    options = options || {};
++    var o = {
++        childList: !!options.childList,
++        attributes: options.attributes,
++        characterData: options.characterData,
++        subtree: !!options.subtree,
++        attributeOldValue: options.attributeOldValue,
++        characterDataOldValue: options.characterDataOldValue,
++        attributeFilter: options.attributeFilter
++    };
++    if ((o.attributeOldValue !== undefined || o.attributeFilter !== undefined) &&
++        o.attributes === undefined) o.attributes = true;
++    if (o.characterDataOldValue !== undefined && o.characterData === undefined)
++        o.characterData = true;
++    o.attributes = !!o.attributes;
++    o.characterData = !!o.characterData;
++    if (!o.childList && !o.attributes && !o.characterData)
++        throw new TypeError("MutationObserver.observe: one of childList, attributes or characterData must be true");
++    if (o.attributeOldValue && !o.attributes)
++        throw new TypeError("MutationObserver.observe: attributeOldValue without attributes");
++    if (o.attributeFilter !== undefined && !o.attributes)
++        throw new TypeError("MutationObserver.observe: attributeFilter without attributes");
++    if (o.characterDataOldValue && !o.characterData)
++        throw new TypeError("MutationObserver.observe: characterDataOldValue without characterData");
++    o.attributeOldValue = !!o.attributeOldValue;
++    o.characterDataOldValue = !!o.characterDataOldValue;
++    o.attributeFilter = o.attributeFilter === undefined ? null :
++        Array.prototype.map.call(o.attributeFilter, String);
++    var m = moState(), regs = m.regs.get(target);
++    if (!regs) { regs = []; m.regs.set(target, regs); }
++    for (var i = 0; i < regs.length; i++) {
++        if (regs[i].observer === this) { regs[i].options = o; return; }
++    }
++    regs.push({ observer: this, options: o });
++    this._nodes.push(target);
++    if (!m.hooked.has(target) && N.observeMutations) {
++        N.observeMutations(target, mutationHook);
++        m.hooked.add(target);
++    }
++});
++def(MutationObserver.prototype, "disconnect", function () {
++    var m = moState(), self = this;
++    this._nodes.forEach(function (n) {
++        var regs = m.regs.get(n);
++        if (regs) m.regs.set(n, regs.filter(function (r) { return r.observer !== self; }));
++    });
++    this._nodes = [];
++    this._queue = [];
++});
++def(MutationObserver.prototype, "takeRecords", function () {
++    return this._queue.splice(0).map(finishRecord);
++});
++G.MutationObserver = MutationObserver;
++G.WebKitMutationObserver = MutationObserver;
++G.MutationRecord = MutationRecord;
++
++/* the multi-node operations as batches */
++(function () {
++    function batched(o, name) {
++        if (!o || typeof o[name] !== "function") return;
++        wrap(o, name, function (orig) {
++            return function () {
++                var self = this, args = arguments;
++                return moBatch(function () { return orig.apply(self, args); });
++            };
++        });
++    }
++    function batchedIfFragment(o, name) {
++        if (!o || typeof o[name] !== "function") return;
++        wrap(o, name, function (orig) {
++            return function (node) {
++                var self = this, args = arguments;
++                if (!node || node.nodeType !== 11) return orig.apply(self, args);
++                return moBatch(function () { return orig.apply(self, args); });
++            };
++        });
++    }
++    function batchedSetter(o, name) {
++        var d = o && Object.getOwnPropertyDescriptor(o, name);
++        if (!d || !d.set) return;
++        var set = d.set.nsOriginal || d.set;
++        var f = function (v) { var self = this; moBatch(function () { set.call(self, v); }); };
++        f.nsOriginal = set;
++        acc(o, name, d.get, f);
++    }
++    [DocumentP, ElementP, FragmentP].forEach(function (p) {
++        ["append", "prepend", "replaceChildren"].forEach(function (k) { batched(p, k); });
++    });
++    [ElementP, CharDataP, proto("DocumentType")].forEach(function (p) {
++        ["before", "after", "replaceWith"].forEach(function (k) { batched(p, k); });
++    });
++    batched(ElementP, "insertAdjacentHTML");
++    ["appendChild", "insertBefore", "replaceChild"].forEach(function (k) { batchedIfFragment(NodeP, k); });
++    batchedSetter(ElementP, "outerHTML");
++    batchedSetter(NodeP, "textContent");
++})();
++
++/* ------------------------------------------------------------------ */
++/* IntersectionObserver and ResizeObserver                             */
++/*
++ * Both compare the last layout's boxes (N.box) with what they reported
++ * before: once soon after observe() and then every 100 ms while anything
++ * is observed (NetSurf tells scripts of no reflow and no scrolling).
++ * IntersectionObserver: the root is the viewport or an element's border
++ * box; rootMargin in px or % (of the root); clipping by scrolling
++ * ancestors is not looked at.
++ */
++
++function geoState() {
++    var s = state();
++    if (!s.geo) s.geo = { observers: [], timer: 0, soon: 0 };
++    return s.geo;
++}
++function geoActive() {
++    return geoState().observers.some(function (o) { return o._targets.length; });
++}
++function geoCheck() {
++    var g = geoState(), d = doc();
++    /* nothing before the first layout (no element has a box yet) */
++    if (!d || !d.documentElement || !boxOf(d.documentElement)) return;
++    g.observers.slice().forEach(function (o) {
++        try { o._check(); } catch (e) { report(e); }
++    });
++}
++function geoStart(soon) {
++    var g = geoState();
++    if (soon && !g.soon) {
++        g.soon = G.setTimeout(function () { g.soon = 0; geoCheck(); }, 0);
++    }
++    if (!g.timer) {
++        g.timer = G.setInterval(function () {
++            if (!geoActive()) { G.clearInterval(g.timer); g.timer = 0; return; }
++            geoCheck();
++        }, 100);
++    }
++}
++function boxOf(el) {
++    return (N.box && el && el.nodeType === 1) ? N.box(el) : null;
++}
++function rectOf(b) { return b ? { x: b[0], y: b[1], w: b[2], h: b[3] } : null; }
++function intersect(a, b) {
++    var x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
++    var r = Math.min(a.x + a.w, b.x + b.w), btm = Math.min(a.y + a.h, b.y + b.h);
++    return (r >= x && btm >= y) ? { x: x, y: y, w: r - x, h: btm - y } : null;
++}
++
++function parseMargin(s) {
++    var parts = String(s === undefined ? "0px" : s).trim().split(/\s+/);
++    if (parts.length > 4 || parts[0] === "") throw new SyntaxError("rootMargin: '" + s + "' is not a margin");
++    var m = parts.map(function (p) {
++        var r = /^(-?\d*\.?\d+)(px|%)$/.exec(p) || (p === "0" ? ["0", "0", "px"] : null);
++        if (!r) throw new SyntaxError("rootMargin: '" + s + "' is not a margin in px or %");
++        return { v: parseFloat(r[1]), u: r[2] };
++    });
++    if (m.length === 1) m = [m[0], m[0], m[0], m[0]];
++    else if (m.length === 2) m = [m[0], m[1], m[0], m[1]];
++    else if (m.length === 3) m = [m[0], m[1], m[2], m[1]];
++    return m;
++}
++
++function IntersectionObserverEntry(init) {
++    init = init || {};
++    var self = this;
++    ["time", "rootBounds", "boundingClientRect", "intersectionRect", "isIntersecting",
++     "intersectionRatio", "target", "isVisible"].forEach(function (k) {
++        Object.defineProperty(self, k, { value: init[k], enumerable: true, configurable: true });
++    });
++}
++
++function IntersectionObserver(callback, options) {
++    if (!new.target) throw new TypeError("Constructor IntersectionObserver requires 'new'");
++    if (typeof callback !== "function")
++        throw new TypeError("IntersectionObserver: the callback is not a function");
++    options = options || {};
++    var t = options.threshold === undefined ? [0] :
++        Array.isArray(options.threshold) ? options.threshold.slice() : [options.threshold];
++    if (!t.length) t = [0];
++    t = t.map(Number);
++    t.forEach(function (v) {
++        if (!(v >= 0 && v <= 1)) throw new RangeError("IntersectionObserver: threshold values must be in [0, 1]");
++    });
++    t.sort(function (a, b) { return a - b; });
++    var root = options.root === undefined ? null : options.root;
++    if (root !== null && (typeof root !== "object" || (root.nodeType !== 1 && root.nodeType !== 9)))
++        throw new TypeError("IntersectionObserver: root is not an Element or a Document");
++    def(this, "_margin", parseMargin(options.rootMargin));
++    def(this, "_cb", callback);
++    def(this, "_targets", []);
++    def(this, "_queue", []);
++    Object.defineProperty(this, "root", { value: root, enumerable: true });
++    Object.defineProperty(this, "rootMargin", { enumerable: true,
++        value: this._margin.map(function (m) { return m.v + m.u; }).join(" ") });
++    Object.defineProperty(this, "thresholds", { value: Object.freeze(t), enumerable: true });
++    Object.defineProperty(this, "delay", { value: 0, enumerable: true });
++    Object.defineProperty(this, "trackVisibility", { value: false, enumerable: true });
++    geoState().observers.push(this);
++}
++def(IntersectionObserver.prototype, "observe", function (el) {
++    if (!el || el.nodeType !== 1) throw new TypeError("IntersectionObserver.observe: target is not an Element");
++    for (var i = 0; i < this._targets.length; i++) if (this._targets[i].el === el) return;
++    this._targets.push({ el: el, index: -1, inter: false });
++    geoStart(true);
++});
++def(IntersectionObserver.prototype, "unobserve", function (el) {
++    this._targets = this._targets.filter(function (t) { return t.el !== el; });
++});
++def(IntersectionObserver.prototype, "disconnect", function () {
++    this._targets = [];
++});
++def(IntersectionObserver.prototype, "takeRecords", function () {
++    return this._queue.splice(0);
++});
++def(IntersectionObserver.prototype, "_rootRect", function () {
++    var v = viewport(), r;
++    if (this.root === null || this.root.nodeType === 9) {
++        r = { x: v[2], y: v[3], w: v[0], h: v[1] };
++    } else {
++        r = rectOf(boxOf(this.root));
++        if (!r) return null;
++    }
++    var m = this._margin, d = [r.h, r.w, r.h, r.w];
++    var px = m.map(function (x, i) { return x.u === "%" ? x.v * d[i] / 100 : x.v; });
++    return { x: r.x - px[3], y: r.y - px[0], w: r.w + px[1] + px[3], h: r.h + px[0] + px[2] };
++});
++def(IntersectionObserver.prototype, "_check", function () {
++    if (!this._targets.length) return;
++    var v = viewport(), sx = v[2], sy = v[3], self = this;
++    var root = this._rootRect(), now = G.performance ? G.performance.now() : Date.now();
++    function client(r) { return r ? new G.DOMRect(r.x - sx, r.y - sy, r.w, r.h) : new G.DOMRect(0, 0, 0, 0); }
++    this._targets.forEach(function (t) {
++        var tr = rectOf(boxOf(t.el)), inside = true, ir = null;
++        if (self.root && self.root.nodeType === 1) inside = isAncestorOf(self.root, t.el);
++        if (tr && root && inside) ir = intersect(tr, root);
++        var isInter = !!ir;
++        var area = tr ? tr.w * tr.h : 0;
++        var ratio = !isInter ? 0 : area > 0 ? (ir.w * ir.h) / area : 1;
++        var th = self.thresholds, idx = 0;
++        if (isInter) {
++            while (idx < th.length && th[idx] <= ratio) idx++;
++        }
++        if (idx === t.index && isInter === t.inter) return;
++        t.index = idx;
++        t.inter = isInter;
++        self._queue.push(new IntersectionObserverEntry({
++            time: now,
++            rootBounds: root ? client(root) : null,
++            boundingClientRect: client(tr),
++            intersectionRect: client(ir),
++            isIntersecting: isInter,
++            intersectionRatio: ratio,
++            target: t.el,
++            isVisible: false
++        }));
++    });
++    if (this._queue.length) {
++        var recs = this._queue.splice(0);
++        this._cb.call(this, recs, this);
++    }
++});
++G.IntersectionObserver = IntersectionObserver;
++G.IntersectionObserverEntry = IntersectionObserverEntry;
++
++function ResizeObserverSize(inline, block) {
++    Object.defineProperty(this, "inlineSize", { value: inline, enumerable: true });
++    Object.defineProperty(this, "blockSize", { value: block, enumerable: true });
++}
++function ResizeObserverEntry() { throw new TypeError("Illegal constructor"); }
++function ResizeObserver(callback) {
++    if (!new.target) throw new TypeError("Constructor ResizeObserver requires 'new'");
++    if (typeof callback !== "function")
++        throw new TypeError("ResizeObserver: the callback is not a function");
++    def(this, "_cb", callback);
++    def(this, "_targets", []);
++    geoState().observers.push(this);
++}
++def(ResizeObserver.prototype, "observe", function (el, options) {
++    if (!el || el.nodeType !== 1) throw new TypeError("ResizeObserver.observe: target is not an Element");
++    var box = (options && options.box) || "content-box";
++    if (["content-box", "border-box", "device-pixel-content-box"].indexOf(box) < 0)
++        throw new TypeError("ResizeObserver.observe: unknown box '" + box + "'");
++    this.unobserve(el);
++    this._targets.push({ el: el, box: box, w: 0, h: 0 });
++    geoStart(true);
++});
++def(ResizeObserver.prototype, "unobserve", function (el) {
++    var t = this._targets.filter(function (t) { return t.el !== el; });
++    this._targets.length = 0;
++    Array.prototype.push.apply(this._targets, t);
++});
++def(ResizeObserver.prototype, "disconnect", function () { this._targets.length = 0; });
++def(ResizeObserver.prototype, "_check", function () {
++    var entries = [];
++    this._targets.forEach(function (t) {
++        var b = boxOf(t.el);
++        var cw = b ? b[6] : 0, ch = b ? b[7] : 0, bw = b ? b[2] : 0, bh = b ? b[3] : 0;
++        var w = t.box === "border-box" ? bw : cw, h = t.box === "border-box" ? bh : ch;
++        if (w === t.w && h === t.h) return;
++        t.w = w; t.h = h;
++        var e = Object.create(ResizeObserverEntry.prototype);
++        var content = [new ResizeObserverSize(cw, ch)];
++        Object.defineProperty(e, "target", { value: t.el, enumerable: true });
++        Object.defineProperty(e, "contentRect", { enumerable: true,
++            value: new G.DOMRect(b ? b[8] : 0, b ? b[9] : 0, cw, ch) });
++        Object.defineProperty(e, "contentBoxSize", { value: Object.freeze(content), enumerable: true });
++        Object.defineProperty(e, "borderBoxSize", { enumerable: true,
++            value: Object.freeze([new ResizeObserverSize(bw, bh)]) });
++        Object.defineProperty(e, "devicePixelContentBoxSize", { value: Object.freeze(content), enumerable: true });
++        entries.push(e);
++    });
++    if (entries.length) this._cb.call(this, entries, this);
++});
++G.ResizeObserver = ResizeObserver;
++G.ResizeObserverEntry = ResizeObserverEntry;
++G.ResizeObserverSize = ResizeObserverSize;
++
+ })(globalThis);
+diff --git a/netsurf/utils/corestringlist.h b/netsurf/utils/corestringlist.h
+index 5cdbb3a..ff8e49a 100644
+--- a/netsurf/utils/corestringlist.h
++++ b/netsurf/utils/corestringlist.h
+@@ -227,8 +227,10 @@ CORESTRING_DOM_STRING(data);
+ CORESTRING_DOM_STRING(dblclick);
+ CORESTRING_DOM_STRING(defer);
+ CORESTRING_DOM_STRING(DOMAttrModified);
++CORESTRING_DOM_STRING(DOMCharacterDataModified);
+ CORESTRING_DOM_STRING(DOMNodeInserted);
+ CORESTRING_DOM_STRING(DOMNodeInsertedIntoDocument);
++CORESTRING_DOM_STRING(DOMNodeRemoved);
+ CORESTRING_DOM_STRING(DOMSubtreeModified);
+ CORESTRING_DOM_STRING(drag);
+ CORESTRING_DOM_STRING(dragend);
