@@ -1,0 +1,279 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 13:29:30 +0200
+Subject: [PATCH] JavaScript: list indexes, HTMLCollection, fragments,
+ namespaceURI, readyState
+
+The list proxies (childNodes, getElementsByTagName, attributes) tested
+for numeric keys, but property keys reach a Proxy as strings: list[0]
+was undefined; their methods also ran on the Proxy.  HTMLCollection had
+no length, item or namedItem.  Document fragments got the plain Node
+prototype; they get DocumentFragment's (its init is Node's).
+Element.namespaceURI and Document.readyState are implemented;
+duk_is_object is added to the QuickJS layer.
+---
+ .../handlers/javascript/duktape/Document.bnd  | 21 +++++++
+ .../handlers/javascript/duktape/Element.bnd   | 16 ++++++
+ .../javascript/duktape/HTMLCollection.bnd     | 51 +++++++++++++++++
+ .../handlers/javascript/duktape/duk_quickjs.c |  5 ++
+ .../handlers/javascript/duktape/duk_quickjs.h |  1 +
+ .../handlers/javascript/duktape/dukky.c       |  5 +-
+ .../handlers/javascript/duktape/generics.js   | 55 ++++++++++++++-----
+ 7 files changed, 140 insertions(+), 14 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Document.bnd b/netsurf/content/handlers/javascript/duktape/Document.bnd
+index 2f9adc3..a6a96cf 100644
+--- a/netsurf/content/handlers/javascript/duktape/Document.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Document.bnd
+@@ -360,6 +360,27 @@ method Document::getElementsByTagName()
+ 	return 1; /* The Proxy(NodeList) wrapper */
+ %}
+ 
++/* "loading" while the parser runs, "interactive" from DOMContentLoaded,
++ * "complete" once the content is done (its load event fired) */
++getter Document::readyState()
++%{
++	struct html_content *htmlc;
++	dom_exception err;
++	const char *state = "loading";
++
++	err = dom_node_get_user_data(priv->parent.node,
++				     corestring_dom___ns_key_html_content_data,
++				     &htmlc);
++	if ((err == DOM_NO_ERR) && (htmlc != NULL)) {
++		if (htmlc->base.status == CONTENT_STATUS_DONE)
++			state = "complete";
++		else if (htmlc->conversion_begun)
++			state = "interactive";
++	}
++	duk_push_string(ctx, state);
++	return 1;
++%}
++
+ getter Document::cookie()
+ %{
+ 	char *cookie_str;
+diff --git a/netsurf/content/handlers/javascript/duktape/Element.bnd b/netsurf/content/handlers/javascript/duktape/Element.bnd
+index ff0686f..cbb392d 100644
+--- a/netsurf/content/handlers/javascript/duktape/Element.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Element.bnd
+@@ -220,6 +220,22 @@ method Element::getElementsByTagName ()
+ 	return 1;
+ %}
+ 
++getter Element::namespaceURI()
++%{
++	dom_exception exc;
++	dom_string *ns = NULL;
++
++	exc = dom_node_get_namespace(((node_private_t *)priv)->node, &ns);
++	if (exc != DOM_NO_ERR) return 0;
++	if (ns == NULL) {
++		duk_push_null(ctx);
++		return 1;
++	}
++	duk_push_lstring(ctx, dom_string_data(ns), dom_string_length(ns));
++	dom_string_unref(ns);
++	return 1;
++%}
++
+ getter Element::id ()
+ %{
+ 	dom_string *idstr = NULL;
+diff --git a/netsurf/content/handlers/javascript/duktape/HTMLCollection.bnd b/netsurf/content/handlers/javascript/duktape/HTMLCollection.bnd
+index 2ffe702..2b2cd9b 100644
+--- a/netsurf/content/handlers/javascript/duktape/HTMLCollection.bnd
++++ b/netsurf/content/handlers/javascript/duktape/HTMLCollection.bnd
+@@ -22,3 +22,54 @@ fini HTMLCollection()
+ %{
+ 	dom_html_collection_unref(priv->coll);
+ %}
++
++getter HTMLCollection::length()
++%{
++	dom_exception err;
++	uint32_t len;
++
++	err = dom_html_collection_get_length(priv->coll, &len);
++	if (err != DOM_NO_ERR) return 0; /* coerced to undefined */
++
++	duk_push_uint(ctx, (duk_uint_t)len);
++	return 1;
++%}
++
++method HTMLCollection::item()
++%{
++	unsigned long i = duk_to_uint(ctx, 0);
++	dom_exception err;
++	dom_node *node = NULL;
++
++	err = dom_html_collection_item(priv->coll, i, &node);
++	if (err != DOM_NO_ERR || node == NULL) {
++		duk_push_null(ctx);
++		return 1;
++	}
++
++	dukky_push_node(ctx, node);
++	dom_node_unref(node);
++	return 1;
++%}
++
++method HTMLCollection::namedItem()
++%{
++	duk_size_t len;
++	const char *name = duk_safe_to_lstring(ctx, 0, &len);
++	dom_exception err;
++	dom_string *str;
++	dom_node *node = NULL;
++
++	err = dom_string_create((const uint8_t *)name, len, &str);
++	if (err != DOM_NO_ERR) return 0;
++	err = dom_html_collection_named_item(priv->coll, str, &node);
++	dom_string_unref(str);
++	if (err != DOM_NO_ERR || node == NULL) {
++		duk_push_null(ctx);
++		return 1;
++	}
++
++	dukky_push_node(ctx, node);
++	dom_node_unref(node);
++	return 1;
++%}
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index f3aa799..9e88598 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -1209,6 +1209,11 @@ duk_bool_t duk_is_string(duk_context *ctx, duk_idx_t idx)
+ 	return duk_get_type(ctx, idx) == DUK_TYPE_STRING;
+ }
+ 
++duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx)
++{
++	return duk_get_type(ctx, idx) == DUK_TYPE_OBJECT;
++}
++
+ duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx)
+ {
+ 	JSValueConst v = duk__val(ctx, idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+index c65a2f7..730ad75 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -191,6 +191,7 @@ void duk_push_context_dump(duk_context *ctx);
+ duk_int_t duk_get_type(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_check_type(duk_context *ctx, duk_idx_t idx, duk_int_t type);
+ duk_bool_t duk_is_undefined(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_number(duk_context *ctx, duk_idx_t idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index a0108fa..79cd265 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -467,10 +467,13 @@ dukky_push_node_klass(duk_context *ctx, struct dom_node *node)
+ 	case DOM_DOCUMENT_NODE:
+ 		duk_push_string(ctx, PROTO_NAME(DOCUMENT));
+ 		break;
++	case DOM_DOCUMENT_FRAGMENT_NODE:
++		/* its init is Node's: querySelector, append and the like */
++		duk_push_string(ctx, PROTO_NAME(DOCUMENTFRAGMENT));
++		break;
+ 	case DOM_ATTRIBUTE_NODE:
+ 	case DOM_PROCESSING_INSTRUCTION_NODE:
+ 	case DOM_DOCUMENT_TYPE_NODE:
+-	case DOM_DOCUMENT_FRAGMENT_NODE:
+ 	case DOM_NOTATION_NODE:
+ 	case DOM_ENTITY_REFERENCE_NODE:
+ 	case DOM_ENTITY_NODE:
+diff --git a/netsurf/content/handlers/javascript/duktape/generics.js b/netsurf/content/handlers/javascript/duktape/generics.js
+index e6e952a..fd2c19d 100644
+--- a/netsurf/content/handlers/javascript/duktape/generics.js
++++ b/netsurf/content/handlers/javascript/duktape/generics.js
+@@ -9,44 +9,73 @@
+ 
+ var NetSurf = {
+     /* The make-proxy call for list-type objects */
++    /* Property keys reach a Proxy as strings: "0", not 0 */
++    listIndex: function(key) {
++	return (typeof key == 'string' && /^(0|[1-9][0-9]*)$/.test(key)) ?
++	    Number(key) : -1;
++    },
+     makeListProxy: function(inner) {
++	var index = NetSurf.listIndex;
+ 	return new Proxy(inner, {
+ 	    has: function(target, key) {
+-		if (typeof key == 'number') {
+-		    return (key >= 0) && (key < target.length);
++		var i = index(key);
++		if (i >= 0) {
++		    return i < target.length;
+ 		} else {
+ 		    return key in target;
+ 		}
+ 	    },
+ 	    get: function(target, key) {
+-		if (typeof key == 'number') {
+-		    return target.item(key);
+-		} else {
+-		    return target[key];
++		var i = index(key);
++		if (i >= 0) {
++		    return i < target.length ? target.item(i) : undefined;
++		}
++		var v = target[key];
++		/* methods run on the list itself, not on the Proxy */
++		return (typeof v == 'function') ? v.bind(target) : v;
++	    },
++	    ownKeys: function(target) {
++		var keys = [];
++		for (var i = 0; i < target.length; i++) keys.push(String(i));
++		return keys.concat(Reflect.ownKeys(target));
++	    },
++	    getOwnPropertyDescriptor: function(target, key) {
++		var i = index(key);
++		if (i >= 0 && i < target.length) {
++		    return { value: target.item(i), enumerable: true,
++			     configurable: true, writable: false };
+ 		}
++		return Reflect.getOwnPropertyDescriptor(target, key);
+ 	    },
+ 	});
+     },
+     /* The make-proxy call for nodemap-type objects */
+     makeNodeMapProxy: function(inner) {
++	var index = NetSurf.listIndex;
+ 	return new Proxy(inner, {
+ 	    has: function(target, key) {
+-		if (typeof key == 'number') {
+-		    return (key >= 0) && (key < target.length);
++		var i = index(key);
++		if (i >= 0) {
++		    return i < target.length;
++		} else if (typeof key == 'string' && target.getNamedItem(key)) {
++		    return true;
+ 		} else {
+-		    return target.getNamedItem(key) || (key in target);
++		    return key in target;
+ 		}
+ 	    },
+ 	    get: function(target, key) {
+-		if (typeof key == 'number') {
+-		    return target.item(key);
+-		} else {
++		var i = index(key);
++		if (i >= 0) {
++		    return i < target.length ? target.item(i) : undefined;
++		}
++		if (typeof key == 'string') {
+ 		    var attr = target.getNamedItem(key);
+ 		    if (attr) {
+ 			return attr;
+ 		    }
+-		    return target[key];
+ 		}
++		var v = target[key];
++		return (typeof v == 'function') ? v.bind(target) : v;
+ 	    },
+ 	});
+     },

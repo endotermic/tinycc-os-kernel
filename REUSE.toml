@@ -116,6 +116,18 @@ SPDX-FileCopyrightText = ["The NetSurf authors", "Vincent Sanders", "2026 Nikola
 SPDX-License-Identifier = "MIT AND GPL-2.0-only"
 
 [[annotations]]
+path = ["patches/netsurf/**/0016-*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Vincent Sanders", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["patches/netsurf/**/0017-*.patch", "patches/netsurf/**/0018-*.patch", "patches/netsurf/**/0019-*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["The NetSurf authors", "Vincent Sanders", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "GPL-2.0-only AND MIT"
+
+[[annotations]]
 path = ["patches/links/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Mikulas Patocka and the Links authors", "2026 Nikolajs Agafonovs"]

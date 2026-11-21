@@ -1799,6 +1799,30 @@ C43. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0015), found writing th
     text/plain. This affected local pages in the guest too. Verification: every test page loads
     harness.js.
 
+C44. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0017), found by the test page
+    events-load.html (phase 0) and phase 1 of docs/NETSURF-JS.md: html.c never fired
+    DOMContentLoaded (the place had only a comment), the load event called only window.onload or
+    <body onload> and never the listeners added with window.addEventListener, and
+    EventTarget.dispatchEvent returned at once for a target that is no node (the Window). Now
+    DOMContentLoaded is fired at the document (bubbling) when the parser is done, and
+    dukky_dispatch_to_object runs a non-node target's listeners (once listeners dropped) for
+    js_fire_event and dispatchEvent. Verification: events-load.html, events-ctor.html.
+
+C45. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0018), found writing dom-select.html:
+    the list proxies of generics.js (childNodes, getElementsByTagName, attributes) tested
+    typeof key == 'number', but property keys reach a Proxy as strings, so list[0] was undefined;
+    methods fetched through the Proxy ran with it as this. HTMLCollection had no length, item or
+    namedItem; document fragments got Node's prototype (no DocumentFragment members). Fixed, with
+    Element.namespaceURI and Document.readyState implemented and duk_is_object added to the QuickJS
+    layer. Verification: dom-select.html, dom-api.html.
+
+C46. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0016): nsgenbind defined WebIDL
+    operations as non-writable and non-configurable and attributes as non-configurable; WebIDL's
+    ECMAScript binding makes both configurable (operations writable too). Scripts and polyfills
+    could not replace any member, so webapi.js (features/0019) could not fill in the stubs. Also
+    found: Element.innerHTML's getter returned "" and HTMLElement.style a new empty object on every
+    read (both now in webapi.js). Verification: tests/netsurf/run.sh, 14 pages.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

@@ -31,7 +31,7 @@ const p = document.getElementById("out"), ul = document.getElementById("list");
 p.textContent = "run";
 for (const w of ["alpha", "beta"]) { const li = document.createElement("li"); li.textContent = w; ul.appendChild(li); }
 T.eq("appendChild", ul.childNodes.length, 2);
-T.todo("Element.tagName", p.tagName, "P"); // phase 1
+T.eq("Element.tagName", p.tagName, "P");
 T.eq("nodeName", p.nodeName, "P");
 T.eq("textContent", p.textContent, "run");
 // microtasks run before timers

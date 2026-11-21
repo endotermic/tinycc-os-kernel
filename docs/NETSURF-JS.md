@@ -1,6 +1,6 @@
 # NetSurf: the web APIs a script-built site needs (plan, target youtube.com)
 
-Plan of 2026-11-21 (phase 0 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
+Plan of 2026-11-21 (phases 0 and 1 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
 nsgenbind bindings are unchanged), redraws DOM changes made after load (0009/0010) and dispatches
 events correctly (0012/0013). youtube.com still shows a blank page. This file lists what it needs,
 in the order planned. Mark a phase done here when it is committed and verified (host and guest,
@@ -105,7 +105,49 @@ and its own polyfills (`fetch-polyfill`, `intersection-observer`, `webcomponents
 
 Unimplemented members used: `Document.querySelectorAll()`, `Window.postMessage()`, `Window.self`.
 
-## Phase 1: small DOM and window gaps (medium)
+## Phase 1: small DOM and window gaps — DONE (2026-11-21)
+
+Patches upstreamable/0016-0018 and features/0019; FIX-LOG C44-C46. 14 test pages, 194 checks,
+all pass on the host and (style, window-api, dom-select looked at) in the x86_64 guest.
+
+- nsgenbind (0016): WebIDL operations are writable and configurable, attributes configurable (they
+  were fixed, so nothing could replace a stub); needed by everything below and by phase 4.
+- Events (0017): `DOMContentLoaded` is fired; `addEventListener` listeners on the window run for
+  `load`; `window.dispatchEvent` works (it returned at once for a non-node).
+- Bindings (0018): list proxies took numeric keys only, which never reach a Proxy (`childNodes[0]`
+  was undefined); `HTMLCollection` length/item/namedItem; fragments get the DocumentFragment
+  prototype; `Element.namespaceURI`, `Document.readyState`.
+- `webapi.js` (0019), loaded after polyfill.js in every page: selectors (`querySelector(All)`,
+  `matches`, `closest`, `getElementsByClassName`; a selector engine in JavaScript: tag/id/class,
+  attribute operators with `i`, all combinators, `:not :is :where :has`, structural and form
+  pseudo-classes, `nth-*` with `of S`; libcss's matcher is not reachable cleanly), ParentNode and
+  ChildNode methods, `children`, `dataset`, `toggleAttribute`, `insertAdjacent*`, an `innerHTML`
+  serializer (the getter returned "") and `outerHTML`, `element.style` over the style attribute
+  (it returned a fresh empty object; it answers only for properties NetSurf's CSS knows, so
+  feature tests do not claim transitions), `getComputedStyle` (display, position, visibility,
+  opacity, colours, font size, z-index, width, height from the layout; defaults for the rest),
+  `getBoundingClientRect`/offset*/client*, event constructors (Event, CustomEvent, MouseEvent,
+  KeyboardEvent and 20 more; `createEvent` by interface with the `init*Event` methods), a
+  constructible `EventTarget`, `AbortController`, `Image`, `Option`, `Text`, `createElementNS` for
+  HTML, `window.self/top/parent`, `postMessage`, `requestAnimationFrame` (callbacks of a frame
+  together, 16 ms), `requestIdleCallback`, `queueMicrotask`, `performance`, `atob`/`btoa`,
+  `structuredClone`, `localStorage` (saved to `~/.netsurf/storage/<origin>`, 5 MB) and
+  `sessionStorage`, `history` state (pushState does not change the address), `matchMedia`, `screen`,
+  `innerWidth` and the like, `navigator.language(s)/onLine`, `document.title/visibilityState/...`,
+  `URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder`, `DOMException`, `CSS.escape`.
+- `window.__netsurf_native` (Window.bnd): box geometry, viewport and scroll, computed values, the
+  storage file.
+
+YouTube (same saved copy): 4 uncaught errors before, 1 after: `new MutationObserver` in the Custom
+Elements polyfill (phase 3); no unimplemented WebIDL member is used any more.
+
+Left out or approximate: `scrollTo` and element scrolling do nothing; geometry and computed values
+are those of the last layout (a rebuild after a DOM change runs later); `getComputedStyle` without a
+box says `display: none`; `CSS.supports` is always false; `history.pushState` keeps state only.
+
+The plan as written before the work:
+
+### Phase 1 plan (2026-11-21)
 
 Native (`.bnd`):
 

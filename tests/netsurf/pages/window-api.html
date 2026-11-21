@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><meta charset="utf-8"><title>window-api</title><script src="harness.js"></script></head><body>
+<script>
+// window members, base64, structuredClone, timers for animation, URL, text encoding,
+// storage (webapi.js)
+T.ok("self top parent", self === window && top === window && parent === window && frames === window);
+T.eq("btoa atob", atob(btoa("helloÿ")), "helloÿ");
+T.eq("btoa", btoa("Man"), "TWFu");
+try { btoa("Ā"); T.ok("btoa range error", false); } catch (e) { T.eq("btoa range error", e.name, "InvalidCharacterError"); }
+const src = { d: new Date(5), m: new Map([[1, { a: [1, 2] }]]), s: new Set([3]) };
+src.self = src;
+const c = structuredClone(src);
+T.ok("structuredClone", c !== src && c.self === c && c.d.getTime() === 5 && c.m.get(1).a[1] === 2 && c.s.has(3));
+const ex = new DOMException("m", "NotFoundError");
+T.eq("DOMException", ex.name + "," + ex.code + "," + ex.message + "," + (ex instanceof Error), "NotFoundError,8,m,true");
+T.ok("performance.now", typeof performance.now() === "number");
+T.eq("navigator", navigator.language + "," + navigator.onLine, "en-US,true");
+T.ok("screen", screen.width > 0 && screen.colorDepth === 24);
+// URL
+const u = new URL("../b/c?x=1&y=two#h", "https://user@Example.com:8443/a/d/e");
+T.eq("URL href", u.href, "https://user@example.com:8443/a/b/c?x=1&y=two#h");
+T.eq("URL parts", [u.protocol, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join(" "),
+    "https: example.com 8443 /a/b/c ?x=1&y=two #h https://example.com:8443");
+u.searchParams.append("z", "a b");
+T.eq("URL searchParams", u.search, "?x=1&y=two&z=a+b");
+T.eq("URL default port", new URL("http://h:80/").href, "http://h/");
+T.eq("URL relative root", new URL("/r", "http://h/a/b").href, "http://h/r");
+T.eq("URL scheme-relative", new URL("//o.org/p", "https://h/").href, "https://o.org/p");
+try { new URL("no scheme"); T.ok("URL invalid", false); } catch (e) { T.eq("URL invalid", e.name, "TypeError"); }
+const sp = new URLSearchParams("a=1&b=2&a=3");
+T.eq("URLSearchParams", sp.getAll("a").join() + "," + sp.get("b") + "," + sp.has("c"), "1,3,2,false");
+sp.set("a", "x"); sp.delete("b");
+T.eq("URLSearchParams set/delete", sp.toString(), "a=x");
+T.eq("URLSearchParams object", new URLSearchParams({ q: "é &" }).toString(), "q=%C3%A9+%26");
+// text encoding
+const bytes = new TextEncoder().encode("aé😀");
+T.eq("TextEncoder", Array.from(bytes).join(), "97,195,169,240,159,152,128");
+T.eq("TextDecoder", new TextDecoder().decode(bytes), "aé😀");
+// storage
+localStorage.clear();
+localStorage.setItem("k", "v");
+localStorage.n = 5;
+T.eq("localStorage", localStorage.getItem("k") + "," + localStorage.n + "," + localStorage.length + "," + localStorage.key(0), "v,5,2,k");
+localStorage.removeItem("n");
+T.eq("localStorage remove", localStorage.length + "," + localStorage.getItem("n"), "1,null");
+sessionStorage.setItem("s", "1");
+T.eq("sessionStorage", sessionStorage.getItem("s"), "1");
+history.pushState({ p: 1 }, "", "#p");
+T.eq("history.pushState", history.state.p + "," + history.length, "1,2");
+// microtasks, animation frames
+const order = [];
+queueMicrotask(() => order.push("micro"));
+let rafArg = null;
+const cancelled = requestAnimationFrame(() => order.push("cancelled"));
+cancelAnimationFrame(cancelled);
+requestAnimationFrame(t => { rafArg = t; order.push("raf"); });
+setTimeout(() => {
+    T.eq("queueMicrotask and requestAnimationFrame", order.join(), "micro,raf");
+    T.eq("requestAnimationFrame time", typeof rafArg, "number");
+    T.done();
+}, 100);
+</script></body></html>

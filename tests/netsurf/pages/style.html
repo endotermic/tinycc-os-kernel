@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>style</title><script src="harness.js"></script>
+<style>
+#w { width: 100px; height: 40px; padding: 5px; border: 2px solid black; color: rgb(0, 0, 255); }
+.gone { display: none; }
+</style></head><body>
+<div id="w">w</div><div id="g" class="gone">g</div><span id="sp">sp</span>
+<script>
+// inline style, computed style, geometry, matchMedia (webapi.js + Window.bnd natives)
+const w = document.getElementById("w"), g = document.getElementById("g");
+w.style.backgroundColor = "red";
+T.eq("style set", w.getAttribute("style"), "background-color: red;");
+T.eq("style get", w.style.backgroundColor, "red");
+w.style.setProperty("margin-top", "3px", "important");
+T.eq("setProperty important", w.style.cssText, "background-color: red; margin-top: 3px !important;");
+T.eq("getPropertyPriority", w.style.getPropertyPriority("margin-top"), "important");
+w.style.removeProperty("margin-top");
+w.style.cssFloat = "left";
+T.eq("cssFloat", w.style.getPropertyValue("float"), "left");
+w.style.cssText = "color: green";
+T.eq("cssText set", w.style.color + "," + w.style.length, "green,1");
+w.style.color = "";
+T.eq("empty value removes", w.hasAttribute("style"), false);
+T.eq("unsupported property", ("transition" in w.style) + "," + typeof w.style.transition, "false,undefined");
+T.eq("supported property", ("display" in w.style) + "," + w.style.display, "true,");
+T.eq("same object", w.style, w.style);
+T.eq("innerWidth", window.innerWidth > 0, true);
+T.eq("matchMedia", [matchMedia("(min-width: 1px)").matches, matchMedia("(max-width: 1px)").matches,
+    matchMedia("print").matches, matchMedia("screen and (orientation: landscape)").matches].join(), "true,false,false,true");
+window.addEventListener("load", () => setTimeout(() => {
+    const r = w.getBoundingClientRect();
+    T.eq("getBoundingClientRect", r.width + "x" + r.height, "114x54");
+    T.eq("offsetWidth/Height", w.offsetWidth + "x" + w.offsetHeight, "114x54");
+    T.eq("clientWidth", w.clientWidth, 110);
+    T.ok("rect position", r.left >= 0 && r.top >= 0 && r.right === r.left + 114);
+    const cs = getComputedStyle(w);
+    T.eq("computed display", cs.display, "block");
+    T.eq("computed color", cs.color, "rgb(0, 0, 255)");
+    T.eq("computed getPropertyValue", cs.getPropertyValue("width"), "100px");
+    T.eq("computed display none", getComputedStyle(g).display, "none");
+    T.eq("computed inline", getComputedStyle(document.getElementById("sp")).display, "inline");
+    T.eq("no box", g.getBoundingClientRect().width + "," + g.offsetWidth, "0,0");
+    T.done();
+}, 100));
+</script></body></html>

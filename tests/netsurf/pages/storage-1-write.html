@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>storage-1-write</title><script src="harness.js"></script></head><body>
+<script>
+// localStorage is saved to ~/.netsurf/storage/<origin>; storage-2-read.html (run next, the
+// same HOME) reads it back
+localStorage.clear();
+localStorage.setItem("kept", "across pages");
+T.eq("written", localStorage.getItem("kept"), "across pages");
+setTimeout(() => T.done(), 50);
+</script></body></html>

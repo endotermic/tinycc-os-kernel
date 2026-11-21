@@ -4,8 +4,6 @@
 <script>
 // DOMContentLoaded, load, the onload and onclick attributes; an uncaught error in one
 // script does not stop the next one (run.sh expects 1 uncaught error: expect-uncaught).
-// NetSurf 3.11 fires no DOMContentLoaded and calls only window.onload / <body onload> at
-// load, not addEventListener listeners on window (phase 1 of docs/NETSURF-JS.md).
 var seen = [];
 document.addEventListener("DOMContentLoaded", function (e) { seen.push("dcl"); });
 window.addEventListener("load", function (e) { seen.push("load"); });
@@ -13,9 +11,9 @@ function finish() {
     setTimeout(function () {
         T.eq("scripts and attribute handlers ran", seen.filter(function (s) {
             return s != "dcl" && s != "load"; }).join(","), "click-attr,listener,script2,onload-attr");
-        T.todo("DOMContentLoaded fired", seen.indexOf("dcl") >= 0);
-        T.todo("window load listener", seen.indexOf("load") >= 0);
-        T.todo("load order", seen.join(","), "click-attr,listener,script2,dcl,load,onload-attr");
+        T.ok("DOMContentLoaded fired", seen.indexOf("dcl") >= 0);
+        T.ok("window load listener", seen.indexOf("load") >= 0);
+        T.eq("load order", seen.join(","), "click-attr,listener,script2,dcl,load,onload-attr");
         T.done();
     }, 50);
 }

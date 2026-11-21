@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>dom-select</title><script src="harness.js"></script></head><body>
+<div id="main" class="box wide" data-x="1">
+  <ul id="list">
+    <li class="item first">one</li>
+    <li class="item" lang="en-GB">two</li>
+    <li class="item odd" title="three items">three</li>
+    <li class="item last"><a href="#x">four</a></li>
+  </ul>
+  <p class="note">p1</p><p class="note empty"></p>
+  <input id="in" type="checkbox" checked disabled><input id="in2" type="text">
+</div>
+<script>
+// selectors (webapi.js), lists from the native bindings
+const $ = s => document.querySelector(s), $$ = s => document.querySelectorAll(s);
+T.eq("#id", $("#list").id, "list");
+T.eq("tag", $$("li").length, 4);
+T.eq("class", $$(".item").length, 4);
+T.eq("two classes", $(".item.first").textContent, "one");
+T.eq("descendant", $$("#main li").length, 4);
+T.eq("child", $$("#main > li").length, 0);
+T.eq("adjacent", $(".first + li").textContent, "two");
+T.eq("sibling", $$(".first ~ li").length, 3);
+T.eq("attribute exists", $$("[title]").length, 1);
+T.eq("attribute =", $("[data-x='1']").id, "main");
+T.eq("attribute ~=", $("[title~=items]").textContent, "three");
+T.eq("attribute |=", $("[lang|=en]").textContent, "two");
+T.eq("attribute ^= $= *=", [$$("[href^='#']").length, $$("[title$=items]").length, $$("[class*=ir]").length].join(), "1,1,1");
+T.eq("attribute i", $$("[title='THREE ITEMS' i]").length, 1);
+T.eq(":first-child :last-child", $("li:first-child").textContent + $("li:last-child").textContent, "onefour");
+T.eq(":nth-child(2n)", Array.from($$("li:nth-child(2n)")).map(e => e.textContent).join(), "two,four");
+T.eq(":nth-child(odd)", $$("li:nth-child(odd)").length, 2);
+T.eq(":nth-last-child(1)", $("li:nth-last-child(1)").textContent, "four");
+T.eq(":not", $$("li:not(.first):not(.last)").length, 2);
+T.eq(":is", $$(":is(ul, p).note, :is(.first)").length, 3);
+T.eq(":has", $$("li:has(a)").length, 1);
+T.eq(":empty", $$("p:empty").length, 1);
+T.eq(":checked :disabled", $$("input:checked").length + "," + $$("input:disabled").length + "," + $$("input:enabled").length, "1,1,1");
+T.eq(":first-of-type", $("p:first-of-type").textContent, "p1");
+T.eq("selector list", $$("#in, #in2, #nothing").length, 2);
+T.eq("element scope", $("#main").querySelectorAll("p").length, 2);
+T.eq("no match", $(".missing"), null);
+try { $("li::"); T.ok("bad selector throws", false); } catch (e) { T.eq("bad selector throws", e.name, "SyntaxError"); }
+const two = $$("li")[1];
+T.eq("matches", two.matches("ul > li.item"), true);
+T.eq("closest", two.closest("div").id, "main");
+T.eq("closest self", two.closest("li"), two);
+T.eq("getElementsByClassName", document.getElementsByClassName("item note").length, 0);
+T.eq("getElementsByClassName 2", $("#main").getElementsByClassName("note").length, 2);
+// native lists: index access, iteration
+const ul = $("#list"), kids = ul.childNodes;
+T.ok("childNodes[i]", kids[1] !== undefined && kids[1] === kids.item(1));
+T.eq("for of childNodes", (() => { let n = 0; for (const k of kids) n++; return n; })(), kids.length);
+let fe = 0; kids.forEach(() => fe++);
+T.eq("NodeList forEach", fe, kids.length);
+T.eq("Array.from(children)", Array.from(ul.children).length, 4);
+T.eq("children item", ul.children.item(0).textContent, "one");
+T.eq("getElementsByTagName index", document.getElementsByTagName("li")[2].textContent, "three");
+T.eq("spread NodeList", [...$$("p")].length, 2);
+T.eq("tagName", ul.tagName, "UL");
+T.eq("localName", ul.localName, "ul");
+T.done();
+</script></body></html>

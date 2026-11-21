@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>events-ctor</title><script src="harness.js"></script></head><body>
+<button id="b">b</button>
+<script>
+// event constructors, window events, postMessage, EventTarget and AbortController (webapi.js)
+const b = document.getElementById("b"), log = [];
+const e = new Event("ping", { bubbles: true, cancelable: true });
+T.ok("new Event", e instanceof Event && e.type === "ping" && e.bubbles && e.cancelable);
+document.body.addEventListener("ping", ev => log.push("body:" + ev.type));
+b.dispatchEvent(e);
+T.eq("dispatched bubbling", log.join(), "body:ping");
+const ce = new CustomEvent("c", { detail: { n: 5 } });
+T.eq("CustomEvent detail", ce.detail.n, 5);
+T.ok("CustomEvent instanceof", ce instanceof CustomEvent && ce instanceof Event);
+class MyEvent extends Event { constructor() { super("mine"); this.extra = 1; } }
+const me = new MyEvent();
+T.ok("subclass of Event", me instanceof MyEvent && me instanceof Event && me.type === "mine" && me.extra === 1);
+const mo = new MouseEvent("click", { clientX: 7, bubbles: true });
+T.eq("MouseEvent", mo.clientX + "," + mo.button + "," + mo.bubbles, "7,0,true");
+const ke = new KeyboardEvent("keydown", { key: "a", ctrlKey: true });
+T.ok("KeyboardEvent", ke instanceof KeyboardEvent && ke.key === "a" && ke.ctrlKey && ke.code === "");
+const legacy = document.createEvent("CustomEvent");
+legacy.initCustomEvent("leg", true, false, 9);
+T.ok("createEvent(CustomEvent)", legacy instanceof CustomEvent && legacy.detail === 9 && legacy.bubbles);
+const lm = document.createEvent("MouseEvents");
+lm.initMouseEvent("click", true, true, window, 1, 0, 0, 3, 4, false, false, false, false, 0, null);
+T.eq("createEvent(MouseEvents)", lm.clientX + "," + lm.clientY + "," + (lm instanceof MouseEvent), "3,4,true");
+try { document.createEvent("NoSuchEvent"); T.ok("createEvent unknown", false); } catch (x) { T.eq("createEvent unknown", x.name, "NotSupportedError"); }
+let clicked = 0;
+b.addEventListener("click", () => clicked++);
+b.click();
+T.eq("element.click()", clicked, 1);
+// events on the window
+let winEv = 0;
+window.addEventListener("custom", ev => { winEv++; T.eq("window listener this", ev.type, "custom"); });
+T.eq("window.dispatchEvent returns", window.dispatchEvent(new Event("custom")), true);
+T.eq("window listener ran", winEv, 1);
+// EventTarget subclass and AbortController
+class Bus extends EventTarget {}
+const bus = new Bus();
+let busN = 0;
+bus.addEventListener("x", ev => { busN++; T.eq("EventTarget target", ev.target, bus); }, { once: true });
+bus.dispatchEvent(new Event("x")); bus.dispatchEvent(new Event("x"));
+T.eq("EventTarget once", busN, 1);
+T.ok("node instanceof EventTarget", b instanceof EventTarget);
+const ac = new AbortController();
+let aborted = 0;
+ac.signal.addEventListener("abort", () => aborted++);
+ac.abort();
+T.eq("AbortController", ac.signal.aborted + "," + aborted + "," + ac.signal.reason.name, "true,1,AbortError");
+// postMessage arrives later, at the listener and at onmessage
+const got = [];
+window.addEventListener("message", ev => got.push("listener:" + ev.data.v));
+window.onmessage = ev => got.push("onmessage:" + (ev.source === window));
+window.postMessage({ v: 3 }, "*");
+T.eq("postMessage is asynchronous", got.length, 0);
+setTimeout(() => {
+    T.eq("postMessage delivered", got.join(), "listener:3,onmessage:true");
+    T.done();
+}, 50);
+</script></body></html>

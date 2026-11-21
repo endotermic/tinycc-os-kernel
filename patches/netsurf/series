@@ -14,3 +14,7 @@ upstreamable/0012-events-dispatch-to-the-target-once-and-bubble-only-b.patch
 upstreamable/0013-JavaScript-addEventListener-options-objects-several-.patch
 features/0014-JavaScript-NETSURF_JS_TRACE-names-the-unimplemented-.patch
 upstreamable/0015-framebuffer-local-.js-.mjs-files-are-scripts-.json-a.patch
+upstreamable/0016-nsgenbind-WebIDL-operations-writable-and-configurabl.patch
+upstreamable/0017-events-DOMContentLoaded-and-the-Window-s-own-listene.patch
+upstreamable/0018-JavaScript-list-indexes-HTMLCollection-fragments-nam.patch
+features/0019-JavaScript-web-APIs-in-JavaScript-webapi.js-with-nat.patch

@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 13:29:30 +0200
+Subject: [PATCH] nsgenbind: WebIDL operations writable and configurable,
+ attributes configurable
+
+WebIDL's ECMAScript binding makes operations writable and configurable
+and attributes configurable; the generated bindings made both fixed, so
+no script (no polyfill) could replace a member, implemented or not.
+---
+ nsgenbind/src/duk-libdom-interface.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/nsgenbind/src/duk-libdom-interface.c b/nsgenbind/src/duk-libdom-interface.c
+index 7a60487..1dd3498 100644
+--- a/nsgenbind/src/duk-libdom-interface.c
++++ b/nsgenbind/src/duk-libdom-interface.c
+@@ -264,14 +264,16 @@ output_add_method(struct opctx *outc,
+                 "\tduk_def_prop(ctx, -3,\n");
+         outputf(outc,
+                 "\t\t     DUK_DEFPROP_HAVE_VALUE |\n");
++        /* WebIDL operations are writable and configurable, so that
++         * scripts (polyfills) can replace them */
+         outputf(outc,
+-                "\t\t     DUK_DEFPROP_HAVE_WRITABLE |\n");
++                "\t\t     DUK_DEFPROP_HAVE_WRITABLE | DUK_DEFPROP_WRITABLE |\n");
+         outputf(outc,
+                 "\t\t     DUK_DEFPROP_HAVE_ENUMERABLE |\n");
+         outputf(outc,
+                 "\t\t     DUK_DEFPROP_ENUMERABLE |\n");
+         outputf(outc,
+-                "\t\t     DUK_DEFPROP_HAVE_CONFIGURABLE);\n");
++                "\t\t     DUK_DEFPROP_HAVE_CONFIGURABLE | DUK_DEFPROP_CONFIGURABLE);\n");
+         outputf(outc,
+                 "\tduk_pop(ctx);\n\n");
+ 
+@@ -303,10 +305,11 @@ output_populate_rw_property(struct opctx *outc,
+                 "\tduk_def_prop(ctx, -4, DUK_DEFPROP_HAVE_GETTER |\n");
+         outputf(outc,
+                 "\t\tDUK_DEFPROP_HAVE_SETTER |\n");
++        /* WebIDL attributes are configurable */
+         outputf(outc,
+                 "\t\tDUK_DEFPROP_HAVE_ENUMERABLE | DUK_DEFPROP_ENUMERABLE |\n");
+         outputf(outc,
+-                "\t\tDUK_DEFPROP_HAVE_CONFIGURABLE);\n");
++                "\t\tDUK_DEFPROP_HAVE_CONFIGURABLE | DUK_DEFPROP_CONFIGURABLE);\n");
+         outputf(outc,
+                 "\tduk_pop(ctx);\n\n");
+ 
+@@ -334,10 +337,11 @@ output_populate_ro_property(struct opctx *outc,
+         output_dump_stack(outc);
+         outputf(outc,
+                 "\tduk_def_prop(ctx, -3, DUK_DEFPROP_HAVE_GETTER |\n");
++        /* WebIDL attributes are configurable */
+         outputf(outc,
+                 "\t\tDUK_DEFPROP_HAVE_ENUMERABLE | DUK_DEFPROP_ENUMERABLE |\n");
+         outputf(outc,
+-                "\t\tDUK_DEFPROP_HAVE_CONFIGURABLE);\n");
++                "\t\tDUK_DEFPROP_HAVE_CONFIGURABLE | DUK_DEFPROP_CONFIGURABLE);\n");
+         outputf(outc,
+                 "\tduk_pop(ctx);\n\n");
+ 

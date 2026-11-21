@@ -1,0 +1,166 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 13:29:30 +0200
+Subject: [PATCH] events: DOMContentLoaded, and the Window's own listeners
+
+html.c fired no DOMContentLoaded (the place had only a comment): it is
+fired at the document, bubbling, once the parser is done.  The load
+event called only window.onload or <body onload>; listeners added with
+window.addEventListener ran never, and dispatchEvent on the Window did
+nothing.  dukky_dispatch_to_object runs a non-node target's listeners
+(once listeners dropped) for js_fire_event and EventTarget.dispatchEvent.
+---
+ netsurf/content/handlers/html/html.c          | 10 +++
+ .../javascript/duktape/EventTarget.bnd        | 12 +++-
+ .../handlers/javascript/duktape/dukky.c       | 70 +++++++++++++++++++
+ .../handlers/javascript/duktape/dukky.h       |  5 ++
+ 4 files changed, 95 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index 66c3f60..0c0927d 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -898,6 +898,16 @@ html_begin_conversion(html_content *htmlc)
+ 	/* fire a simple event that bubbles named DOMContentLoaded at
+ 	 * the Document.
+ 	 */
++	if (htmlc->jsthread != NULL && htmlc->document != NULL) {
++		dom_string *dcl;
++		if (dom_string_create((const uint8_t *)"DOMContentLoaded",
++				SLEN("DOMContentLoaded"), &dcl) == DOM_NO_ERR) {
++			fire_generic_dom_event(dcl,
++					(dom_node *)htmlc->document,
++					true, false);
++			dom_string_unref(dcl);
++		}
++	}
+ 
+ 	/* get encoding */
+ 	if (htmlc->encoding == NULL) {
+diff --git a/netsurf/content/handlers/javascript/duktape/EventTarget.bnd b/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
+index 0fb2dce..7985f03 100644
+--- a/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
++++ b/netsurf/content/handlers/javascript/duktape/EventTarget.bnd
+@@ -265,8 +265,16 @@ method EventTarget::dispatchEvent()
+ 
+ 	if (dom_event_set_is_trusted(evt, false) != DOM_NO_ERR) return 0;
+ 
+-	/** \todo work out how to dispatch against non-node things */
+-	if (priv->is_node == false) return 0;
++	if (priv->is_node == false) {
++		/* no node (the Window): run its script listeners */
++		bool prevented = false;
++		duk_push_this(ctx);
++		dukky_dispatch_to_object(ctx, -1, evt);
++		duk_pop(ctx);
++		dom_event_is_default_prevented(evt, &prevented);
++		duk_push_boolean(ctx, !prevented);
++		return 1;
++	}
+ 
+ 	bool success;
+ 	/* Event prepared, dispatch against ourselves */
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index 634dd16..a0108fa 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -1506,6 +1506,72 @@ void dukky_shuffle_array(duk_context *ctx, duk_uarridx_t idx)
+ }
+ 
+ 
++/* exported interface documented in dukky.h */
++void dukky_dispatch_to_object(duk_context *ctx, duk_idx_t obj_idx,
++			      dom_event *evt)
++{
++	dom_string *name;
++	duk_uarridx_t idx, copy_idx;
++
++	obj_idx = duk_normalize_index(ctx, obj_idx);
++	if (dom_event_get_type(evt, &name) != DOM_NO_ERR || name == NULL)
++		return;
++	duk_push_lstring(ctx, dom_string_data(name), dom_string_length(name));
++	dom_string_unref(name);
++	duk_dup(ctx, obj_idx);
++	/* ... type obj */
++	if (dukky_event_target_push_listeners(ctx, true)) {
++		/* ... undefined: no listener of this type */
++		duk_pop(ctx);
++		return;
++	}
++	/* ... sublisteners: copy them (a listener may add or remove
++	 * listeners), dropping the once listeners from the original */
++	duk_push_array(ctx);
++	idx = copy_idx = 0;
++	while (duk_get_prop_index(ctx, -2, idx)) {
++		/* ... sublisteners copy entry */
++		bool once;
++		duk_get_prop_index(ctx, -1, 1);
++		once = (duk_to_int(ctx, -1) & ELF_ONCE) != 0;
++		duk_pop(ctx);
++		if (once) {
++			duk_dup(ctx, -3);
++			dukky_shuffle_array(ctx, idx);
++			duk_pop(ctx);
++		}
++		duk_put_prop_index(ctx, -2, copy_idx++);
++		if (!once)
++			idx++;
++	}
++	/* ... sublisteners copy undefined */
++	duk_pop(ctx);
++	duk_remove(ctx, -2);
++	/* ... copy */
++	idx = 0;
++	while (duk_get_prop_index(ctx, -1, idx++)) {
++		/* ... copy entry */
++		if (duk_get_prop_index(ctx, -1, 2)) {
++			/* removed during this dispatch */
++			duk_pop_2(ctx);
++			continue;
++		}
++		duk_pop(ctx);
++		duk_get_prop_index(ctx, -1, 0);
++		/* ... copy entry callback */
++		duk_dup(ctx, obj_idx);
++		dukky_push_event(ctx, evt);
++		dukky_reset_start_time(ctx);
++		if (duk_pcall_method(ctx, 1) != 0) {
++			dukky_dump_error(ctx);
++		}
++		/* ... copy entry result */
++		duk_pop_2(ctx);
++	}
++	/* ... copy undefined */
++	duk_pop_2(ctx);
++}
++
+ void js_handle_new_element(jsthread *thread, struct dom_element *node)
+ {
+ 	assert(thread);
+@@ -1639,6 +1705,10 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
+ 		return true;
+ 	}
+ 	dukky_enter_thread(thread);
++	/* the listeners added with addEventListener on the Window */
++	duk_push_global_object(CTX);
++	dukky_dispatch_to_object(CTX, -1, evt);
++	duk_pop(CTX);
+ 	/* ... */
+ 	duk_get_global_string(CTX, HANDLER_MAGIC);
+ 	/* ... handlers */
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.h b/netsurf/content/handlers/javascript/duktape/dukky.h
+index 9407841..a3d36de 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.h
++++ b/netsurf/content/handlers/javascript/duktape/dukky.h
+@@ -57,6 +57,11 @@ void dukky_push_generics(duk_context *ctx, const char *generic);
+ /* Log the current stack frame if possible */
+ void dukky_log_stack_frame(duk_context *ctx, const char * reason);
+ 
++/* run the script listeners for evt's type of the object at obj_idx, which
++ * is no DOM node (the Window), with the object as this */
++void dukky_dispatch_to_object(duk_context *ctx, duk_idx_t obj_idx,
++			      dom_event *evt);
++
+ /* called by the bindings nsgenbind generates for WebIDL members that have no
+  * implementation; name is "Interface.member", "Interface.method()" or
+  * "Interface.member=" (setter), a string constant */

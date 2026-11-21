@@ -31,9 +31,11 @@ Categories:
   parallel builds; libnsfb's X window closing on WM_DELETE_WINDOW and titled with the page, resizable and maximizable,
   with the system's pointer; event listeners: options objects, several per event, each run once,
   libdom's target phase and non-bubbling events; local `.js` files typed as scripts in the
-  framebuffer front end) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
+  framebuffer front end; WebIDL members writable and configurable in nsgenbind; DOMContentLoaded
+  and the window's listeners; list indexes, HTMLCollection, fragments) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
-  NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses)
+  NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
+  APIs written in JavaScript, with native helpers in Window.bnd)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

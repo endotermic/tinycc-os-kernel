@@ -6,7 +6,7 @@
  * "TEST TODO name" while it fails and "TEST FIXED name" once it passes (then make it a
  * T.eq or T.ok); neither counts as a failure.  Plain ES5, so a page can test newer syntax on its own. */
 var T = (function () {
-    var checks = 0, failed = 0, ended = false;
+    var checks = 0, failed = 0, ended = false, failures = [];
     function show(v) {
         try { return JSON.stringify(v); } catch (e) { return String(v); }
     }
@@ -17,6 +17,7 @@ var T = (function () {
                 console.log("TEST PASS " + name);
             } else {
                 failed++;
+                failures.push(name);
                 console.log("TEST FAIL " + name + (detail === undefined ? "" : " (" + detail + ")"));
             }
         },
@@ -36,6 +37,15 @@ var T = (function () {
             if (ended) return;
             ended = true;
             console.log("TEST END " + checks + " " + failed);
+            /* the summary on the page too, for a look in the guest */
+            if (document.body) {
+                var p = document.createElement("p");
+                p.setAttribute("style", "font-size: 150%; font-weight: bold; color: " +
+                    (failed ? "red" : "green"));
+                p.appendChild(document.createTextNode("TEST END: " + checks + " checks, " +
+                    failed + " failed" + (failures.length ? " (" + failures.join(", ") + ")" : "")));
+                document.body.appendChild(p);
+            }
         }
     };
 })();

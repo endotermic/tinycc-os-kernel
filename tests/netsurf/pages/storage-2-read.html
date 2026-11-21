@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>storage-2-read</title><script src="harness.js"></script></head><body>
+<script>
+// run after storage-1-write.html with the same HOME (tests/netsurf/run.sh runs pages in name
+// order); alone it fails
+T.eq("localStorage saved by the previous page", localStorage.getItem("kept"), "across pages");
+T.done();
+</script></body></html>

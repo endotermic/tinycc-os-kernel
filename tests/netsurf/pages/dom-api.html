@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>dom-api</title><script src="harness.js"></script></head><body>
+<div id="box"><span id="s">s</span></div>
+<script>
+// DOM convenience methods and constructors (webapi.js)
+const box = document.getElementById("box"), s = document.getElementById("s");
+const names = () => Array.from(box.childNodes).map(n => n.nodeType === 1 ? n.tagName.toLowerCase() : n.nodeValue).join(",");
+box.append("t1", document.createElement("b"));
+T.eq("append", names(), "span,t1,b");
+box.prepend(document.createElement("i"));
+T.eq("prepend", names(), "i,span,t1,b");
+s.before("x"); s.after("y");
+T.eq("before after", names(), "i,x,span,y,t1,b");
+s.replaceWith(document.createElement("em"));
+T.eq("replaceWith", names(), "i,x,em,y,t1,b");
+box.querySelector("em").remove();
+T.eq("remove", names(), "i,x,y,t1,b");
+box.replaceChildren("only");
+T.eq("replaceChildren", names(), "only");
+box.insertAdjacentHTML("beforeend", "<u>u</u><s>s</s>");
+box.insertAdjacentText("afterbegin", "first");
+T.eq("insertAdjacent", names(), "first,only,u,s");
+T.eq("outerHTML", box.querySelector("u").outerHTML.toLowerCase(), "<u>u</u>");
+box.querySelector("s").outerHTML = "<q>q</q>";
+T.eq("outerHTML set", names(), "first,only,u,q");
+T.eq("toggleAttribute", [box.toggleAttribute("hidden"), box.hasAttribute("hidden"), box.toggleAttribute("hidden"), box.hidden].join(), "true,true,false,false");
+box.hidden = true;
+T.eq("hidden", box.getAttribute("hidden"), "");
+box.hidden = false;
+box.setAttribute("data-user-id", "42");
+T.eq("dataset get", box.dataset.userId, "42");
+box.dataset.fooBar = "x";
+T.eq("dataset set", box.getAttribute("data-foo-bar"), "x");
+T.eq("dataset in/delete", ("fooBar" in box.dataset) + "," + (delete box.dataset.fooBar) + "," + box.hasAttribute("data-foo-bar"), "true,true,false");
+T.eq("dataset keys", Object.keys(box.dataset).join(), "userId");
+T.ok("getAttributeNames", box.getAttributeNames().indexOf("data-user-id") >= 0);
+box.innerText = "plain";
+T.eq("innerText", box.textContent, "plain");
+T.eq("isConnected", box.isConnected + "," + document.createElement("p").isConnected, "true,false");
+const ser = document.createElement("div");
+ser.innerHTML = '<p class="a" title="q&quot;">x &amp; y<br></p><!--c--><script>a<b<\/script>';
+T.eq("innerHTML get", ser.innerHTML, '<p class="a" title="q&quot;">x &amp; y<br></p><!--c--><script>a<b<\/script>');
+const fr = document.createDocumentFragment();
+fr.append(document.createElement("i"), "t");
+T.eq("DocumentFragment querySelector", fr.querySelector("i").tagName + "," + fr.childNodes.length, "I,2");
+// constructors
+const img = new Image(40, 20);
+T.ok("Image", img instanceof HTMLImageElement && img.tagName === "IMG" && img.getAttribute("width") === "40");
+const opt = new Option("label", "v", true);
+T.ok("Option", opt.tagName === "OPTION" && opt.textContent === "label" && opt.getAttribute("value") === "v");
+T.eq("Text", new Text("abc").nodeValue, "abc");
+T.eq("DocumentFragment", new DocumentFragment().nodeType, 11);
+const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+T.eq("createElementNS(XHTML) canvas", typeof canvas.getContext, "function");
+// document
+T.eq("title", document.title, "dom-api");
+document.title = "changed";
+T.eq("title set", document.getElementsByTagName("title")[0].textContent, "changed");
+T.eq("readyState", document.readyState, "loading");
+T.eq("defaultView", document.defaultView, window);
+T.eq("visibilityState", document.visibilityState, "visible");
+document.addEventListener("DOMContentLoaded", () => T.eq("readyState at DOMContentLoaded", document.readyState, "interactive"));
+window.addEventListener("load", () => setTimeout(() => {
+    T.eq("readyState after load", document.readyState, "complete");
+    T.done();
+}, 50));
+</script></body></html>
