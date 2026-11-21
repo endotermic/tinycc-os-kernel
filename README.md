@@ -172,7 +172,7 @@ NetSurf (3.11, 2026-11-20: a second graphical browser with real CSS 2.1 layout, 
 on QuickJS (ES2023, in place of NetSurf's Duktape), PNG/JPEG/GIF/BMP/SVG images and HTTPS through libcurl and LibreSSL;
 the framebuffer front end in an X window, `netsurf [-w W -h H] [URL]`; its settings in
 `/usr/share/netsurf/Choices`, `~/.netsurf/Choices` per user; what scripts change after the page has
-loaded is drawn: the box tree is rebuilt), restarts JWM or logs out, and the greeter returns; Reboot and Shut down at its end
+loaded is drawn: the box tree is rebuilt; `docs/NETSURF-JS.md` plans the web APIs still missing, target youtube.com), restarts JWM or logs out, and the greeter returns; Reboot and Shut down at its end
 (2026-11-13) let any user end the system: busybox `reboot` and `poweroff`, allowed by
 `/etc/busybox.conf`, signal `/init`, which stops every process and resets (no ACPI, so no
 real power-off; under QEMU's `-no-reboot` both end QEMU). The
