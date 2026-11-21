@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><meta charset="utf-8"><meta name="test-server"><title>net-fetch</title><script src="harness.js"></script></head><body>
+<script>
+// fetch, Headers, Request, Response, Blob, FormData, sendBeacon (webapi.js)
+// the second origin: ?other=PORT (on 127.0.0.1) or ?other=http://HOST:PORT
+const otherArg = new URLSearchParams(location.search).get("other") || "";
+const other = /^https?:/.test(otherArg) ? otherArg : "http://127.0.0.1:" + otherArg;
+(async () => {
+    let r = await fetch("/api/echo?x=1", { headers: { "X-A": "b" } });
+    T.eq("fetch GET", r.status + "," + r.ok + "," + r.statusText + "," + r.type, "200,true,OK,basic");
+    const echo = await r.json();
+    T.eq("fetch headers sent", echo.headers["x-a"], "b");
+    T.eq("Response.headers", r.headers.get("content-type") + "," + r.headers.get("x-multi"), "application/json,a, b");
+    T.eq("bodyUsed", r.bodyUsed, true);
+    try { await r.text(); T.ok("body used twice rejects", false); } catch (e) { T.eq("body used twice rejects", e.name, "TypeError"); }
+    r = await fetch("/api/echo", { method: "POST", body: JSON.stringify({ k: 1 }), headers: new Headers({ "Content-Type": "application/json" }) });
+    const p = await r.json();
+    T.eq("fetch POST", p.method + "," + p.body + "," + p.headers["content-type"], 'POST,{"k":1},application/json');
+    const fd = new FormData(); fd.append("a", "1"); fd.append("b", "x y");
+    r = await fetch("/api/echo", { method: "POST", body: fd });
+    T.eq("FormData body (URL-encoded)", (await r.json()).body, "a=1&b=x+y");
+    r = await fetch("/api/status?code=500");
+    T.eq("fetch 500 resolves", r.status + "," + r.ok, "500,false");
+    r = await fetch("/api/redirect?code=301&to=/api/json");
+    T.eq("fetch redirect", r.redirected + "," + (await r.json()).a, "true,1");
+    r = await fetch("/api/bytes");
+    T.eq("arrayBuffer", (await r.arrayBuffer()).byteLength, 256);
+    r = await fetch("/api/json");
+    const clone = r.clone();
+    T.eq("clone", (await r.json()).a + "," + ((await clone.text()).length > 10), "1,true");
+    r = await fetch("/api/json");
+    T.eq("blob", (await r.blob()).size > 10, true);
+    const ac = new AbortController();
+    const pending = fetch("/api/slow?ms=3000", { signal: ac.signal });
+    ac.abort();
+    try { await pending; T.ok("abort rejects", false); } catch (e) { T.eq("abort rejects", e.name, "AbortError"); }
+    try { await fetch(other + "/api/echo"); T.ok("cross-origin rejects", false); } catch (e) { T.eq("cross-origin rejects", e.name, "TypeError"); }
+    r = await fetch(other + "/api/echo?acao=*");
+    T.eq("cross-origin with ACAO", r.type + "," + r.status, "cors,200");
+    r = await fetch(other + "/api/echo", { mode: "no-cors" });
+    T.eq("no-cors gives opaque", r.type, "opaque");
+    try { await fetch("http://127.0.0.1:9/"); T.ok("network error rejects", false); } catch (e) { T.eq("network error rejects", e.name, "TypeError"); }
+    // the classes on their own
+    const h = new Headers([["A", "1"]]); h.append("a", "2"); h.set("B", "3");
+    T.eq("Headers", h.get("a") + "|" + h.get("b") + "|" + [...h.keys()].join(), "1, 2|3|a,b");
+    const own = new Response('{"z":9}', { status: 201, headers: { "Content-Type": "application/json" } });
+    T.eq("new Response", own.status + "," + (await own.json()).z, "201,9");
+    T.eq("Response.json", (await Response.json({ q: 1 }).json()).q, 1);
+    const req = new Request("/api/echo", { method: "post", body: "rb" });
+    T.eq("new Request", req.method + "," + req.url.slice(-9) + "," + (await req.text()), "POST,/api/echo,rb");
+    const blob = new Blob(["ab", new Uint8Array([99])], { type: "Text/Plain" });
+    T.eq("Blob", blob.size + "," + blob.type + "," + (await blob.text()) + "," + (await blob.slice(1).text()), "3,text/plain,abc,bc");
+    T.eq("File", new File(["x"], "f.txt").name, "f.txt");
+    T.eq("sendBeacon", navigator.sendBeacon("/api/echo", "beacon"), true);
+    T.done();
+})().catch(e => { T.ok("no exception", false, String(e)); T.done(); });
+</script></body></html>

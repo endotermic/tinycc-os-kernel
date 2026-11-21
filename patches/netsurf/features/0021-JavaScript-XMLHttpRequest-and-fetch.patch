@@ -1,0 +1,978 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 14:14:45 +0200
+Subject: [PATCH] JavaScript: XMLHttpRequest and fetch
+
+Window.bnd's native request() starts a request through the fetch layer
+(any method, the script's headers, a text body), follows redirects (303,
+and 301/302 after POST, become GET; at most 20), and calls back once with
+the status, status text, response headers, final URL and the body as an
+ArrayBuffer, or with an error; abortRequest() cancels one, and a page's
+requests end with its script thread.  webapi.js builds on it:
+XMLHttpRequest (asynchronous only: readyState events, timeouts, abort,
+responseType text/json/arraybuffer/blob, charset from Content-Type),
+fetch with Headers, Request, Response and AbortSignal, Blob, File,
+FormData (sent URL-encoded) and navigator.sendBeacon.  Cross-origin
+responses are exposed when Access-Control-Allow-Origin allows the page
+(no preflight); pages from file: read anything.
+---
+ .../handlers/javascript/duktape/Window.bnd    | 361 ++++++++++++
+ .../handlers/javascript/duktape/webapi.js     | 527 ++++++++++++++++++
+ 2 files changed, 888 insertions(+)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index de404e9..0a2068a 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -12,6 +12,7 @@ class Window {
+ 	private struct browser_window * win;
+ 	private struct html_content * htmlc;
+ 	private struct window_schedule_s * schedule_ring;
++	private struct window_request_s * request_ring;
+ 	private bool closed_down;
+ 	prologue %{
+ #include "utils/corestrings.h"
+@@ -28,12 +29,14 @@ class Window {
+ #include "netsurf/window.h"
+ #include "html/box.h"
+ #include "html/box_inspect.h"
++#include "content/fetch.h"
+ #include <errno.h>
+ #include <stdio.h>
+ #include <sys/stat.h>
+ 
+ #define WINDOW_CALLBACKS MAGIC(WindowCallbacks)
+ #define HANDLER_MAGIC MAGIC(HANDLER_MAP)
++#define WINDOW_REQUESTS MAGIC(WindowRequests)
+ 
+ static size_t next_handle = 0;
+ 
+@@ -294,6 +297,359 @@ static duk_ret_t native_storage_write(duk_context *ctx)
+ 	return 1;
+ }
+ 
++/*
++ * Requests made by scripts (webapi.js's XMLHttpRequest and fetch):
++ * request(method, url, headers, body, callback) starts one through the
++ * fetch layer (not the cache: every request goes out), follows redirects,
++ * and calls back once, from the fetch poll:
++ *   callback(status, statusText, headers, finalURL, body) with the response
++ *   headers as "name: value\r\n" lines and the body as an ArrayBuffer, or
++ *   callback(0, errorMessage) when no response came.
++ * abortRequest(handle) cancels one; a page's requests end with it.
++ */
++typedef struct window_request_s {
++	window_private_t *owner;
++	duk_context *ctx;
++	struct window_request_s *r_next;
++	struct window_request_s *r_prev;
++	size_t handle;
++	struct fetch *fetch;	/* NULL once the fetch is over */
++	nsurl *url;
++	char *method;
++	char *body;
++	char **headers;		/* "Name: value", NULL-terminated */
++	int redirects;
++	char *status_text;
++	char *resp_headers;
++	size_t resp_headers_len;
++	uint8_t *data;
++	size_t data_len;
++	size_t data_alloc;
++} window_request_t;
++
++static size_t next_request = 1;
++
++static void window_request_free(window_request_t *req)
++{
++	char **h;
++	if (req->headers != NULL) {
++		for (h = req->headers; *h != NULL; h++)
++			free(*h);
++		free(req->headers);
++	}
++	if (req->url != NULL)
++		nsurl_unref(req->url);
++	free(req->method);
++	free(req->body);
++	free(req->status_text);
++	free(req->resp_headers);
++	free(req->data);
++	free(req);
++}
++
++/* forget the script callback of a request */
++static void window_request_forget(duk_context *ctx, size_t handle)
++{
++	duk_push_global_object(ctx);
++	duk_get_prop_string(ctx, -1, WINDOW_REQUESTS);
++	if (duk_is_object(ctx, -1)) {
++		duk_push_int(ctx, (duk_int_t)handle);
++		duk_del_prop(ctx, -2);
++	}
++	duk_pop_2(ctx);
++}
++
++/* stop a request: abort its fetch (no callback follows), drop it */
++static void window_request_cancel(window_private_t *w, window_request_t *req)
++{
++	if (req->fetch != NULL) {
++		fetch_abort(req->fetch);
++		req->fetch = NULL;
++	}
++	RING_REMOVE(w->request_ring, req);
++	window_request_forget(req->ctx, req->handle);
++	window_request_free(req);
++}
++
++/* hand the result to the script and drop the request */
++static void window_request_deliver(window_request_t *req, long status,
++				   const char *error)
++{
++	duk_context *ctx = req->ctx;
++	window_private_t *w = req->owner;
++	int nargs;
++
++	RING_REMOVE(w->request_ring, req);
++	if (w->closed_down) {
++		window_request_free(req);
++		return;
++	}
++	duk_push_global_object(ctx);
++	duk_get_prop_string(ctx, -1, WINDOW_REQUESTS);
++	duk_push_int(ctx, (duk_int_t)req->handle);
++	duk_get_prop(ctx, -2);
++	/* ..., win, requests, callback */
++	duk_push_int(ctx, (duk_int_t)req->handle);
++	duk_del_prop(ctx, -3);
++	if (duk_get_type(ctx, -1) != DUK_TYPE_OBJECT) {
++		duk_pop_3(ctx);
++		window_request_free(req);
++		return;
++	}
++	if (error != NULL) {
++		duk_push_int(ctx, 0);
++		duk_push_string(ctx, error);
++		nargs = 2;
++	} else {
++		void *buf;
++		duk_push_int(ctx, (duk_int_t)status);
++		duk_push_string(ctx, req->status_text != NULL ? req->status_text : "");
++		duk_push_lstring(ctx, req->resp_headers != NULL ? req->resp_headers : "",
++				 req->resp_headers_len);
++		duk_push_string(ctx, nsurl_access(req->url));
++		buf = duk_push_buffer(ctx, req->data_len, false);
++		if (req->data_len > 0)
++			memcpy(buf, req->data, req->data_len);
++		nargs = 5;
++	}
++	window_request_free(req);
++	(void) dukky_pcall(ctx, nargs, true);
++	duk_pop_3(ctx);
++}
++
++static void window_request_fetch_cb(const fetch_msg *msg, void *p);
++
++static nserror window_request_start(window_request_t *req)
++{
++	const char *headers[66];
++	char method_line[64];
++	const char *body = NULL;
++	nsurl *referer = NULL;
++	int n = 0;
++	char **h;
++
++	for (h = req->headers; h != NULL && *h != NULL && n < 64; h++)
++		headers[n++] = *h;
++	if (strcmp(req->method, "GET") != 0 && strcmp(req->method, "POST") != 0) {
++		snprintf(method_line, sizeof method_line, "%s %s",
++			 FETCH_METHOD_HEADER, req->method);
++		headers[n++] = method_line;
++	}
++	headers[n] = NULL;
++	if (req->body != NULL && strcmp(req->method, "GET") != 0 &&
++	    strcmp(req->method, "HEAD") != 0)
++		body = req->body;
++	else if (strcmp(req->method, "POST") == 0)
++		body = "";
++	if (req->owner->htmlc != NULL)
++		referer = content_get_url(&req->owner->htmlc->base);
++
++	free(req->status_text);
++	req->status_text = NULL;
++	free(req->resp_headers);
++	req->resp_headers = NULL;
++	req->resp_headers_len = 0;
++	req->data_len = 0;
++	return fetch_start(req->url, referer, window_request_fetch_cb, req,
++			   false, body, NULL, true, false, headers, &req->fetch);
++}
++
++static void window_request_fetch_cb(const fetch_msg *msg, void *p)
++{
++	window_request_t *req = p;
++	const char *line;
++	size_t len;
++	long code;
++
++	switch (msg->type) {
++	case FETCH_HEADER:
++		line = (const char *)msg->data.header_or_data.buf;
++		len = msg->data.header_or_data.len;
++		while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n' ||
++				   line[len - 1] == ' '))
++			len--;
++		if (len == 0)
++			break;
++		if (len > 5 && strncmp(line, "HTTP/", 5) == 0) {
++			/* a status line: a new response (redirect, 100) */
++			const char *t = memchr(line, ' ', len);
++			if (t != NULL)
++				t = memchr(t + 1, ' ', len - (t + 1 - line));
++			free(req->status_text);
++			req->status_text = (t != NULL) ?
++				strndup(t + 1, len - (t + 1 - line)) : NULL;
++			req->resp_headers_len = 0;
++			break;
++		} else {
++			char *nh = realloc(req->resp_headers,
++					   req->resp_headers_len + len + 3);
++			if (nh == NULL)
++				break;
++			memcpy(nh + req->resp_headers_len, line, len);
++			memcpy(nh + req->resp_headers_len + len, "\r\n", 3);
++			req->resp_headers = nh;
++			req->resp_headers_len += len + 2;
++		}
++		break;
++
++	case FETCH_DATA:
++		len = msg->data.header_or_data.len;
++		if (req->data_len + len > req->data_alloc) {
++			size_t na = (req->data_len + len) * 2 + 4096;
++			uint8_t *nd = realloc(req->data, na);
++			if (nd == NULL)
++				break;
++			req->data = nd;
++			req->data_alloc = na;
++		}
++		memcpy(req->data + req->data_len, msg->data.header_or_data.buf, len);
++		req->data_len += len;
++		break;
++
++	case FETCH_FINISHED:
++	case FETCH_NOTMODIFIED:
++	case FETCH_AUTH:
++		code = fetch_http_code(req->fetch);
++		req->fetch = NULL;
++		if (code == 0 && msg->type == FETCH_FINISHED)
++			code = 200; /* file:, data:, resource: */
++		if (msg->type == FETCH_NOTMODIFIED && code == 0)
++			code = 304;
++		window_request_deliver(req, code, NULL);
++		break;
++
++	case FETCH_REDIRECT: {
++		nsurl *to = NULL;
++		code = fetch_http_code(req->fetch);
++		req->fetch = NULL;
++		if (++req->redirects > 20 ||
++		    nsurl_join(req->url, msg->data.redirect, &to) != NSERROR_OK) {
++			window_request_deliver(req, 0, "too many redirects or a bad redirect");
++			break;
++		}
++		nsurl_unref(req->url);
++		req->url = to;
++		if (code == 303 || ((code == 301 || code == 302) &&
++				    strcmp(req->method, "POST") == 0)) {
++			free(req->method);
++			req->method = strdup("GET");
++			free(req->body);
++			req->body = NULL;
++		}
++		if (req->method == NULL || window_request_start(req) != NSERROR_OK)
++			window_request_deliver(req, 0, "redirect failed");
++		break;
++	}
++
++	case FETCH_ERROR:
++	case FETCH_TIMEDOUT:
++	case FETCH_CERT_ERR:
++	case FETCH_SSL_ERR:
++		req->fetch = NULL;
++		window_request_deliver(req,  0,
++			msg->type == FETCH_TIMEDOUT ? "timed out" :
++			msg->type == FETCH_ERROR && msg->data.error != NULL ?
++			msg->data.error : "network error");
++		break;
++
++	default:
++		break;
++	}
++}
++
++/* request(method, url, headers[], body or null, callback) -> handle, or
++ * throws for a URL the browser can not fetch */
++static duk_ret_t native_request(duk_context *ctx)
++{
++	window_private_t *w = native_window(ctx);
++	window_request_t *req;
++	duk_size_t n, i;
++	nsurl *url;
++
++	if (w == NULL || w->closed_down)
++		return duk_error(ctx, DUK_ERR_ERROR, "no window");
++	if (nsurl_create(duk_safe_to_string(ctx, 1), &url) != NSERROR_OK ||
++	    !fetch_can_fetch(url)) {
++		if (url != NULL)
++			nsurl_unref(url);
++		return duk_error(ctx, DUK_ERR_TYPE_ERROR, "can not fetch that URL");
++	}
++	req = calloc(1, sizeof *req);
++	if (req == NULL) {
++		nsurl_unref(url);
++		return duk_error(ctx, DUK_ERR_ERROR, "out of memory");
++	}
++	req->owner = w;
++	req->ctx = ctx;
++	req->url = url;
++	req->handle = next_request++;
++	req->method = strdup(duk_safe_to_string(ctx, 0));
++	if (duk_get_type(ctx, 3) != DUK_TYPE_NULL &&
++	    duk_get_type(ctx, 3) != DUK_TYPE_UNDEFINED)
++		req->body = strdup(duk_safe_to_string(ctx, 3));
++	n = duk_is_object(ctx, 2) ? duk_get_length(ctx, 2) : 0;
++	if (n > 64)
++		n = 64;
++	req->headers = calloc(n + 1, sizeof (char *));
++	for (i = 0; req->headers != NULL && i < n; i++) {
++		duk_get_prop_index(ctx, 2, i);
++		req->headers[i] = strdup(duk_safe_to_string(ctx, -1));
++		duk_pop(ctx);
++	}
++	if (req->method == NULL || req->headers == NULL) {
++		window_request_free(req);
++		return duk_error(ctx, DUK_ERR_ERROR, "out of memory");
++	}
++
++	/* the callback, by handle */
++	duk_push_global_object(ctx);
++	duk_get_prop_string(ctx, -1, WINDOW_REQUESTS);
++	if (!duk_is_object(ctx, -1)) {
++		duk_pop(ctx);
++		duk_push_object(ctx);
++		duk_dup(ctx, -1);
++		duk_put_prop_string(ctx, -3, WINDOW_REQUESTS);
++	}
++	duk_push_int(ctx, (duk_int_t)req->handle);
++	duk_dup(ctx, 4);
++	duk_put_prop(ctx, -3);
++	duk_pop_2(ctx);
++
++	RING_INSERT(w->request_ring, req);
++	if (window_request_start(req) != NSERROR_OK) {
++		window_request_cancel(w, req);
++		return duk_error(ctx, DUK_ERR_TYPE_ERROR, "the request could not start");
++	}
++	duk_push_int(ctx, (duk_int_t)req->handle);
++	return 1;
++}
++
++/* abortRequest(handle) */
++static duk_ret_t native_abort_request(duk_context *ctx)
++{
++	window_private_t *w = native_window(ctx);
++	size_t handle = duk_to_uint(ctx, 0);
++	window_request_t *found = NULL;
++	if (w == NULL)
++		return 0;
++	RING_ITERATE_START(window_request_t, w->request_ring, req) {
++		if (req->handle == handle) {
++			found = req;
++			RING_ITERATE_STOP(w->request_ring, req);
++		}
++	} RING_ITERATE_END(w->request_ring, req);
++	if (found != NULL)
++		window_request_cancel(w, found);
++	return 0;
++}
++
++/* end every request of a page */
++static void window_requests_end(window_private_t *w)
++{
++	while (w->request_ring != NULL)
++		window_request_cancel(w, w->request_ring);
++}
++
+ static void native_put(duk_context *ctx, const char *name,
+ 		       duk_c_function fn, duk_idx_t nargs)
+ {
+@@ -503,6 +859,7 @@ static duk_ret_t dukky_window_closedown_thread(duk_context *ctx)
+ 	}
+ 
+ 	priv->closed_down = true;
++	window_requests_end(priv);
+ 
+ 	NSLOG(dukky, DEEPDEBUG, "Closing down thread");
+ 	while (priv->schedule_ring != NULL) {
+@@ -555,6 +912,7 @@ init Window(struct browser_window *win, struct html_content *htmlc)
+ 	priv->win = win;
+ 	priv->htmlc = htmlc;
+ 	priv->schedule_ring = NULL;
++	priv->request_ring = NULL;
+ 	priv->closed_down = false;
+ 	NSLOG(netsurf, DEEPDEBUG, "win=%p htmlc=%p", priv->win, priv->htmlc);
+ 
+@@ -571,6 +929,7 @@ fini Window()
+ 	while (priv->schedule_ring != NULL) {
+ 		window_remove_callback_by_handle(ctx, priv, priv->schedule_ring->handle);
+ 	}
++	window_requests_end(priv);
+ %}
+ 
+ prototype Window()
+@@ -677,6 +1036,8 @@ prototype Window()
+ 	native_put(ctx, "style", native_computed_style, 1);
+ 	native_put(ctx, "storageRead", native_storage_read, 0);
+ 	native_put(ctx, "storageWrite", native_storage_write, 1);
++	native_put(ctx, "request", native_request, 5);
++	native_put(ctx, "abortRequest", native_abort_request, 1);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index ad32c08..8367d73 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -2458,4 +2458,531 @@ if (typeof G.TextEncoder !== "function" || G.TextEncoder.nsOriginal !== undefine
+     G.TextDecoder = TextDecoder;
+ }
+ 
++
++/* ------------------------------------------------------------------ */
++/* Networking: Blob, FormData, Headers, XMLHttpRequest, fetch          */
++/* (one native request() under all of them, Window.bnd)               */
++
++var utf8 = new TextEncoder();
++
++/* bytes of a body or blob part */
++function bytesOf(x) {
++    if (x instanceof Blob) return x._bytes;
++    if (x instanceof ArrayBuffer) return new Uint8Array(x.slice(0));
++    if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer.slice(x.byteOffset, x.byteOffset + x.byteLength));
++    return utf8.encode(String(x));
++}
++function concatBytes(list) {
++    var n = 0, i;
++    for (i = 0; i < list.length; i++) n += list[i].length;
++    var out = new Uint8Array(n), o = 0;
++    for (i = 0; i < list.length; i++) { out.set(list[i], o); o += list[i].length; }
++    return out;
++}
++
++function Blob(parts, opts) {
++    if (!new.target) throw new TypeError("Blob: use new");
++    def(this, "_bytes", concatBytes(Array.from(parts || []).map(bytesOf)));
++    def(this, "_type", opts && opts.type ? String(opts.type).toLowerCase() : "");
++}
++acc(Blob.prototype, "size", function () { return this._bytes.length; });
++acc(Blob.prototype, "type", function () { return this._type; });
++def(Blob.prototype, "arrayBuffer", function () { return Promise.resolve(this._bytes.slice().buffer); });
++def(Blob.prototype, "bytes", function () { return Promise.resolve(this._bytes.slice()); });
++def(Blob.prototype, "text", function () { return Promise.resolve(new TextDecoder().decode(this._bytes)); });
++def(Blob.prototype, "slice", function (start, end, type) {
++    var b = Object.create(Blob.prototype);
++    def(b, "_bytes", this._bytes.slice(start, end));
++    def(b, "_type", type ? String(type).toLowerCase() : "");
++    return b;
++});
++def(Blob.prototype, Symbol.toStringTag, "Blob");
++function File(parts, name, opts) {
++    if (!new.target) throw new TypeError("File: use new");
++    var f = Reflect.construct(Blob, [parts, opts], new.target);
++    def(f, "name", String(name));
++    def(f, "lastModified", (opts && opts.lastModified) || Date.now());
++    return f;
++}
++File.prototype = Object.create(Blob.prototype);
++def(File.prototype, "constructor", File);
++G.Blob = Blob;
++G.File = File;
++
++/* FormData: names and values; sent URL-encoded (no multipart bodies) */
++function FormData(form) {
++    if (!new.target) throw new TypeError("FormData: use new");
++    def(this, "_list", []);
++    var list = this._list;
++    if (form && form.querySelectorAll) {
++        Array.prototype.forEach.call(form.querySelectorAll("input, select, textarea"), function (el) {
++            var name = el.getAttribute("name"), type = (el.getAttribute("type") || "").toLowerCase();
++            if (!name || el.hasAttribute("disabled")) return;
++            if ((type === "checkbox" || type === "radio") && !el.checked) return;
++            if (type === "submit" || type === "button" || type === "file" || type === "reset") return;
++            list.push([name, String(el.value === undefined ? "" : el.value)]);
++        });
++    }
++}
++var fdMethods = {
++    append: function (k, v, name) { this._list.push([String(k), v instanceof Blob ? v : String(v)]); },
++    delete: function (k) {
++        k = String(k);
++        var keep = this._list.filter(function (p) { return p[0] !== k; });
++        this._list.length = 0;
++        Array.prototype.push.apply(this._list, keep);
++    },
++    get: function (k) { k = String(k); for (var i = 0; i < this._list.length; i++) if (this._list[i][0] === k) return this._list[i][1]; return null; },
++    getAll: function (k) { k = String(k); return this._list.filter(function (p) { return p[0] === k; }).map(function (p) { return p[1]; }); },
++    has: function (k) { k = String(k); return this._list.some(function (p) { return p[0] === k; }); },
++    set: function (k, v) { this.delete(k); this.append(k, v); },
++    forEach: function (cb, thisArg) { var self = this; this._list.forEach(function (p) { cb.call(thisArg, p[1], p[0], self); }); },
++    entries: function () { return this._list.map(function (p) { return [p[0], p[1]]; })[Symbol.iterator](); },
++    keys: function () { return this._list.map(function (p) { return p[0]; })[Symbol.iterator](); },
++    values: function () { return this._list.map(function (p) { return p[1]; })[Symbol.iterator](); }
++};
++Object.keys(fdMethods).forEach(function (k) { def(FormData.prototype, k, fdMethods[k]); });
++def(FormData.prototype, Symbol.iterator, FormData.prototype.entries);
++G.FormData = FormData;
++
++/* the request body as text for the native request, and its default type */
++function encodeBody(body) {
++    if (body === null || body === undefined) return { text: null, type: null };
++    if (body instanceof URLSearchParams)
++        return { text: body.toString(), type: "application/x-www-form-urlencoded;charset=UTF-8" };
++    if (body instanceof FormData) {
++        var sp = new URLSearchParams();
++        body._list.forEach(function (p) { sp.append(p[0], p[1] instanceof Blob ? (p[1].name || "blob") : p[1]); });
++        return { text: sp.toString(), type: "application/x-www-form-urlencoded;charset=UTF-8" };
++    }
++    if (body instanceof Blob)
++        return { text: new TextDecoder().decode(body._bytes), type: body.type || null };
++    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body))
++        return { text: new TextDecoder().decode(bytesOf(body)), type: null };
++    return { text: String(body), type: "text/plain;charset=UTF-8" };
++}
++
++/* Headers */
++var forbiddenHeader = /^(accept-charset|accept-encoding|access-control-request-headers|access-control-request-method|connection|content-length|cookie|cookie2|date|dnt|expect|host|keep-alive|origin|referer|set-cookie|te|trailer|transfer-encoding|upgrade|via|proxy-.*|sec-.*)$/;
++function Headers(init) {
++    if (!new.target) throw new TypeError("Headers: use new");
++    def(this, "_map", new Map());
++    var self = this;
++    if (init instanceof Headers) init.forEach(function (v, k) { self.append(k, v); });
++    else if (init && typeof init[Symbol.iterator] === "function")
++        Array.from(init).forEach(function (p) { p = Array.from(p); self.append(p[0], p[1]); });
++    else if (init && typeof init === "object")
++        Object.keys(init).forEach(function (k) { self.append(k, init[k]); });
++}
++function headerName(n) {
++    n = String(n);
++    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(n)) throw new TypeError("Headers: invalid name " + n);
++    return n.toLowerCase();
++}
++var hMethods = {
++    append: function (k, v) {
++        k = headerName(k); v = String(v).trim();
++        var m = this._map;
++        m.set(k, m.has(k) ? (k === "set-cookie" ? m.get(k) + "\n" : m.get(k) + ", ") + v : v);
++    },
++    set: function (k, v) { this._map.set(headerName(k), String(v).trim()); },
++    get: function (k) { k = headerName(k); return this._map.has(k) ? this._map.get(k).replace(/\n/g, ", ") : null; },
++    getSetCookie: function () { return this._map.has("set-cookie") ? this._map.get("set-cookie").split("\n") : []; },
++    has: function (k) { return this._map.has(headerName(k)); },
++    delete: function (k) { this._map.delete(headerName(k)); },
++    forEach: function (cb, thisArg) {
++        var self = this;
++        Array.from(this._map.keys()).sort().forEach(function (k) { cb.call(thisArg, self.get(k), k, self); });
++    },
++    entries: function () { var self = this; return Array.from(this._map.keys()).sort().map(function (k) { return [k, self.get(k)]; })[Symbol.iterator](); },
++    keys: function () { return Array.from(this._map.keys()).sort()[Symbol.iterator](); },
++    values: function () { var self = this; return Array.from(this._map.keys()).sort().map(function (k) { return self.get(k); })[Symbol.iterator](); }
++};
++Object.keys(hMethods).forEach(function (k) { def(Headers.prototype, k, hMethods[k]); });
++def(Headers.prototype, Symbol.iterator, Headers.prototype.entries);
++G.Headers = Headers;
++
++/* the "name: value\r\n" lines of a response as Headers */
++function parseHeaderLines(text) {
++    var h = new Headers();
++    String(text || "").split("\r\n").forEach(function (line) {
++        var i = line.indexOf(":");
++        if (i > 0) {
++            try { h.append(line.slice(0, i).trim(), line.slice(i + 1).trim()); } catch (e) { /* skip */ }
++        }
++    });
++    return h;
++}
++
++function pageOrigin() {
++    return G.location ? G.location.origin : "null";
++}
++function originOf(url) {
++    try { return new URLCtor(url).origin; } catch (e) { return "null"; }
++}
++/* a cross-origin response is exposed only if it allows the page; pages
++ * from file: may read anything (local development) */
++function corsAllowed(url, headers, credentials) {
++    var page = pageOrigin(), there = originOf(url);
++    if (there === page || (G.location && G.location.protocol === "file:")) return true;
++    if (/^(data|blob|about):/.test(url)) return true;
++    var allow = headers.get("access-control-allow-origin");
++    if (allow === null) return false;
++    if (allow.trim() === "*") return !credentials;
++    return allow.trim() === page;
++}
++
++function charsetOf(type) {
++    var m = /charset\s*=\s*"?([^";\s]+)/i.exec(type || "");
++    return m ? m[1] : "utf-8";
++}
++function decodeText(buf, type) {
++    var dec;
++    try { dec = new TextDecoder(charsetOf(type)); } catch (e) { dec = new TextDecoder(); }
++    return dec.decode(buf);
++}
++
++function resolveURL(url) {
++    var base = G.location ? G.location.href : undefined;
++    return new URLCtor(String(url), base).href;
++}
++
++/* start a request: done(status, statusText, headerLines, finalURL, buffer)
++ * or done(0, error) */
++function startRequest(method, url, headers, body, done) {
++    if (!N.request) throw new TypeError("networking is not available");
++    var lines = [];
++    headers.forEach(function (v, k) { lines.push(k + ": " + v); });
++    return N.request(method, url, lines, body, done);
++}
++
++/* XMLHttpRequest */
++function XMLHttpRequest() {
++    if (!new.target) throw new TypeError("XMLHttpRequest: use new");
++    def(this, "_x", {
++        state: 0, method: "GET", url: "", headers: new Headers(), sent: false,
++        status: 0, statusText: "", responseHeaders: new Headers(), responseURL: "",
++        body: null, handle: 0, timer: 0, responseType: "", timeout: 0,
++        withCredentials: false, mime: null, text: null, error: false
++    });
++    def(this, "upload", targetize({}));
++    var self = this;
++    ["onreadystatechange", "onloadstart", "onprogress", "onabort", "onerror", "onload",
++     "ontimeout", "onloadend"].forEach(function (k) { def(self, k, null); });
++}
++XMLHttpRequest.prototype = Object.create(JsEventTarget.prototype);
++def(XMLHttpRequest.prototype, "constructor", XMLHttpRequest);
++["UNSENT", "OPENED", "HEADERS_RECEIVED", "LOADING", "DONE"].forEach(function (k, i) {
++    XMLHttpRequest[k] = i;
++    def(XMLHttpRequest.prototype, k, i);
++});
++function xhrFire(xhr, type, loaded, total) {
++    var e = (type === "readystatechange") ? new G.Event(type) :
++        new G.ProgressEvent(type, { lengthComputable: total > 0, loaded: loaded || 0, total: total || 0 });
++    xhr.dispatchEvent(e);
++}
++function xhrSetState(xhr, n) {
++    xhr._x.state = n;
++    xhrFire(xhr, "readystatechange");
++}
++function xhrEnd(xhr, kind) {
++    var x = xhr._x;
++    if (x.timer) { G.clearTimeout(x.timer); x.timer = 0; }
++    x.sent = false;
++    x.handle = 0;
++    if (kind !== "load") {
++        x.error = true;
++        x.status = 0; x.statusText = ""; x.body = null;
++        x.responseHeaders = new Headers();
++    }
++    xhrSetState(xhr, 4);
++    var n = x.body ? x.body.byteLength : 0;
++    if (kind === "load") xhrFire(xhr, "progress", n, n);
++    xhrFire(xhr, kind, n, n);
++    xhrFire(xhr, "loadend", n, n);
++}
++var xhrMethods = {
++    open: function (method, url, async, user, password) {
++        var x = this._x;
++        if (async === false) throw domError("InvalidAccessError", "synchronous XMLHttpRequest is not supported");
++        method = String(method);
++        if (/^(delete|get|head|options|post|put|patch)$/i.test(method)) method = method.toUpperCase();
++        if (/^(connect|trace|track)$/i.test(method)) throw domError("SecurityError", "method " + method);
++        var full;
++        try { full = resolveURL(url); } catch (e) { throw domError("SyntaxError", "bad URL " + url); }
++        if (x.handle && N.abortRequest) N.abortRequest(x.handle);
++        x.method = method; x.url = full; x.headers = new Headers(); x.sent = false; x.handle = 0;
++        x.status = 0; x.statusText = ""; x.body = null; x.text = null; x.error = false;
++        x.responseHeaders = new Headers(); x.responseURL = "";
++        xhrSetState(this, 1);
++    },
++    setRequestHeader: function (name, value) {
++        var x = this._x;
++        if (x.state !== 1 || x.sent) throw domError("InvalidStateError", "setRequestHeader: not opened");
++        var k = headerName(name);
++        if (forbiddenHeader.test(k)) return;
++        x.headers.append(k, value);
++    },
++    send: function (body) {
++        var x = this._x, self = this;
++        if (x.state !== 1 || x.sent) throw domError("InvalidStateError", "send: not opened");
++        if (x.method === "GET" || x.method === "HEAD") body = null;
++        var enc = encodeBody(body);
++        if (enc.type && !x.headers.has("content-type")) x.headers.set("content-type", enc.type);
++        x.sent = true;
++        xhrFire(this, "loadstart", 0, 0);
++        var credentials = x.withCredentials;
++        try {
++            x.handle = startRequest(x.method, x.url, x.headers, enc.text, function (status, statusText, lines, finalURL, buf) {
++                if (!x.sent) return;
++                x.handle = 0;
++                if (status === 0 && arguments.length < 5) { xhrEnd(self, "error"); return; }
++                var headers = parseHeaderLines(lines);
++                if (!corsAllowed(finalURL, headers, credentials)) { xhrEnd(self, "error"); return; }
++                x.status = status; x.statusText = statusText; x.responseHeaders = headers;
++                x.responseURL = finalURL; x.body = buf; x.text = null;
++                xhrSetState(self, 2);
++                xhrSetState(self, 3);
++                xhrEnd(self, "load");
++            });
++        } catch (e) {
++            G.setTimeout(function () { xhrEnd(self, "error"); }, 0);
++            return;
++        }
++        if (x.timeout > 0) {
++            x.timer = G.setTimeout(function () {
++                x.timer = 0;
++                if (!x.sent) return;
++                if (x.handle && N.abortRequest) N.abortRequest(x.handle);
++                xhrEnd(self, "timeout");
++            }, x.timeout);
++        }
++    },
++    abort: function () {
++        var x = this._x;
++        if (x.sent) {
++            if (x.handle && N.abortRequest) N.abortRequest(x.handle);
++            xhrEnd(this, "abort");
++        }
++        if (x.state === 4) x.state = 0;
++    },
++    getResponseHeader: function (name) {
++        if (this._x.state < 2 || this._x.error) return null;
++        return this._x.responseHeaders.get(name);
++    },
++    getAllResponseHeaders: function () {
++        if (this._x.state < 2 || this._x.error) return "";
++        var out = "";
++        this._x.responseHeaders.forEach(function (v, k) {
++            if (k !== "set-cookie" && k !== "set-cookie2") out += k + ": " + v + "\r\n";
++        });
++        return out;
++    },
++    overrideMimeType: function (m) { this._x.mime = String(m); }
++};
++Object.keys(xhrMethods).forEach(function (k) { def(XMLHttpRequest.prototype, k, xhrMethods[k]); });
++acc(XMLHttpRequest.prototype, "readyState", function () { return this._x.state; });
++acc(XMLHttpRequest.prototype, "status", function () { return this._x.status; });
++acc(XMLHttpRequest.prototype, "statusText", function () { return this._x.statusText; });
++acc(XMLHttpRequest.prototype, "responseURL", function () { return this._x.responseURL; });
++acc(XMLHttpRequest.prototype, "responseXML", function () { return null; });
++acc(XMLHttpRequest.prototype, "timeout", function () { return this._x.timeout; },
++    function (v) { this._x.timeout = Math.max(0, v | 0); });
++acc(XMLHttpRequest.prototype, "withCredentials", function () { return this._x.withCredentials; },
++    function (v) { this._x.withCredentials = !!v; });
++acc(XMLHttpRequest.prototype, "responseType", function () { return this._x.responseType; }, function (v) {
++    v = String(v);
++    if (["", "text", "json", "arraybuffer", "blob", "document"].indexOf(v) >= 0) this._x.responseType = v;
++});
++function xhrText(x) {
++    if (x.text === null) x.text = x.body ? decodeText(x.body, x.mime || x.responseHeaders.get("content-type")) : "";
++    return x.text;
++}
++acc(XMLHttpRequest.prototype, "responseText", function () {
++    var x = this._x;
++    if (x.responseType !== "" && x.responseType !== "text")
++        throw domError("InvalidStateError", "responseText needs responseType text");
++    return x.state >= 3 ? xhrText(x) : "";
++});
++acc(XMLHttpRequest.prototype, "response", function () {
++    var x = this._x;
++    switch (x.responseType) {
++    case "": case "text": return x.state >= 3 ? xhrText(x) : "";
++    }
++    if (x.state !== 4 || x.error) return null;
++    switch (x.responseType) {
++    case "json": try { return JSON.parse(xhrText(x)); } catch (e) { return null; }
++    case "arraybuffer": return x.body;
++    case "blob": return new Blob([x.body || new ArrayBuffer(0)], { type: x.responseHeaders.get("content-type") || "" });
++    }
++    return null;
++});
++G.XMLHttpRequest = XMLHttpRequest;
++G.XMLHttpRequestEventTarget = JsEventTarget;
++G.XMLHttpRequestUpload = JsEventTarget;
++
++/* fetch */
++function bodyMixin(proto) {
++    function take(self) {
++        if (self._bodyUsed) return Promise.reject(new TypeError("body already used"));
++        def(self, "_bodyUsed", true);
++        return Promise.resolve(self._buf ? new Uint8Array(self._buf) : new Uint8Array(0));
++    }
++    acc(proto, "bodyUsed", function () { return !!this._bodyUsed; });
++    acc(proto, "body", function () { return this._buf ? {} : null; });
++    def(proto, "arrayBuffer", function () { return take(this).then(function (b) { return b.slice().buffer; }); });
++    def(proto, "bytes", function () { return take(this).then(function (b) { return b.slice(); }); });
++    def(proto, "text", function () {
++        var type = this.headers.get("content-type");
++        return take(this).then(function (b) { return decodeText(b, type); });
++    });
++    def(proto, "json", function () { return this.text().then(function (t) { return JSON.parse(t); }); });
++    def(proto, "blob", function () {
++        var type = this.headers.get("content-type") || "";
++        return take(this).then(function (b) { return new Blob([b], { type: type }); });
++    });
++    def(proto, "formData", function () {
++        return this.text().then(function (t) {
++            var fd = new FormData();
++            new URLSearchParams(t).forEach(function (v, k) { fd.append(k, v); });
++            return fd;
++        });
++    });
++}
++
++function Request(input, init) {
++    if (!new.target) throw new TypeError("Request: use new");
++    init = init || {};
++    var src = input instanceof Request ? input : null;
++    def(this, "url", src ? src.url : resolveURL(input instanceof URLCtor ? input.href : input));
++    var method = String(init.method || (src ? src.method : "GET"));
++    if (/^(delete|get|head|options|post|put|patch)$/i.test(method)) method = method.toUpperCase();
++    def(this, "method", method);
++    def(this, "headers", new Headers(init.headers || (src ? src.headers : undefined)));
++    var body = init.body !== undefined ? init.body : (src ? src._bodyInit : null);
++    if (body !== null && body !== undefined && (method === "GET" || method === "HEAD"))
++        throw new TypeError("Request: GET and HEAD requests have no body");
++    def(this, "_bodyInit", body === undefined ? null : body);
++    var enc = encodeBody(body);
++    def(this, "_buf", enc.text === null ? null : utf8.encode(enc.text).buffer);
++    if (enc.type && !this.headers.has("content-type")) this.headers.set("content-type", enc.type);
++    def(this, "signal", init.signal || (src ? src.signal : null) || new G.AbortController().signal);
++    def(this, "credentials", init.credentials || (src ? src.credentials : "same-origin"));
++    def(this, "mode", init.mode || (src ? src.mode : "cors"));
++    def(this, "cache", init.cache || "default");
++    def(this, "redirect", init.redirect || "follow");
++    def(this, "referrer", "about:client");
++    def(this, "referrerPolicy", init.referrerPolicy || "");
++    def(this, "integrity", init.integrity || "");
++    def(this, "keepalive", !!init.keepalive);
++    def(this, "destination", "");
++}
++bodyMixin(Request.prototype);
++def(Request.prototype, "clone", function () { return new Request(this); });
++G.Request = Request;
++
++function Response(body, init) {
++    if (!new.target) throw new TypeError("Response: use new");
++    init = init || {};
++    var status = init.status === undefined ? 200 : init.status | 0;
++    if (status < 200 || status > 599) throw new RangeError("Response: status " + status);
++    def(this, "status", status);
++    def(this, "statusText", init.statusText === undefined ? "" : String(init.statusText));
++    def(this, "headers", init.headers instanceof Headers ? init.headers : new Headers(init.headers));
++    def(this, "type", "default");
++    def(this, "url", "");
++    def(this, "redirected", false);
++    var enc = encodeBody(body);
++    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) def(this, "_buf", bytesOf(body).buffer);
++    else if (body instanceof Blob) def(this, "_buf", body._bytes.slice().buffer);
++    else def(this, "_buf", enc.text === null ? null : utf8.encode(enc.text).buffer);
++    if (enc.type && !this.headers.has("content-type")) this.headers.set("content-type", enc.type);
++}
++acc(Response.prototype, "ok", function () { return this.status >= 200 && this.status <= 299; });
++bodyMixin(Response.prototype);
++def(Response.prototype, "clone", function () {
++    if (this._bodyUsed) throw new TypeError("Response.clone: body already used");
++    var r = Object.create(Response.prototype), self = this;
++    ["status", "statusText", "type", "url", "redirected"].forEach(function (k) { def(r, k, self[k]); });
++    def(r, "headers", new Headers(this.headers));
++    def(r, "_buf", this._buf ? this._buf.slice(0) : null);
++    return r;
++});
++Response.error = function () {
++    var r = Object.create(Response.prototype);
++    def(r, "status", 0); def(r, "statusText", ""); def(r, "type", "error"); def(r, "url", "");
++    def(r, "redirected", false); def(r, "headers", new Headers()); def(r, "_buf", null);
++    return r;
++};
++Response.json = function (data, init) {
++    init = init || {};
++    var h = new Headers(init.headers);
++    if (!h.has("content-type")) h.set("content-type", "application/json");
++    return new Response(JSON.stringify(data), { status: init.status, statusText: init.statusText, headers: h });
++};
++Response.redirect = function (url, status) {
++    return new Response(null, { status: status || 302, headers: { location: resolveURL(url) } });
++};
++G.Response = Response;
++
++def(WindowP, "fetch", function (input, init) {
++    var req;
++    try { req = new Request(input, init); } catch (e) { return Promise.reject(e); }
++    return new Promise(function (resolve, reject) {
++        var signal = req.signal, handle = 0, settled = false;
++        if (signal && signal.aborted) { reject(signal.reason); return; }
++        function onAbort() {
++            if (settled) return;
++            settled = true;
++            if (handle && N.abortRequest) N.abortRequest(handle);
++            reject(signal.reason || domError("AbortError", "the request was aborted"));
++        }
++        if (signal) signal.addEventListener("abort", onAbort);
++        var body = req._buf ? new TextDecoder().decode(new Uint8Array(req._buf)) : null;
++        var credentials = req.credentials === "include";
++        try {
++            handle = startRequest(req.method, req.url, req.headers, body, function (status, statusText, lines, finalURL, buf) {
++                if (settled) return;
++                settled = true;
++                if (signal) signal.removeEventListener("abort", onAbort);
++                if (status === 0 && arguments.length < 5) {
++                    reject(new TypeError("Failed to fetch: " + statusText));
++                    return;
++                }
++                var headers = parseHeaderLines(lines);
++                var cors = originOf(finalURL) !== pageOrigin();
++                if (req.mode !== "no-cors" && !corsAllowed(finalURL, headers, credentials)) {
++                    reject(new TypeError("Failed to fetch: blocked by CORS"));
++                    return;
++                }
++                var r = Object.create(Response.prototype);
++                def(r, "status", status);
++                def(r, "statusText", statusText);
++                def(r, "headers", headers);
++                def(r, "type", req.mode === "no-cors" && cors ? "opaque" : cors ? "cors" : "basic");
++                def(r, "url", finalURL);
++                def(r, "redirected", finalURL !== req.url);
++                def(r, "_buf", req.method === "HEAD" ? null : buf);
++                resolve(r);
++            });
++        } catch (e) {
++            settled = true;
++            reject(new TypeError("Failed to fetch: " + e.message));
++        }
++    });
++});
++
++if (NavigatorP) {
++    def(NavigatorP, "sendBeacon", function (url, data) {
++        var enc = encodeBody(data), h = new Headers();
++        if (enc.type) h.set("content-type", enc.type);
++        try {
++            startRequest("POST", resolveURL(url), h, enc.text === null ? "" : enc.text, function () {});
++            return true;
++        } catch (e) {
++            return false;
++        }
++    });
++}
++
+ })(globalThis);

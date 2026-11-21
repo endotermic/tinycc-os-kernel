@@ -21,6 +21,8 @@
 # build/<arch>/netsurf/tests/<page>.log (of every page with --keep).
 # A URL (http://...) is run the same way and only reports errors and the trace; this is
 # how a saved copy of a real site is measured (served by python3 -m http.server).
+# Pages with <meta name="test-server"> are opened from tests/netsurf/server.py, started on
+# 127.0.0.1 ports 18537 and 18538 (NETSURF_TEST_PORT sets the first).
 # Memory is capped with a systemd-run scope where one is available (1 GB per page).
 # Exit status: 0 when every page passed.
 set -u
@@ -37,7 +39,7 @@ while [ $# -gt 0 ]; do
         --binary) binary=$2; shift 2 ;;
         --timeout) timeout=$2; shift 2 ;;
         --keep) keep=1; shift ;;
-        -h|--help) sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "run.sh: unknown option $1" >&2; exit 2 ;;
         *) pages+=("$1"); shift ;;
     esac
@@ -81,6 +83,24 @@ if command -v systemd-run >/dev/null && systemd-run --user --scope -q true 2>/de
     cap=(systemd-run --user --scope -q -p MemoryMax=1G -p MemorySwapMax=0)
 fi
 
+# the test server (server.py), for pages with <meta name="test-server">: they are opened
+# from it (http://127.0.0.1:PORT/NAME.html?other=PORT2, the second port a second origin)
+port=${NETSURF_TEST_PORT:-18537}
+port2=$((port + 1))
+server=
+for page in "${pages[@]}"; do
+    f=$page
+    case $page in *://*) continue ;; */*) ;; *) f=$here/pages/$page; [ -e "$f" ] || f=$f.html ;; esac
+    if [ -e "$f" ] && grep -q '<meta name="test-server"' "$f"; then
+        python3 -I "$here/server.py" "$here/pages" $port $port2 > "$tmp/server.log" 2>&1 &
+        server=$!
+        trap 'kill $server 2>/dev/null; rm -rf "$tmp"' EXIT
+        for i in $(seq 50); do grep -q ready "$tmp/server.log" && break; sleep 0.1; done
+        grep -q ready "$tmp/server.log" || { echo "run.sh: the test server did not start:" >&2; cat "$tmp/server.log" >&2; exit 2; }
+        break
+    fi
+done
+
 total=0 passed=0
 for page in "${pages[@]}"; do
     case $page in
@@ -89,6 +109,9 @@ for page in "${pages[@]}"; do
         *) file=$here/pages/$page; [ -e "$file" ] || file=$here/pages/$page.html
            url=file://$file; name=$(basename "$file" .html) ;;
     esac
+    if [ -n "$file" ] && grep -q '<meta name="test-server"' "$file"; then
+        url=http://127.0.0.1:$port/$(basename "$file")?other=$port2
+    fi
     log=$out/$name.log
     : > "$log"
     start=$(date +%s.%N)

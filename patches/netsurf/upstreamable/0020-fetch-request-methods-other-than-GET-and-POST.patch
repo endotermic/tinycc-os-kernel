@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 14:14:45 +0200
+Subject: [PATCH] fetch: request methods other than GET and POST
+
+fetch_start takes the method as a pseudo header in its headers
+(FETCH_METHOD_HEADER, "X-NetSurf-Method: PUT"), which the curl fetcher
+takes out and turns into CURLOPT_CUSTOMREQUEST (CURLOPT_NOBODY for HEAD);
+reused curl handles get the method reset every time.
+---
+ netsurf/content/fetch.h         |  6 ++++++
+ netsurf/content/fetchers/curl.c | 26 +++++++++++++++++++++++++-
+ 2 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/netsurf/content/fetch.h b/netsurf/content/fetch.h
+index e7180d0..8e254b6 100644
+--- a/netsurf/content/fetch.h
++++ b/netsurf/content/fetch.h
+@@ -93,6 +93,12 @@ typedef struct fetch_msg {
+ 	} data;
+ } fetch_msg;
+ 
++/**
++ * A pseudo header in fetch_start's headers: the request method when it is
++ * not GET or POST ("X-NetSurf-Method: PUT"); the HTTP fetcher takes it out
++ */
++#define FETCH_METHOD_HEADER "X-NetSurf-Method:"
++
+ /**
+  * Fetcher post data types
+  */
+diff --git a/netsurf/content/fetchers/curl.c b/netsurf/content/fetchers/curl.c
+index 40a5c36..d8dd952 100644
+--- a/netsurf/content/fetchers/curl.c
++++ b/netsurf/content/fetchers/curl.c
+@@ -261,6 +261,7 @@ struct curl_fetch_info {
+ 	char *realm;		/**< HTTP Auth Realm */
+ 	struct fetch_postdata *postdata; /**< POST data */
+ 	NSCURL_POSTDATA_T *curl_postdata; /**< POST data in curl representation */
++	char *method;		/**< Request method other than GET/POST, or NULL */
+ 
+ 	long http_code; /**< HTTP result code from cURL. */
+ 
+@@ -445,6 +446,7 @@ static struct curl_fetch_info *fetch_alloc(void)
+ 	fetch->url = NULL;
+ 	fetch->host = NULL;
+ 	fetch->location = NULL;
++	fetch->method = NULL;
+ 	fetch->content_length = 0;
+ 	fetch->http_code = 0;
+ 	fetch->cookie_string = NULL;
+@@ -548,8 +550,19 @@ fetch_curl_setup(struct fetch *parent_fetch,
+ 		APPEND(fetch->headers, "DNT: 1");
+ 	}
+ 
+-	/* And add any headers specified by the caller */
++	/* And add any headers specified by the caller; the pseudo header
++	 * FETCH_METHOD_HEADER sets the request method instead (scripts'
++	 * XMLHttpRequest: PUT, DELETE, HEAD, ...) */
+ 	for (i = 0; headers[i] != NULL; i++) {
++		if (strncasecmp(headers[i], FETCH_METHOD_HEADER,
++				SLEN(FETCH_METHOD_HEADER)) == 0) {
++			const char *m = headers[i] + SLEN(FETCH_METHOD_HEADER);
++			while (*m == ' ')
++				m++;
++			free(fetch->method);
++			fetch->method = strdup(m);
++			continue;
++		}
+ 		APPEND(fetch->headers, headers[i]);
+ 	}
+ 
+@@ -1197,6 +1210,16 @@ static CURLcode fetch_curl_set_options(struct curl_fetch_info *f)
+ 	if (code != CURLE_OK) {
+ 		return code;
+ 	}
++	/* the method (handles are reused: always set) */
++	if (f->method != NULL && strcasecmp(f->method, "HEAD") == 0) {
++		SETOPT(CURLOPT_CUSTOMREQUEST, NULL);
++		SETOPT(CURLOPT_NOBODY, 1L);
++	} else {
++		SETOPT(CURLOPT_NOBODY, 0L);
++		SETOPT(CURLOPT_CUSTOMREQUEST, f->method);
++		if (f->postdata->type == FETCH_POSTDATA_NONE)
++			SETOPT(CURLOPT_HTTPGET, f->method == NULL ? 1L : 0L);
++	}
+ 
+ 	f->cookie_string = urldb_get_cookie(f->url, true);
+ 	if (f->cookie_string) {
+@@ -1450,6 +1473,7 @@ static void fetch_curl_free(void *vf)
+ 	nsurl_unref(f->url);
+ 	lwc_string_unref(f->host);
+ 	free(f->location);
++	free(f->method);
+ 	free(f->cookie_string);
+ 	free(f->realm);
+ 	if (f->headers) {

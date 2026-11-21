@@ -1,6 +1,6 @@
 # NetSurf: the web APIs a script-built site needs (plan, target youtube.com)
 
-Plan of 2026-11-21 (phases 0 and 1 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
+Plan of 2026-11-21 (phases 0, 1 and 2 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
 nsgenbind bindings are unchanged), redraws DOM changes made after load (0009/0010) and dispatches
 events correctly (0012/0013). youtube.com still shows a blank page. This file lists what it needs,
 in the order planned. Mark a phase done here when it is committed and verified (host and guest,
@@ -185,7 +185,42 @@ JavaScript (`polyfill.js`): `URL`, `URLSearchParams`, `TextEncoder`/`TextDecoder
 
 Done when: each has a passing test page; YouTube's first error is no longer `Image`.
 
-## Phase 2: networking (large)
+## Phase 2: networking — DONE (2026-11-21)
+
+Patches upstreamable/0020 and features/0021. Test pages `net-xhr` (29 checks) and `net-fetch` (24),
+served by `tests/netsurf/server.py` (started by run.sh for pages with
+`<meta name="test-server">`, two ports = two origins); all 16 pages pass on the host; net-xhr and net-fetch also in the x86_64 guest (server on the host, reached as 10.0.2.2).
+
+- Fetch layer (0020): `fetch_start` takes the method as the pseudo header `FETCH_METHOD_HEADER`
+  ("X-NetSurf-Method: PUT"); the curl fetcher turns it into CURLOPT_CUSTOMREQUEST (CURLOPT_NOBODY
+  for HEAD) and resets it on reused handles. The script's request headers went through
+  `fetch_start`'s existing headers argument, the text body through its URL-encoded body (curl
+  takes the given Content-Type), so the planned llcache changes were not needed: script requests
+  bypass the cache and go to the fetch layer directly.
+- `request()` (0021, Window.bnd): one request through the fetch layer, redirects followed (at most
+  20; 303, and 301/302 after POST, become GET), one callback from the fetch poll with status,
+  status text, headers, final URL and the body as an ArrayBuffer, or an error; `abortRequest()`;
+  a page's requests end with its script thread (closedown and fini).
+- `webapi.js`: `XMLHttpRequest` (asynchronous only: synchronous `open` throws
+  InvalidAccessError; readyState 1-4 events, load/error/abort/timeout/loadend and progress events,
+  `timeout`, `abort`, `responseType` text/json/arraybuffer/blob, the charset of Content-Type,
+  forbidden request headers dropped), `fetch` with `Headers`, `Request`, `Response` (also
+  constructed by scripts, `Response.json`), `AbortSignal`, `Blob`, `File`, `FormData` and
+  `navigator.sendBeacon`.
+- Policy: cookies are stored and sent as for the page's own fetches (also cross-origin, whatever
+  `withCredentials`/`credentials` say); a cross-origin response is exposed only when
+  Access-Control-Allow-Origin is `*` (without credentials) or the page's origin; no preflight
+  requests; pages from `file:` read any response (local development).
+
+Not done: progress while a response arrives (all readyState steps come at the end), binary request
+bodies (sent as UTF-8 text) and multipart FormData (sent URL-encoded), streaming bodies
+(`response.body` is a placeholder), `responseXML`. YouTube's saved copy still stops at
+`new MutationObserver` before its first data request, so the milestone of this phase moves to
+phase 3. The BBC start page: 3 uncaught errors (8 after patch 0006).
+
+The plan as written before the work:
+
+### Phase 2 plan (2026-11-21)
 
 1. Fetch layer: extend `llcache_post_data` with a raw body type (bytes + content type) and add an
    optional extra-headers list to `hlcache_handle_retrieve`/`llcache_handle_retrieve` →

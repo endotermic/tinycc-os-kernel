@@ -18,3 +18,5 @@ upstreamable/0016-nsgenbind-WebIDL-operations-writable-and-configurabl.patch
 upstreamable/0017-events-DOMContentLoaded-and-the-Window-s-own-listene.patch
 upstreamable/0018-JavaScript-list-indexes-HTMLCollection-fragments-nam.patch
 features/0019-JavaScript-web-APIs-in-JavaScript-webapi.js-with-nat.patch
+upstreamable/0020-fetch-request-methods-other-than-GET-and-POST.patch
+features/0021-JavaScript-XMLHttpRequest-and-fetch.patch

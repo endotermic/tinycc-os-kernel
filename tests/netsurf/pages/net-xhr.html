@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><meta charset="utf-8"><meta name="test-server"><title>net-xhr</title><script src="harness.js"></script></head><body>
+<script>
+// XMLHttpRequest (webapi.js over Window.bnd's request()), served by tests/netsurf/server.py
+// the second origin: ?other=PORT (on 127.0.0.1) or ?other=http://HOST:PORT
+const otherArg = new URLSearchParams(location.search).get("other") || "";
+const other = /^https?:/.test(otherArg) ? otherArg : "http://127.0.0.1:" + otherArg;
+function xhr(method, url, opts) {
+    opts = opts || {};
+    return new Promise(resolve => {
+        const x = new XMLHttpRequest(), states = [];
+        x.onreadystatechange = () => states.push(x.readyState);
+        x.open(method, url);
+        if (opts.type) x.responseType = opts.type;
+        if (opts.timeout) x.timeout = opts.timeout;
+        Object.keys(opts.headers || {}).forEach(k => x.setRequestHeader(k, opts.headers[k]));
+        const done = kind => resolve({ x: x, kind: kind, states: states.join("") });
+        x.onload = () => done("load"); x.onerror = () => done("error");
+        x.ontimeout = () => done("timeout"); x.onabort = () => done("abort");
+        x.send(opts.body);
+        if (opts.abort) x.abort();
+    });
+}
+(async () => {
+    let r = await xhr("GET", "/api/echo?q=1", { headers: { "X-Test": "yes", "Cookie": "forbidden" } });
+    T.eq("GET load", r.kind + "," + r.x.status + "," + r.x.statusText, "load,200,OK");
+    T.eq("readyState sequence", r.states, "1234");
+    const echo = JSON.parse(r.x.responseText);
+    T.eq("request header sent", echo.headers["x-test"], "yes");
+    T.eq("forbidden header dropped", echo.headers["cookie"] === undefined || echo.headers["cookie"] !== "forbidden", true);
+    T.eq("query", echo.query.q, "1");
+    T.eq("getResponseHeader", r.x.getResponseHeader("x-echo") + "," + r.x.getResponseHeader("X-MULTI"), "yes,a, b");
+    T.ok("getAllResponseHeaders", /content-type: application\/json\r\n/.test(r.x.getAllResponseHeaders()));
+    T.eq("responseURL", r.x.responseURL, location.origin + "/api/echo?q=1");
+    r = await xhr("POST", "/api/echo", { body: JSON.stringify({ n: "é" }), headers: { "Content-Type": "application/json" } });
+    const post = JSON.parse(r.x.responseText);
+    T.eq("POST body", post.method + "," + post.body + "," + post.headers["content-type"], 'POST,{"n":"é"},application/json');
+    r = await xhr("PUT", "/api/echo", { body: "put-body" });
+    T.eq("PUT", JSON.parse(r.x.responseText).method + "," + JSON.parse(r.x.responseText).body, "PUT,put-body");
+    r = await xhr("DELETE", "/api/echo");
+    T.eq("DELETE", JSON.parse(r.x.responseText).method, "DELETE");
+    r = await xhr("HEAD", "/api/echo");
+    T.eq("HEAD", r.x.status + "," + r.x.responseText, "200,");
+    r = await xhr("POST", "/api/echo", { body: new URLSearchParams({ a: "1 2" }) });
+    T.eq("URLSearchParams body", JSON.parse(r.x.responseText).headers["content-type"] + "|" + JSON.parse(r.x.responseText).body,
+        "application/x-www-form-urlencoded;charset=UTF-8|a=1+2");
+    r = await xhr("GET", "/api/status?code=404&text=Nope");
+    T.eq("404 is a load", r.kind + "," + r.x.status + "," + r.x.statusText + "," + r.x.responseText, "load,404,Nope,status 404");
+    r = await xhr("GET", "/api/redirect?code=302&to=/api/echo%3Fr%3D1");
+    T.eq("redirect followed", r.x.status + "," + JSON.parse(r.x.responseText).query.r + "," + r.x.responseURL.slice(-13), "200,1,/api/echo?r=1");
+    r = await xhr("POST", "/api/redirect?code=303&to=/api/echo", { body: "x" });
+    T.eq("303 turns POST into GET", JSON.parse(r.x.responseText).method, "GET");
+    r = await xhr("POST", "/api/redirect?code=307&to=/api/echo", { body: "kept" });
+    T.eq("307 keeps POST", JSON.parse(r.x.responseText).method + "," + JSON.parse(r.x.responseText).body, "POST,kept");
+    r = await xhr("GET", "/api/json", { type: "json" });
+    T.eq("responseType json", r.x.response.list[2] + "," + r.x.response.s, "3,é");
+    r = await xhr("GET", "/api/bytes", { type: "arraybuffer" });
+    const b = new Uint8Array(r.x.response);
+    T.eq("responseType arraybuffer", b.length + "," + b[0] + "," + b[255], "256,0,255");
+    r = await xhr("GET", "/api/latin1");
+    T.eq("charset from Content-Type", r.x.responseText, "café");
+    r = await xhr("GET", "/api/slow?ms=3000", { timeout: 200 });
+    T.eq("timeout", r.kind + "," + r.x.readyState + "," + r.x.status, "timeout,4,0");
+    r = await xhr("GET", "/api/slow?ms=3000", { abort: true });
+    T.eq("abort", r.kind + "," + r.x.readyState, "abort,0");
+    r = await xhr("GET", other + "/api/echo");
+    T.eq("cross-origin refused", r.kind + "," + r.x.status, "error,0");
+    r = await xhr("GET", other + "/api/echo?acao=*");
+    T.eq("cross-origin allowed by *", r.kind + "," + r.x.status, "load,200");
+    r = await xhr("GET", other + "/api/echo?acao=" + encodeURIComponent(location.origin));
+    T.eq("cross-origin allowed by origin", r.kind, "load");
+    r = await xhr("GET", "http://127.0.0.1:9/nothing");
+    T.eq("connection refused", r.kind + "," + r.x.status, "error,0");
+    r = await xhr("GET", "/api/setcookie?name=nsc&value=42");
+    r = await xhr("GET", "/api/echo");
+    T.eq("cookies stored and sent", /nsc=42/.test(JSON.parse(r.x.responseText).headers["cookie"] || ""), true);
+    const x = new XMLHttpRequest();
+    try { x.send(); T.ok("send before open throws", false); } catch (e) { T.eq("send before open throws", e.name, "InvalidStateError"); }
+    try { x.open("GET", "/", false); T.ok("synchronous refused", false); } catch (e) { T.eq("synchronous refused", e.name, "InvalidAccessError"); }
+    T.done();
+})().catch(e => { T.ok("no exception", false, String(e)); T.done(); });
+</script></body></html>
