@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>stress</title><script src="harness.js"></script></head><body><div id="box"></div>
+<script>
+// many nodes created and removed from timers (finalizers, the rebuilt box tree)
+let n = 0, rounds = 0;
+const box = document.getElementById("box");
+function round() {
+    for (let i = 0; i < 3000; i++) { const d = document.createElement("div"); d.textContent = "x" + i; box.appendChild(d); }
+    while (box.firstChild) box.removeChild(box.firstChild);
+    for (let i = 0; i < 3000; i++) { const s = document.createElement("span"); n += s.nodeType; }
+    rounds++;
+    if (rounds < 15) {
+        setTimeout(round, 1);
+    } else {
+        T.eq("rounds", rounds, 15);
+        T.eq("nodes made", n, 45000);
+        T.eq("box empty", box.childNodes.length, 0);
+        T.done();
+    }
+}
+round();
+</script></body></html>

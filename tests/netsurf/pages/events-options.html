@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>events-options</title><script src="harness.js"></script></head><body>
+<button id="b">b</button>
+<script>
+// addEventListener options objects (passive, once, capture), removeEventListener,
+// several listeners on one event (patch 0013)
+const b = document.getElementById("b"), log = [];
+const fire = () => { const e = document.createEvent("Event"); e.initEvent("click", true, true); b.dispatchEvent(e); };
+const h1 = () => log.push("passive"), h2 = () => log.push("once"), h3 = () => log.push("bool"), h4 = () => log.push("removed");
+b.addEventListener("click", h1, { passive: true });
+b.addEventListener("click", h2, { once: true });
+b.addEventListener("click", h3, false);
+b.addEventListener("click", h4, { capture: true });
+b.removeEventListener("click", h4, { capture: true });
+b.addEventListener("click", () => log.push("noarg"));
+b.addEventListener("click", h3, false); // a duplicate is ignored
+fire();
+T.eq("first dispatch", log.join(","), "passive,once,bool,noarg");
+log.length = 0;
+fire();
+T.eq("once listener gone", log.join(","), "passive,bool,noarg");
+log.length = 0;
+b.removeEventListener("click", h1);
+fire();
+T.eq("removeEventListener", log.join(","), "bool,noarg");
+T.done();
+</script></body></html>

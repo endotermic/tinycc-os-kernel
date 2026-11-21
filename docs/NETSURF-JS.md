@@ -1,6 +1,6 @@
 # NetSurf: the web APIs a script-built site needs (plan, target youtube.com)
 
-Plan of 2026-11-21. NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
+Plan of 2026-11-21 (phase 0 done the same day). NetSurf 3.11 runs scripts on QuickJS (patch 0006, a Duktape-API layer, so the
 nsgenbind bindings are unchanged), redraws DOM changes made after load (0009/0010) and dispatches
 events correctly (0012/0013). youtube.com still shows a blank page. This file lists what it needs,
 in the order planned. Mark a phase done here when it is committed and verified (host and guest,
@@ -60,30 +60,60 @@ Video playback is a separate problem (phase 7).
 - Native code where the engine owns the state (network, layout, timers, storage, DOM hooks);
   JavaScript (`polyfill.js`, loaded into every heap) where a spec-sized API can sit on top of a
   small native one (`fetch` on XHR, `URL`, `TextEncoder`, selector matching if C is too costly).
-- Every API gets a test page in a new `tests/netsurf/` directory that prints `PASS`/`FAIL` lines to
-  the console, plus a runner (`tests/netsurf/run.sh`, the host `-f ram` recipe from the scratchpad
-  kit: `rung3.sh`) that diffs against expected output. Guest check (QEMU driven over QMP: screendumps, keys,
-  pointer) at the end of each phase. A tcc bug found on the way goes into
-  `patches/tinycc` and the tcc fix log as usual.
+- Every API gets a self-checking page in `tests/netsurf/pages/` (checks through `harness.js`;
+  `T.todo` for a known gap), run by `tests/netsurf/run.sh` on the host. Guest check (QEMU
+  driven over QMP: screendumps, keys, pointer) at the end of each phase. A tcc bug found on the
+  way goes into `patches/tinycc` and the tcc fix log as usual.
 - A built tree is about 4 min; after an `.idl` edit delete `build/Linux-framebuffer/duktape`
   in the incremental tree (nsgenbind output does not depend on the IDL files).
 
-## Phase 0: test harness (small)
+## Phase 0: test harness — DONE (2026-11-21)
 
-- `tests/netsurf/` with the pages written so far (events, dynamic DOM, stress) turned into
-  self-checking pages; `run.sh` runs each with a time cap and memory cap (systemd-run scope) and prints a summary.
-- A local copy of youtube.com's start page and its scripts (fetched once, kept in the scratchpad,
-  not in the repo) served by `python -m http.server`, so progress is measured without network
-  changes: count of uncaught script errors and the first failing API, logged by a new
-  `NETSURF_JS_TRACE=1` switch in `dukky.c` that names every unbound IDL member called (cheap way to
-  find the next missing API on any site).
+- `tests/netsurf/run.sh [--arch A] [--timeout S] [--keep] [PAGE|URL...]` opens each page of
+  `tests/netsurf/pages/` with the built browser (`-f ram`, no window, 1 GB memory cap) and reads
+  its log: a page passes when it printed `TEST END`, no check failed and its count of uncaught
+  script errors is the one its `<meta name="expect-uncaught">` names. `T.todo` checks list the
+  known gaps (`todo:`, and `fixed:` once one passes). Resources and fonts come through
+  `$NETSURFRES`; `/etc/ssl` is hidden in a private mount namespace (`unshare -rm`) because the
+  browser's LibreSSL aborts on the host's OpenSSL 3 `openssl.cnf`. 7 pages: `es`, `timers`,
+  `events-order`, `events-options`, `events-load`, `dom-dynamic`, `stress`; all pass.
+- For a URL it reports the uncaught errors with the place each was thrown.
+  `tests/netsurf/mirror.py URL DIR` saves a page with its scripts and style sheets for offline
+  runs (served by `python3 -m http.server --bind 127.0.0.1`: the browser's curl tries `::1` for
+  `localhost`).
+- `NETSURF_JS_TRACE=1` (patch features/0014): the stubs nsgenbind generates for unimplemented
+  WebIDL members call `dukky_unimplemented("Interface.member")`, which reports each name once on
+  stderr and in the log; `run.sh` sets it and lists the names.
+- Fixes found on the way: local `.js` files were typed `text/html` and refused as scripts
+  (upstreamable/0015, FIX-LOG C43); `removeEventListener` without options missed a listener added
+  with `{passive: true}` (listener identity is type, callback, capture: 0013 amended, C42).
+- Known gaps the pages found (phase 1): `Element.tagName` is unimplemented; no
+  `DOMContentLoaded` is fired; at load only `window.onload`/`<body onload>` run, not
+  `addEventListener("load")` listeners on window.
 
-Done when: `run.sh` passes on the current build, the trace lists YouTube's first missing calls.
+YouTube (start page saved 2026-11-21, NetSurf's user agent): it sends NetSurf its ES5 app build
+and its own polyfills (`fetch-polyfill`, `intersection-observer`, `webcomponents-all-noPatch`,
+`web-animations-next-lite`, `scheduler`), so phases 2-4 may partly be covered by them. Measured:
+4 uncaught errors, each mapping to phase 1:
+
+| Error | Where | Missing |
+|---|---|---|
+| `'Image' is not defined` | inline `ytPrewarmYtimg` | `Image` constructor |
+| `not a function` | web-animations 78:434 | `getContext` on `createElementNS(XHTML, "canvas")`: elements made with createElementNS get no HTML interface |
+| ` is not a constructor` | webcomponents 20:665 | `new Event("click")` |
+| `cannot read property 'forEach' of undefined` | spf.js 11:238 | `document.querySelectorAll` (stub returns undefined) |
+
+Unimplemented members used: `Document.querySelectorAll()`, `Window.postMessage()`, `Window.self`.
 
 ## Phase 1: small DOM and window gaps (medium)
 
 Native (`.bnd`):
 
+- Found by phase 0: `Element.tagName`; fire `DOMContentLoaded` at the document (html.c only
+  has the comment) and run `addEventListener("load")` listeners on window (js_fire_event only
+  calls `window.onload` or `<body onload>`); `createElementNS` with the XHTML namespace must give
+  the HTML interfaces (`HTMLCanvasElement` etc.); `window.self`, `window.postMessage` (a message
+  event to the same window, from the scheduler).
 - `Image` constructor (`new Image(w, h)` → `createElement("img")`), `Option`; `Event` and
   `CustomEvent` constructors with `bubbles`/`cancelable`/`detail`.
 - `querySelector`, `querySelectorAll`, `matches`, `closest` on Document/Element/DocumentFragment:

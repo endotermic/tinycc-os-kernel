@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>events-load</title><meta name="expect-uncaught" content="1"><script src="harness.js"></script>
+<script>
+// DOMContentLoaded, load, the onload and onclick attributes; an uncaught error in one
+// script does not stop the next one (run.sh expects 1 uncaught error: expect-uncaught).
+// NetSurf 3.11 fires no DOMContentLoaded and calls only window.onload / <body onload> at
+// load, not addEventListener listeners on window (phase 1 of docs/NETSURF-JS.md).
+var seen = [];
+document.addEventListener("DOMContentLoaded", function (e) { seen.push("dcl"); });
+window.addEventListener("load", function (e) { seen.push("load"); });
+function finish() {
+    setTimeout(function () {
+        T.eq("scripts and attribute handlers ran", seen.filter(function (s) {
+            return s != "dcl" && s != "load"; }).join(","), "click-attr,listener,script2,onload-attr");
+        T.todo("DOMContentLoaded fired", seen.indexOf("dcl") >= 0);
+        T.todo("window load listener", seen.indexOf("load") >= 0);
+        T.todo("load order", seen.join(","), "click-attr,listener,script2,dcl,load,onload-attr");
+        T.done();
+    }, 50);
+}
+</script></head>
+<body onload="seen.push('onload-attr'); T.eq('event in an attribute handler', typeof event, 'object'); finish()">
+<button id="b" onclick="seen.push('click-attr'); return false">b</button>
+<script>
+var b = document.getElementById("b");
+b.addEventListener("click", function (ev) { seen.push("listener"); T.ok("event target", ev.target === b); });
+var ev = document.createEvent("Event"); ev.initEvent("click", true, true);
+b.dispatchEvent(ev);
+T.eq("onclick property", typeof b.onclick, "function");
+throw new RangeError("uncaught on purpose");
+</script>
+<script>seen.push("script2");</script>
+</body></html>

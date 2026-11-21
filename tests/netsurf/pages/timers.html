@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>timers</title><script src="harness.js"></script></head><body>
+<script>
+// setTimeout ordering, setInterval with clearInterval, clearTimeout, await on a timer
+const log = [];
+setTimeout(() => log.push("t60"), 60);
+setTimeout(() => log.push("t20"), 20);
+const cancelled = setTimeout(() => log.push("cancelled"), 30);
+clearTimeout(cancelled);
+let n = 0;
+const iv = setInterval(() => { n++; if (n === 3) clearInterval(iv); }, 15);
+setTimeout((a, b) => log.push("args " + a + b), 5, "x", "y");
+(async () => {
+    await new Promise(r => setTimeout(r, 40));
+    log.push("await40");
+})();
+setTimeout(() => {
+    T.eq("timer order", log.join(","), "args xy,t20,await40,t60");
+    T.eq("interval ran 3 times", n, 3);
+    T.done();
+}, 300);
+</script></body></html>

@@ -1783,6 +1783,22 @@ C41. 2026-11-20, COMMITTED (patches/netsurf/upstreamable/0012, 0013), found inve
     event, capture/target/bubble order over div and body, a non-bubbling event; the event, dynamic,
     stress and ES test pages unchanged.
 
+C42. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0013 amended), found by the new test
+    page tests/netsurf/pages/events-options.html: removeEventListener("click", h) did not remove
+    a listener added with {passive: true}, and a second addEventListener of the same callback with
+    other passive/once options added it twice. event_target_register_listener and
+    _unregister_listener compared all listener flags; the DOM's listener identity is type,
+    callback and capture only. Both compare the capture bit now. Verification: tests/netsurf/run.sh
+    (events-options passes).
+
+C43. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0015), found writing the NetSurf test
+    pages (phase 0 of docs/NETSURF-JS.md): a local page's <script src="x.js"> never ran ("failed:
+    UnacceptableType"). The framebuffer front end's fetch_filetype, which types file: URLs by
+    their extension, knew CSS and images only and called everything else text/html, which is no
+    script type. .js and .mjs are application/javascript now, .json application/json, .txt
+    text/plain. This affected local pages in the guest too. Verification: every test page loads
+    harness.js.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

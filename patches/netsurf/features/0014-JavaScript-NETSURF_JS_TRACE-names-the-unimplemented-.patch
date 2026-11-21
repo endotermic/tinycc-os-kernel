@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 21 Nov 2026 11:21:48 +0200
+Subject: [PATCH] JavaScript: NETSURF_JS_TRACE names the unimplemented WebIDL
+ members a page uses
+
+---
+ .../handlers/javascript/duktape/dukky.c       | 34 +++++++++++++++++++
+ .../handlers/javascript/duktape/dukky.h       |  5 +++
+ nsgenbind/src/duk-libdom-interface.c          | 28 +++++++++++++++
+ 3 files changed, 67 insertions(+)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index 6e66c28..634dd16 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -25,6 +25,9 @@
+  */
+ 
+ #include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ #include <nsutils/time.h>
+ 
+ #include "netsurf/inttypes.h"
+@@ -1716,3 +1719,34 @@ bool js_fire_event(jsthread *thread, const char *type, struct dom_document *doc,
+ 	dukky_leave_thread(thread);
+ 	return true;
+ }
++
++/* exported interface documented in dukky.h
++ *
++ * With the environment variable NETSURF_JS_TRACE set (to anything but "0"),
++ * every unimplemented WebIDL member a script uses is reported once, on
++ * stderr and in the log, which names the next missing API of a page. */
++void dukky_unimplemented(const char *name)
++{
++	static int enabled = -1;
++	static const char *seen[1024];
++	static size_t nseen = 0;
++	size_t i;
++
++	if (enabled < 0) {
++		const char *e = getenv("NETSURF_JS_TRACE");
++		enabled = (e != NULL && *e != '\0' && strcmp(e, "0") != 0);
++	}
++	if (!enabled) {
++		return;
++	}
++	for (i = 0; i < nseen; i++) {
++		if (seen[i] == name || strcmp(seen[i], name) == 0) {
++			return;
++		}
++	}
++	if (nseen < sizeof seen / sizeof seen[0]) {
++		seen[nseen++] = name;
++	}
++	fprintf(stderr, "NETSURF_JS_TRACE unimplemented %s\n", name);
++	NSLOG(jserrors, WARNING, "Unimplemented: %s", name);
++}
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.h b/netsurf/content/handlers/javascript/duktape/dukky.h
+index 5a67951..9407841 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.h
++++ b/netsurf/content/handlers/javascript/duktape/dukky.h
+@@ -57,4 +57,9 @@ void dukky_push_generics(duk_context *ctx, const char *generic);
+ /* Log the current stack frame if possible */
+ void dukky_log_stack_frame(duk_context *ctx, const char * reason);
+ 
++/* called by the bindings nsgenbind generates for WebIDL members that have no
++ * implementation; name is "Interface.member", "Interface.method()" or
++ * "Interface.member=" (setter), a string constant */
++void dukky_unimplemented(const char *name);
++
+ #endif
+diff --git a/nsgenbind/src/duk-libdom-interface.c b/nsgenbind/src/duk-libdom-interface.c
+index 46436c4..7a60487 100644
+--- a/nsgenbind/src/duk-libdom-interface.c
++++ b/nsgenbind/src/duk-libdom-interface.c
+@@ -23,6 +23,24 @@
+ #include "output.h"
+ #include "duk-libdom.h"
+ 
++/**
++ * output the call that reports an unimplemented member at run time
++ *
++ * The browser logs the name (once per name) when its NETSURF_JS_TRACE
++ * environment variable is set, which names the next missing API of a page.
++ */
++static void
++output_unimplemented_trace(struct opctx *outc,
++                           const char *interface,
++                           const char *member,
++                           const char *suffix)
++{
++        outputf(outc,
++                "\tdukky_unimplemented(\"%s.%s%s\");\n",
++                interface, member, suffix);
++}
++
++
+ /** prefix for all generated functions */
+ #define DLPFX "dukky"
+ 
+@@ -1021,6 +1039,8 @@ output_interface_elipsis_operation(struct opctx *outc,
+                 WARN(WARNING_UNIMPLEMENTED,
+                      "Unimplemented: method %s::%s();",
+                      interfacee->name, operatione->name);
++                output_unimplemented_trace(outc, interfacee->name,
++                                           operatione->name, "()");
+                 outputf(outc,
+                         "\treturn 0;\n");
+         }
+@@ -1064,6 +1084,8 @@ output_interface_overloaded_operation(struct opctx *outc,
+                 WARN(WARNING_UNIMPLEMENTED,
+                      "Unimplemented: method %s::%s();",
+                      interfacee->name, operatione->name);
++                output_unimplemented_trace(outc, interfacee->name,
++                                           operatione->name, "()");
+                 outputf(outc,
+                         "\treturn 0;\n");
+         }
+@@ -1377,6 +1399,8 @@ output_interface_operation(struct opctx *outc,
+                 WARN(WARNING_UNIMPLEMENTED,
+                      "Unimplemented: method %s::%s();",
+                      interfacee->name, operatione->name);
++                output_unimplemented_trace(outc, interfacee->name,
++                                           operatione->name, "()");
+ 
+                 if (options->dbglog) {
+                         outputf(outc,
+@@ -1469,6 +1493,8 @@ output_attribute_getter(struct opctx *outc,
+              interfacee->name,
+              atributee->name,
+              type_str);
++        output_unimplemented_trace(outc, interfacee->name,
++                                   atributee->name, "");
+ 
+         if (options->dbglog) {
+                 outputf(outc,
+@@ -1573,6 +1599,8 @@ output_attribute_setter(struct opctx *outc,
+                      interfacee->name,
+                      atributee->name,
+                      type_str);
++                output_unimplemented_trace(outc, interfacee->name,
++                                           atributee->name, "=");
+                 if (options->dbglog) {
+                         outputf(outc,
+                                "\tNSLOG(dukky, WARNING, \"Unimplemented\");\n");

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>dom-dynamic</title><script src="harness.js"></script>
+<style>.big { font-size: 200%; color: red }</style></head><body>
+<p id="o">start</p><ul id="l"></ul><input id="i" value="typed">
+<img id="im" src="red.png" width="40">
+<script>
+// DOM changes after the page has loaded (patches 0009/0010 draw them; checked here: the
+// browser keeps running and the DOM is as the script left it)
+const o = document.getElementById("o"), l = document.getElementById("l");
+let n = 0;
+const t = setInterval(() => {
+    n++;
+    o.textContent = "tick " + n;
+    const li = document.createElement("li"); li.textContent = "item " + n; l.appendChild(li);
+    if (n == 2) o.className = "big";
+    if (n == 3) l.removeChild(l.firstChild);
+    if (n == 4) { const img = document.createElement("img"); img.src = "red.png"; img.id = "im2"; document.body.appendChild(img); }
+    if (n == 5) {
+        clearInterval(t);
+        T.eq("list after changes", l.childNodes.length, 4);
+        T.eq("first item", l.firstChild.textContent, "item 2");
+        T.eq("className", o.className, "big");
+        T.eq("text", o.textContent, "tick 5");
+        T.ok("inserted image", document.getElementById("im2") !== null);
+        T.eq("input value", document.getElementById("i").value, "typed");
+        l.innerHTML = "<li>a</li><li>b</li>";
+        T.eq("innerHTML", l.childNodes.length, 2);
+        T.done();
+    }
+}, 100);
+</script></body></html>

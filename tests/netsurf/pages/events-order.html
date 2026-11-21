@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>events-order</title><script src="harness.js"></script></head><body>
+<div id="d"><button id="b">b</button></div>
+<script>
+// capture, target and bubble order (patches 0012/0013); a non-bubbling event stops at the target
+const d = document.getElementById("d"), b = document.getElementById("b"), log = [];
+document.body.addEventListener("click", () => log.push("body-bubble"));
+d.addEventListener("click", () => log.push("div-capture"), true);
+d.addEventListener("click", () => log.push("div-bubble"), { capture: false });
+b.addEventListener("click", () => log.push("target"));
+b.addEventListener("click", () => log.push("target-capture"), { capture: true });
+const e = document.createEvent("Event"); e.initEvent("click", true, true); b.dispatchEvent(e);
+T.eq("bubbling event", log.join(","), "div-capture,target,target-capture,div-bubble,body-bubble");
+log.length = 0;
+const e2 = document.createEvent("Event"); e2.initEvent("click", false, true); b.dispatchEvent(e2);
+T.eq("non-bubbling event", log.join(","), "div-capture,target,target-capture");
+log.length = 0;
+const e3 = document.createEvent("Event"); e3.initEvent("click", true, true);
+d.addEventListener("click", ev => ev.stopPropagation(), true);
+b.dispatchEvent(e3);
+T.eq("stopPropagation in capture", log.join(","), "div-capture");
+T.done();
+</script></body></html>

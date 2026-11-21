@@ -12,3 +12,5 @@ features/0010-html-rebuilt-box-trees-take-over-loaded-objects-refo.patch
 upstreamable/0011-libnsfb-x-framebuffer-resizable-maximizable-window-t.patch
 upstreamable/0012-events-dispatch-to-the-target-once-and-bubble-only-b.patch
 upstreamable/0013-JavaScript-addEventListener-options-objects-several-.patch
+features/0014-JavaScript-NETSURF_JS_TRACE-names-the-unimplemented-.patch
+upstreamable/0015-framebuffer-local-.js-.mjs-files-are-scripts-.json-a.patch
