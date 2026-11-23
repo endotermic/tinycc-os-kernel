@@ -53,6 +53,15 @@ T.eq("Text", new Text("abc").nodeValue, "abc");
 T.eq("DocumentFragment", new DocumentFragment().nodeType, 11);
 const canvas = document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
 T.eq("createElementNS(XHTML) canvas", typeof canvas.getContext, "function");
+T.eq("createElementNS(XHTML) name", canvas.tagName, "CANVAS");
+// the name is the second argument; SVG names keep their case
+const svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+svgEl.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+T.eq("createElementNS(SVG) names", svgEl.tagName + "," + svgEl.localName + "," + svgEl.namespaceURI,
+    "svg,svg,http://www.w3.org/2000/svg");
+T.eq("createElementNS(SVG) serialised", svgEl.outerHTML, "<svg><path></path></svg>");
+T.eq("createElementNS(SVG) a is no HTMLAnchorElement",
+    document.createElementNS("http://www.w3.org/2000/svg", "a") instanceof HTMLAnchorElement, false);
 // document
 T.eq("title", document.title, "dom-api");
 document.title = "changed";

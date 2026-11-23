@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 15:36:20 +0200
+Subject: [PATCH] html: style sheets added after layout apply
+
+A <style> element made by a script was never registered (only the parser's
+were, when their text arrived), and a style sheet that finished loading
+after the document was converted started the conversion again, which
+ignored it ("NS layout is static").  Inserted style elements are now
+registered; a sheet that finishes later makes the selection context afresh
+from the loaded sheets and rebuilds the box tree, and the content still
+goes on to done.  A rebuild asked for while the first box tree is being
+made happens when it is finished.
+---
+ netsurf/content/handlers/html/css.c     | 50 +++++++++++++++++++++++--
+ netsurf/content/handlers/html/html.c    | 12 +++++-
+ netsurf/content/handlers/html/private.h |  3 ++
+ 3 files changed, 61 insertions(+), 4 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/css.c b/netsurf/content/handlers/html/css.c
+index 0bc3884..58ff67f 100644
+--- a/netsurf/content/handlers/html/css.c
++++ b/netsurf/content/handlers/html/css.c
+@@ -86,6 +86,31 @@ static nserror css_error_to_nserror(css_error error)
+ }
+ 
+ 
++/**
++ * Apply the style sheets again after the document was laid out.
++ *
++ * A style sheet that finishes loading after the selection context was made
++ * (a \<style\> or \<link\> added or changed by a script) used to start the
++ * conversion again, which ignored it ("NS layout is static").  The context
++ * is made afresh from the current sheets and the box tree rebuilt.
++ */
++static void html_css_restyle(html_content *c)
++{
++	css_select_ctx *select_ctx;
++
++	if (c->select_ctx == NULL || c->aborted)
++		return;
++
++	if (html_css_new_selection_context(c, &select_ctx) != NSERROR_OK) {
++		NSLOG(netsurf, INFO, "could not apply the changed style sheets");
++		return;
++	}
++	css_select_ctx_destroy(c->select_ctx);
++	c->select_ctx = select_ctx;
++
++	html_schedule_rebox(c);
++}
++
+ /**
+  * Callback for fetchcache() for stylesheets.
+  */
+@@ -136,6 +161,16 @@ html_convert_css_callback(hlcache_handle *css,
+ 		break;
+ 	}
+ 
++	if (parent->select_ctx != NULL) {
++		/* the document is laid out already */
++		if (event->type == CONTENT_MSG_DONE ||
++				event->type == CONTENT_MSG_ERROR) {
++			html_css_restyle(parent);
++			html_proceed_to_done(parent);
++		}
++		return NSERROR_OK;
++	}
++
+ 	if (html_can_begin_conversion(parent)) {
+ 		html_begin_conversion(parent);
+ 	}
+@@ -362,9 +397,14 @@ bool html_css_process_style(html_content *c, dom_node *node)
+ 			break;
+ 	}
+ 
+-		/* Should already exist */
++	/* The parser made an entry when the element's text arrived; an
++	 * element a script made with its text already in it has none yet */
+ 	if (i == c->stylesheet_count) {
+-		return false;
++		if (html_css_update_style(c, node) == false)
++			return false;
++		s = c->stylesheets + (c->stylesheet_count - 1);
++		if (s->node != node)
++			return false;
+ 	}
+ 
+ 	exc = dom_element_get_attribute(node, corestring_dom_media, &val);
+@@ -687,7 +727,11 @@ html_css_new_selection_context(html_content *c, css_select_ctx **ret_select_ctx)
+ 			origin = CSS_ORIGIN_USER;
+ 		}
+ 
+-		if (hsheet->sheet != NULL) {
++		/* a sheet added after the document was laid out may still
++		 * be loading: it is applied when it is done */
++		if (hsheet->sheet != NULL &&
++				content_get_status(hsheet->sheet) ==
++				CONTENT_STATUS_DONE) {
+ 			sheet = nscss_get_stylesheet(hsheet->sheet);
+ 		}
+ 
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index d8b4366..022ded0 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -279,6 +279,11 @@ static void html_box_convert_done(html_content *c, bool success)
+ 	html_proceed_to_done(c);
+ 
+ 	dom_node_unref(html);
++
++	if (c->rebox_after_conversion) {
++		c->rebox_after_conversion = false;
++		html_schedule_rebox(c);
++	}
+ }
+ 
+ /* Documented in html_internal.h */
+@@ -1314,8 +1319,13 @@ static void html_rebox(void *p)
+ /* exported interface documented in html/private.h */
+ void html_schedule_rebox(html_content *htmlc)
+ {
++	if (htmlc->box_conversion_context != NULL) {
++		/* done when the tree being made is finished */
++		htmlc->rebox_after_conversion = true;
++		return;
++	}
+ 	if (htmlc->layout == NULL || htmlc->rebox_running ||
+-	    htmlc->rebox_pending || htmlc->box_conversion_context != NULL) {
++	    htmlc->rebox_pending) {
+ 		return;
+ 	}
+ 	htmlc->rebox_pending = true;
+diff --git a/netsurf/content/handlers/html/private.h b/netsurf/content/handlers/html/private.h
+index a7306a7..96bb0bb 100644
+--- a/netsurf/content/handlers/html/private.h
++++ b/netsurf/content/handlers/html/private.h
+@@ -128,6 +128,9 @@ typedef struct html_content {
+ 	bool rebox_pending;
+ 	/** The box tree is being rebuilt */
+ 	bool rebox_running;
++	/** A rebuild was asked for while the first box tree was being made
++	 * (from parts of the DOM or styles it may have missed) */
++	bool rebox_after_conversion;
+ 	/** The last rebuild's conversion succeeded */
+ 	bool rebox_ok;
+ 	/** Minimum delay before the next rebuild, in ms */

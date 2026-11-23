@@ -5,8 +5,13 @@
 .narrow { width: 50px; } .wide { width: 120px; }
 #w { width: 100px; height: 40px; padding: 5px; border: 2px solid black; color: rgb(0, 0, 255); }
 .gone { display: none; }
+#fx-wrap { position: absolute; top: 300px; left: 0; width: 200px; }
+#fx { position: fixed; top: 0; right: 0; width: 30px; }
+#fx div { height: 20px; }
+#fx-next { margin-top: 56px; height: 5px; }
 </style></head><body>
 <div id="w">w</div><div id="g" class="gone">g</div><span id="sp">sp</span>
+<div id="fx-wrap"><div><div id="fx"><div></div></div><div id="fx-next"></div></div></div>
 <script>
 // inline style, computed style, geometry, matchMedia (webapi.js + Window.bnd natives)
 const w = document.getElementById("w"), g = document.getElementById("g");
@@ -68,6 +73,22 @@ window.addEventListener("load", () => setTimeout(async () => {
     document.body.appendChild(inh);
     await new Promise(r => setTimeout(r, 300));
     T.eq("computed visibility of an inline inherit", getComputedStyle(inh).visibility, "visible");
+    // a fixed box before a block with a top margin: the margin is not lost inside it
+    T.eq("margin after a fixed sibling", Math.round(document.getElementById("fx-next").getBoundingClientRect().top), 356);
+    // <style> elements made by scripts (text set before or after insertion) apply
+    const dyn = ["a", "b", "c"].map(() => { const d = document.createElement("div"); d.style.height = "5px"; document.body.appendChild(d); return d; });
+    dyn.forEach((d, i) => d.id = "dyn" + i);
+    const s1 = document.createElement("style");
+    s1.textContent = "#dyn0 { width: 11px; }";
+    document.head.appendChild(s1);
+    const s2 = document.createElement("style");
+    document.head.appendChild(s2);
+    s2.textContent = "#dyn1 { width: 22px; }";
+    const s3 = document.createElement("style");
+    s3.appendChild(document.createTextNode("#dyn2 { width: 33px; }"));
+    document.body.appendChild(s3);
+    await new Promise(r => setTimeout(r, 800));
+    T.eq("style elements added by a script", dyn.map(d => d.getBoundingClientRect().width).join(","), "11,22,33");
     T.done();
 }, 100));
 </script></body></html>

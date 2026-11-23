@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 15:36:20 +0200
+Subject: [PATCH] JavaScript: createElementNS takes its name, foreign names
+ keep their case
+
+Document.createElementNS read both the namespace and the name from its
+first argument, so every element it made was named after the namespace
+(<http://WWW.W3.ORG/2000/SVG>).  The name is the second argument; null,
+undefined or "" is no namespace, and a failure throws.
+
+libdom upper-cased the name of every element of an HTML document and gave
+it the HTML element type of that name: elements of other namespaces (SVG,
+MathML) now keep their names as given (svg, path, foreignObject) and are
+never HTML elements (an SVG a is no HTMLAnchorElement).
+---
+ libdom/src/html/html_document.c               | 18 +++++++---
+ .../handlers/javascript/duktape/Document.bnd  | 33 +++++++++++--------
+ 2 files changed, 34 insertions(+), 17 deletions(-)
+
+diff --git a/libdom/src/html/html_document.c b/libdom/src/html/html_document.c
+index 5471f4f..33ca287 100644
+--- a/libdom/src/html/html_document.c
++++ b/libdom/src/html/html_document.c
+@@ -8,6 +8,7 @@
+ #include <assert.h>
+ #include <stdlib.h>
+ 
++#include <dom/dom.h>
+ #include <dom/html/html_elements.h>
+ 
+ #include "html/html_document.h"
+@@ -540,11 +541,20 @@ _dom_html_document_create_element_internal(
+ 	if (dom_string_length(in_tag_name) == 0)
+ 		return DOM_INVALID_CHARACTER_ERR;
+ 
+-	exc = dom_string_toupper(in_tag_name, true, &params.name);
+-	if (exc != DOM_NO_ERR)
+-		return exc;
++	/* Elements of other namespaces (SVG, MathML) keep their names as
++	 * given and are never HTML elements of the same name */
++	if (namespace != NULL && !dom_string_isequal(namespace,
++			dom_namespaces[DOM_NAMESPACE_HTML])) {
++		params.name = dom_string_ref(in_tag_name);
++		params.type = DOM_HTML_ELEMENT_TYPE__UNKNOWN;
++	} else {
++		exc = dom_string_toupper(in_tag_name, true, &params.name);
++		if (exc != DOM_NO_ERR)
++			return exc;
+ 
+-	params.type = _dom_html_document_get_element_type(html, params.name);
++		params.type = _dom_html_document_get_element_type(html,
++				params.name);
++	}
+ 	params.doc = html;
+ 	params.namespace = namespace;
+ 	params.prefix = prefix;
+diff --git a/netsurf/content/handlers/javascript/duktape/Document.bnd b/netsurf/content/handlers/javascript/duktape/Document.bnd
+index fb42fda..fc1e154 100644
+--- a/netsurf/content/handlers/javascript/duktape/Document.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Document.bnd
+@@ -197,17 +197,26 @@ method Document::createElementNS()
+ 	dom_exception err;
+ 	duk_size_t text_len;
+ 	duk_size_t ns_len;
+-	const char *ns = duk_safe_to_lstring(ctx, 0, &ns_len);
+-	const char *text = duk_safe_to_lstring(ctx, 0, &text_len);
++	const char *ns;
++	const char *text = duk_safe_to_lstring(ctx, 1, &text_len);
+ 	dom_string *text_str;
+-	dom_string *ns_str;
+-
+-	err = dom_string_create((const uint8_t*)ns, ns_len, &ns_str);
+-	if (err != DOM_NO_ERR) return 0; /* coerced to undefined */
++	dom_string *ns_str = NULL;
++
++	/* null, undefined or "" is no namespace */
++	if (!duk_is_null(ctx, 0) && !duk_is_undefined(ctx, 0)) {
++		ns = duk_safe_to_lstring(ctx, 0, &ns_len);
++		if (ns_len > 0) {
++			err = dom_string_create((const uint8_t*)ns, ns_len,
++					&ns_str);
++			if (err != DOM_NO_ERR)
++				return 0; /* coerced to undefined */
++		}
++	}
+ 
+ 	err = dom_string_create((const uint8_t*)text, text_len, &text_str);
+ 	if (err != DOM_NO_ERR) {
+-		dom_string_unref(ns_str);
++		if (ns_str != NULL)
++			dom_string_unref(ns_str);
+ 		return 0; /* coerced to undefined */
+ 	}
+ 
+@@ -215,14 +224,12 @@ method Document::createElementNS()
+ 					     ns_str,
+ 					     text_str,
+ 					     &newnode);
+-	if (err != DOM_NO_ERR) {
++	if (ns_str != NULL)
+ 		dom_string_unref(ns_str);
+-		dom_string_unref(text_str);
+-		return 0; /* coerced to undefined */
+-	}
+-
+ 	dom_string_unref(text_str);
+-	dom_string_unref(ns_str);
++	if (err != DOM_NO_ERR)
++		return duk_error(ctx, DUK_ERR_ERROR,
++				"createElementNS: invalid name or namespace");
+ 
+ 	dukky_push_node(ctx, newnode);
+ 

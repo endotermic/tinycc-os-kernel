@@ -429,6 +429,17 @@ secondary text, about as fast as before (29 s); the masthead is still wrong. Not
 around var() is only as good as libcss's calc(), `@property`, var() in @media or selectors,
 custom properties on pseudo-elements (they use the element's), animation of custom properties.
 
+The masthead overlap (2026-11-23) was not CSS: YouTube's `--ytd-toolbar-height` resolved fine,
+but NetSurf collapsed the page manager's top margin into a box inside the fixed masthead, so the
+margin was lost (upstreamable/0038, C57). Found by capturing the live DOM through a probe
+(`outerHTML`) and replaying it offline with the saved style sheets. Capturing it showed two more
+bugs: createElementNS named elements after their namespace, and SVG names were upper-cased
+(upstreamable/0039, C58); and `<style>` elements added by scripts, or sheets that finish after
+layout, never applied (upstreamable/0040, C59). CSS.supports is answered by libcss (features/0041;
+ShadyCSS uses it to detect var()). YouTube's search header now sits below the masthead. Still
+wrong: the logo is a black box (`-webkit-mask` with a solid background; libcss has no mask
+properties), and the search button has no icon.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

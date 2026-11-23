@@ -1922,6 +1922,31 @@ C56. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0036), found when libcs
     their colour was dropped. Boxes with opacity 0 and their contents are no longer drawn; other
     opacities are still drawn opaque. Verification: YouTube's search page in the guest.
 
+C57. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0038), found because YouTube's search
+    header overlapped the masthead: layout_next_margin_block went down into absolutely positioned
+    and fixed boxes when it looked for the box a margin collapses to. Inside the fixed masthead it
+    found the 56px flex bar, made it the collapse target, and the page manager's
+    margin-top: var(--ytd-toolbar-height) was never applied (even 100px !important was ignored).
+    Such boxes and their margins now take no part in the collapse. Found by replaying a captured
+    copy of the live DOM offline, hiding parts until the margin came back. Verification: style.html
+    ("margin after a fixed sibling", 300 before, 356 now); YouTube's results start below the
+    masthead in the guest.
+
+C58. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0039), found serialising YouTube's DOM:
+    document.createElementNS read both the namespace and the name from argument 0 (an upstream
+    NetSurf bug), so every element it made was named after its namespace
+    (<http://WWW.W3.ORG/2000/SVG>). libdom also upper-cased SVG names and gave them HTML element
+    types (an SVG a was an HTMLAnchorElement). Foreign-namespace elements now keep their names and
+    are plain elements. Verification: dom-api.html (two new checks failed before).
+
+C59. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0040), found while testing C57: a <style>
+    element made by a script never applied (only the parser registered style elements), and a
+    style sheet that finished loading after conversion was ignored ("NS layout is static"). Script
+    <style> elements are registered on insertion. A sheet that finishes later rebuilds the selection
+    context from the loaded sheets and the box tree, and the content still goes on to done. A rebox
+    requested during the first box conversion now runs when it finishes (it was dropped before).
+    Verification: style.html ("style elements added by a script": 946,946,946 before, 11,22,33 now).
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

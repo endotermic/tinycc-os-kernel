@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 15:36:20 +0200
+Subject: [PATCH] html: margins do not collapse into absolutely positioned
+ boxes
+
+layout_next_margin_block went down into an absolutely positioned or fixed
+box when it looked for the box the current margin collapses to.  A box
+inside it with a height (a fixed page header with a flex bar of 56px)
+became that box; it is laid out in its own context later, so the margin
+was never applied and the following block lost its top margin.  Such boxes
+and their margins now take no part in the collapse.
+---
+ netsurf/content/handlers/html/layout.c | 22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/layout.c b/netsurf/content/handlers/html/layout.c
+index 76ce24d..09d3db1 100644
+--- a/netsurf/content/handlers/html/layout.c
++++ b/netsurf/content/handlers/html/layout.c
+@@ -1148,6 +1148,13 @@ static void layout_minmax_block(
+  * \param  max_neg_margin  updated to to maximum negative margin encountered
+  * \return  next box that current margin collapses to, or NULL if none.
+  */
++static inline bool layout_box_out_of_flow(const struct box *box)
++{
++	return box->style != NULL &&
++		(css_computed_position(box->style) == CSS_POSITION_ABSOLUTE ||
++		 css_computed_position(box->style) == CSS_POSITION_FIXED);
++}
++
+ static struct box*
+ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 			 struct box *box,
+@@ -1200,9 +1207,14 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 		}
+ 
+ 
+-		/* Find next box */
++		/* Find next box.  An absolutely positioned or fixed box is
++		 * laid out in a context of its own later: its children and
++		 * its margins take no part in this collapse (going into it
++		 * made a box inside it with a height the box the margin
++		 * collapsed to, and the margin was never applied). */
+ 		if (box->type == BOX_BLOCK && !box->object && box->children &&
+ 				box->style &&
++				!layout_box_out_of_flow(box) &&
+ 				css_computed_overflow_y(box->style) ==
+ 				CSS_OVERFLOW_VISIBLE) {
+ 			/* Down into children. */
+@@ -1213,7 +1225,9 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 				 * Go up to first ancestor with a sibling. */
+ 				do {
+ 					/* Apply bottom margin */
+-					if (*max_pos_margin <
++					if (layout_box_out_of_flow(box))
++						;
++					else if (*max_pos_margin <
+ 							box->margin[BOTTOM])
+ 						*max_pos_margin =
+ 							box->margin[BOTTOM];
+@@ -1234,7 +1248,9 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 			}
+ 
+ 			/* Apply bottom margin */
+-			if (*max_pos_margin < box->margin[BOTTOM])
++			if (layout_box_out_of_flow(box))
++				;
++			else if (*max_pos_margin < box->margin[BOTTOM])
+ 				*max_pos_margin = box->margin[BOTTOM];
+ 			else if (*max_neg_margin < -box->margin[BOTTOM])
+ 				*max_neg_margin = -box->margin[BOTTOM];

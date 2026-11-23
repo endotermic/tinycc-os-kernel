@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 15:36:20 +0200
+Subject: [PATCH] JavaScript: CSS.supports answered by libcss
+
+CSS.supports(property, value) parses the declaration with libcss (a native
+that compares the parsed sheet's size with an empty one's); custom
+properties and values with var() are supported when the property is known.
+The condition form handles not, and, or, selector() and parenthesised
+groups.  ShadyCSS checks var() support this way and now uses the native
+custom properties.
+---
+ .../handlers/javascript/duktape/Window.bnd    | 30 ++++++++++++
+ .../handlers/javascript/duktape/webapi.js     | 46 +++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index 8f1088e..f164153 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -30,6 +30,7 @@ class Window {
+ #include "html/box.h"
+ #include "html/box_inspect.h"
+ #include "content/fetch.h"
++#include "css/select.h"
+ #include "content/content.h"
+ #include "netsurf/content.h"
+ #include <errno.h>
+@@ -801,6 +802,34 @@ static duk_ret_t native_current_script(duk_context *ctx)
+ 	return 1;
+ }
+ 
++/* cssDeclaration(text): whether libcss keeps anything of a declaration
++ * list ("property: value"), for CSS.supports */
++static size_t css_empty_size;
++static size_t native_css_size(const char *text, size_t len)
++{
++	css_stylesheet *sheet;
++	size_t size = 0;
++	sheet = nscss_create_inline_style((const uint8_t *)text, len,
++			"UTF-8", "about:blank", false);
++	if (sheet == NULL)
++		return 0;
++	if (css_stylesheet_size(sheet, &size) != CSS_OK)
++		size = 0;
++	css_stylesheet_destroy(sheet);
++	return size;
++}
++
++static duk_ret_t native_css_declaration(duk_context *ctx)
++{
++	duk_size_t len;
++	const char *text = duk_safe_to_lstring(ctx, 0, &len);
++	if (css_empty_size == 0)
++		css_empty_size = native_css_size("", 0);
++	duk_push_boolean(ctx, css_empty_size != 0 &&
++			native_css_size(text, len) > css_empty_size);
++	return 1;
++}
++
+ /* imageState(img): [complete, naturalWidth, naturalHeight] of an image
+  * element from its box's object; [false, 0, 0] without one */
+ static duk_ret_t native_image_state(duk_context *ctx)
+@@ -1228,6 +1257,7 @@ prototype Window()
+ 	native_put(ctx, "currentScript", native_current_script, 0);
+ 	native_put(ctx, "markHTMLDDA", native_mark_htmldda, 1);
+ 	native_put(ctx, "imageState", native_image_state, 1);
++	native_put(ctx, "cssDeclaration", native_css_declaration, 1);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index acf537e..43d1866 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -1999,6 +1999,52 @@ if (!G.CSS) {
+     };
+ }
+ 
++/* CSS.supports: what libcss keeps (it was always false, so ShadyCSS
++ * emulated custom properties instead of using the native ones); a value
++ * with var() is kept for any property */
++(function () {
++    function decl(prop, value) {
++        prop = String(prop).trim();
++        value = String(value).trim();
++        if (/^--./.test(prop)) return true;
++        if (/var\(\s*--/i.test(value)) return /^-?[a-z][a-z-]*$/i.test(prop);
++        return N.cssDeclaration ? N.cssDeclaration(prop + ": " + value) : false;
++    }
++    function condition(text) {
++        text = String(text).trim();
++        var m;
++        if ((m = /^not\s+(.*)$/i.exec(text))) return !condition(m[1]);
++        /* split on top-level "and" / "or" */
++        var depth = 0, parts = [], ops = [], last = 0;
++        for (var i = 0; i < text.length; i++) {
++            var c = text[i];
++            if (c === "(") depth++;
++            else if (c === ")") depth--;
++            else if (depth === 0 && /\s/.test(c)) {
++                var w = /^\s+(and|or)\s+/i.exec(text.slice(i));
++                if (w) { parts.push(text.slice(last, i)); ops.push(w[1].toLowerCase()); i += w[0].length - 1; last = i + 1; }
++            }
++        }
++        if (parts.length) {
++            parts.push(text.slice(last));
++            var res = condition(parts[0]);
++            for (var k = 0; k < ops.length; k++)
++                res = ops[k] === "and" ? res && condition(parts[k + 1]) : res || condition(parts[k + 1]);
++            return res;
++        }
++        if ((m = /^selector\((.*)\)$/i.exec(text))) {
++            try { doc().createDocumentFragment().querySelector(m[1]); return true; } catch (e) { return false; }
++        }
++        /* one parenthesised group (the and/or split is done): a condition */
++        if (text[0] === "(" && text[text.length - 1] === ")") return condition(text.slice(1, -1));
++        var colon = text.indexOf(":");
++        return colon > 0 ? decl(text.slice(0, colon), text.slice(colon + 1)) : false;
++    }
++    def(G.CSS, "supports", function (a, b) {
++        return arguments.length >= 2 ? decl(a, b) : condition(a);
++    });
++})();
++
+ /* ------------------------------------------------------------------ */
+ /* Document                                                            */
+ 

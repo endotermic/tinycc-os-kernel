@@ -36,3 +36,7 @@ upstreamable/0034-html-load-and-error-events-of-images.patch
 features/0035-JavaScript-document.all-image-state-interface-names-.patch
 upstreamable/0036-html-boxes-with-opacity-0-are-not-drawn.patch
 features/0037-libcss-CSS-custom-properties-and-var.patch
+upstreamable/0038-html-margins-do-not-collapse-into-absolutely-positio.patch
+upstreamable/0039-JavaScript-createElementNS-takes-its-name-foreign-na.patch
+upstreamable/0040-html-style-sheets-added-after-layout-apply.patch
+features/0041-JavaScript-CSS.supports-answered-by-libcss.patch

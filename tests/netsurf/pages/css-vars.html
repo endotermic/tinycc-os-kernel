@@ -73,6 +73,13 @@ window.addEventListener("load", () => setTimeout(async () => {
     await new Promise(r => setTimeout(r, 600));
     T.eq("style.setProperty of a custom property restyles", W("#dynamic .in"), 77);
     T.eq("getPropertyValue of a custom property", dyn.style.getPropertyValue("--dyn"), "77px");
+    // CSS.supports answers what libcss keeps (ShadyCSS checks var() support this way)
+    T.eq("CSS.supports var()", CSS.supports("box-shadow", "0 0 0 var(--foo)"), true);
+    T.eq("CSS.supports a custom property", CSS.supports("--x", "1px"), true);
+    T.eq("CSS.supports display: flex", CSS.supports("display", "flex"), true);
+    T.eq("CSS.supports an unknown value", CSS.supports("display", "bogus"), false);
+    T.eq("CSS.supports an unknown property", CSS.supports("not-a-property", "1px"), false);
+    T.eq("CSS.supports a condition", CSS.supports("(color: red) and (not (display: bogus))"), true);
     T.done();
 }, 100));
 </script></body></html>
