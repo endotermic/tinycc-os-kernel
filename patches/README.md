@@ -52,7 +52,8 @@ Categories:
   NETSURF_JS_PROBE; template cloning, handleEvent listener objects; style on SVG elements; document.all,
   image state, interface names, IntersectionObserver fixes; CSS custom properties and var() in
   libcss; CSS.supports answered by libcss;
-  mask-image in libcss, drawn in the background colour)
+  mask-image in libcss, drawn in the background colour;
+  SVG elements as SVGElements, style off Element.prototype)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

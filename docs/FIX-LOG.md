@@ -1954,6 +1954,16 @@ C60. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0042), found while addi
     subpaths into one polygon, which fills the holes in letters. Verification: page mask (an SVG
     <img>, a ring with a hole) in the guest; YouTube's logo.
 
+C61. 2026-11-23, COMMITTED (patches/netsurf/features/0045), found from YouTube's 42 console
+    errors "cannot set property 'cssText' of undefined": features/0032 had put style on
+    Element.prototype too, for SVG elements, whose wrappers were plain Elements. YouTube's component
+    wrapper (_.hB) gives each declared prop whose name is own on Element.prototype
+    (XGy = Object.getOwnPropertyNames(Element.prototype)) an accessor without a getter. So
+    el.style of yt-attributed-string read undefined. SVGElement is now declared as an Element
+    (cssom.idl, SVGElement.bnd), SVG-namespace nodes get it, and style is on HTMLElement and
+    SVGElement only, as in browsers. Verification: style.html (two checks failed before); no
+    console errors on YouTube's search page.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

@@ -43,3 +43,4 @@ features/0041-JavaScript-CSS.supports-answered-by-libcss.patch
 upstreamable/0042-framebuffer-paths-are-plotted-so-SVG-images-are-draw.patch
 features/0043-libcss-mask-image-and-the-mask-shorthands.patch
 features/0044-html-mask-image-drawn-in-the-background-colour.patch
+features/0045-JavaScript-SVG-elements-are-SVGElements-style-off-El.patch

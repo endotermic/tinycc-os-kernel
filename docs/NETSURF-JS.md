@@ -452,6 +452,15 @@ eye. The search button's icon is an inline <svg> element, which NetSurf does not
 mask-size, mask-position and mask-repeat (the image is fitted with contain), gradient and bitmap
 masks, and masking of the box's contents.
 
+YouTube's 42 console errors ("cannot set property 'cssText' of undefined") were our `style` on
+Element.prototype, which YouTube's component wrapper shadows with a getter-less accessor. Now SVG
+elements are SVGElements and `style` lives where browsers have it (features/0045, C61).
+`tests/netsurf/run.sh` reports a crash or error exit of the browser. The search button's icon
+is not an inline <svg> problem yet: its `<span class="yt-icon-shape">` stays empty, so YouTube
+never inserts the icon (it fetches icon SVGs from fonts.gstatic.com; why that fails is open).
+Rendering inline <svg> (serialised to an SVG image in a replaced box) would come after that.
+Also open: the browser sometimes stops logging about 20 s into the page and recovers late.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

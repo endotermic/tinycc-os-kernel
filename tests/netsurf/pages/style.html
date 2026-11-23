@@ -56,6 +56,12 @@ window.addEventListener("load", () => setTimeout(async () => {
     T.eq("svg style cssText cleared", svg.getAttribute("style"), null);
     T.eq("same style object", document.body.style, document.body.style);
     T.ok("style own on HTMLElement.prototype", Object.prototype.hasOwnProperty.call(HTMLElement.prototype, "style"));
+    // as in browsers style is not on Element.prototype (YouTube's components shadow everything named
+    // there with a setter-only accessor) but on SVGElement.prototype, and SVG elements are SVGElements
+    T.eq("style not own on Element.prototype", Object.prototype.hasOwnProperty.call(Element.prototype, "style"), false);
+    T.eq("SVG element is an SVGElement", [svg instanceof SVGElement, svg instanceof Element,
+        Object.getPrototypeOf(SVGElement.prototype) === Element.prototype,
+        Object.prototype.hasOwnProperty.call(SVGElement.prototype, "style")].join(","), "true,true,true,true");
     // a changed class attribute restyles (libdom kept the first class list for selectors)
     const cls = document.createElement("div");
     cls.className = "narrow";

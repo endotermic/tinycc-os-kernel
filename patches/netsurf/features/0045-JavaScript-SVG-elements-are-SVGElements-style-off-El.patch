@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 17:03:25 +0200
+Subject: [PATCH] JavaScript: SVG elements are SVGElements, style off
+ Element.prototype
+
+style was own on Element.prototype as well as HTMLElement.prototype (for SVG
+elements, whose wrappers were plain Elements).  YouTube's component wrapper
+gives every declared property whose name is own on Element.prototype a
+setter-only accessor, so el.style of its yt-attributed-string elements read
+undefined and setting style.cssText threw (42 console errors on the search
+page).  SVGElement is now declared as an Element (cssom.idl, SVGElement.bnd),
+elements in the SVG namespace get that prototype, and style is own on
+HTMLElement.prototype and SVGElement.prototype only, as in browsers.
+---
+ .../content/handlers/javascript/WebIDL/cssom.idl    |  5 +++++
+ .../handlers/javascript/duktape/SVGElement.bnd      | 13 +++++++++++++
+ netsurf/content/handlers/javascript/duktape/dukky.c |  8 ++++++++
+ .../content/handlers/javascript/duktape/netsurf.bnd |  1 +
+ .../content/handlers/javascript/duktape/webapi.js   | 13 ++++++-------
+ netsurf/utils/corestringlist.h                      |  1 +
+ 6 files changed, 34 insertions(+), 7 deletions(-)
+ create mode 100644 netsurf/content/handlers/javascript/duktape/SVGElement.bnd
+
+diff --git a/netsurf/content/handlers/javascript/WebIDL/cssom.idl b/netsurf/content/handlers/javascript/WebIDL/cssom.idl
+index 95c97e4..0579f91 100644
+--- a/netsurf/content/handlers/javascript/WebIDL/cssom.idl
++++ b/netsurf/content/handlers/javascript/WebIDL/cssom.idl
+@@ -128,6 +128,11 @@ partial interface CSSStyleDeclaration {
+ 
+ HTMLElement implements ElementCSSInlineStyle;
+ 
++/* NetSurf: SVGElement (SVG 2) is not in these files; declared here so that
++ * it is an Element, which SVG elements' wrappers use */
++interface SVGElement : Element {
++};
++
+ SVGElement implements ElementCSSInlineStyle;
+ 
+ partial interface Window {
+diff --git a/netsurf/content/handlers/javascript/duktape/SVGElement.bnd b/netsurf/content/handlers/javascript/duktape/SVGElement.bnd
+new file mode 100644
+index 0000000..80c075f
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/SVGElement.bnd
+@@ -0,0 +1,13 @@
++/* SVG element binding using duktape and libdom
++ *
++ * Copyright 2026 Nikolajs Agafonovs
++ *
++ * This file is part of NetSurf, http://www.netsurf-browser.org/
++ *
++ * Released under the terms of the MIT License,
++ *         http://www.opensource.org/licenses/mit-license
++ */
++
++/* the wrapper of every element in the SVG namespace: an Element; its style
++ * (ElementCSSInlineStyle) comes from webapi.js, as HTMLElement's does */
++init SVGElement(struct dom_element *svg_element::element);
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index b1fa735..9957c08 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -444,6 +444,14 @@ dukky_push_node_klass(duk_context *ctx, struct dom_node *node)
+ 			break;
+ 		}
+ 
++		if (dom_string_isequal(namespace, corestring_dom_svg_namespace)) {
++			/* an SVG element: an SVGElement (an Element with
++			 * style), whatever its name */
++			duk_push_string(ctx, PROTO_NAME(SVGELEMENT));
++			dom_string_unref(namespace);
++			break;
++		}
++
+ 		if (dom_string_isequal(namespace, corestring_dom_html_namespace) == false) {
+ 			/* definitely not an HTML element of some kind */
+ 			duk_push_string(ctx, PROTO_NAME(ELEMENT));
+diff --git a/netsurf/content/handlers/javascript/duktape/netsurf.bnd b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+index 06b1c88..f194ce9 100644
+--- a/netsurf/content/handlers/javascript/duktape/netsurf.bnd
++++ b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+@@ -66,6 +66,7 @@ struct dom_html_br_element;
+ #include "DOMSettableTokenList.bnd"
+ #include "NamedNodeMap.bnd"
+ #include "Element.bnd"
++#include "SVGElement.bnd"
+ #include "HTMLCollection.bnd"
+ #include "Location.bnd"
+ #include "Navigator.bnd"
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 43d1866..0958535 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -1779,12 +1779,11 @@ function inlineStyle(el) {
+         }
+     });
+ }
+-/* own on HTMLElement.prototype as in browsers (scripts look there: YouTube
+- * puts its own setter-only style on a component class when HTMLElement's
+- * prototype has none), and on Element.prototype for SVG elements, which
+- * have style too (ElementCSSInlineStyle) and no SVGElement prototype here:
+- * without it el.style = "..." made a string property and a later
+- * el.style.cssText = "" threw "not an object" */
++/* own on HTMLElement.prototype and SVGElement.prototype as in browsers, and
++ * not on Element.prototype: scripts look there (YouTube's components give
++ * every declared property named on Element.prototype a setter-only accessor,
++ * so with style on Element.prototype el.style read undefined and setting
++ * el.style.cssText threw).  SVG elements' wrappers are SVGElements */
+ (function () {
+     function get() {
+         /* one declaration per element, kept on its wrapper */
+@@ -1796,7 +1795,7 @@ function inlineStyle(el) {
+         return st;
+     }
+     function set(v) { this.setAttribute("style", String(v)); }
+-    [HTMLElementP, ElementP].forEach(function (p) { if (p) acc(p, "style", get, set); });
++    [HTMLElementP, proto("SVGElement")].forEach(function (p) { if (p) acc(p, "style", get, set); });
+ })();
+ 
+ /* ------------------------------------------------------------------ */
+diff --git a/netsurf/utils/corestringlist.h b/netsurf/utils/corestringlist.h
+index c020422..a77d6b5 100644
+--- a/netsurf/utils/corestringlist.h
++++ b/netsurf/utils/corestringlist.h
+@@ -378,6 +378,7 @@ CORESTRING_DOM_STRING(__ns_key_canvas_node_data);
+ CORESTRING_DOM_VALUE(text_javascript, "text/javascript");
+ CORESTRING_DOM_VALUE(http_equiv, "http-equiv");
+ CORESTRING_DOM_VALUE(html_namespace, "http://www.w3.org/1999/xhtml");
++CORESTRING_DOM_VALUE(svg_namespace, "http://www.w3.org/2000/svg");
+ 
+ CORESTRING_NSURL(about_blank, "about:blank");
+ CORESTRING_NSURL(about_query_ssl, "about:query/ssl");

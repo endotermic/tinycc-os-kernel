@@ -28,6 +28,7 @@
 # carrying the state it found, which the URL report then lists.
 # Memory is capped with a systemd-run scope where one is available (1 GB per page);
 # NETSURF_TEST_CPU=25% also caps the CPU, to run the browser as slowly as in the guest.
+# A crash (signal) or error exit of the browser is reported, and fails a page.
 # Exit status: 0 when every page passed.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -134,6 +135,10 @@ for page in "${pages[@]}"; do
         sleep 0.2
     done
     wait $pid 2>/dev/null
+    status=$?
+    # the browser's own end: a crash (128 + signal) or an error exit; not timeout's 124 or our kill
+    exited=
+    case $status in 0|124|137|143) ;; *) exited="browser exited with status $status$([ $status -gt 128 ] && echo " (signal $((status - 128)))")" ;; esac
     secs=$(echo "$(date +%s.%N) - $start" | bc | sed 's/^\./0./; s/\(\.[0-9]\).*/\1/')
     uncaught=$(grep -c 'Uncaught error in JS' "$log")
     trace=$(grep -o 'NETSURF_JS_TRACE unimplemented .*' "$log" | sed 's/.* unimplemented //' | sort -u | tr '\n' ' ')
@@ -144,6 +149,7 @@ for page in "${pages[@]}"; do
              if ($1 == "at") { sub(/^ *at /,""); sub(/\(http:\/\/[^\/]*\//,"("); e=e "  at " $0 }
              print "   error: " e}' "$log" | cut -c1-220 | head -30
         [ -n "$trace" ] && echo "   unimplemented: $trace"
+        [ -n "$exited" ] && echo "   $exited"
         continue
     fi
     total=$((total + 1))
@@ -155,6 +161,7 @@ for page in "${pages[@]}"; do
     [ -n "$end" ] || problems="no TEST END within ${timeout}s"
     [ -z "$fails" ] || problems="${problems:+$problems; }$(echo "$fails" | wc -l) failed checks"
     [ "$uncaught" = "$want" ] || problems="${problems:+$problems; }$uncaught uncaught script errors, expected $want"
+    [ -z "$exited" ] || problems="${problems:+$problems; }$exited"
     if [ -z "$problems" ]; then
         passed=$((passed + 1))
         set -- $end

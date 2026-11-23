@@ -128,7 +128,7 @@ SPDX-FileCopyrightText = ["The NetSurf authors", "Vincent Sanders", "2026 Nikola
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["patches/netsurf/**/0017-*.patch", "patches/netsurf/**/0018-*.patch", "patches/netsurf/**/0019-*.patch", "patches/netsurf/**/0021-*.patch", "patches/netsurf/**/0024-*.patch", "patches/netsurf/**/0027-*.patch", "patches/netsurf/**/0028-*.patch", "patches/netsurf/**/0029-*.patch", "patches/netsurf/**/0035-*.patch", "patches/netsurf/**/0041-*.patch"]
+path = ["patches/netsurf/**/0017-*.patch", "patches/netsurf/**/0018-*.patch", "patches/netsurf/**/0019-*.patch", "patches/netsurf/**/0021-*.patch", "patches/netsurf/**/0024-*.patch", "patches/netsurf/**/0027-*.patch", "patches/netsurf/**/0028-*.patch", "patches/netsurf/**/0029-*.patch", "patches/netsurf/**/0035-*.patch", "patches/netsurf/**/0041-*.patch", "patches/netsurf/**/0045-*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["The NetSurf authors", "Vincent Sanders", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "GPL-2.0-only AND MIT"

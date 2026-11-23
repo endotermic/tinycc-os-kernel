@@ -22,7 +22,9 @@ duk_quickjs.c/.h, generics.js) and MIT (Attr.bnd, Element.bnd, Node.bnd, netsurf
 two-line WebIDL hunk is in the copy of the WHATWG DOM specification's IDL), 0033 (libdom) under
 MIT, 0035 under GPL-2.0-only (webapi.js, duk_quickjs.c/.h) and MIT (Window.bnd), 0037 (libcss)
 under MIT, 0039 (libdom, Document.bnd) under MIT, 0041 under GPL-2.0-only (webapi.js) and MIT
-(Window.bnd), 0043 (libcss) under MIT, the others under
+(Window.bnd), 0043 (libcss) under MIT, 0045 under
+GPL-2.0-only (dukky.c, corestringlist.h, webapi.js) and MIT (SVGElement.bnd, netsurf.bnd; its
+four-line WebIDL hunk is in the copy of the CSSOM specification's IDL), the others under
 GPL-2.0-only
 (../../LICENSES/GPL-2.0-only.txt); 0006 adds GPL-2.0-only files to NetSurf's JavaScript
 directory, and its three-line hunk in Duktape's duktape.h (MIT) is under MIT as well.  They
