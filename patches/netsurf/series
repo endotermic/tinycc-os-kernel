@@ -40,3 +40,6 @@ upstreamable/0038-html-margins-do-not-collapse-into-absolutely-positio.patch
 upstreamable/0039-JavaScript-createElementNS-takes-its-name-foreign-na.patch
 upstreamable/0040-html-style-sheets-added-after-layout-apply.patch
 features/0041-JavaScript-CSS.supports-answered-by-libcss.patch
+upstreamable/0042-framebuffer-paths-are-plotted-so-SVG-images-are-draw.patch
+features/0043-libcss-mask-image-and-the-mask-shorthands.patch
+features/0044-html-mask-image-drawn-in-the-background-colour.patch

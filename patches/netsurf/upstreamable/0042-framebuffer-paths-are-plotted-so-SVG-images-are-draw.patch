@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 16:28:20 +0200
+Subject: [PATCH] framebuffer: paths are plotted, so SVG images are drawn
+
+The framebuffer front end's path plotter only logged "path unimplemented",
+so no SVG image (an <img>, a background or anything libsvgtiny draws) was
+ever drawn.  Paths are now flattened (Bezier curves into straight edges, in
+device pixels after the transform), filled by the non-zero winding rule
+with a scanline filler (holes, as in letters, stay open; libnsfb's path
+joins the subpaths into one polygon) and their outlines stroked.  No
+anti-aliasing.
+---
+ netsurf/frontends/framebuffer/framebuffer.c | 252 +++++++++++++++++++-
+ 1 file changed, 250 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/frontends/framebuffer/framebuffer.c b/netsurf/frontends/framebuffer/framebuffer.c
+index 32fa911..fc45128 100644
+--- a/netsurf/frontends/framebuffer/framebuffer.c
++++ b/netsurf/frontends/framebuffer/framebuffer.c
+@@ -22,6 +22,7 @@
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <math.h>
+ 
+ #include <libnsfb.h>
+ #include <libnsfb_plot.h>
+@@ -265,6 +266,157 @@ framebuffer_plot_polygon(const struct redraw_context *ctx,
+  * \param transform A transform to apply to the path.
+  * \return NSERROR_OK on success else error code.
+  */
++/** a straight edge of a flattened path, in device pixels */
++struct fb_path_edge {
++	float x0, y0, x1, y1;
++};
++
++/** the edges of a path being flattened */
++struct fb_path {
++	struct fb_path_edge *edge;
++	unsigned int n, alloc;
++	float sx, sy;	/* start of the current subpath */
++	float cx, cy;	/* current point */
++	bool open;	/* a subpath has been started */
++};
++
++static bool fb_path_add(struct fb_path *fp, float x, float y)
++{
++	if (fp->n == fp->alloc) {
++		unsigned int alloc = fp->alloc ? fp->alloc * 2 : 64;
++		struct fb_path_edge *e = realloc(fp->edge, alloc * sizeof(*e));
++		if (e == NULL)
++			return false;
++		fp->edge = e;
++		fp->alloc = alloc;
++	}
++	fp->edge[fp->n].x0 = fp->cx;
++	fp->edge[fp->n].y0 = fp->cy;
++	fp->edge[fp->n].x1 = x;
++	fp->edge[fp->n].y1 = y;
++	fp->n++;
++	fp->cx = x;
++	fp->cy = y;
++	return true;
++}
++
++/** close the current subpath (fills always close it) */
++static bool fb_path_close(struct fb_path *fp)
++{
++	bool ok = true;
++	if (fp->open && (fp->cx != fp->sx || fp->cy != fp->sy))
++		ok = fb_path_add(fp, fp->sx, fp->sy);
++	fp->cx = fp->sx;
++	fp->cy = fp->sy;
++	return ok;
++}
++
++static int fb_path_cmp_float(const void *a, const void *b)
++{
++	const float *fa = a, *fb = b;
++	return (*fa > *fb) - (*fa < *fb);
++}
++
++/** a crossing of a scanline: its x and the edge's direction */
++struct fb_path_cross {
++	float x;
++	int dir;
++};
++
++static int fb_path_cmp_cross(const void *a, const void *b)
++{
++	return fb_path_cmp_float(&((const struct fb_path_cross *) a)->x,
++			&((const struct fb_path_cross *) b)->x);
++}
++
++/**
++ * Fill the flattened path by the non-zero winding rule, sampling each row
++ * of pixels at its centre (no anti-aliasing)
++ */
++static void fb_path_fill(struct fb_path *fp, nsfb_colour_t colour)
++{
++	nsfb_bbox_t clip, span;
++	nsfb_plot_pen_t pen;
++	struct fb_path_cross *cross;
++	float ymin, ymax;
++	unsigned int i;
++	int y, y0, y1;
++
++	if (fp->n < 2)
++		return;
++	cross = malloc(fp->n * sizeof(*cross));
++	if (cross == NULL)
++		return;
++
++	ymin = ymax = fp->edge[0].y0;
++	for (i = 0; i < fp->n; i++) {
++		struct fb_path_edge *e = &fp->edge[i];
++		if (e->y0 < ymin) ymin = e->y0;
++		if (e->y1 < ymin) ymin = e->y1;
++		if (e->y0 > ymax) ymax = e->y0;
++		if (e->y1 > ymax) ymax = e->y1;
++	}
++
++	nsfb_plot_get_clip(nsfb, &clip);
++	y0 = (int) ymin;
++	if (y0 < clip.y0) y0 = clip.y0;
++	y1 = (int) ymax + 1;
++	if (y1 > clip.y1) y1 = clip.y1;
++
++	memset(&pen, 0, sizeof(pen));
++	pen.stroke_type = NFSB_PLOT_OPTYPE_SOLID;
++	pen.stroke_width = 1;
++	pen.stroke_colour = colour;
++
++	for (y = y0; y < y1; y++) {
++		float sy = y + 0.5f;
++		unsigned int nc = 0;
++		int winding = 0;
++
++		for (i = 0; i < fp->n; i++) {
++			struct fb_path_edge *e = &fp->edge[i];
++			if ((e->y0 <= sy && e->y1 > sy) ||
++					(e->y1 <= sy && e->y0 > sy)) {
++				cross[nc].x = e->x0 + (sy - e->y0) *
++						(e->x1 - e->x0) / (e->y1 - e->y0);
++				cross[nc].dir = e->y1 > e->y0 ? 1 : -1;
++				nc++;
++			}
++		}
++		if (nc < 2)
++			continue;
++		qsort(cross, nc, sizeof(*cross), fb_path_cmp_cross);
++
++		for (i = 0; i + 1 < nc; i++) {
++			int xa, xb;
++			winding += cross[i].dir;
++			if (winding == 0)
++				continue;
++			/* pixels whose centres lie between the crossings */
++			xa = (int) (cross[i].x + 0.5f);
++			xb = (int) (cross[i + 1].x + 0.5f);
++			if (xa < clip.x0) xa = clip.x0;
++			if (xb > clip.x1) xb = clip.x1;
++			if (xa >= xb)
++				continue;
++			span.x0 = xa;
++			span.y0 = y;
++			span.x1 = xb;
++			span.y1 = y;
++			nsfb_plot_line(nsfb, &span, &pen);
++		}
++	}
++
++	free(cross);
++}
++
++/**
++ * Plots a path.
++ *
++ * The path is flattened (Bezier curves into straight edges, in device
++ * pixels after the transform), filled by the non-zero winding rule and its
++ * outline stroked.  SVG images are drawn this way.
++ */
+ static nserror
+ framebuffer_plot_path(const struct redraw_context *ctx,
+ 		const plot_style_t *pstyle,
+@@ -272,8 +424,104 @@ framebuffer_plot_path(const struct redraw_context *ctx,
+ 		unsigned int n,
+ 		const float transform[6])
+ {
+-	NSLOG(netsurf, INFO, "path unimplemented");
+-	return NSERROR_OK;
++	struct fb_path fp;
++	unsigned int i = 0;
++	bool ok = true;
++
++	memset(&fp, 0, sizeof(fp));
++
++#define TX(x, y) (transform[0] * (x) + transform[2] * (y) + transform[4])
++#define TY(x, y) (transform[1] * (x) + transform[3] * (y) + transform[5])
++
++	while (ok && i < n) {
++		switch ((int) p[i]) {
++		case PLOTTER_PATH_MOVE:
++			if (i + 3 > n) { ok = false; break; }
++			ok = fb_path_close(&fp);
++			fp.sx = fp.cx = TX(p[i + 1], p[i + 2]);
++			fp.sy = fp.cy = TY(p[i + 1], p[i + 2]);
++			fp.open = true;
++			i += 3;
++			break;
++
++		case PLOTTER_PATH_CLOSE:
++			ok = fb_path_close(&fp);
++			i += 1;
++			break;
++
++		case PLOTTER_PATH_LINE:
++			if (i + 3 > n) { ok = false; break; }
++			ok = fb_path_add(&fp, TX(p[i + 1], p[i + 2]),
++					TY(p[i + 1], p[i + 2]));
++			i += 3;
++			break;
++
++		case PLOTTER_PATH_BEZIER: {
++			float x0 = fp.cx, y0 = fp.cy;
++			float x1, y1, x2, y2, x3, y3, len;
++			int seg, k;
++
++			if (i + 7 > n) { ok = false; break; }
++			x1 = TX(p[i + 1], p[i + 2]); y1 = TY(p[i + 1], p[i + 2]);
++			x2 = TX(p[i + 3], p[i + 4]); y2 = TY(p[i + 3], p[i + 4]);
++			x3 = TX(p[i + 5], p[i + 6]); y3 = TY(p[i + 5], p[i + 6]);
++			/* about one segment per 3 pixels of control polygon */
++			len = fabsf(x1 - x0) + fabsf(y1 - y0) +
++				fabsf(x2 - x1) + fabsf(y2 - y1) +
++				fabsf(x3 - x2) + fabsf(y3 - y2);
++			seg = (int) (len / 3);
++			if (seg < 2) seg = 2;
++			if (seg > 64) seg = 64;
++			for (k = 1; ok && k <= seg; k++) {
++				float t = (float) k / seg, u = 1 - t;
++				float a = u * u * u, b = 3 * u * u * t;
++				float c = 3 * u * t * t, d = t * t * t;
++				ok = fb_path_add(&fp,
++						a * x0 + b * x1 + c * x2 + d * x3,
++						a * y0 + b * y1 + c * y2 + d * y3);
++			}
++			i += 7;
++			break;
++		}
++
++		default:
++			ok = false;
++			break;
++		}
++	}
++
++#undef TX
++#undef TY
++
++	if (ok)
++		ok = fb_path_close(&fp);
++
++	if (ok && pstyle->fill_colour != NS_TRANSPARENT)
++		fb_path_fill(&fp, pstyle->fill_colour);
++
++	if (ok && pstyle->stroke_colour != NS_TRANSPARENT &&
++			pstyle->stroke_width > 0) {
++		nsfb_plot_pen_t pen;
++		nsfb_bbox_t line;
++		int w = plot_style_fixed_to_int(pstyle->stroke_width) *
++				(fabsf(transform[0]) + fabsf(transform[3])) / 2;
++
++		memset(&pen, 0, sizeof(pen));
++		pen.stroke_type = NFSB_PLOT_OPTYPE_SOLID;
++		pen.stroke_width = w > 0 ? w : 1;
++		pen.stroke_colour = pstyle->stroke_colour;
++		for (i = 0; i < fp.n; i++) {
++			line.x0 = (int) (fp.edge[i].x0 + 0.5f);
++			line.y0 = (int) (fp.edge[i].y0 + 0.5f);
++			line.x1 = (int) (fp.edge[i].x1 + 0.5f);
++			line.y1 = (int) (fp.edge[i].y1 + 0.5f);
++			nsfb_plot_line(nsfb, &line, &pen);
++		}
++	}
++
++	free(fp.edge);
++
++	return ok ? NSERROR_OK : NSERROR_INVALID;
+ }
+ 
+ 

@@ -440,6 +440,18 @@ ShadyCSS uses it to detect var()). YouTube's search header now sits below the ma
 wrong: the logo is a black box (`-webkit-mask` with a solid background; libcss has no mask
 properties), and the search button has no icon.
 
+mask-image (features/0043 libcss, features/0044 html): libcss has the property mask-image (url or
+none) and the shorthands mask, -webkit-mask and -webkit-mask-image. The shorthands keep the first
+layer's url(); gradients become none. A box with a mask image is drawn as the image's shapes in
+its background colour, fitted and centred; this is how YouTube draws icons
+(`mask: url(icon.svg) ...; background-color: currentcolor`). Without compositing, the image is
+drawn through plotters that recolour its fills and strokes, so this works for SVG masks only. The
+framebuffer front end could not draw SVG at all (its path plotter was a stub; upstreamable/0042,
+C60). YouTube's logo is now drawn in the text colour. New page `mask`: the drawing is checked by
+eye. The search button's icon is an inline <svg> element, which NetSurf does not render. Not done:
+mask-size, mask-position and mask-repeat (the image is fitted with contain), gradient and bitmap
+masks, and masking of the box's contents.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

@@ -1947,6 +1947,13 @@ C59. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0040), found while test
     requested during the first box conversion now runs when it finishes (it was dropped before).
     Verification: style.html ("style elements added by a script": 946,946,946 before, 11,22,33 now).
 
+C60. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0042), found while adding mask-image:
+    the framebuffer front end's path plotter was a stub ("path unimplemented"), so NetSurf on the
+    framebuffer never drew an SVG image (img, background or mask). Paths are now flattened, filled
+    by the non-zero winding rule with a scanline filler, and stroked. libnsfb's own path joins the
+    subpaths into one polygon, which fills the holes in letters. Verification: page mask (an SVG
+    <img>, a ring with a hole) in the guest; YouTube's logo.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

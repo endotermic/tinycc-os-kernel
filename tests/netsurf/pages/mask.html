@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>mask</title><script src="harness.js"></script>
+<style>
+.m { width: 160px; height: 80px; margin: 8px; display: inline-block; }
+#a { -webkit-mask: url(icon-ring.svg) no-repeat center / cover; mask: url(icon-ring.svg) no-repeat center / cover;
+     background-color: currentcolor; color: rgb(0, 0, 255); }
+#b { -webkit-mask-image: url(icon-ring.svg); background: green; border: 4px solid black; }
+#c { mask: url(missing.svg); background: black; }
+#d { mask: linear-gradient(#fff, #000); background: orange; }
+</style></head><body>
+<div class="m" id="a"></div><div class="m" id="b"></div><div class="m" id="c"></div><div class="m" id="d"></div><br>
+<img id="img" src="icon-ring.svg" width="160" height="80" alt="">
+<script>
+// mask-image (url) and SVG images.  What scripts can see is checked here; how they are drawn is checked
+// by eye (tests/netsurf/browse.sh file://$PWD/tests/netsurf/pages/mask.html): a and b are a ring with
+// a hole and a square, in blue and green (no border), fitted and centred; c is nothing (its mask did not
+// load); d is an orange box (gradient masks are not supported); the image is a red ring and a black
+// square.  Before masks were drawn, a, b and c were solid boxes; before paths were plotted, SVG images
+// were not drawn at all.
+window.addEventListener("load", () => setTimeout(() => {
+    const r = id => document.getElementById(id).getBoundingClientRect();
+    T.eq("a masked box keeps its size", r("a").width + "x" + r("a").height, "160x80");
+    T.eq("its border too (not drawn)", r("b").width, 168);
+    T.eq("SVG image size", r("img").width + "x" + r("img").height, "160x80");
+    T.eq("SVG image complete", document.getElementById("img").complete, true);
+    T.done();
+}, 200));
+</script></body></html>

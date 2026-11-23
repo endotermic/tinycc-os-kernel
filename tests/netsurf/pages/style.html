@@ -89,6 +89,10 @@ window.addEventListener("load", () => setTimeout(async () => {
     document.body.appendChild(s3);
     await new Promise(r => setTimeout(r, 800));
     T.eq("style elements added by a script", dyn.map(d => d.getBoundingClientRect().width).join(","), "11,22,33");
+    // mask-image and the mask shorthands are kept by libcss (drawing: page mask)
+    T.eq("CSS.supports mask", [CSS.supports("mask", "url(i.svg) no-repeat center / cover"),
+        CSS.supports("-webkit-mask", "url(i.svg) no-repeat"), CSS.supports("mask-image", "url(i.svg)"),
+        CSS.supports("-webkit-mask-image", "none"), CSS.supports("mask-image", "12px")].join(","), "true,true,true,true,false");
     T.done();
 }, 100));
 </script></body></html>

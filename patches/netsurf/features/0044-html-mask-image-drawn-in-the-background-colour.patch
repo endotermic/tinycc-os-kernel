@@ -1,0 +1,516 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 16:28:21 +0200
+Subject: [PATCH] html: mask-image drawn in the background colour
+
+A box with a mask image fetches it like a background image and is drawn as
+the image's shapes in the box's background colour (the way sites draw
+icons: mask: url(icon.svg) with background-color: currentcolor), fitted
+into the padding box and centred (as mask-size: contain; mask-size and
+mask-position are not parsed).  There is no compositing: the image is
+drawn through plotters that paint its fills and strokes in that colour, so
+SVG masks work and bitmaps are drawn as they are.  The box's own
+background and borders are not drawn; while the mask loads, or if it
+failed, the box shows nothing.  Its contents are drawn unmasked.
+---
+ netsurf/content/handlers/html/box.h           |   6 +
+ netsurf/content/handlers/html/box_construct.c |  19 ++
+ .../content/handlers/html/box_manipulate.c    |   1 +
+ netsurf/content/handlers/html/html.h          |   1 +
+ netsurf/content/handlers/html/object.c        |  56 ++++-
+ netsurf/content/handlers/html/object.h        |  11 +
+ netsurf/content/handlers/html/redraw.c        | 227 +++++++++++++++++-
+ 7 files changed, 311 insertions(+), 10 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/box.h b/netsurf/content/handlers/html/box.h
+index df2b99d..8999ffb 100644
+--- a/netsurf/content/handlers/html/box.h
++++ b/netsurf/content/handlers/html/box.h
+@@ -434,6 +434,12 @@ struct box {
+ 	 */
+ 	struct hlcache_handle *background;
+ 
++	/**
++	 * Mask image for this box (mask-image), or NULL if none: the
++	 * box's background colour is drawn in the shape of its image
++	 */
++	struct hlcache_handle *mask;
++
+ 
+ 	/**
+ 	 * Object in this box (usually an image), or NULL if none.
+diff --git a/netsurf/content/handlers/html/box_construct.c b/netsurf/content/handlers/html/box_construct.c
+index cf286a1..6aaa6e4 100644
+--- a/netsurf/content/handlers/html/box_construct.c
++++ b/netsurf/content/handlers/html/box_construct.c
+@@ -478,6 +478,7 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
+ 	struct box *box = NULL, *old_box;
+ 	css_select_results *styles = NULL;
+ 	lwc_string *bgimage_uri;
++	lwc_string *mask_uri;
+ 	dom_exception err;
+ 	struct box_construct_props props;
+ 	const css_computed_style *root_style = NULL;
+@@ -708,6 +709,24 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
+ 		}
+ 	}
+ 
++	/* and for a mask image (drawn in the background colour) */
++	if (css_computed_mask_image(box->style, &mask_uri) ==
++			CSS_MASK_IMAGE_IMAGE && mask_uri != NULL &&
++			nsoption_bool(background_images) == true) {
++		nsurl *url;
++		nserror error;
++
++		error = nsurl_create(lwc_string_data(mask_uri), &url);
++		if (error == NSERROR_OK) {
++			if (html_fetch_mask(ctx->content, url, box,
++					image_types) == false) {
++				nsurl_unref(url);
++				return false;
++			}
++			nsurl_unref(url);
++		}
++	}
++
+ 	if (*convert_children)
+ 		box->flags |= CONVERT_CHILDREN;
+ 
+diff --git a/netsurf/content/handlers/html/box_manipulate.c b/netsurf/content/handlers/html/box_manipulate.c
+index 8073a7f..6cd5430 100644
+--- a/netsurf/content/handlers/html/box_manipulate.c
++++ b/netsurf/content/handlers/html/box_manipulate.c
+@@ -150,6 +150,7 @@ box_create(css_select_results *styles,
+ 	box->usemap = NULL;
+ 	box->id = id;
+ 	box->background = NULL;
++	box->mask = NULL;
+ 	box->object = NULL;
+ 	box->object_params = NULL;
+ 	box->iframe = NULL;
+diff --git a/netsurf/content/handlers/html/html.h b/netsurf/content/handlers/html/html.h
+index 91256a0..c60abd4 100644
+--- a/netsurf/content/handlers/html/html.h
++++ b/netsurf/content/handlers/html/html.h
+@@ -101,6 +101,7 @@ struct content_html_object {
+ 	/** Bitmap of acceptable content types */
+ 	content_type permitted_types;
+ 	bool background;  /**< This object is a background image. */
++	bool mask;  /**< ... the box's mask-image (background too) */
+ };
+ 
+ 
+diff --git a/netsurf/content/handlers/html/object.c b/netsurf/content/handlers/html/object.c
+index f59ff49..5299aa6 100644
+--- a/netsurf/content/handlers/html/object.c
++++ b/netsurf/content/handlers/html/object.c
+@@ -91,10 +91,16 @@ html_object_failed(struct box *box, html_content *content, bool background)
+ static void
+ html_object_done(struct box *box,
+ 		 hlcache_handle *object,
+-		 bool background)
++		 bool background,
++		 bool mask)
+ {
+ 	struct box *b;
+ 
++	if (mask) {
++		box->mask = object;
++		return;
++	}
++
+ 	if (background) {
+ 		box->background = object;
+ 		return;
+@@ -188,7 +194,7 @@ html_object_callback(hlcache_handle *object,
+ 							box->height : 0);
+ 
+ 			/* Adjust parent content for new object size */
+-			html_object_done(box, object, o->background);
++			html_object_done(box, object, o->background, o->mask);
+ 			if (c->base.status == CONTENT_STATUS_READY ||
+ 					c->base.status == CONTENT_STATUS_DONE)
+ 				content__reformat(&c->base, false,
+@@ -205,7 +211,7 @@ html_object_callback(hlcache_handle *object,
+ 			event_node = dom_node_ref(box->node);
+ 			event_type = corestring_dom_load;
+ 		}
+-		html_object_done(box, object, o->background);
++		html_object_done(box, object, o->background, o->mask);
+ 
+ 		if (c->base.status != CONTENT_STATUS_LOADING &&
+ 				box->flags & REPLACE_DIM) {
+@@ -258,7 +264,15 @@ html_object_callback(hlcache_handle *object,
+ 
+ 			box_coords(box, &x, &y);
+ 
+-			if (object == box->background) {
++			if (object == box->mask) {
++				/* the mask: redraw the whole box */
++				data.redraw.x = x;
++				data.redraw.y = y;
++				data.redraw.width = box->padding[LEFT] +
++						box->width + box->padding[RIGHT];
++				data.redraw.height = box->padding[TOP] +
++						box->height + box->padding[BOTTOM];
++			} else if (object == box->background) {
+ 				/* Redraw request is for background */
+ 				css_fixed hpos = 0, vpos = 0;
+ 				css_unit hunit = CSS_UNIT_PX;
+@@ -737,12 +751,13 @@ nserror html_object_free_objects(html_content *html)
+ 
+ 
+ /* exported interface documented in html/object.h */
+-bool
+-html_fetch_object(html_content *c,
++static bool
++html_fetch_object_role(html_content *c,
+ 		  nsurl *url,
+ 		  struct box *box,
+ 		  content_type permitted_types,
+-		  bool background)
++		  bool background,
++		  bool mask)
+ {
+ 	struct content_html_object *object;
+ 	hlcache_handle_callback object_callback;
+@@ -768,6 +783,7 @@ html_fetch_object(html_content *c,
+ 			if (object->content == NULL ||
+ 			    object->box == NULL ||
+ 			    object->background != background ||
++			    object->mask != mask ||
+ 			    content_get_status(object->content) !=
+ 					CONTENT_STATUS_DONE ||
+ 			    nsurl_compare(content_get_url(
+@@ -779,7 +795,7 @@ html_fetch_object(html_content *c,
+ 			object->next = c->object_list;
+ 			c->object_list = object;
+ 			c->num_objects++;
+-			html_object_done(box, object->content, background);
++			html_object_done(box, object->content, background, mask);
+ 			return true;
+ 		}
+ 	}
+@@ -804,6 +820,7 @@ html_fetch_object(html_content *c,
+ 	object->box = box;
+ 	object->permitted_types = permitted_types;
+ 	object->background = background;
++	object->mask = mask;
+ 
+ 	error = hlcache_handle_retrieve(url,
+ 					HLCACHE_RETRIEVE_SNIFF_TYPE,
+@@ -831,3 +848,26 @@ html_fetch_object(html_content *c,
+ 
+ 	return true;
+ }
++
++/* exported interface documented in html/object.h */
++bool
++html_fetch_object(html_content *c,
++		  nsurl *url,
++		  struct box *box,
++		  content_type permitted_types,
++		  bool background)
++{
++	return html_fetch_object_role(c, url, box, permitted_types,
++			background, false);
++}
++
++/* exported interface documented in html/object.h */
++bool
++html_fetch_mask(html_content *c,
++		nsurl *url,
++		struct box *box,
++		content_type permitted_types)
++{
++	return html_fetch_object_role(c, url, box, permitted_types,
++			true, true);
++}
+diff --git a/netsurf/content/handlers/html/object.h b/netsurf/content/handlers/html/object.h
+index 67d770c..5b809fa 100644
+--- a/netsurf/content/handlers/html/object.h
++++ b/netsurf/content/handlers/html/object.h
+@@ -45,6 +45,17 @@ struct nsurl;
+  */
+ bool html_fetch_object(struct html_content *c, struct nsurl *url, struct box *box, content_type permitted_types, bool background);
+ 
++/**
++ * Start a fetch of a box's mask image (mask-image).
++ *
++ * \param c content of type CONTENT_HTML
++ * \param url URL of the image
++ * \param box box with the mask
++ * \param permitted_types bitmap of acceptable types
++ * \return true on success, false on memory exhaustion
++ */
++bool html_fetch_mask(struct html_content *c, struct nsurl *url, struct box *box, content_type permitted_types);
++
+ /**
+  * release memory of content objects associated with a HTML content
+  *
+diff --git a/netsurf/content/handlers/html/redraw.c b/netsurf/content/handlers/html/redraw.c
+index 1566fa9..c0dd256 100644
+--- a/netsurf/content/handlers/html/redraw.c
++++ b/netsurf/content/handlers/html/redraw.c
+@@ -1228,6 +1228,208 @@ static bool html_redraw_box_children(const html_content *html, struct box *box,
+  * x, y, clip_[xy][01] are in target coordinates.
+  */
+ 
++/*
++ * mask-image: the box's background colour drawn in the shape of an image.
++ *
++ * There is no compositing, so the mask is not applied to pixels: the mask
++ * image (an SVG icon, usually) is drawn through these plotters, which paint
++ * every fill and stroke in the box's background colour.  Bitmaps are drawn
++ * as they are.  Only one mask is drawn at a time.
++ */
++static const struct redraw_context *mask_real_ctx;
++static colour mask_colour;
++
++static plot_style_t mask_style(const plot_style_t *pstyle)
++{
++	/* (the colours, not the plot types: SVG paths set no types) */
++	plot_style_t style = *pstyle;
++	if (style.fill_colour != NS_TRANSPARENT)
++		style.fill_colour = mask_colour;
++	if (style.stroke_colour != NS_TRANSPARENT)
++		style.stroke_colour = mask_colour;
++	return style;
++}
++
++static nserror mask_clip(const struct redraw_context *ctx,
++		const struct rect *clip)
++{
++	return mask_real_ctx->plot->clip(mask_real_ctx, clip);
++}
++
++static nserror mask_arc(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, int x, int y, int radius,
++		int angle1, int angle2)
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->arc(mask_real_ctx, &style, x, y, radius,
++			angle1, angle2);
++}
++
++static nserror mask_disc(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, int x, int y, int radius)
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->disc(mask_real_ctx, &style, x, y, radius);
++}
++
++static nserror mask_line(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, const struct rect *line)
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->line(mask_real_ctx, &style, line);
++}
++
++static nserror mask_rectangle(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, const struct rect *rectangle)
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->rectangle(mask_real_ctx, &style,
++			rectangle);
++}
++
++static nserror mask_polygon(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, const int *p, unsigned int n)
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->polygon(mask_real_ctx, &style, p, n);
++}
++
++static nserror mask_path(const struct redraw_context *ctx,
++		const plot_style_t *pstyle, const float *p, unsigned int n,
++		const float transform[6])
++{
++	plot_style_t style = mask_style(pstyle);
++	return mask_real_ctx->plot->path(mask_real_ctx, &style, p, n,
++			transform);
++}
++
++static nserror mask_bitmap(const struct redraw_context *ctx,
++		struct bitmap *bitmap, int x, int y, int width, int height,
++		colour bg, bitmap_flags_t flags)
++{
++	return mask_real_ctx->plot->bitmap(mask_real_ctx, bitmap, x, y,
++			width, height, bg, flags);
++}
++
++static nserror mask_text(const struct redraw_context *ctx,
++		const plot_font_style_t *fstyle, int x, int y,
++		const char *text, size_t length)
++{
++	plot_font_style_t style = *fstyle;
++	style.foreground = mask_colour;
++	return mask_real_ctx->plot->text(mask_real_ctx, &style, x, y,
++			text, length);
++}
++
++static nserror mask_group_start(const struct redraw_context *ctx,
++		const char *name)
++{
++	if (mask_real_ctx->plot->group_start == NULL)
++		return NSERROR_OK;
++	return mask_real_ctx->plot->group_start(mask_real_ctx, name);
++}
++
++static nserror mask_group_end(const struct redraw_context *ctx)
++{
++	if (mask_real_ctx->plot->group_end == NULL)
++		return NSERROR_OK;
++	return mask_real_ctx->plot->group_end(mask_real_ctx);
++}
++
++static nserror mask_flush(const struct redraw_context *ctx)
++{
++	if (mask_real_ctx->plot->flush == NULL)
++		return NSERROR_OK;
++	return mask_real_ctx->plot->flush(mask_real_ctx);
++}
++
++static const struct plotter_table mask_plotters = {
++	.clip = mask_clip,
++	.arc = mask_arc,
++	.disc = mask_disc,
++	.line = mask_line,
++	.rectangle = mask_rectangle,
++	.polygon = mask_polygon,
++	.path = mask_path,
++	.bitmap = mask_bitmap,
++	.text = mask_text,
++	.group_start = mask_group_start,
++	.group_end = mask_group_end,
++	.flush = mask_flush,
++	.option_knockout = false,
++};
++
++/**
++ * Whether a box has a mask-image (drawn by html_redraw_mask instead of its
++ * background and borders)
++ */
++static bool html_redraw_box_has_mask(struct box *box)
++{
++	lwc_string *uri = NULL;
++
++	return box->style != NULL &&
++		css_computed_mask_image(box->style, &uri) ==
++			CSS_MASK_IMAGE_IMAGE && uri != NULL;
++}
++
++/**
++ * Draw a box's mask image in its background colour, fitted into its padding
++ * box (as mask-size: contain) and centred.  Nothing is drawn while the image
++ * loads or if it failed, as for a mask that is transparent.
++ */
++static bool html_redraw_mask(struct box *box, int x, int y,
++		int padding_width, int padding_height, const struct rect *clip,
++		float scale, const struct redraw_context *ctx)
++{
++	struct redraw_context mask_ctx = *ctx;
++	struct content_redraw_data data;
++	css_color bgcol;
++	int iw, ih, w, h;
++	bool ok;
++
++	if (box->mask == NULL ||
++			content_get_status(box->mask) != CONTENT_STATUS_DONE)
++		return true;
++
++	css_computed_background_color(box->style, &bgcol);
++	if (nscss_color_is_transparent(bgcol))
++		return true;
++
++	iw = content_get_width(box->mask);
++	ih = content_get_height(box->mask);
++	if (iw <= 0 || ih <= 0 || padding_width <= 0 || padding_height <= 0)
++		return true;
++
++	/* contain: the largest size with the image's proportions */
++	if ((long long) padding_width * ih <= (long long) padding_height * iw) {
++		w = padding_width;
++		h = (int) ((long long) padding_width * ih / iw);
++	} else {
++		h = padding_height;
++		w = (int) ((long long) padding_height * iw / ih);
++	}
++
++	data.x = x + (padding_width - w) / 2;
++	data.y = y + (padding_height - h) / 2;
++	data.width = w;
++	data.height = h;
++	data.background_colour = NS_TRANSPARENT;
++	data.scale = scale * w / iw;
++	data.repeat_x = false;
++	data.repeat_y = false;
++
++	mask_real_ctx = ctx;
++	mask_colour = nscss_color_to_ns(bgcol);
++	mask_ctx.plot = &mask_plotters;
++
++	if (ctx->plot->clip(ctx, clip) != NSERROR_OK)
++		return false;
++	ok = content_redraw(box->mask, &data, clip, &mask_ctx);
++	mask_real_ctx = NULL;
++
++	return ok;
++}
++
+ bool html_redraw_box(const html_content *html, struct box *box,
+ 		int x_parent, int y_parent,
+ 		const struct rect *clip, const float scale,
+@@ -1243,6 +1445,7 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 	struct rect rect;
+ 	int x_scrolled, y_scrolled;
+ 	struct box *bg_box = NULL;
++	bool masked = false;
+ 	css_computed_clip_rect css_rect;
+ 	enum css_overflow_e overflow_x = CSS_OVERFLOW_VISIBLE;
+ 	enum css_overflow_e overflow_y = CSS_OVERFLOW_VISIBLE;
+@@ -1478,6 +1681,26 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 
+ 	bg_box = html_redraw_find_bg_box(box);
+ 
++	/* a box with a mask image shows only the image's shape, in its
++	 * background colour (no background image, no borders) */
++	masked = html_redraw_box_has_mask(box);
++	if (masked) {
++		struct rect p;
++		p.x0 = x < r.x0 ? r.x0 : x;
++		p.y0 = y < r.y0 ? r.y0 : y;
++		p.x1 = x + padding_width < r.x1 ? x + padding_width : r.x1;
++		p.y1 = y + padding_height < r.y1 ? y + padding_height : r.y1;
++		if (bg_box == box)
++			bg_box = NULL;
++		if ((p.x0 < p.x1) && (p.y0 < p.y1)) {
++			if (!html_redraw_mask(box, x, y, padding_width,
++					padding_height, &p, scale, ctx))
++				return false;
++			if (ctx->plot->clip(ctx, &r) != NSERROR_OK)
++				return false;
++		}
++	}
++
+ 	/* bg_box == NULL implies that this box should not have
+ 	* its background rendered. Otherwise filter out linebreaks,
+ 	* optimize away non-differing inlines, only plot background
+@@ -1533,7 +1756,7 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 	}
+ 
+ 	/* borders for block level content and replaced inlines */
+-	if (box->style &&
++	if (box->style && !masked &&
+ 	    box->type != BOX_TEXT &&
+ 	    box->type != BOX_INLINE_END &&
+ 	    (box->type != BOX_INLINE || box->object ||
+@@ -1550,7 +1773,7 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 	}
+ 
+ 	/* backgrounds and borders for non-replaced inlines */
+-	if (box->style && box->type == BOX_INLINE && box->inline_end &&
++	if (box->style && !masked && box->type == BOX_INLINE && box->inline_end &&
+ 			(html_redraw_box_has_background(box) ||
+ 			border_top || border_right ||
+ 			border_bottom || border_left)) {
