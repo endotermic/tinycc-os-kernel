@@ -1,0 +1,442 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 11:17:55 +0200
+Subject: [PATCH] JavaScript: DOM fixes found by YouTube's Polymer app
+
+- innerHTML of markup starting with a comment gave no nodes at all
+  (the fragment parser puts leading comments before the html element,
+  and only the first child was looked at): every Polymer template of
+  YouTube came out empty.
+- Attr is a Node with name, value, localName, namespaceURI, prefix,
+  ownerElement (Attr.bnd; attribute nodes had Node's prototype only).
+- textContent of an element without text is "" (it was undefined),
+  null for the document and doctype.
+- List and NamedNodeMap proxies index with the list's own item(): a
+  script replacing list.item with i => list[i] (ShadyDOM) looped.
+- DOMContentLoaded is fired once (html_begin_conversion runs again
+  whenever a script or style sheet added later has loaded); events at
+  the Window have an eventPhase; an on<event> handler that is not
+  callable is ignored (duk_is_callable).
+- Scripts may use the process's stack less a margin (at most 8 MB)
+  instead of QuickJS's 1 MB: Polymer elements nest deeper.
+---
+ netsurf/content/handlers/html/html.c          |   8 +-
+ .../handlers/javascript/WebIDL/dom.idl        |   4 +-
+ .../handlers/javascript/duktape/Attr.bnd      | 105 ++++++++++++++++++
+ .../handlers/javascript/duktape/Element.bnd   |  29 +++++
+ .../handlers/javascript/duktape/Node.bnd      |  13 ++-
+ .../handlers/javascript/duktape/duk_quickjs.c |  24 ++++
+ .../handlers/javascript/duktape/duk_quickjs.h |   1 +
+ .../handlers/javascript/duktape/dukky.c       |  23 +++-
+ .../handlers/javascript/duktape/generics.js   |  11 +-
+ .../handlers/javascript/duktape/netsurf.bnd   |   2 +
+ 10 files changed, 210 insertions(+), 10 deletions(-)
+ create mode 100644 netsurf/content/handlers/javascript/duktape/Attr.bnd
+
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index b7be015..d8b4366 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -837,6 +837,7 @@ html_begin_conversion(html_content *htmlc)
+ 	nserror ns_error;
+ 	struct form *f;
+ 	dom_exception exc; /* returned by libdom functions */
++	bool first_conversion;
+ 	dom_string *node_name = NULL;
+ 	dom_hubbub_error error;
+ 
+@@ -889,7 +890,10 @@ html_begin_conversion(html_content *htmlc)
+ 		return false;
+ 	}
+ 
+-	/* Conversion begins proper at this point */
++	/* Conversion begins proper at this point; it begins again whenever a
++	 * script or style sheet added later finishes loading, but the
++	 * document is loaded once (DOMContentLoaded was fired every time) */
++	first_conversion = !htmlc->conversion_begun;
+ 	htmlc->conversion_begun = true;
+ 
+ 	/* complete script execution, including deferred scripts */
+@@ -898,7 +902,7 @@ html_begin_conversion(html_content *htmlc)
+ 	/* fire a simple event that bubbles named DOMContentLoaded at
+ 	 * the Document.
+ 	 */
+-	if (htmlc->jsthread != NULL && htmlc->document != NULL) {
++	if (first_conversion && htmlc->jsthread != NULL && htmlc->document != NULL) {
+ 		dom_string *dcl;
+ 		if (dom_string_create((const uint8_t *)"DOMContentLoaded",
+ 				SLEN("DOMContentLoaded"), &dcl) == DOM_NO_ERR) {
+diff --git a/netsurf/content/handlers/javascript/WebIDL/dom.idl b/netsurf/content/handlers/javascript/WebIDL/dom.idl
+index 495bb0a..4beba5b 100644
+--- a/netsurf/content/handlers/javascript/WebIDL/dom.idl
++++ b/netsurf/content/handlers/javascript/WebIDL/dom.idl
+@@ -327,14 +327,12 @@ interface NamedNodeMap {
+ };
+ 
+ [Exposed=Window]
+-interface Attr {
++interface Attr : Node {
+   readonly attribute DOMString? namespaceURI;
+   readonly attribute DOMString? prefix;
+   readonly attribute DOMString localName;
+   readonly attribute DOMString name;
+            attribute DOMString value;
+-  [TreatNullAs=EmptyString] attribute DOMString nodeValue; // legacy alias of .value
+-  [TreatNullAs=EmptyString] attribute DOMString textContent; // legacy alias of .value
+ 
+   readonly attribute Element? ownerElement;
+ 
+diff --git a/netsurf/content/handlers/javascript/duktape/Attr.bnd b/netsurf/content/handlers/javascript/duktape/Attr.bnd
+new file mode 100644
+index 0000000..7abb5d9
+--- /dev/null
++++ b/netsurf/content/handlers/javascript/duktape/Attr.bnd
+@@ -0,0 +1,105 @@
++/* Attr binding for browser using duktape and libdom
++ *
++ * Copyright 2026 Nikolajs Agafonovs
++ *
++ * This file is part of NetSurf, http://www.netsurf-browser.org/
++ *
++ * Released under the terms of the MIT License,
++ *         http://www.opensource.org/licenses/mit-license
++ */
++
++/* An attribute node (element.attributes, getAttributeNode): name, value
++ * and the rest over libdom's attr calls (attribute nodes had Node's
++ * prototype only, so attr.name and attr.value were undefined) */
++
++class Attr {
++	prologue %{
++static duk_ret_t attr_push_string(duk_context *ctx, dom_string *s, bool null_ok)
++{
++	if (s == NULL) {
++		if (null_ok)
++			duk_push_null(ctx);
++		else
++			duk_push_string(ctx, "");
++		return 1;
++	}
++	duk_push_lstring(ctx, dom_string_data(s), dom_string_length(s));
++	dom_string_unref(s);
++	return 1;
++}
++%};
++};
++
++getter Attr::name()
++%{
++	dom_string *s = NULL;
++	if (dom_attr_get_name((struct dom_attr *)priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return attr_push_string(ctx, s, false);
++%}
++
++getter Attr::localName()
++%{
++	dom_string *s = NULL;
++	if (dom_node_get_local_name(priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	if (s == NULL &&
++	    dom_attr_get_name((struct dom_attr *)priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return attr_push_string(ctx, s, false);
++%}
++
++getter Attr::namespaceURI()
++%{
++	dom_string *s = NULL;
++	if (dom_node_get_namespace(priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return attr_push_string(ctx, s, true);
++%}
++
++getter Attr::prefix()
++%{
++	dom_string *s = NULL;
++	if (dom_node_get_prefix(priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return attr_push_string(ctx, s, true);
++%}
++
++getter Attr::value()
++%{
++	dom_string *s = NULL;
++	if (dom_attr_get_value((struct dom_attr *)priv->parent.node, &s) != DOM_NO_ERR)
++		return 0;
++	return attr_push_string(ctx, s, false);
++%}
++
++setter Attr::value()
++%{
++	dom_string *s = NULL;
++	duk_size_t slen;
++	const char *str = duk_safe_to_lstring(ctx, 0, &slen);
++	if (dom_string_create((const uint8_t *)str, slen, &s) != DOM_NO_ERR)
++		return 0;
++	dom_attr_set_value((struct dom_attr *)priv->parent.node, s);
++	dom_string_unref(s);
++	return 0;
++%}
++
++getter Attr::ownerElement()
++%{
++	struct dom_element *e = NULL;
++	if (dom_attr_get_owner_element((struct dom_attr *)priv->parent.node, &e) != DOM_NO_ERR ||
++	    e == NULL) {
++		duk_push_null(ctx);
++		return 1;
++	}
++	dukky_push_node(ctx, (struct dom_node *)e);
++	dom_node_unref(e);
++	return 1;
++%}
++
++getter Attr::specified()
++%{
++	duk_push_boolean(ctx, true);
++	return 1;
++%}
+diff --git a/netsurf/content/handlers/javascript/duktape/Element.bnd b/netsurf/content/handlers/javascript/duktape/Element.bnd
+index cbb392d..f8887e5 100644
+--- a/netsurf/content/handlers/javascript/duktape/Element.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Element.bnd
+@@ -512,6 +512,35 @@ setter Element::innerHTML()
+ 	 */
+ 	exc = dom_node_get_first_child(fragment, &html);
+ 	if (exc != DOM_NO_ERR) goto out;
++	/* comments at the start of the markup come before that element (the
++	 * parser's initial insertion mode puts them in the fragment): they
++	 * are the first nodes of the result.  Looking only at the first child
++	 * gave nothing at all for markup starting with a comment (every
++	 * Polymer template of YouTube) */
++	while (html != NULL) {
++		dom_node_type type;
++		struct dom_node *next = NULL, *cref;
++		exc = dom_node_get_node_type(html, &type);
++		if (exc != DOM_NO_ERR) goto out;
++		if (type == DOM_ELEMENT_NODE)
++			break;
++		exc = dom_node_get_next_sibling(html, &next);
++		if (exc != DOM_NO_ERR) goto out;
++		if (type == DOM_COMMENT_NODE) {
++			exc = dom_node_remove_child(fragment, html, &cref);
++			if (exc == DOM_NO_ERR) {
++				dom_node_unref(cref);
++				exc = dom_node_append_child(priv->parent.node,
++							    html, &cref);
++				if (exc == DOM_NO_ERR)
++					dom_node_unref(cref);
++			}
++		}
++		dom_node_unref(html);
++		html = next;
++		if (exc != DOM_NO_ERR) goto out;
++	}
++	if (html == NULL) goto out;
+ 
+ 	/* We can then ask that HTML element to give us its body */
+ 	exc = dom_element_get_elements_by_tag_name(html, corestring_dom_BODY, &bodies);
+diff --git a/netsurf/content/handlers/javascript/duktape/Node.bnd b/netsurf/content/handlers/javascript/duktape/Node.bnd
+index 8cd0794..65aa93a 100644
+--- a/netsurf/content/handlers/javascript/duktape/Node.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Node.bnd
+@@ -240,7 +240,18 @@ getter Node::textContent()
+ 		dom_string_unref(content);
+ 		return 1;
+ 	}
+-	return 0;
++	/* no text: "" for an element, fragment, attribute or character data
++	 * (it was undefined, so an empty element looked as if it had text),
++	 * null for a document or doctype */
++	{
++		dom_node_type type;
++		if (dom_node_get_node_type(priv->node, &type) == DOM_NO_ERR &&
++		    (type == DOM_DOCUMENT_NODE || type == DOM_DOCUMENT_TYPE_NODE))
++			duk_push_null(ctx);
++		else
++			duk_push_string(ctx, "");
++	}
++	return 1;
+ %}
+ 
+ setter Node::textContent()
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index bf7af09..5810a18 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -61,6 +61,7 @@
+ #undef realloc
+ 
+ #include <setjmp.h>
++#include <sys/resource.h>
+ 
+ extern duk_bool_t dukky_check_timeout(void *udata);
+ 
+@@ -691,6 +692,24 @@ duk_context *duk_create_heap(duk_alloc_function alloc_func,
+ 	}
+ 	JS_SetRuntimeOpaque(heap->rt, heap);
+ 	JS_SetHostPromiseRejectionTracker(heap->rt, duk__rejection_tracker, heap);
++	/* QuickJS lets scripts use 1 MB of the C stack; component frameworks
++	 * nest deeper (YouTube's Polymer elements, each constructor a chain
++	 * of mixins, create their children from their constructors: "stack
++	 * overflow").  Allow the process's stack less a margin for NetSurf's
++	 * own frames, at most 8 MB */
++	{
++		struct rlimit rl;
++		size_t want = 8u << 20;
++		if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
++			if (rl.rlim_cur > (3u << 19) + JS_DEFAULT_STACK_SIZE)
++				want = (size_t)rl.rlim_cur - (3u << 19);
++			else
++				want = JS_DEFAULT_STACK_SIZE;
++			if (want > (8u << 20))
++				want = 8u << 20;
++		}
++		JS_SetMaxStackSize(heap->rt, want);
++	}
+ 	if (duk_obj_class_id == 0)
+ 		JS_NewClassID(&duk_obj_class_id);
+ 	if (duk_thread_class_id == 0)
+@@ -1297,6 +1316,11 @@ duk_bool_t duk_is_string(duk_context *ctx, duk_idx_t idx)
+ 	return duk_get_type(ctx, idx) == DUK_TYPE_STRING;
+ }
+ 
++duk_bool_t duk_is_callable(duk_context *ctx, duk_idx_t idx)
++{
++	return JS_IsFunction(ctx->heap->ctx, duk__val(ctx, idx));
++}
++
+ duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx)
+ {
+ 	return duk_get_type(ctx, idx) == DUK_TYPE_OBJECT;
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+index 808dbbe..8a7f817 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -198,6 +198,7 @@ int duk_netsurf_call_depth(duk_context *ctx);
+ void duk_netsurf_rejection_handler(duk_context *ctx,
+ 				   void (*fn)(void *udata, const char *msg));
+ duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx);
++duk_bool_t duk_is_callable(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_number(duk_context *ctx, duk_idx_t idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index bf921e6..e877917 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -483,6 +483,8 @@ dukky_push_node_klass(duk_context *ctx, struct dom_node *node)
+ 		duk_push_string(ctx, PROTO_NAME(DOCUMENTTYPE));
+ 		break;
+ 	case DOM_ATTRIBUTE_NODE:
++		duk_push_string(ctx, PROTO_NAME(ATTR));
++		break;
+ 	case DOM_PROCESSING_INSTRUCTION_NODE:
+ 		/* (not libdom character data: CharacterData's members would
+ 		 * not work on it) */
+@@ -1210,7 +1212,12 @@ bool dukky_get_current_value_of_event_handler(duk_context *ctx,
+ 		duk_pop(ctx);
+ 		/* ... handler node */
+ 	}
+-	/* ... handler node */
++	/* ... handler node: a handler that is not callable (el.onload set
++	 * to an object) is ignored; it was called ("not a function") */
++	if (!duk_is_callable(ctx, -2)) {
++		duk_pop_2(ctx);
++		return false;
++	}
+ 	return true;
+ }
+ 
+@@ -1625,6 +1632,20 @@ void dukky_dispatch_to_object(duk_context *ctx, duk_idx_t obj_idx,
+ 		duk_def_prop(ctx, -3, DUK_DEFPROP_HAVE_VALUE |
+ 			     DUK_DEFPROP_HAVE_CONFIGURABLE |
+ 			     DUK_DEFPROP_CONFIGURABLE);
++		/* eventPhase: at the target when it is the object, else
++		 * bubbling (DOMContentLoaded and load come from the
++		 * Document); libdom's phase is unset for these */
++		{
++			duk_bool_t at_target;
++			duk_push_string(ctx, "eventPhase");
++			duk_get_prop_string(ctx, -2, "target");
++			at_target = duk_strict_equals(ctx, -1, obj_idx);
++			duk_pop(ctx);
++			duk_push_int(ctx, at_target ? 2 : 3);
++			duk_def_prop(ctx, -3, DUK_DEFPROP_HAVE_VALUE |
++				     DUK_DEFPROP_HAVE_CONFIGURABLE |
++				     DUK_DEFPROP_CONFIGURABLE);
++		}
+ 		duk_pop(ctx);
+ 	}
+ 	/* ... sublisteners: copy them (a listener may add or remove
+diff --git a/netsurf/content/handlers/javascript/duktape/generics.js b/netsurf/content/handlers/javascript/duktape/generics.js
+index fd2c19d..88dee6b 100644
+--- a/netsurf/content/handlers/javascript/duktape/generics.js
++++ b/netsurf/content/handlers/javascript/duktape/generics.js
+@@ -16,6 +16,10 @@ var NetSurf = {
+     },
+     makeListProxy: function(inner) {
+ 	var index = NetSurf.listIndex;
++	/* the list's own item(): a script may replace list.item (ShadyDOM
++	 * sets list.item = function (i) { return list[i]; }, which looped
++	 * through this Proxy for ever) */
++	var item = inner.item;
+ 	return new Proxy(inner, {
+ 	    has: function(target, key) {
+ 		var i = index(key);
+@@ -28,7 +32,7 @@ var NetSurf = {
+ 	    get: function(target, key) {
+ 		var i = index(key);
+ 		if (i >= 0) {
+-		    return i < target.length ? target.item(i) : undefined;
++		    return i < target.length ? item.call(target, i) : undefined;
+ 		}
+ 		var v = target[key];
+ 		/* methods run on the list itself, not on the Proxy */
+@@ -42,7 +46,7 @@ var NetSurf = {
+ 	    getOwnPropertyDescriptor: function(target, key) {
+ 		var i = index(key);
+ 		if (i >= 0 && i < target.length) {
+-		    return { value: target.item(i), enumerable: true,
++		    return { value: item.call(target, i), enumerable: true,
+ 			     configurable: true, writable: false };
+ 		}
+ 		return Reflect.getOwnPropertyDescriptor(target, key);
+@@ -52,6 +56,7 @@ var NetSurf = {
+     /* The make-proxy call for nodemap-type objects */
+     makeNodeMapProxy: function(inner) {
+ 	var index = NetSurf.listIndex;
++	var item = inner.item; /* (as for lists) */
+ 	return new Proxy(inner, {
+ 	    has: function(target, key) {
+ 		var i = index(key);
+@@ -66,7 +71,7 @@ var NetSurf = {
+ 	    get: function(target, key) {
+ 		var i = index(key);
+ 		if (i >= 0) {
+-		    return i < target.length ? target.item(i) : undefined;
++		    return i < target.length ? item.call(target, i) : undefined;
+ 		}
+ 		if (typeof key == 'string') {
+ 		    var attr = target.getNamedItem(key);
+diff --git a/netsurf/content/handlers/javascript/duktape/netsurf.bnd b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+index dea931f..06b1c88 100644
+--- a/netsurf/content/handlers/javascript/duktape/netsurf.bnd
++++ b/netsurf/content/handlers/javascript/duktape/netsurf.bnd
+@@ -60,6 +60,7 @@ struct dom_html_br_element;
+ #include "Document.bnd"
+ #include "Node.bnd"
+ #include "CharacterData.bnd"
++#include "Attr.bnd"
+ #include "NodeList.bnd"
+ #include "DOMTokenList.bnd"
+ #include "DOMSettableTokenList.bnd"
+@@ -192,6 +193,7 @@ init ProcessingInstruction(struct dom_node_text *text::character_data);
+ init XMLDocument(struct dom_document *document);
+ 
+ init CharacterData(struct dom_node_character_data *character_data::node);
++init Attr(struct dom_attr *attr::node);
+ init DocumentFragment(struct dom_document *document::node);
+ init DocumentType(struct dom_document *document::node);
+ 

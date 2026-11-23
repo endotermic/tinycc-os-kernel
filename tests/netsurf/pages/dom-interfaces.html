@@ -50,6 +50,27 @@ T.ok("importNode copies", imported.firstChild !== tpl.content.firstChild);
 const moved = document.createElement("i");
 document.body.appendChild(moved);
 T.eq("adoptNode takes the node out", document.adoptNode(moved) === moved && moved.parentNode, null);
+const cl = tpl.cloneNode(true);
+T.eq("cloneNode of a template copies the content", cl.content.childNodes.length, 2);
+T.ok("the copy is a copy", cl.content.firstChild !== tpl.content.firstChild);
+T.eq("shallow cloneNode of a template: empty content", tpl.cloneNode(false).content.childNodes.length, 0);
+const outerTpl = document.createElement("template");
+outerTpl.innerHTML = "<div><template><b>deep</b></template></div>";
+const innerOf = t => t.content.firstChild.firstChild;
+innerOf(outerTpl).content;
+const outerCopy = outerTpl.content.cloneNode(true);
+T.eq("nested template in a cloned fragment keeps its content", outerCopy.firstChild.firstChild.content.childNodes.length, 1);
+T.eq("importNode of a fragment with a template", document.importNode(outerTpl.content, true).firstChild.firstChild.content.firstChild.textContent, "deep");
+// innerHTML starting with comments (it gave no nodes at all)
+const lead = document.createElement("div");
+lead.innerHTML = "<!--a--><!--b--><p>x</p>";
+T.eq("innerHTML with leading comments", Array.prototype.map.call(lead.childNodes, n => n.nodeType).join(","), "8,8,1");
+const onlyComment = document.createElement("div");
+onlyComment.innerHTML = "<!--only-->";
+T.eq("innerHTML of a comment alone", onlyComment.firstChild && onlyComment.firstChild.data, "only");
+const tc = document.createElement("template");
+tc.innerHTML = "<!--css-build:shady--><div id=\"t1\"></div>";
+T.eq("template markup starting with a comment", tc.content.childNodes.length, 2);
 const made = document.createElement("template");
 made.innerHTML = "<i>x</i><i>y</i>";
 T.eq("createElement('template') content", made.content.childNodes.length, 2);
@@ -87,6 +108,25 @@ T.eq("currentScript of the first script", firstCurrent && firstCurrent.id, "firs
 T.eq("currentScript of the second", secondCurrent && secondCurrent.id, "second");
 let inTimer = "unset";
 setTimeout(() => { inTimer = document.currentScript; }, 0);
+
+// textContent with no text: "" for elements and fragments, null for the document
+T.eq("textContent of an empty element", document.createElement("div").textContent, "");
+T.eq("textContent of an empty fragment", document.createDocumentFragment().textContent, "");
+T.eq("textContent of the document", document.textContent, null);
+
+// attribute nodes: Attr with name and value (they were bare Nodes)
+const ae = document.createElement("div");
+ae.setAttribute("data-k", "v1");
+ae.setAttribute("title", "t");
+const attrs = Array.from(ae.attributes);
+T.eq("Attr name/value", attrs.map(x => x.name + "=" + x.value).sort().join(","), "data-k=v1,title=t");
+const ak = ae.attributes.getNamedItem ? ae.attributes.getNamedItem("data-k") : attrs.filter(x => x.name === "data-k")[0];
+T.ok("Attr instance and Node", ak instanceof Attr && ak instanceof Node && ak.nodeType === 2);
+T.eq("Attr localName, namespaceURI", ak.localName + "," + ak.namespaceURI, "data-k,null");
+T.eq("Attr ownerElement", ak.ownerElement, ae);
+ak.value = "v2";
+T.eq("setting Attr value", ae.getAttribute("data-k"), "v2");
+T.eq("Attr nodeName/nodeValue", ak.nodeName + "=" + ak.nodeValue, "data-k=v2");
 
 // class list of an element without class: value is "" (it crashed)
 const nc = document.getElementById("noclass");

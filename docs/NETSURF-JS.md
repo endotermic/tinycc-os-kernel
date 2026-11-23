@@ -357,6 +357,19 @@ customized built-ins, `NodeIterator`'s adjustment when its reference node is rem
 `<template>`'s children are rendered until a script reads `content`, `HTMLIFrameElement.contentWindow`
 and `document.all` (both used by YouTube, both still stubs).
 
+After phase 4 (2026-11-23): patches upstreamable/0029 and features/0030, FIX-LOG C52. Why the
+app stamped nothing, found with `--probe`: its templates were empty (innerHTML of markup starting
+with a comment gave no nodes), then Polymer's template parser read `attr.name` (attribute nodes
+were bare Nodes), then the stack overflowed (QuickJS's 1 MB; now the process's stack less a
+margin), then an endless loop through the list proxies (ShadyDOM replaces `list.item`), and
+`textContent`, `DOMContentLoaded` twice, template cloning, `handleEvent` objects and non-callable
+handlers. Now the home page builds `ytd-app` with 287 YouTube elements, `ytd-page-manager`,
+`ytd-browse` and its rich grid, and calls `/youtubei/v1/guide`, `log_event` and `player`; a search
+results page builds 20 `ytd-video-renderer` with their titles, with no uncaught error. For a
+signed-out visitor the home page holds only a "Your YouTube history is off" notice, and that
+notice is not rendered yet (the rich grid makes no section). Whether all this looks right on
+screen is phase 5.
+
 The plan as written before the work:
 
 ### Phase 4 plan (2026-11-21)

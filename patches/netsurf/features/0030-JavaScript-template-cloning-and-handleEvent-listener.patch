@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 11:17:55 +0200
+Subject: [PATCH] JavaScript: template cloning and handleEvent listener objects
+
+cloneNode and importNode copy a template's content, also of templates
+inside the cloned subtree (the content lives in webapi.js); listener
+objects with handleEvent work on nodes and the Window.
+---
+ .../handlers/javascript/duktape/webapi.js     | 49 ++++++++++++++++++-
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index f0b4f80..326de8d 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -664,12 +664,36 @@ var jsTargetMethods = {
+         return !e.defaultPrevented;
+     }
+ };
++/* a listener object ({ handleEvent }) for the native targets, which call
++ * functions only: one wrapper per object, so that removeEventListener with
++ * the object finds it */
++var listenerWrappers = new WeakMap();
++function listenerFunction(cb) {
++    if (cb === null || typeof cb !== "object") return cb;
++    var f = listenerWrappers.get(cb);
++    if (!f) {
++        f = function (e) {
++            var h = cb.handleEvent;
++            if (typeof h !== "function") throw new TypeError("handleEvent is not a function");
++            return h.call(cb, e);
++        };
++        listenerWrappers.set(cb, f);
++    }
++    return f;
++}
+ if (NativeETP) {
+     JsEventTarget.prototype = NativeETP;
+     Object.keys(jsTargetMethods).forEach(function (k) {
+         wrap(NativeETP, k, function (orig) {
+-            return function () {
+-                if (nativeTarget(this) && orig) return orig.apply(this, arguments);
++            return function (type, cb) {
++                if (nativeTarget(this) && orig) {
++                    if (k !== "dispatchEvent" && cb !== null && typeof cb === "object") {
++                        var args = Array.prototype.slice.call(arguments);
++                        args[1] = listenerFunction(cb);
++                        return orig.apply(this, args);
++                    }
++                    return orig.apply(this, arguments);
++                }
+                 return jsTargetMethods[k].apply(this, arguments);
+             };
+         });
+@@ -3655,6 +3679,27 @@ if (!G.HTMLDocument && G.Document) G.HTMLDocument = G.Document;
+         while (nFirst(this)) nAppend(f, nFirst(this));
+         return f;
+     });
++    /* cloneNode (and importNode) of a template copies its content, also of
++     * templates inside the cloned subtree (the HTML spec's cloning steps):
++     * the content lives here, so the native clone lost it and a cloned
++     * template (Polymer clones every element template) came out empty */
++    function copyTemplates(from, to) {
++        if (from.nodeType === 1 && from.localName === "template" && own(from, CONTENT)) {
++            var src = from.content, dst = to.content;
++            for (var c = nFirst(src); c; c = nNext(c)) nAppend(dst, c.cloneNode(true));
++        }
++        for (var a = nFirst(from), b = nFirst(to); a && b; a = nNext(a), b = nNext(b))
++            copyTemplates(a, b);
++    }
++    wrap(NodeP, "cloneNode", function (orig) {
++        return function (deep) {
++            var c = orig.call(this, deep);
++            if (c && this.nodeType === 1 && this.localName === "template" && !deep && own(this, CONTENT))
++                return c;
++            if (c && deep) copyTemplates(this, c);
++            return c;
++        };
++    });
+ })();
+ 
+ 

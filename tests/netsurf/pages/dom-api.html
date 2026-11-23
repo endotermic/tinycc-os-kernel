@@ -57,6 +57,11 @@ T.eq("createElementNS(XHTML) canvas", typeof canvas.getContext, "function");
 T.eq("title", document.title, "dom-api");
 document.title = "changed";
 T.eq("title set", document.getElementsByTagName("title")[0].textContent, "changed");
+// a script replacing list.item (ShadyDOM does: item = i => list[i]) must not loop
+const kids = document.body.childNodes;
+kids.item = function (i) { return kids[i]; };
+T.eq("list index after item() is replaced", kids[0], document.body.firstChild);
+T.eq("replaced item() itself", kids.item(0), document.body.firstChild);
 T.eq("readyState", document.readyState, "loading");
 T.eq("defaultView", document.defaultView, window);
 T.eq("visibilityState", document.visibilityState, "visible");

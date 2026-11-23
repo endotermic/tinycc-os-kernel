@@ -27,3 +27,5 @@ upstreamable/0025-framebuffer-run-due-callbacks-in-time-order.patch
 upstreamable/0026-libdom-event-targets-set-and-referenced-no-DOMSubtre.patch
 upstreamable/0027-JavaScript-Window-events-uncaught-errors-timer-ids-a.patch
 features/0028-JavaScript-web-APIs-for-Web-Components-polyfills-NET.patch
+upstreamable/0029-JavaScript-DOM-fixes-found-by-YouTube-s-Polymer-app.patch
+features/0030-JavaScript-template-cloning-and-handleEvent-listener.patch

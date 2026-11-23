@@ -1872,6 +1872,21 @@ C51. 2026-11-21, COMMITTED (patches/netsurf/upstreamable/0027), found by YouTube
     HTMLTemplateElement's prototype, doctypes DocumentType's. Verification: events-window.html,
     errors.html (3 expected uncaught errors), timers.html, dom-interfaces.html.
 
+C52. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0029), found probing why YouTube's app
+    stamped nothing (run.sh --probe): Element.innerHTML ran a document parse and took the body of
+    the fragment's first child; markup starting with a comment puts the comment first, so the
+    result was empty (YouTube's Polymer templates all start with <!--css-build:shady-->).
+    Attribute nodes were bare Nodes (attr.name undefined: Polymer's template parser failed).
+    textContent of an empty element was undefined (YouTube's render check reported "zc").
+    The list proxies indexed through target.item(), which ShadyDOM replaces with i => list[i]
+    (an endless recursion). html_begin_conversion runs again whenever a script or style sheet
+    added after the parse finishes, and fired DOMContentLoaded each time (a listener deleting
+    its own global then failed). An on<event> handler set to a non-function was called. QuickJS
+    allowed scripts 1 MB of C stack, too little for Polymer's nested element construction
+    (stack overflow). All fixed. Verification: dom-interfaces.html, dom-api.html,
+    events-window.html (new checks failing on the old build); YouTube search results render
+    (20 ytd-video-renderer with their titles).
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

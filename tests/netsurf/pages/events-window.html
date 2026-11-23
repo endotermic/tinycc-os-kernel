@@ -6,7 +6,8 @@
 // target, EventTarget.prototype's methods work on nodes and the Window, script events
 // dispatched at the Window have it as target; MessageChannel
 var order = [], dclTarget = null, loadTarget = null, loadCurrent = null;
-window.addEventListener("DOMContentLoaded", function (e) { order.push("window-DCL"); dclTarget = e.target; });
+var dclPhase = -1;
+window.addEventListener("DOMContentLoaded", function (e) { order.push("window-DCL"); dclTarget = e.target; dclPhase = e.eventPhase; });
 document.addEventListener("DOMContentLoaded", function () { order.push("document-DCL"); });
 window.addEventListener("load", function (e) { order.push("load"); loadTarget = e.target; loadCurrent = e.currentTarget; });
 </script></head><body>
@@ -34,6 +35,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     saved.call(window, "wping", () => w++);
     window.dispatchEvent(new Event("wping"));
     T.eq("saved addEventListener on the window", w, 1);
+
+    // listener objects with handleEvent, on a node and on the window
+    const calls = [];
+    const lo = { handleEvent(e) { calls.push(e.type + ":" + (this === lo)); } };
+    host.addEventListener("hx", lo);
+    window.addEventListener("wx", lo);
+    host.dispatchEvent(new Event("hx"));
+    window.dispatchEvent(new Event("wx"));
+    host.removeEventListener("hx", lo);
+    host.dispatchEvent(new Event("hx"));
+    T.eq("handleEvent listener objects", calls.join(","), "hx:true,wx:true");
+    // an on<event> handler that is not callable is ignored (it was called: an uncaught error)
+    host.onclick = { notAFunction: true };
+    host.dispatchEvent(new MouseEvent("click"));
+    T.ok("non-callable onclick ignored", true);
 
     // a script event at the window: target and currentTarget are the window
     let tgt = null, cur = null;
@@ -76,6 +92,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     document.head.appendChild(bad);
     await sleep(300);
     T.eq("script load and error events", loaded.sort().join(","), "listener,onerror,onload");
+    T.eq("DOMContentLoaded and load once, also after a script added later loaded", order.join(","), "document-DCL,window-DCL,load");
+    T.eq("eventPhase of the window's DOMContentLoaded (bubbled)", dclPhase, 3);
+    let wphase = -1;
+    window.addEventListener("phase", e => { wphase = e.eventPhase; });
+    window.dispatchEvent(new Event("phase"));
+    T.eq("eventPhase of an event at the window", wphase, 2);
     T.ok("the added script ran", window.scriptOkRan === true);
 
     // MessageChannel
