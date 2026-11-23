@@ -40,6 +40,12 @@ const other = /^https?:/.test(otherArg) ? otherArg : "http://127.0.0.1:" + other
     T.eq("cross-origin with ACAO", r.type + "," + r.status, "cors,200");
     r = await fetch(other + "/api/echo", { mode: "no-cors" });
     T.eq("no-cors gives opaque", r.type, "opaque");
+    // an Origin header on cross-origin requests (servers that answer only to one) and non-GET ones
+    r = await fetch(other + "/api/echo?acao=origin");
+    T.eq("cross-origin sends Origin", (await r.json()).headers.origin, location.origin);
+    T.eq("same-origin GET sends none", (await (await fetch("/api/echo")).json()).headers.origin, undefined);
+    T.eq("same-origin POST sends Origin", (await (await fetch("/api/echo", { method: "POST", body: "x" })).json()).headers.origin, location.origin);
+    T.eq("a script's Origin header is dropped", (await (await fetch(other + "/api/echo?acao=origin", { headers: { Origin: "http://evil.example" } })).json()).headers.origin, location.origin);
     try { await fetch("http://127.0.0.1:9/"); T.ok("network error rejects", false); } catch (e) { T.eq("network error rejects", e.name, "TypeError"); }
     // the classes on their own
     const h = new Headers([["A", "1"]]); h.append("a", "2"); h.set("B", "3");

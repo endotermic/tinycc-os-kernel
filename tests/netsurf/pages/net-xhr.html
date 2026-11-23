@@ -68,6 +68,8 @@ function xhr(method, url, opts) {
     T.eq("cross-origin refused", r.kind + "," + r.x.status, "error,0");
     r = await xhr("GET", other + "/api/echo?acao=*");
     T.eq("cross-origin allowed by *", r.kind + "," + r.x.status, "load,200");
+    r = await xhr("GET", other + "/api/echo?acao=origin");
+    T.eq("cross-origin sends Origin", r.kind + "," + JSON.parse(r.x.responseText).headers.origin, "load," + location.origin);
     r = await xhr("GET", other + "/api/echo?acao=" + encodeURIComponent(location.origin));
     T.eq("cross-origin allowed by origin", r.kind, "load");
     r = await xhr("GET", "http://127.0.0.1:9/nothing");

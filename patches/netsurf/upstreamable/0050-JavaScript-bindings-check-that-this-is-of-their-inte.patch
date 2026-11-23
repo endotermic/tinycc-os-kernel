@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 18:48:26 +0200
+Subject: [PATCH] JavaScript: bindings check that this is of their interface
+
+The generated methods, getters and setters took this's private data as
+their interface's without checking what this was, so a method called on
+an object of another interface (Document.prototype.createElement.call(
+window), Node.prototype.appendChild.call(window, ...)) read that object's
+private data as its own: a NULL or wrong libdom node, and a crash.
+YouTube's search page crashed the browser in about half the runs this
+way.  nsgenbind now emits a check that the interface's prototype is on
+this's prototype chain (dukky_this_is), and the call throws TypeError:
+Illegal invocation otherwise, as in browsers.
+---
+ .../handlers/javascript/duktape/dukky.c       | 33 ++++++++++++++++++
+ .../handlers/javascript/duktape/dukky.h       |  7 ++++
+ nsgenbind/src/duk-libdom-interface.c          | 34 +++++++++++++++----
+ 3 files changed, 67 insertions(+), 7 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index 9957c08..55b0ab1 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -118,6 +118,39 @@ static duk_ret_t dukky_populate_object(duk_context *ctx, void *udata)
+ 	return 1; /* The object */
+ }
+ 
++/* exported interface documented in dukky.h */
++duk_bool_t dukky_this_is(duk_context *ctx, const char *protoname)
++{
++	duk_bool_t found = 0;
++	int depth;
++
++	duk_push_this(ctx);
++	/* this */
++	duk_get_global_string(ctx, PROTO_MAGIC);
++	/* this prototab */
++	duk_get_prop_string(ctx, -1, protoname);
++	/* this prototab proto */
++	if (!duk_is_object(ctx, -1)) {
++		/* no such prototype: nothing to check against */
++		duk_pop_3(ctx);
++		return 1;
++	}
++	duk_dup(ctx, -3);
++	/* this prototab proto obj */
++	for (depth = 0; depth < 64 && duk_is_object(ctx, -1); depth++) {
++		duk_get_prototype(ctx, -1);
++		duk_remove(ctx, -2);
++		/* this prototab proto obj.__proto__ */
++		if (duk_is_object(ctx, -1) && duk_strict_equals(ctx, -1, -2)) {
++			found = 1;
++			break;
++		}
++	}
++	duk_pop(ctx);
++	duk_pop_3(ctx);
++	return found;
++}
++
+ duk_ret_t dukky_create_object(duk_context *ctx, const char *name, int args)
+ {
+ 	duk_ret_t ret;
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.h b/netsurf/content/handlers/javascript/duktape/dukky.h
+index a3d36de..6843f8f 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.h
++++ b/netsurf/content/handlers/javascript/duktape/dukky.h
+@@ -26,6 +26,13 @@
+ #define DUKKY_H
+ 
+ duk_ret_t dukky_create_object(duk_context *ctx, const char *name, int args);
++
++/**
++ * Whether this (of the binding being called) is an object of an interface:
++ * the interface's prototype is on its prototype chain.  The bindings check
++ * it before taking this's private data as the interface's.
++ */
++duk_bool_t dukky_this_is(duk_context *ctx, const char *protoname);
+ duk_bool_t dukky_push_node_stacked(duk_context *ctx);
+ duk_bool_t dukky_push_node(duk_context *ctx, struct dom_node *node);
+ void dukky_inject_not_ctr(duk_context *ctx, int idx, const char *name);
+diff --git a/nsgenbind/src/duk-libdom-interface.c b/nsgenbind/src/duk-libdom-interface.c
+index 1dd3498..b72d1e5 100644
+--- a/nsgenbind/src/duk-libdom-interface.c
++++ b/nsgenbind/src/duk-libdom-interface.c
+@@ -383,7 +383,8 @@ output_prototype_constant_int(struct opctx *outc,
+  * generate code that gets a private pointer for a method
+  */
+ static int
+-output_get_method_private(struct opctx *outc, char *class_name, bool is_global)
++output_get_method_private(struct opctx *outc, char *class_name, bool is_global,
++			  const char *interface_name)
+ {
+         outputf(outc,
+                 "\t/* Get private data for method */\n");
+@@ -412,7 +413,21 @@ output_get_method_private(struct opctx *outc, char *class_name, bool is_global)
+         outputf(outc,
+                 "\t\treturn 0; /* can do? No can do. */\n");
+         outputf(outc,
+-                "\t}\n\n");
++                "\t}\n");
++        if (!is_global && interface_name != NULL) {
++                /* this must be an object of the interface: a method
++                 * called on another (document.createElement.call(window))
++                 * would take that object's private data for this one's */
++                char *proto_name = get_prototype_name(interface_name);
++                outputf(outc,
++                        "\tif (!%s_this_is(ctx, \"%s\")) {\n", DLPFX, proto_name);
++                outputf(outc,
++                        "\t\treturn duk_error(ctx, DUK_ERR_TYPE_ERROR, \"Illegal invocation\");\n");
++                outputf(outc,
++                        "\t}\n");
++                free(proto_name);
++        }
++        outputf(outc, "\n");
+ 
+         return 0;
+ }
+@@ -1035,7 +1050,8 @@ output_interface_elipsis_operation(struct opctx *outc,
+                      interfacee->name, operatione->name);
+ 
+         output_get_method_private(outc, interfacee->class_name,
+-                                  interfacee->u.interface.primary_global);
++                                  interfacee->u.interface.primary_global,
++                                  interfacee->name);
+ 
+         cdatac = output_ccode(outc, operatione->method);
+         if (cdatac == 0) {
+@@ -1078,7 +1094,8 @@ output_interface_overloaded_operation(struct opctx *outc,
+          */
+ 
+         output_get_method_private(outc, interfacee->class_name,
+-                                  interfacee->u.interface.primary_global);
++                                  interfacee->u.interface.primary_global,
++                                  interfacee->name);
+ 
+         cdatac = output_ccode(outc,
+                               operatione->method);
+@@ -1395,7 +1412,8 @@ output_interface_operation(struct opctx *outc,
+        }
+ 
+         output_get_method_private(outc, interfacee->class_name,
+-                                  interfacee->u.interface.primary_global);
++                                  interfacee->u.interface.primary_global,
++                                  interfacee->name);
+ 
+         cdatac = output_ccode(outc, operatione->method);
+         if (cdatac == 0) {
+@@ -1462,7 +1480,8 @@ output_attribute_getter(struct opctx *outc,
+ 
+         output_get_method_private(outc,
+                                   interfacee->class_name,
+-                                  interfacee->u.interface.primary_global);
++                                  interfacee->u.interface.primary_global,
++                                  interfacee->name);
+ 
+         /* if binding available for this attribute getter process it */
+         if (atributee->getter != NULL) {
+@@ -1569,7 +1588,8 @@ output_attribute_setter(struct opctx *outc,
+ 
+         output_get_method_private(outc,
+                                   interfacee->class_name,
+-                                  interfacee->u.interface.primary_global);
++                                  interfacee->u.interface.primary_global,
++                                  interfacee->name);
+ 
+         /* if binding available for this attribute getter process it */
+         if (atributee->setter != NULL) {

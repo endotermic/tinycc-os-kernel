@@ -1964,6 +1964,36 @@ C61. 2026-11-23, COMMITTED (patches/netsurf/features/0045), found from YouTube's
     SVGElement only, as in browsers. Verification: style.html (two checks failed before); no
     console errors on YouTube's search page.
 
+C62. 2026-11-23, COMMITTED (patches/netsurf/features/0047), found because YouTube's icon
+    placeholders stayed empty: our fetch and XMLHttpRequest sent no Origin header, and
+    www.gstatic.com answers with Access-Control-Allow-Origin only to requests that have one
+    (Vary: Origin). Our CORS check then refused the icons. Cross-origin CORS-mode requests and all
+    non-GET/HEAD requests now send Origin; a script's forbidden headers are dropped.
+    Verification: net-fetch.html, net-xhr.html (new acao=origin endpoint in tests/netsurf/server.py;
+    the checks failed before); YouTube: 0 of 102 icon fetches fail (dozens did).
+
+C63. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0046), found drawing YouTube's outline icons:
+    libsvgtiny read path arc arguments with sscanf %f, so the flags, which SVG lets be written
+    without separators ("a9 9 0 110 18", "0 00.152"), were read as numbers and the path broke. Rings
+    were drawn as discs. The flags are now read as single characters. Verification: YouTube's info,
+    person and clear icons in the guest.
+
+C64. 2026-11-23, COMMITTED (patches/netsurf/features/0049), found because YouTube's icon wrappers
+    were 0x0: libcss dropped every rule using :is() or :where() (YouTube sizes icons with
+    :where(.ytIconWrapperHost)). Selectors are expanded when parsed ("A:is(X, Y) B" becomes
+    "A X B, A Y B"). Verification: style.html (4 new checks failed before).
+
+C65. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0050), found by tests/netsurf/run.sh's new
+    crash report: YouTube's search page segfaulted the browser in about half the runs, a NULL
+    read in dom_document_create_element_ns (from the kernel log: segfault at 0, mapped through an
+    unstripped relink of the same tree). A temporary trace in libdom's inline wrappers led to the
+    createElement binding with a NULL document: the generated bindings took this's private data
+    as their interface's without checking this, so Document.prototype.createElement.call(window)
+    read Window's private data as a Document's (an upstream NetSurf bug). nsgenbind now emits a
+    check (dukky_this_is: the interface's prototype on this's chain), and the call throws
+    TypeError: Illegal invocation, as in browsers. About 300 KB more code. Verification:
+    dom-api.html (the old build crashes on it); six YouTube runs without a crash.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

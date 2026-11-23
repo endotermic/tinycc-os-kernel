@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 17:50:41 +0200
+Subject: [PATCH] libsvgtiny: arc flags need no separators
+
+Path arcs were read with sscanf("%f" x 7), so the two flags were read as
+numbers: "a9 9 0 110 18" (flags 1 and 1, then x 0, as optimisers write
+it) read the large-arc flag as 110, and "0 00.152" read 00.152.  The
+paths of such icons (YouTube's outline icons: a ring drawn as two arcs)
+broke at the first arc.  The arguments are read with the flags as single
+characters 0 or 1.
+---
+ libsvgtiny/src/svgtiny.c | 64 +++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 57 insertions(+), 7 deletions(-)
+
+diff --git a/libsvgtiny/src/svgtiny.c b/libsvgtiny/src/svgtiny.c
+index ee0c59c..234ff76 100644
+--- a/libsvgtiny/src/svgtiny.c
++++ b/libsvgtiny/src/svgtiny.c
+@@ -40,7 +40,53 @@
+ 
+ static svgtiny_code svgtiny_parse_svg(dom_element *svg,
+ 		struct svgtiny_parse_state state);
+-static svgtiny_code svgtiny_parse_path(dom_element *path,
++static 
++/**
++ * Read the seven arguments of an elliptical arc (rx ry rotation large-arc
++ * sweep x y).  The two flags are single characters 0 or 1, which need no
++ * separator ("a9 9 0 110 18" is flags 1 and 1 then x 0; "0 00.152" is flags
++ * 0 and 0 then .152): reading them as numbers, as sscanf's %f does, broke
++ * the paths of icons written by optimisers.
++ *
++ * \return the number of characters read, or 0 if there are no arguments
++ */
++static int svgtiny_parse_arc_args(const char *s, float *arg)
++{
++	const char *p = s;
++	char *end;
++	int k;
++
++	for (k = 0; k < 7; k++) {
++		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
++				*p == ',')
++			p++;
++		if (k == 3 || k == 4) {
++			if (*p != '0' && *p != '1')
++				return 0;
++			arg[k] = *p - '0';
++			p++;
++		} else {
++			arg[k] = strtof(p, &end);
++			if (end == p)
++				return 0;
++			p = end;
++		}
++	}
++	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
++		p++;
++	return p - s;
++}
++
++/** copy arc arguments read by svgtiny_parse_arc_args (always true) */
++static bool arc_ok(const float *arg, float *rx, float *ry, float *rotation,
++		float *large_arc, float *sweep, float *x, float *y)
++{
++	*rx = arg[0]; *ry = arg[1]; *rotation = arg[2];
++	*large_arc = arg[3]; *sweep = arg[4]; *x = arg[5]; *y = arg[6];
++	return true;
++}
++
++svgtiny_code svgtiny_parse_path(dom_element *path,
+ 		struct svgtiny_parse_state state);
+ static svgtiny_code svgtiny_parse_rect(dom_element *rect,
+ 		struct svgtiny_parse_state state);
+@@ -946,6 +992,8 @@ svgtiny_code svgtiny_parse_path(dom_element *path,
+ 		char command[2];
+ 		int plot_command;
+ 		float x, y, x1, y1, x2, y2, rx, ry, rotation, large_arc, sweep;
++		float arc[7];
++		int arc_n;
+ 		int n;
+ 
+                 /* Ensure there is sufficient space for path elements */
+@@ -1140,9 +1188,11 @@ svgtiny_code svgtiny_parse_path(dom_element *path,
+ 					&x, &y, &n) == 2);
+ 
+ 		/* elliptical arc (A, a) (7 arguments) */
+-		} else if (sscanf(s, " %1[Aa] %f %f %f %f %f %f %f %n", command,
+-				&rx, &ry, &rotation, &large_arc, &sweep,
+-				&x, &y, &n) == 8) {
++		} else if (sscanf(s, " %1[Aa] %n", command, &n) == 1 &&
++				(arc_n = svgtiny_parse_arc_args(s + n, arc)) > 0 &&
++				arc_ok(arc, &rx, &ry, &rotation, &large_arc, &sweep,
++					&x, &y)) {
++			n += arc_n;
+ 			do {
+ 				int bzsegments;
+ 				double bzpoints[6*4]; /* allow for up to four bezier segments per arc */
+@@ -1185,9 +1235,9 @@ svgtiny_code svgtiny_parse_path(dom_element *path,
+ 
+ 
+ 				s += n;
+-			} while (sscanf(s, "%f %f %f %f %f %f %f %n",
+-				&rx, &ry, &rotation, &large_arc, &sweep,
+-				&x, &y, &n) == 7);
++			} while ((n = svgtiny_parse_arc_args(s, arc)) > 0 &&
++				arc_ok(arc, &rx, &ry, &rotation, &large_arc,
++					&sweep, &x, &y));
+ 
+ 		} else {
+ 			/* fprintf(stderr, "parse failed at \"%s\"\n", s); */

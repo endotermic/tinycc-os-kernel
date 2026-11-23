@@ -43,7 +43,9 @@ Categories:
   honoured; libdom's class list following a changed class attribute; load and error events of
   images; boxes with opacity 0 not drawn; margins not collapsing into absolutely positioned boxes;
   createElementNS's name and foreign names kept; style sheets added after layout applied;
-  the framebuffer's path plotter, so SVG images are drawn) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
+  the framebuffer's path plotter, so SVG images are drawn;
+  libsvgtiny's arc flags without separators; bindings that check this is of their interface)
+  and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
   APIs written in JavaScript, with native helpers in Window.bnd; XMLHttpRequest and fetch;
@@ -53,7 +55,8 @@ Categories:
   image state, interface names, IntersectionObserver fixes; CSS custom properties and var() in
   libcss; CSS.supports answered by libcss;
   mask-image in libcss, drawn in the background colour;
-  SVG elements as SVGElements, style off Element.prototype)
+  SVG elements as SVGElements, style off Element.prototype;
+  an Origin header on fetch and XMLHttpRequest; inline SVG drawn as an image; :is() and :where())
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

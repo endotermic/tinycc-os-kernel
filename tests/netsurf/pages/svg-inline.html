@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>svg-inline</title><script src="harness.js"></script>
+<style>
+#icons { color: rgb(0, 128, 0); }
+.box { display: inline-block; width: 48px; height: 48px; margin: 4px; }
+</style></head><body>
+<div id="icons">
+<svg id="parsed" width="96" height="48" viewBox="0 0 40 20"><path d="M10 1A9 9 0 1 0 10 19A9 9 0 1 0 10 1ZM10 6A4 4 0 1 1 10 14A4 4 0 1 1 10 6Z" fill="#ff0000"/><rect x="24" y="3" width="14" height="14"/></svg>
+<span class="box" id="html-host"></span>
+<span class="box" id="ns-host"></span>
+</div>
+<svg id="hidden" width="20" height="20" style="display: none"><rect width="20" height="20"/></svg>
+<script>
+// inline <svg>: drawn as an image of its own markup.  Scripts see its box; the drawing is checked by eye
+// (tests/netsurf/browse.sh file://$PWD/tests/netsurf/pages/svg-inline.html): a red ring with a hole and a
+// green square (fill from the colour, as with fill: currentcolor), 96x48; then two green rings with
+// holes (one from innerHTML, whose viewbox the parser lower-cased, one from createElementNS), 48x48.
+document.getElementById("html-host").innerHTML =
+    '<svg viewBox="0 0 20 20" style="width: 100%; height: 100%"><path d="M10 1A9 9 0 1 0 10 19A9 9 0 1 0 10 1ZM10 6A4 4 0 1 1 10 14A4 4 0 1 1 10 6Z"/></svg>';
+const NS = "http://www.w3.org/2000/svg";
+const made = document.createElementNS(NS, "svg");
+made.setAttribute("viewBox", "0 0 20 20");
+made.setAttribute("width", "48");
+made.setAttribute("height", "48");
+const p = document.createElementNS(NS, "path");
+p.setAttribute("d", "M10 1A9 9 0 1 0 10 19A9 9 0 1 0 10 1ZM10 6A4 4 0 1 1 10 14A4 4 0 1 1 10 6Z");
+p.setAttribute("fill", "currentColor");
+made.appendChild(p);
+document.getElementById("ns-host").appendChild(made);
+window.addEventListener("load", () => setTimeout(() => {
+    const r = e => { const b = (typeof e === "string" ? document.getElementById(e) : e).getBoundingClientRect(); return Math.round(b.width) + "x" + Math.round(b.height); };
+    T.eq("parsed svg box", r("parsed"), "96x48");
+    T.eq("innerHTML svg fills its host", r(document.querySelector("#html-host svg")), "48x48");
+    T.eq("createElementNS svg box", r(made), "48x48");
+    T.eq("display: none svg has no box", r("hidden"), "0x0");
+    T.done();
+}, 800));
+</script></body></html>

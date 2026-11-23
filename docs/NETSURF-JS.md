@@ -461,6 +461,23 @@ never inserts the icon (it fetches icon SVGs from fonts.gstatic.com; why that fa
 Rendering inline <svg> (serialised to an SVG image in a replaced box) would come after that.
 Also open: the browser sometimes stops logging about 20 s into the page and recovers late.
 
+The icons (2026-11-23): YouTube fetches its icon SVGs with fetch(). www.gstatic.com allows the
+page only when the request has an Origin header, and ours had none, so the CORS check refused
+them (features/0047, C62). With the SVG text, YouTube inserts it as inline <svg>, which NetSurf
+now draws as an image of its own markup (features/0048: the subtree is written out, with SVG's
+attribute case, currentColor and a default fill of the CSS colour, and fetched as a data: URL into
+a replaced box). Optimised icon paths use arc flags without separators, which libsvgtiny misread
+(upstreamable/0046, C63). The icon wrappers are sized by :where() rules, which libcss lacked;
+:is() and :where() are now expanded into plain selectors (features/0049, C64). YouTube's masthead
+icons (clear, sign-in, info) and the logo are drawn in the guest; the search button is laid out
+16 px tall instead of 40, so its icon is cut off. New page `svg-inline`; the drawing is checked by eye.
+
+A crash: with the icons arriving, YouTube's search page segfaulted the browser in about half the
+runs. The generated bindings never checked `this`, so a DOM method called on another kind of
+object read the wrong private data. Calls with the wrong object now throw "Illegal invocation"
+(upstreamable/0050, C65). YouTube logs 42 "not an object" errors where it sets cssText on its own
+placeholder Symbol in strict code; browsers take the same path.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

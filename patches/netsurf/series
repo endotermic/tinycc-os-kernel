@@ -44,3 +44,8 @@ upstreamable/0042-framebuffer-paths-are-plotted-so-SVG-images-are-draw.patch
 features/0043-libcss-mask-image-and-the-mask-shorthands.patch
 features/0044-html-mask-image-drawn-in-the-background-colour.patch
 features/0045-JavaScript-SVG-elements-are-SVGElements-style-off-El.patch
+upstreamable/0046-libsvgtiny-arc-flags-need-no-separators.patch
+features/0047-JavaScript-fetch-and-XMLHttpRequest-send-an-Origin-h.patch
+features/0048-html-inline-SVG-drawn-as-an-image-of-its-markup.patch
+features/0049-libcss-is-and-where-as-plain-selectors.patch
+upstreamable/0050-JavaScript-bindings-check-that-this-is-of-their-inte.patch

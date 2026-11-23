@@ -62,6 +62,16 @@ T.eq("createElementNS(SVG) names", svgEl.tagName + "," + svgEl.localName + "," +
 T.eq("createElementNS(SVG) serialised", svgEl.outerHTML, "<svg><path></path></svg>");
 T.eq("createElementNS(SVG) a is no HTMLAnchorElement",
     document.createElementNS("http://www.w3.org/2000/svg", "a") instanceof HTMLAnchorElement, false);
+// a binding's method called on an object of another interface throws (it took that object's private
+// data as its own: document.createElement.call(window) crashed the browser, as YouTube sometimes did)
+const illegal = f => { try { f(); return "no error"; } catch (e) { return e.name; } };
+T.eq("methods check their object", [
+    illegal(() => Document.prototype.createElement.call(window, "div")),
+    illegal(() => Document.prototype.createElement.call(document.body, "div")),
+    illegal(() => Node.prototype.appendChild.call(window, document.createElement("p"))),
+    illegal(() => Element.prototype.getAttribute.call(document, "x"))].join(","),
+    "TypeError,TypeError,TypeError,TypeError");
+T.eq("methods still work on their own objects", Document.prototype.createElement.call(document, "b").tagName, "B");
 // document
 T.eq("title", document.title, "dom-api");
 document.title = "changed";

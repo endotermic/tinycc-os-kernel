@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 17:50:41 +0200
+Subject: [PATCH] JavaScript: fetch and XMLHttpRequest send an Origin header
+
+Cross-origin requests in CORS mode, and any request but GET and HEAD, now
+carry Origin: <the page's origin>, and a script's own forbidden headers
+(Origin, Cookie, Referer, ...) are not sent.  Servers that answer with
+Access-Control-Allow-Origin only to a request with an Origin header
+(www.gstatic.com, Vary: Origin) were refused by our CORS check, so
+YouTube's icons (fetched from there) never arrived.
+---
+ .../content/handlers/javascript/duktape/webapi.js   | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 0958535..2faf900 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -2805,10 +2805,17 @@ function resolveURL(url) {
+ 
+ /* start a request: done(status, statusText, headerLines, finalURL, buffer)
+  * or done(0, error) */
+-function startRequest(method, url, headers, body, done) {
++/* the page's own headers but the forbidden ones, and an Origin header as
++ * browsers send it: on cross-origin requests in CORS mode and on any
++ * request but GET and HEAD (servers such as www.gstatic.com answer with
++ * Access-Control-Allow-Origin only when it is there) */
++function startRequest(method, url, headers, body, done, mode) {
+     if (!N.request) throw new TypeError("networking is not available");
+     var lines = [];
+-    headers.forEach(function (v, k) { lines.push(k + ": " + v); });
++    headers.forEach(function (v, k) { if (!forbiddenHeader.test(k)) lines.push(k + ": " + v); });
++    if (/^https?:/i.test(url) &&
++            (!/^(GET|HEAD)$/i.test(method) || (mode !== "no-cors" && originOf(url) !== pageOrigin())))
++        lines.push("Origin: " + pageOrigin());
+     return N.request(method, url, lines, body, done);
+ }
+ 
+@@ -3120,7 +3127,7 @@ def(WindowP, "fetch", function (input, init) {
+                 def(r, "redirected", finalURL !== req.url);
+                 def(r, "_buf", req.method === "HEAD" ? null : buf);
+                 resolve(r);
+-            });
++            }, req.mode);
+         } catch (e) {
+             settled = true;
+             reject(new TypeError("Failed to fetch: " + e.message));

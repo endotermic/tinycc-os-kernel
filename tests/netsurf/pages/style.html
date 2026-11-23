@@ -9,8 +9,15 @@
 #fx { position: fixed; top: 0; right: 0; width: 30px; }
 #fx div { height: 20px; }
 #fx-next { margin-top: 56px; height: 5px; }
+:where(.iw-a) { width: 24px; height: 5px; }
+section span { display: block; height: 5px; }
+section :is(.iw-b, .iw-c) span { width: 31px; }
+:is(.iw-d:is(.iw-e)) { width: 17px; height: 5px; }
+.iw-f:-webkit-any(.iw-g) { width: 13px; height: 5px; }
 </style></head><body>
 <div id="w">w</div><div id="g" class="gone">g</div><span id="sp">sp</span>
+<div class="iw-a" id="iw1"></div><section><div class="iw-b"><span id="iw2"></span></div><div class="iw-c"><span id="iw3"></span></div><div><span id="iw4"></span></div></section>
+<div class="iw-d iw-e" id="iw5"></div><div class="iw-d" id="iw6" style="height:5px"></div><div class="iw-f iw-g" id="iw7"></div>
 <div id="fx-wrap"><div><div id="fx"><div></div></div><div id="fx-next"></div></div></div>
 <script>
 // inline style, computed style, geometry, matchMedia (webapi.js + Window.bnd natives)
@@ -79,6 +86,12 @@ window.addEventListener("load", () => setTimeout(async () => {
     document.body.appendChild(inh);
     await new Promise(r => setTimeout(r, 300));
     T.eq("computed visibility of an inline inherit", getComputedStyle(inh).visibility, "visible");
+    // :is() and :where() (and :-webkit-any()), expanded by libcss into plain selectors
+    const iw = id => Math.round(document.getElementById(id).getBoundingClientRect().width);
+    T.eq(":where()", iw("iw1"), 24);
+    T.eq(":is() with a list, between combinators", [iw("iw2"), iw("iw3"), iw("iw4") > 31].join(","), "31,31,true");
+    T.eq("nested :is()", [iw("iw5"), iw("iw6") > 17].join(","), "17,true");
+    T.eq(":-webkit-any()", iw("iw7"), 13);
     // a fixed box before a block with a top margin: the margin is not lost inside it
     T.eq("margin after a fixed sibling", Math.round(document.getElementById("fx-next").getBoundingClientRect().top), 356);
     // <style> elements made by scripts (text set before or after insertion) apply
