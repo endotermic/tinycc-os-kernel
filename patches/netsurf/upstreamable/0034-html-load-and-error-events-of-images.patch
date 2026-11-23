@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 13:05:59 +0200
+Subject: [PATCH] html: load and error events of images
+
+An <img> whose image was fetched or failed got no load or error event
+(scripts that show an image after its load event never showed it).  The
+object callback fires them at the element once it is done with the box.
+---
+ netsurf/content/handlers/html/object.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/netsurf/content/handlers/html/object.c b/netsurf/content/handlers/html/object.c
+index b9ba993..f59ff49 100644
+--- a/netsurf/content/handlers/html/object.c
++++ b/netsurf/content/handlers/html/object.c
+@@ -163,6 +163,10 @@ html_object_callback(hlcache_handle *object,
+ 	html_content *c = (html_content *) o->parent;
+ 	int x, y;
+ 	struct box *box;
++	/* the load or error event of the element (an <img>), fired once this
++	 * callback is done with the box: a listener may change the DOM */
++	dom_node *event_node = NULL;
++	dom_string *event_type = NULL;
+ 
+ 	box = o->box;
+ 
+@@ -197,6 +201,10 @@ html_object_callback(hlcache_handle *object,
+ 		c->base.active--;
+ 		NSLOG(netsurf, INFO, "%d fetches active", c->base.active);
+ 
++		if (!o->background && box->node != NULL) {
++			event_node = dom_node_ref(box->node);
++			event_type = corestring_dom_load;
++		}
+ 		html_object_done(box, object, o->background);
+ 
+ 		if (c->base.status != CONTENT_STATUS_LOADING &&
+@@ -229,6 +237,10 @@ html_object_callback(hlcache_handle *object,
+ 		c->base.active--;
+ 		NSLOG(netsurf, INFO, "%d fetches active", c->base.active);
+ 
++		if (!o->background && box->node != NULL) {
++			event_node = dom_node_ref(box->node);
++			event_type = corestring_dom_error;
++		}
+ 		html_object_failed(box, c, o->background);
+ 
+ 		break;
+@@ -521,6 +533,13 @@ html_object_callback(hlcache_handle *object,
+ 		}
+ 	}
+ 
++	if (event_node != NULL) {
++		if (c->jsthread != NULL)
++			fire_generic_dom_event(event_type, event_node,
++					       false, false);
++		dom_node_unref(event_node);
++	}
++
+ 	return NSERROR_OK;
+ }
+ 

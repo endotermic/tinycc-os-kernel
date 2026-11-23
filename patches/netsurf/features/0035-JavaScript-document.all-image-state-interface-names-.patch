@@ -1,0 +1,400 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 13:05:59 +0200
+Subject: [PATCH] JavaScript: document.all, image state, interface names,
+ observer fixes
+
+document.all is a collection with [[IsHTMLDDA]] (QuickJS's
+JS_SetIsHTMLDDA through markHTMLDDA): it was undefined, so x ===
+document.all held for every undefined x (YouTube's sanitizer replaced
+undefined bound values with "zClosurez" and hid its results).
+<img> complete, naturalWidth, naturalHeight (imageState).  Interface
+objects have names (constructor.name was "").
+IntersectionObserverEntry members are prototype getters (a polyfill
+replaced the observer otherwise); an element that intersects without
+area gets another entry once it has area.  The timers this file uses
+are the bindings' own, not what a page put on window.  Computed styles
+skip inline keywords and var() values.
+---
+ .../handlers/javascript/duktape/Window.bnd    |  37 +++++
+ .../handlers/javascript/duktape/duk_quickjs.c |   5 +
+ .../handlers/javascript/duktape/duk_quickjs.h |   3 +
+ .../handlers/javascript/duktape/webapi.js     | 140 +++++++++++++++---
+ 4 files changed, 161 insertions(+), 24 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index 60fdd6d..8f1088e 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -30,6 +30,8 @@ class Window {
+ #include "html/box.h"
+ #include "html/box_inspect.h"
+ #include "content/fetch.h"
++#include "content/content.h"
++#include "netsurf/content.h"
+ #include <errno.h>
+ #include <stdio.h>
+ #include <sys/stat.h>
+@@ -799,6 +801,39 @@ static duk_ret_t native_current_script(duk_context *ctx)
+ 	return 1;
+ }
+ 
++/* imageState(img): [complete, naturalWidth, naturalHeight] of an image
++ * element from its box's object; [false, 0, 0] without one */
++static duk_ret_t native_image_state(duk_context *ctx)
++{
++	struct box *box = native_box(ctx, 0);
++	int done = 0, w = 0, h = 0;
++	if (box != NULL && box->object != NULL) {
++		content_status st = content_get_status(box->object);
++		done = (st == CONTENT_STATUS_DONE || st == CONTENT_STATUS_ERROR);
++		if (st == CONTENT_STATUS_READY || st == CONTENT_STATUS_DONE) {
++			w = content_get_width(box->object);
++			h = content_get_height(box->object);
++		}
++	}
++	duk_push_array(ctx);
++	duk_push_boolean(ctx, done);
++	duk_put_prop_index(ctx, -2, 0);
++	duk_push_int(ctx, w);
++	duk_put_prop_index(ctx, -2, 1);
++	duk_push_int(ctx, h);
++	duk_put_prop_index(ctx, -2, 2);
++	return 1;
++}
++
++/* markHTMLDDA(obj): obj behaves as document.all does (falsy, typeof
++ * "undefined", == null, but not === undefined) */
++static duk_ret_t native_mark_htmldda(duk_context *ctx)
++{
++	if (duk_is_object(ctx, 0))
++		duk_netsurf_set_htmldda(ctx, 0);
++	return 0;
++}
++
+ static void native_put(duk_context *ctx, const char *name,
+ 		       duk_c_function fn, duk_idx_t nargs)
+ {
+@@ -1191,6 +1226,8 @@ prototype Window()
+ 	native_put(ctx, "abortRequest", native_abort_request, 1);
+ 	native_put(ctx, "observeMutations", native_observe_mutations, 2);
+ 	native_put(ctx, "currentScript", native_current_script, 0);
++	native_put(ctx, "markHTMLDDA", native_mark_htmldda, 1);
++	native_put(ctx, "imageState", native_image_state, 1);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index 5810a18..aefd2dc 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -1316,6 +1316,11 @@ duk_bool_t duk_is_string(duk_context *ctx, duk_idx_t idx)
+ 	return duk_get_type(ctx, idx) == DUK_TYPE_STRING;
+ }
+ 
++void duk_netsurf_set_htmldda(duk_context *ctx, duk_idx_t idx)
++{
++	JS_SetIsHTMLDDA(ctx->heap->ctx, duk__val(ctx, idx));
++}
++
+ duk_bool_t duk_is_callable(duk_context *ctx, duk_idx_t idx)
+ {
+ 	return JS_IsFunction(ctx->heap->ctx, duk__val(ctx, idx));
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+index 8a7f817..7d4786b 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.h
+@@ -199,6 +199,9 @@ void duk_netsurf_rejection_handler(duk_context *ctx,
+ 				   void (*fn)(void *udata, const char *msg));
+ duk_bool_t duk_is_object(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_callable(duk_context *ctx, duk_idx_t idx);
++/* NetSurf: give the object at idx document.all's [[IsHTMLDDA]] behaviour
++ * (falsy, typeof "undefined", == null) */
++void duk_netsurf_set_htmldda(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_null(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_boolean(duk_context *ctx, duk_idx_t idx);
+ duk_bool_t duk_is_number(duk_context *ctx, duk_idx_t idx);
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index a92abd0..acf537e 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -93,9 +93,19 @@ function proto(name) {
+     return (c && c.prototype) || null;
+ }
+ 
++/* The browser's own timers, for the timers of this file: pages replace
++ * window.setTimeout and the like with their own (YouTube's scheduler), and
++ * internal work (observers' polling, MutationObserver delivery, XHR
++ * timeouts) went through them and stalled.  Page scripts assign to the
++ * window object itself; the Window prototype keeps the bindings' functions. */
++function nTimeout(f, ms, win) { return WindowP.setTimeout.call(win || G, f, ms || 0); }
++function nInterval(f, ms, win) { return WindowP.setInterval.call(win || G, f, ms || 0); }
++function nClearTimeout(id, win) { return WindowP.clearTimeout.call(win || G, id); }
++function nClearInterval(id, win) { return WindowP.clearInterval.call(win || G, id); }
++
+ /* report an error from a callback without stopping the caller */
+ function report(e) {
+-    G.setTimeout(function () { throw e; }, 0);
++    nTimeout(function () { throw e; }, 0);
+ }
+ 
+ var ElementP = proto("Element"), NodeP = proto("Node");
+@@ -203,7 +213,7 @@ def(WindowP, "postMessage", function (data, targetOrigin) {
+         data: data, origin: G.location ? G.location.origin : "",
+         lastEventId: "", source: win, ports: []
+     });
+-    G.setTimeout(function () {
++    nTimeout(function () {
+         win.dispatchEvent(e);
+         if (typeof win.onmessage === "function") {
+             try { win.onmessage.call(win, e); } catch (x) { report(x); }
+@@ -294,7 +304,7 @@ def(WindowP, "requestAnimationFrame", function (cb) {
+     var id = ++s.raf.id;
+     s.raf.queue.push({ id: id, cb: cb });
+     if (!s.raf.timer) {
+-        s.raf.timer = win.setTimeout(function () {
++        s.raf.timer = nTimeout(function () {
+             var q = s.raf.queue;
+             s.raf.queue = [];
+             s.raf.timer = 0;
+@@ -314,11 +324,11 @@ def(WindowP, "cancelAnimationFrame", function (id) {
+     s.raf.queue.forEach(function (e) { if (e.id === id) e.cancelled = true; });
+ });
+ def(WindowP, "requestIdleCallback", function (cb) {
+-    return W(this).setTimeout(function () {
++    return nTimeout(function () {
+         cb({ didTimeout: false, timeRemaining: function () { return 15; } });
+     }, 1);
+ });
+-def(WindowP, "cancelIdleCallback", function (id) { W(this).clearTimeout(id); });
++def(WindowP, "cancelIdleCallback", function (id) { nClearTimeout(id, W(this)); });
+ /* clearTimeout/clearInterval take any value (the binding wanted a number):
+  * a missing or 0 id is no timer */
+ ["clearTimeout", "clearInterval"].forEach(function (k) {
+@@ -735,7 +745,7 @@ if (typeof G.AbortController !== "function" || G.AbortController.nsOriginal) {
+     AbortSignal.abort = function (reason) { var s = newSignal(); abortSignal(s, reason); return s; };
+     AbortSignal.timeout = function (ms) {
+         var s = newSignal();
+-        G.setTimeout(function () { abortSignal(s, domError("TimeoutError", "signal timed out")); }, ms);
++        nTimeout(function () { abortSignal(s, domError("TimeoutError", "signal timed out")); }, ms);
+         return s;
+     };
+     AbortSignal.any = function (signals) {
+@@ -1877,6 +1887,11 @@ def(WindowP, "getComputedStyle", function (el, pseudo) {
+         values.display = d ? d.v : "none";
+     }
+     inline.forEach(function (d, k) {
++        /* an inline value stands in for what the layout does not say,
++         * but not a keyword or a var() that only the cascade resolves
++         * (visibility: inherit came out as "inherit") */
++        if (native && own(native, camel(k))) return;
++        if (/^(inherit|initial|unset|revert)$/i.test(d.v) || /var\(/i.test(d.v)) return;
+         if (k !== "display" || !native) values[camel(k)] = d.v;
+     });
+     var api = Object.create(StyleDeclaration.prototype);
+@@ -2089,7 +2104,7 @@ acc(WindowP, "history", function () {
+                 var to = index + delta;
+                 if (to < 0 || to >= entries.length) return;
+                 index = to;
+-                win.setTimeout(function () {
++                nTimeout(function () {
+                     var e = makeEvent("popstate", {}, eventProtos.PopStateEvent, { state: entries[index].state });
+                     win.dispatchEvent(e);
+                     if (typeof win.onpopstate === "function") {
+@@ -2180,7 +2195,7 @@ acc(WindowP, "localStorage", function () {
+             /* saved once per task, not per setItem */
+             pending = text;
+             if (pending !== null && !s.saveTimer) {
+-                s.saveTimer = G.setTimeout(function () {
++                s.saveTimer = nTimeout(function () {
+                     s.saveTimer = 0;
+                     if (N.storageWrite) N.storageWrite(pending);
+                 }, 0);
+@@ -2783,7 +2798,7 @@ function xhrSetState(xhr, n) {
+ }
+ function xhrEnd(xhr, kind) {
+     var x = xhr._x;
+-    if (x.timer) { G.clearTimeout(x.timer); x.timer = 0; }
++    if (x.timer) { nClearTimeout(x.timer); x.timer = 0; }
+     x.sent = false;
+     x.handle = 0;
+     if (kind !== "load") {
+@@ -2842,11 +2857,11 @@ var xhrMethods = {
+                 xhrEnd(self, "load");
+             });
+         } catch (e) {
+-            G.setTimeout(function () { xhrEnd(self, "error"); }, 0);
++            nTimeout(function () { xhrEnd(self, "error"); }, 0);
+             return;
+         }
+         if (x.timeout > 0) {
+-            x.timer = G.setTimeout(function () {
++            x.timer = nTimeout(function () {
+                 x.timer = 0;
+                 if (!x.sent) return;
+                 if (x.handle && N.abortRequest) N.abortRequest(x.handle);
+@@ -3141,7 +3156,7 @@ function finishRecord(r) {
+ function moDeliver() {
+     var m = moState();
+     m.micro = false;
+-    if (m.timer) { G.clearTimeout(m.timer); m.timer = 0; }
++    if (m.timer) { nClearTimeout(m.timer); m.timer = 0; }
+     for (var guard = 0; guard < 100; guard++) {
+         var list = m.observers.filter(function (o) { return o._queue.length; });
+         if (!list.length) return;
+@@ -3162,7 +3177,7 @@ function moSchedule(nested) {
+             Promise.resolve().then(moDeliver);
+         }
+     } else if (!m.micro && !m.timer) {
+-        m.timer = G.setTimeout(function () { m.timer = 0; moDeliver(); }, 0);
++        m.timer = nTimeout(function () { m.timer = 0; moDeliver(); }, 0);
+     }
+ }
+ 
+@@ -3372,11 +3387,11 @@ function geoCheck() {
+ function geoStart(soon) {
+     var g = geoState();
+     if (soon && !g.soon) {
+-        g.soon = G.setTimeout(function () { g.soon = 0; geoCheck(); }, 0);
++        g.soon = nTimeout(function () { g.soon = 0; geoCheck(); }, 0);
+     }
+     if (!g.timer) {
+-        g.timer = G.setInterval(function () {
+-            if (!geoActive()) { G.clearInterval(g.timer); g.timer = 0; return; }
++        g.timer = nInterval(function () {
++            if (!geoActive()) { nClearInterval(g.timer); g.timer = 0; return; }
+             geoCheck();
+         }, 100);
+     }
+@@ -3405,14 +3420,17 @@ function parseMargin(s) {
+     return m;
+ }
+ 
++/* the members are getters on the prototype, as in browsers: the common
++ * IntersectionObserver polyfill (YouTube loads one) replaces the native
++ * observer unless 'intersectionRatio' in IntersectionObserverEntry.prototype */
++var ENTRY = Symbol("netsurf.entry");
+ function IntersectionObserverEntry(init) {
+-    init = init || {};
+-    var self = this;
+-    ["time", "rootBounds", "boundingClientRect", "intersectionRect", "isIntersecting",
+-     "intersectionRatio", "target", "isVisible"].forEach(function (k) {
+-        Object.defineProperty(self, k, { value: init[k], enumerable: true, configurable: true });
+-    });
++    Object.defineProperty(this, ENTRY, { value: init || {} });
+ }
++["time", "rootBounds", "boundingClientRect", "intersectionRect", "isIntersecting",
++ "intersectionRatio", "target", "isVisible"].forEach(function (k) {
++    acc(IntersectionObserverEntry.prototype, k, function () { return this[ENTRY][k]; });
++});
+ 
+ function IntersectionObserver(callback, options) {
+     if (!new.target) throw new TypeError("Constructor IntersectionObserver requires 'new'");
+@@ -3485,9 +3503,15 @@ def(IntersectionObserver.prototype, "_check", function () {
+         if (isInter) {
+             while (idx < th.length && th[idx] <= ratio) idx++;
+         }
+-        if (idx === t.index && isInter === t.inter) return;
++        /* an element without area yet (our layout lags behind DOM changes)
++         * that intersects gets another entry once it has area: in a browser
++         * its first entry would have had it, and scripts skip entries
++         * whose intersectionRect has no height (YouTube's images) */
++        var zero = isInter && area === 0;
++        if (idx === t.index && isInter === t.inter && !(t.zero && !zero)) return;
+         t.index = idx;
+         t.inter = isInter;
++        t.zero = zero;
+         self._queue.push(new IntersectionObserverEntry({
+             time: now,
+             rootBounds: root ? client(root) : null,
+@@ -3582,7 +3606,7 @@ function newPort() {
+ function portFlush(p) {
+     if (!p._started || p._closed || p._flushing) return;
+     def(p, "_flushing", true);
+-    G.setTimeout(function () {
++    nTimeout(function () {
+         p._flushing = false;
+         var q = p._queue.splice(0);
+         q.forEach(function (data) {
+@@ -3637,6 +3661,10 @@ G.MessagePort = MessagePort;
+         if (typeof f !== "function" || !/^[A-Z]/.test(name)) return;
+         var p = f.prototype;
+         if (p && typeof p === "object" && !own(p, "constructor")) def(p, "constructor", f);
++        /* and a name (they had none: el.constructor.name was "", and
++         * YouTube's sanitizer took custom elements for unknown native ones
++         * and blanked their bound text with "zClosurez") */
++        if (f.name === "") Object.defineProperty(f, "name", { value: name, configurable: true });
+     });
+ });
+ /* WebIDL constants are on the interface object as well as on its prototype
+@@ -3808,6 +3836,70 @@ if (HTMLElementP) {
+     })();
+ }
+ 
++/* document.all: every element, indexable, callable, item() and namedItem(),
++ * with the [[IsHTMLDDA]] behaviour browsers give it (falsy, typeof
++ * "undefined", == null).  It was a stub returning undefined, so code testing
++ * "x === document.all" took undefined for it (YouTube's sanitizer then
++ * replaced undefined binding values with "zClosurez", hiding its results) */
++if (DocumentP) {
++    (function () {
++        var ALL = Symbol("netsurf.all");
++        function make(d) {
++            function list() { return d.getElementsByTagName("*"); }
++            function named(name) {
++                name = String(name);
++                var l = list(), i, e, found = [];
++                for (i = 0; i < l.length; i++) {
++                    e = l.item(i);
++                    if (e.id === name || e.getAttribute("name") === name) found.push(e);
++                }
++                return found.length === 0 ? null : found.length === 1 ? found[0] : staticList(found);
++            }
++            function item(i) {
++                if (i === undefined) return null;
++                var n = Number(i);
++                if (String(i) !== "" && n >>> 0 === n) return list().item(n);
++                return named(i);
++            }
++            var methods = { item: item, namedItem: named };
++            var target = function () { return item(arguments[0]); };
++            var p = new Proxy(target, {
++                apply: function (t, self, args) { return item(args[0]); },
++                get: function (t, k) {
++                    if (typeof k === "symbol") return k === Symbol.iterator ? function () { return listIterator(list()); } : undefined;
++                    if (k === "length") return list().length;
++                    if (own(methods, k)) return methods[k];
++                    if (/^(0|[1-9][0-9]*)$/.test(k)) return list().item(Number(k));
++                    if (k === "toString") return function () { return "[object HTMLAllCollection]"; };
++                    return named(k) || undefined;
++                },
++                has: function (t, k) {
++                    return typeof k === "string" && (k === "length" || own(methods, k) ||
++                        (/^(0|[1-9][0-9]*)$/.test(k) ? Number(k) < list().length : !!named(k)));
++                }
++            });
++            if (N.markHTMLDDA) N.markHTMLDDA(p);
++            return p;
++        }
++        acc(DocumentP, "all", function () {
++            if (!own(this, ALL)) Object.defineProperty(this, ALL, { value: make(this), configurable: true });
++            return this[ALL];
++        });
++    })();
++}
++
++/* <img>: complete, naturalWidth, naturalHeight from the image NetSurf
++ * fetched for the element's box (no box: not fetched, not complete unless
++ * there is no src) */
++(function () {
++    var IP = proto("HTMLImageElement");
++    if (!IP || !N.imageState) return;
++    function st(el) { return N.imageState(el) || [false, 0, 0]; }
++    acc(IP, "complete", function () { return !this.getAttribute("src") || st(this)[0]; });
++    acc(IP, "naturalWidth", function () { return st(this)[1]; });
++    acc(IP, "naturalHeight", function () { return st(this)[2]; });
++})();
++
+ /* <script>: src is the resolved URL or "" (the binding gave null without
+  * the attribute); async and nonce reflect their attributes */
+ (function () {

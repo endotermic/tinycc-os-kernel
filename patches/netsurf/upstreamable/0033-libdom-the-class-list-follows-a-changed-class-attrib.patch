@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 13:05:59 +0200
+Subject: [PATCH] libdom: the class list follows a changed class attribute
+
+An element's classes are cached for selector matching, but the cache
+was built only when the class attribute was created: changing the
+value of an existing class attribute (className, classList, setAttribute)
+left selectors matching the old classes, so a class added later never
+restyled the element (YouTube's images stayed visibility: hidden).
+_dom_attr_set_value rebuilds the cache for an element's class.
+---
+ libdom/src/core/attr.c    | 12 ++++++++++++
+ libdom/src/core/element.c |  8 ++++++++
+ libdom/src/core/element.h |  3 +++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/libdom/src/core/attr.c b/libdom/src/core/attr.c
+index 8fcaac3..e628aa5 100644
+--- a/libdom/src/core/attr.c
++++ b/libdom/src/core/attr.c
+@@ -592,6 +592,18 @@ dom_exception _dom_attr_set_value(struct dom_attr *attr,
+ 	/* Now the attribute node is specified */
+ 	attr->specified = true;
+ 
++	/* The element's class list is cached (for selector matching): it was
++	 * built only when the class attribute was created, so a changed
++	 * class="..." kept matching the old classes */
++	if (a->parent != NULL && a->parent->type == DOM_ELEMENT_NODE &&
++	    a->namespace == NULL && a->name != NULL &&
++	    dom_string_isequal(a->name, a->owner->class_string)) {
++		err = _dom_element_update_classes(
++				(struct dom_element *) a->parent, value);
++		if (err != DOM_NO_ERR)
++			return err;
++	}
++
+ 	return DOM_NO_ERR;
+ }
+ 
+diff --git a/libdom/src/core/element.c b/libdom/src/core/element.c
+index 05dc8c6..389babb 100644
+--- a/libdom/src/core/element.c
++++ b/libdom/src/core/element.c
+@@ -356,6 +356,14 @@ static dom_attr_list * _dom_element_attr_list_node_create(dom_attr *attr,
+ 	return new_list_node;
+ }
+ 
++/* exported internal interface documented in element.h */
++dom_exception _dom_element_update_classes(struct dom_element *ele,
++		dom_string *value)
++{
++	return _dom_element_create_classes(ele,
++			value != NULL ? dom_string_data(value) : "");
++}
++
+ /**
+  * Destroy an entire attribute list, and its attributes
+  *
+diff --git a/libdom/src/core/element.h b/libdom/src/core/element.h
+index fb946b7..3a63885 100644
+--- a/libdom/src/core/element.h
++++ b/libdom/src/core/element.h
+@@ -103,6 +103,9 @@ dom_exception _dom_element_set_id_attribute_ns(struct dom_element *element,
+ 		bool is_id);
+ dom_exception _dom_element_set_id_attribute_node(struct dom_element *element,
+ 		struct dom_attr *id_attr, bool is_id);
++/* Rebuild the element's cached class list from a class attribute value */
++dom_exception _dom_element_update_classes(struct dom_element *ele,
++		dom_string *value);
+ dom_exception _dom_element_get_classes(struct dom_element *element,
+ 		lwc_string ***classes, uint32_t *n_classes);
+ dom_exception _dom_element_has_class(struct dom_element *element,

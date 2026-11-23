@@ -22,6 +22,7 @@ T.eq("Event.AT_TARGET", Event.AT_TARGET, 2);
 T.eq("Element.prototype.constructor", Element.prototype.constructor, Element);
 T.eq("HTMLElement.prototype.constructor", HTMLElement.prototype.constructor, HTMLElement);
 T.eq("text node constructor", document.createTextNode("x").constructor, Text);
+T.eq("interface names", [HTMLElement.name, HTMLUnknownElement.name, Node.name, document.createElement("x-y").constructor.name].join(","), "HTMLElement,HTMLUnknownElement,Node,HTMLUnknownElement");
 T.ok("HTMLDocument", typeof HTMLDocument === "function" && document instanceof HTMLDocument);
 T.ok("CDATASection", typeof CDATASection === "function" && CDATASection.prototype instanceof Text);
 
@@ -108,6 +109,16 @@ T.eq("currentScript of the first script", firstCurrent && firstCurrent.id, "firs
 T.eq("currentScript of the second", secondCurrent && secondCurrent.id, "second");
 let inTimer = "unset";
 setTimeout(() => { inTimer = document.currentScript; }, 0);
+
+// document.all: a collection that behaves as undefined in tests, yet is not undefined
+T.eq("document.all is falsy", !document.all, true);
+T.eq("typeof document.all", typeof document.all, "undefined");
+T.eq("document.all == null", document.all == null, true);
+T.eq("document.all !== undefined", document.all !== undefined, true);
+T.eq("undefined is not document.all", undefined === document.all, false);
+T.eq("document.all.length", document.all.length, document.getElementsByTagName("*").length);
+T.eq("document.all[0] and item(0)", document.all[0] === document.documentElement && document.all.item(0) === document.documentElement, true);
+T.eq("document.all by id, and called", document.all.link === document.getElementById("link") && document.all("link") === document.getElementById("link"), true);
 
 // textContent with no text: "" for elements and fragments, null for the document
 T.eq("textContent of an empty element", document.createElement("div").textContent, "");

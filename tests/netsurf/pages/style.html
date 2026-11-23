@@ -2,6 +2,7 @@
 <!-- SPDX-License-Identifier: BSD-2-Clause -->
 <html><head><title>style</title><script src="harness.js"></script>
 <style>
+.narrow { width: 50px; } .wide { width: 120px; }
 #w { width: 100px; height: 40px; padding: 5px; border: 2px solid black; color: rgb(0, 0, 255); }
 .gone { display: none; }
 </style></head><body>
@@ -28,7 +29,7 @@ T.eq("same object", w.style, w.style);
 T.eq("innerWidth", window.innerWidth > 0, true);
 T.eq("matchMedia", [matchMedia("(min-width: 1px)").matches, matchMedia("(max-width: 1px)").matches,
     matchMedia("print").matches, matchMedia("screen and (orientation: landscape)").matches].join(), "true,false,false,true");
-window.addEventListener("load", () => setTimeout(() => {
+window.addEventListener("load", () => setTimeout(async () => {
     const r = w.getBoundingClientRect();
     T.eq("getBoundingClientRect", r.width + "x" + r.height, "114x54");
     T.eq("offsetWidth/Height", w.offsetWidth + "x" + w.offsetHeight, "114x54");
@@ -50,6 +51,23 @@ window.addEventListener("load", () => setTimeout(() => {
     T.eq("svg style cssText cleared", svg.getAttribute("style"), null);
     T.eq("same style object", document.body.style, document.body.style);
     T.ok("style own on HTMLElement.prototype", Object.prototype.hasOwnProperty.call(HTMLElement.prototype, "style"));
+    // a changed class attribute restyles (libdom kept the first class list for selectors)
+    const cls = document.createElement("div");
+    cls.className = "narrow";
+    document.body.appendChild(cls);
+    await new Promise(r => setTimeout(r, 300));
+    const w1 = cls.getBoundingClientRect().width;
+    cls.className = "narrow wide";
+    await new Promise(r => setTimeout(r, 600));
+    T.eq("class change restyles", w1 + "->" + cls.getBoundingClientRect().width, "50->120");
+    cls.classList.remove("wide");
+    await new Promise(r => setTimeout(r, 600));
+    T.eq("classList change restyles", cls.getBoundingClientRect().width, 50);
+    const inh = document.createElement("span");
+    inh.setAttribute("style", "visibility: inherit");
+    document.body.appendChild(inh);
+    await new Promise(r => setTimeout(r, 300));
+    T.eq("computed visibility of an inline inherit", getComputedStyle(inh).visibility, "visible");
     T.done();
 }, 100));
 </script></body></html>

@@ -31,3 +31,6 @@ upstreamable/0029-JavaScript-DOM-fixes-found-by-YouTube-s-Polymer-app.patch
 features/0030-JavaScript-template-cloning-and-handleEvent-listener.patch
 upstreamable/0031-JavaScript-honour-the-script_timeout-option.patch
 features/0032-JavaScript-element-style-on-HTMLElement-and-Element-.patch
+upstreamable/0033-libdom-the-class-list-follows-a-changed-class-attrib.patch
+upstreamable/0034-html-load-and-error-events-of-images.patch
+features/0035-JavaScript-document.all-image-state-interface-names-.patch

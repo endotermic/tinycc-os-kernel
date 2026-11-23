@@ -1897,6 +1897,24 @@ C53. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0031), found when YouTu
     el.style = "..." made a string property and el.style.cssText then threw (YouTube's icons).
     Verification: style.html (SVG checks), the slowed-down host run (no interruption).
 
+C54. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0033), found because YouTube's thumbnails
+    stayed visibility: hidden after their "ytCoreImageLoaded" class was added (phase 5): libdom
+    caches an element's classes for selector matching and built the cache only when the class
+    attribute was created, so changing an existing class attribute never restyled (selectors kept
+    matching the old classes). _dom_attr_set_value now rebuilds the cache for a class attribute.
+    Verification: style.html ("class change restyles" failed before: 50->50).
+
+C55. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0034 and features/0035), found probing
+    YouTube's search page (phase 5): images never got load or error events (the object callback
+    now fires them); document.all was undefined, so "x === document.all" held for every undefined x
+    and YouTube's polymer-resin sanitizer turned undefined bound values into "zClosurez" (the
+    results container was hidden with hidden="zClosurez"); it is now a collection with QuickJS's
+    [[IsHTMLDDA]] (falsy, typeof "undefined", not === undefined). Also: interface objects had no
+    name; IntersectionObserverEntry members were own properties, so YouTube's observer polyfill
+    replaced ours, and that polyfill and our observers' polling ran on the page's wrapped timers.
+    Verification: images.html, dom-interfaces.html, observe-geometry.html; YouTube's search page in
+    the guest shows its results with thumbnails.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

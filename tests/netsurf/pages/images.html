@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>images</title><script src="harness.js"></script></head><body>
+<img id="parsed" src="pixel-6x4.png" alt="">
+<script>
+// <img>: load and error events, complete, naturalWidth and naturalHeight (pixel-6x4.png is 6x4)
+const ev = [];
+const parsed = document.getElementById("parsed");
+parsed.addEventListener("load", () => ev.push("parsed:load"));
+const made = document.createElement("img");
+made.onload = () => ev.push("made:onload");
+made.src = "pixel-6x4.png";
+document.body.appendChild(made);
+const bad = document.createElement("img");
+bad.onerror = () => ev.push("bad:onerror");
+bad.addEventListener("error", () => ev.push("bad:error"));
+bad.src = "no-such-image.png";
+document.body.appendChild(bad);
+T.eq("no src: complete", document.createElement("img").complete, true);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+    for (let i = 0; i < 40 && ev.length < 4; i++) await sleep(50);
+    T.eq("load and error events", ev.slice().sort().join(","), "bad:error,bad:onerror,made:onload,parsed:load");
+    T.eq("complete after load", made.complete, true);
+    T.eq("naturalWidth x naturalHeight", made.naturalWidth + "x" + made.naturalHeight, "6x4");
+    T.eq("parsed image natural size", parsed.naturalWidth + "x" + parsed.naturalHeight, "6x4");
+    T.done();
+})();
+</script></body></html>

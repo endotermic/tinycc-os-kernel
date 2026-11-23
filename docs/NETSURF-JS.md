@@ -402,7 +402,22 @@ B. Native: a per-document `CustomElementRegistry` (`define`, `get`, `whenDefined
 Gate: if route A gets the YouTube app booting (`ytd-app` upgraded, no fatal errors), stop there
 and only do the native Custom Elements of route B if other sites need it.
 
-## Phase 5: CSS needed for the page to look right (medium-large, libcss)
+## Phase 5: CSS needed for the page to look right — IN PROGRESS
+
+Started 2026-11-23. The page was not drawn for reasons other than CSS first; found with
+`run.sh --probe` (layout probes: display and box of the main containers) and fixed: the results
+container carried hidden="zClosurez" (document.all was undefined, so YouTube's sanitizer treated
+undefined values as document.all; C55), the thumbnails got no src (YouTube's IntersectionObserver
+polyfill replaced ours, then its zero-area first entries were ignored), images got no load event,
+and a class added later never restyled (libdom's cached class list, C54). Patches upstreamable/0033
+and 0034, features/0035; new page `images`. Now YouTube's search page in the guest shows its
+results with thumbnails, titles, channels and descriptions; the masthead (logo, sign-in button)
+and the duration badges are still wrong. Next: CSS custom properties (YouTube's base style sheet
+uses var() about 9,900 times; libcss drops those declarations).
+
+The plan as written before the work:
+
+### Phase 5 plan (2026-11-21)
 
 Even with the scripts running, YouTube's layout relies on CSS custom properties (`--yt-*`,
 `var()` everywhere, also set from script through `style.setProperty`). libcss has no `var()`.
