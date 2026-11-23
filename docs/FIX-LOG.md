@@ -1994,6 +1994,15 @@ C65. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0050), found by tests/n
     TypeError: Illegal invocation, as in browsers. About 300 KB more code. Verification:
     dom-api.html (the old build crashes on it); six YouTube runs without a crash.
 
+C66. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0051), found because YouTube's search
+    button was 16 px tall in its 40 px bar: (1) a flex item stretched to its line was laid out
+    again, but height: 100% inside it saw its height: auto and fell back to content height (CSS
+    Flexbox 9.8: the stretched size is definite). It is now marked DEFINITE_HEIGHT while it is laid
+    out again. (2) Inline children of a flex container (a span) were not blockified, and box_button
+    made every button an inline block, even a flex item, so neither stretched. Verification:
+    style.html (two checks failed before); YouTube's search and filter buttons in the guest;
+    DuckDuckGo unchanged.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

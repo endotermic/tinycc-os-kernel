@@ -478,6 +478,10 @@ object read the wrong private data. Calls with the wrong object now throw "Illeg
 (upstreamable/0050, C65). YouTube logs 42 "not an object" errors where it sets cssText on its own
 placeholder Symbol in strict code; browsers take the same path.
 
+The search button: flex items stretched to their line are now definite for percentage heights
+inside them, and inline flex items (spans, buttons) are blockified (upstreamable/0051, C66). The
+button is 40 px with its magnifier; the filter button and its icon show too.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

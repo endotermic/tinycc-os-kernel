@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 20:07:37 +0200
+Subject: [PATCH] html: stretched flex items are definite, inline flex items
+ blockified
+
+A flex item stretched to the line's cross size was laid out again with its
+height, but percentages inside it saw its height: auto and fell back to
+content height (CSS Flexbox 9.8: the stretched size is definite); it is
+now marked DEFINITE_HEIGHT while laid out.  Children of a flex container
+that are inline (a span) were left inline, not blockified, and a button
+was always made an inline block, even as a flex item, so neither
+stretched: inline boxes among the items become blocks, and only inline
+buttons become inline blocks.  YouTube's search button was 16px tall in
+its 40px bar.
+---
+ netsurf/content/handlers/html/box.h             | 4 +++-
+ netsurf/content/handlers/html/box_construct.c   | 2 ++
+ netsurf/content/handlers/html/box_special.c     | 5 ++++-
+ netsurf/content/handlers/html/layout_flex.c     | 8 +++++++-
+ netsurf/content/handlers/html/layout_internal.h | 4 +++-
+ 5 files changed, 19 insertions(+), 4 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/box.h b/netsurf/content/handlers/html/box.h
+index 8999ffb..7fc2811 100644
+--- a/netsurf/content/handlers/html/box.h
++++ b/netsurf/content/handlers/html/box.h
+@@ -88,7 +88,9 @@ typedef enum {
+ 	REPLACE_DIM = 1 << 9,	/* replaced element has given dimensions */
+ 	IFRAME      = 1 << 10,	/* box contains an iframe */
+ 	CONVERT_CHILDREN = 1 << 11,  /* wanted children converting */
+-	IS_REPLACED = 1 << 12	/* box is a replaced element */
++	IS_REPLACED = 1 << 12,	/* box is a replaced element */
++	DEFINITE_HEIGHT = 1 << 13 /* height is definite though auto (a
++				   * stretched flex item being laid out) */
+ } box_flags;
+ 
+ 
+diff --git a/netsurf/content/handlers/html/box_construct.c b/netsurf/content/handlers/html/box_construct.c
+index 6aaa6e4..32afef1 100644
+--- a/netsurf/content/handlers/html/box_construct.c
++++ b/netsurf/content/handlers/html/box_construct.c
+@@ -604,6 +604,8 @@ box_construct_element(struct box_construct_ctx *ctx, bool *convert_children)
+ 			case BOX_INLINE_FLEX:
+ 				box->type = BOX_FLEX;
+ 				break;
++			case BOX_INLINE:
++				/* (a span among the flex items is one) */
+ 			case BOX_INLINE_BLOCK:
+ 				box->type = BOX_BLOCK;
+ 				break;
+diff --git a/netsurf/content/handlers/html/box_special.c b/netsurf/content/handlers/html/box_special.c
+index c3bc7ea..a64d4a5 100644
+--- a/netsurf/content/handlers/html/box_special.c
++++ b/netsurf/content/handlers/html/box_special.c
+@@ -814,7 +814,10 @@ box_button(dom_node *n,
+ 	box->flags |= IS_REPLACED;
+ 	gadget->box = box;
+ 
+-	box->type = BOX_INLINE_BLOCK;
++	/* a button is atomic: inline-level ones are inline blocks; block-level
++	 * ones (display: block, or blockified as flex items) stay blocks */
++	if (box->type == BOX_INLINE)
++		box->type = BOX_INLINE_BLOCK;
+ 
+ 	/* Just render the contents */
+ 
+diff --git a/netsurf/content/handlers/html/layout_flex.c b/netsurf/content/handlers/html/layout_flex.c
+index 61adcaa..9cae57d 100644
+--- a/netsurf/content/handlers/html/layout_flex.c
++++ b/netsurf/content/handlers/html/layout_flex.c
+@@ -965,10 +965,16 @@ static void layout_flex__place_line_items_cross(struct flex_ctx *ctx,
+ 			if (lh__box_size_cross_is_auto(ctx->horizontal, b)) {
+ 				*box_size_cross += cross_free_space;
+ 
+-				/* Relayout children for stretch. */
++				/* Relayout children for stretch.  The stretched
++				 * height is definite: percentage heights inside
++				 * resolve against it (CSS Flexbox 9.8) */
++				if (ctx->horizontal)
++					b->flags |= DEFINITE_HEIGHT;
+ 				if (!layout_flex_item(ctx, item, b->width)) {
++					b->flags &= ~DEFINITE_HEIGHT;
+ 					return;
+ 				}
++				b->flags &= ~DEFINITE_HEIGHT;
+ 			}
+ 			/* Fall through. */
+ 		case CSS_ALIGN_SELF_FLEX_START:
+diff --git a/netsurf/content/handlers/html/layout_internal.h b/netsurf/content/handlers/html/layout_internal.h
+index d094462..05fa966 100644
+--- a/netsurf/content/handlers/html/layout_internal.h
++++ b/netsurf/content/handlers/html/layout_internal.h
+@@ -530,7 +530,9 @@ static inline void layout_find_dimensions(
+ 					containing_block->height != AUTO &&
+ 					(css_computed_position(box->style) ==
+ 							CSS_POSITION_ABSOLUTE ||
+-						cbhtype == CSS_HEIGHT_SET)) {
++						cbhtype == CSS_HEIGHT_SET ||
++						(containing_block->flags &
++							DEFINITE_HEIGHT))) {
+ 					/* Box is absolutely positioned or its
+ 					 * containing block has a valid
+ 					 * specified height.
