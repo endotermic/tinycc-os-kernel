@@ -34,3 +34,5 @@ features/0032-JavaScript-element-style-on-HTMLElement-and-Element-.patch
 upstreamable/0033-libdom-the-class-list-follows-a-changed-class-attrib.patch
 upstreamable/0034-html-load-and-error-events-of-images.patch
 features/0035-JavaScript-document.all-image-state-interface-names-.patch
+upstreamable/0036-html-boxes-with-opacity-0-are-not-drawn.patch
+features/0037-libcss-CSS-custom-properties-and-var.patch

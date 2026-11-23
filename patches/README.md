@@ -41,14 +41,15 @@ Categories:
   markup starting with a comment, Attr as a Node, textContent "", list proxies that a replaced
   item() cannot loop, DOMContentLoaded once, room for deep recursion; the script_timeout option
   honoured; libdom's class list following a changed class attribute; load and error events of
-  images) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
+  images; boxes with opacity 0 not drawn) and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
   APIs written in JavaScript, with native helpers in Window.bnd; XMLHttpRequest and fetch;
   MutationObserver, IntersectionObserver and ResizeObserver; the DOM of Web Components
   polyfills: traversal, interface objects, template content, MessageChannel, link URLs;
   NETSURF_JS_PROBE; template cloning, handleEvent listener objects; style on SVG elements; document.all,
-  image state, interface names, IntersectionObserver fixes)
+  image state, interface names, IntersectionObserver fixes; CSS custom properties and var() in
+  libcss)
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc
 that it needs go to the tinycc categories like the Linux ones.

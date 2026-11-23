@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 13:46:31 +0200
+Subject: [PATCH] html: boxes with opacity 0 are not drawn
+
+NetSurf has no opacity: a box with opacity: 0 (and everything in it) was
+drawn as if opaque, so the hover and focus layers that pages keep
+invisible with opacity: 0 covered the page (YouTube's results became
+black blocks once their var() colours resolved).  Such boxes are now
+skipped; other opacities are still drawn opaque.
+---
+ netsurf/content/handlers/html/redraw.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/netsurf/content/handlers/html/redraw.c b/netsurf/content/handlers/html/redraw.c
+index f770699..1566fa9 100644
+--- a/netsurf/content/handlers/html/redraw.c
++++ b/netsurf/content/handlers/html/redraw.c
+@@ -1253,6 +1253,15 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 	if (html_redraw_printing && (box->flags & PRINTED))
+ 		return true;
+ 
++	/* a box with opacity: 0 is not seen, nor is anything in it (other
++	 * opacities are drawn opaque: there is no compositing) */
++	if (box->style != NULL) {
++		css_fixed opacity = INTTOFIX(1);
++		if (css_computed_opacity(box->style, &opacity) ==
++				CSS_OPACITY_SET && opacity <= 0)
++			return true;
++	}
++
+ 	if (box->style != NULL) {
+ 		overflow_x = css_computed_overflow_x(box->style);
+ 		overflow_y = css_computed_overflow_y(box->style);

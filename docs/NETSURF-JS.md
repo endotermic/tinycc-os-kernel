@@ -415,6 +415,20 @@ results with thumbnails, titles, channels and descriptions; the masthead (logo, 
 and the duration badges are still wrong. Next: CSS custom properties (YouTube's base style sheet
 uses var() about 9,900 times; libcss drops those declarations).
 
+CSS custom properties and var() (features/0037, libcss): the lexer reads `--name` as an identifier;
+custom properties and declarations using var() are kept as text and resolved when a node's style
+is selected (select/custom.c): the node's custom properties are its parent's plus its own (taken
+from the parent's partial style, substituted, cycles and missing names undefined, inherit /
+unset / initial), kept on the computed style; var() declarations are substituted, parsed as
+inline styles (cached per selection context) and cascaded with their own origin, importance and
+specificity (an equal later declaration still wins; a failing one is unset). Shorthands,
+fallbacks, nested var(), !important and `style.setProperty("--x")` work. Test page `css-vars`
+(21 checks). A box with opacity 0 is no longer drawn (0036, C56: YouTube's hover layers turned
+black once their colours resolved). YouTube's search page in the guest: duration badges, grey
+secondary text, about as fast as before (29 s); the masthead is still wrong. Not done: calc()
+around var() is only as good as libcss's calc(), `@property`, var() in @media or selectors,
+custom properties on pseudo-elements (they use the element's), animation of custom properties.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

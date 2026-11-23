@@ -1915,6 +1915,13 @@ C55. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0034 and features/0035)
     Verification: images.html, dom-interfaces.html, observe-geometry.html; YouTube's search page in
     the guest shows its results with thumbnails.
 
+C56. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0036), found when libcss's new var()
+    support (features/0037) turned YouTube's results into black blocks: NetSurf has no opacity, so
+    a box with opacity: 0 was drawn opaque, and the hover layers pages keep invisible that way
+    (YouTube's yt-interaction .fill, background-color: var(...)) covered the content; before var()
+    their colour was dropped. Boxes with opacity 0 and their contents are no longer drawn; other
+    opacities are still drawn opaque. Verification: YouTube's search page in the guest.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

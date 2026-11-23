@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>css-vars</title><script src="harness.js"></script>
+<style>
+:root { --w: 120px; --c: rgb(0, 128, 0); --chain-a: var(--chain-b); --chain-b: 30px; }
+body { margin: 0; }
+#basic { width: var(--w); color: var(--c); height: 10px; }
+#fallback { width: var(--missing, 80px); height: 10px; }
+#nested-fallback { width: var(--missing, var(--w)); height: 10px; }
+#parent { --x: 60px; }
+#parent .child { width: var(--x); height: 10px; }
+#parent .override { --x: 90px; width: var(--x); height: 10px; }
+#chain { width: var(--chain-a); height: 10px; }
+#cycle { --p: var(--q); --q: var(--p); width: var(--p, 44px); height: 10px; }
+#invalid { width: 200px; }
+#invalid { width: var(--nope); height: 10px; }
+#shorthand { --m: 0 0 0 25px; --bc: rgb(255, 0, 0); margin: var(--m); border: 2px solid var(--bc); width: 50px; height: 10px; }
+.order1 { width: var(--w); height: 10px; }
+.order1 { width: 50px; }
+.order2 { width: 50px; height: 10px; }
+.order2 { width: var(--w); }
+#imp { width: var(--w) !important; height: 10px; }
+#imp.x { width: 33px; }
+#customimp { --w: 70px !important; width: var(--w); height: 10px; }
+#customimp.y { --w: 10px; }
+#initial { --w: initial; width: var(--w, 15px); height: 10px; }
+#dynamic { height: 10px; }
+#dynamic .in { width: var(--dyn, 5px); height: 10px; }
+</style></head><body>
+<div id="basic">a</div>
+<div id="fallback"></div>
+<div id="nested-fallback"></div>
+<div id="parent"><div class="child"></div><div class="override"></div></div>
+<div id="chain"></div>
+<div id="cycle"></div>
+<div id="invalid"></div>
+<div id="shorthand"></div>
+<div class="order1" id="o1"></div>
+<div class="order2" id="o2"></div>
+<div id="imp" class="x"></div>
+<div id="customimp" class="y"></div>
+<div id="initial"></div>
+<div id="inline" style="--iw: 45px; width: var(--iw); height: 10px"></div>
+<div id="dynamic"><div class="in"></div></div>
+<script>
+// CSS custom properties and var(): substitution, fallbacks, inheritance, cycles,
+// shorthands, the cascade's order and importance, inline styles, changes from script
+const W = sel => Math.round(document.querySelector(sel).getBoundingClientRect().width);
+window.addEventListener("load", () => setTimeout(async () => {
+    const full = W("body");
+    T.eq("var() width", W("#basic"), 120);
+    T.eq("var() colour", getComputedStyle(document.getElementById("basic")).color, "rgb(0, 128, 0)");
+    T.eq("fallback", W("#fallback"), 80);
+    T.eq("fallback with var()", W("#nested-fallback"), 120);
+    T.eq("inherited from the parent", W("#parent .child"), 60);
+    T.eq("redefined on the element", W("#parent .override"), 90);
+    T.eq("a custom property using another", W("#chain"), 30);
+    T.eq("a cycle is invalid (fallback used)", W("#cycle"), 44);
+    T.eq("invalid at computed time: unset (not the earlier 200px)", W("#invalid"), full);
+    const sh = document.getElementById("shorthand");
+    T.eq("shorthand with var(): margin", Math.round(sh.getBoundingClientRect().left), 25);
+    T.eq("shorthand with var(): border", W("#shorthand"), 54);
+    T.eq("a later equal declaration wins over var()", W("#o1"), 50);
+    T.eq("a later var() wins over an equal declaration", W("#o2"), 120);
+    T.eq("!important var() declaration", W("#imp"), 120);
+    T.eq("!important custom property", W("#customimp"), 70);
+    T.eq("--w: initial is undefined", W("#initial"), 15);
+    T.eq("inline style custom property and var()", W("#inline"), 45);
+    T.eq("unknown property names still dropped", getComputedStyle(document.getElementById("basic")).height, "10px");
+    const dyn = document.getElementById("dynamic");
+    T.eq("before setProperty", W("#dynamic .in"), 5);
+    dyn.style.setProperty("--dyn", "77px");
+    await new Promise(r => setTimeout(r, 600));
+    T.eq("style.setProperty of a custom property restyles", W("#dynamic .in"), 77);
+    T.eq("getPropertyValue of a custom property", dyn.style.getPropertyValue("--dyn"), "77px");
+    T.done();
+}, 100));
+</script></body></html>
