@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 11:50:49 +0200
+Subject: [PATCH] JavaScript: element style on HTMLElement and Element
+ prototypes
+
+style is own on HTMLElement.prototype, as in browsers, and on
+Element.prototype for SVG elements (no SVGElement prototype here): an SVG
+element had no style, so el.style = "..." made a string property and a
+later el.style.cssText threw.
+---
+ .../handlers/javascript/duktape/webapi.js        | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 326de8d..a92abd0 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -1769,8 +1769,14 @@ function inlineStyle(el) {
+         }
+     });
+ }
+-if (HTMLElementP) {
+-    acc(HTMLElementP, "style", function () {
++/* own on HTMLElement.prototype as in browsers (scripts look there: YouTube
++ * puts its own setter-only style on a component class when HTMLElement's
++ * prototype has none), and on Element.prototype for SVG elements, which
++ * have style too (ElementCSSInlineStyle) and no SVGElement prototype here:
++ * without it el.style = "..." made a string property and a later
++ * el.style.cssText = "" threw "not an object" */
++(function () {
++    function get() {
+         /* one declaration per element, kept on its wrapper */
+         var st = this[STYLE];
+         if (!st) {
+@@ -1778,8 +1784,10 @@ if (HTMLElementP) {
+             Object.defineProperty(this, STYLE, { value: st, configurable: true });
+         }
+         return st;
+-    }, function (v) { this.setAttribute("style", String(v)); });
+-}
++    }
++    function set(v) { this.setAttribute("style", String(v)); }
++    [HTMLElementP, ElementP].forEach(function (p) { if (p) acc(p, "style", get, set); });
++})();
+ 
+ /* ------------------------------------------------------------------ */
+ /* Geometry and computed style                                         */

@@ -370,6 +370,13 @@ signed-out visitor the home page holds only a "Your YouTube history is off" noti
 notice is not rendered yet (the rich grid makes no section). Whether all this looks right on
 screen is phase 5.
 
+In the guest the search page crashed NetSurf after 5 s: there the app script ran longer than the
+fixed 10 s limit (the `script_timeout` option was ignored) and was stopped half-way (0031, C53;
+the system `Choices` now allows 120 s). `run.sh` honours `NETSURF_TEST_CPU` (e.g. 25%) to run
+the browser slowed down like the guest. With that, the search page loads in the guest (1200 MB,
+"Done" after 26 s) without a crash; the window shows only parts of the masthead: the results are
+in the document but not drawn (phase 5: YouTube's layout CSS).
+
 The plan as written before the work:
 
 ### Phase 4 plan (2026-11-21)

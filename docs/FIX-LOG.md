@@ -1887,6 +1887,16 @@ C52. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0029), found probing wh
     events-window.html (new checks failing on the old build); YouTube search results render
     (20 ytd-video-renderer with their titles).
 
+C53. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0031), found when YouTube's search page
+    crashed NetSurf in the x86_64 guest (a NULL document in createElement, from dmesg's ip mapped
+    on a copy of the build tree relinked with tcc -g) and, run on the host at 25% CPU
+    (NETSURF_TEST_CPU), its app script ended in "InternalError: interrupted": js_newheap was given
+    the script_timeout option and ignored it for a fixed 10 s, so on a slow machine the 10 MB app
+    script was stopped half-way through its setup. The option is honoured now (0: no limit) and
+    userland/netsurf/Choices sets 120 s. Also (features/0032): SVG elements had no style, so
+    el.style = "..." made a string property and el.style.cssText then threw (YouTube's icons).
+    Verification: style.html (SVG checks), the slowed-down host run (no interruption).
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

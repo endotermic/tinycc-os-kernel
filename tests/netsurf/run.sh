@@ -26,7 +26,8 @@
 # --probe JS runs the script file JS in every page after NetSurf's web APIs
 # (NETSURF_JS_PROBE): a look into a real site, e.g. a setTimeout that throws an Error
 # carrying the state it found, which the URL report then lists.
-# Memory is capped with a systemd-run scope where one is available (1 GB per page).
+# Memory is capped with a systemd-run scope where one is available (1 GB per page);
+# NETSURF_TEST_CPU=25% also caps the CPU, to run the browser as slowly as in the guest.
 # Exit status: 0 when every page passed.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -44,7 +45,7 @@ while [ $# -gt 0 ]; do
         --timeout) timeout=$2; shift 2 ;;
         --keep) keep=1; shift ;;
         --probe) probe=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift 2 ;;
-        -h|--help) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '3,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) echo "run.sh: unknown option $1" >&2; exit 2 ;;
         *) pages+=("$1"); shift ;;
     esac
@@ -85,7 +86,7 @@ if [ -e /etc/ssl/openssl.cnf ]; then
 fi
 cap=()
 if command -v systemd-run >/dev/null && systemd-run --user --scope -q true 2>/dev/null; then
-    cap=(systemd-run --user --scope -q -p MemoryMax=1G -p MemorySwapMax=0)
+    cap=(systemd-run --user --scope -q -p MemoryMax=1G -p MemorySwapMax=0 ${NETSURF_TEST_CPU:+-p CPUQuota=$NETSURF_TEST_CPU})
 fi
 
 # the test server (server.py), for pages with <meta name="test-server">: they are opened

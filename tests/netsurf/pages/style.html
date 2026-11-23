@@ -41,6 +41,15 @@ window.addEventListener("load", () => setTimeout(() => {
     T.eq("computed display none", getComputedStyle(g).display, "none");
     T.eq("computed inline", getComputedStyle(document.getElementById("sp")).display, "inline");
     T.eq("no box", g.getBoundingClientRect().width + "," + g.offsetWidth, "0,0");
+    // SVG elements have style too (YouTube's icons; el.style = "..." made a string)
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    T.eq("svg element style", typeof svg.style, "object");
+    svg.style = "fill: red";
+    T.eq("svg style set as a string", svg.style.fill, "red");
+    svg.style.cssText = "";
+    T.eq("svg style cssText cleared", svg.getAttribute("style"), null);
+    T.eq("same style object", document.body.style, document.body.style);
+    T.ok("style own on HTMLElement.prototype", Object.prototype.hasOwnProperty.call(HTMLElement.prototype, "style"));
     T.done();
 }, 100));
 </script></body></html>

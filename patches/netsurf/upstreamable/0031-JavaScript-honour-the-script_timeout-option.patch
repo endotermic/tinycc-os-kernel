@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Mon, 23 Nov 2026 11:50:49 +0200
+Subject: [PATCH] JavaScript: honour the script_timeout option
+
+js_newheap got nsoption script_timeout but checked a fixed 10 s: on a
+slow machine YouTube's 10 MB app script overran it and was stopped
+half-way through its setup.  The limit is the option now (seconds, 0 for
+none).
+---
+ netsurf/content/handlers/javascript/duktape/dukky.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/dukky.c b/netsurf/content/handlers/javascript/duktape/dukky.c
+index e877917..b1fa735 100644
+--- a/netsurf/content/handlers/javascript/duktape/dukky.c
++++ b/netsurf/content/handlers/javascript/duktape/dukky.c
+@@ -66,6 +66,7 @@ struct jsheap {
+ 	bool pending_destroy; /**< Whether this heap is pending destruction */
+ 	unsigned int live_threads; /**< number of live threads */
+ 	uint64_t exec_start_time;
++	uint64_t timeout_ms; /**< a script's time limit, 0: none */
+ };
+ 
+ /**
+@@ -627,6 +628,10 @@ js_newheap(int timeout, jsheap **heap)
+ 	*heap = NULL;
+ 	NSLOG(dukky, DEBUG, "Creating new duktape javascript heap");
+ 	if (ret == NULL) return NSERROR_NOMEM;
++	/* the script_timeout option (seconds; it was ignored for a fixed 10 s,
++	 * which a slow machine's YouTube app script overran: it was stopped
++	 * half-way through its setup) */
++	ret->timeout_ms = timeout > 0 ? (uint64_t)timeout * 1000 : 0;
+ 	ctx = ret->ctx = duk_create_heap(
+ 		dukky_alloc_function,
+ 		dukky_realloc_function,
+@@ -915,10 +920,11 @@ static void dukky_leave_thread(jsthread *thread)
+ 
+ duk_bool_t dukky_check_timeout(void *udata)
+ {
+-#define JS_EXEC_TIMEOUT_MS 10000 /* 10 seconds */
+ 	jsheap *heap = (jsheap *) udata;
+ 	uint64_t now;
+ 
++	if (heap->timeout_ms == 0)
++		return false;
+ 	(void) nsu_getmonotonic_ms(&now);
+ 
+ 	/* This function may be called during duk heap construction,
+@@ -926,7 +932,7 @@ duk_bool_t dukky_check_timeout(void *udata)
+ 	 * start time.
+ 	 */
+ 	return heap->exec_start_time != 0 &&
+-			now > (heap->exec_start_time + JS_EXEC_TIMEOUT_MS);
++			now > (heap->exec_start_time + heap->timeout_ms);
+ }
+ 
+ static void dukky_dump_error(duk_context *ctx)

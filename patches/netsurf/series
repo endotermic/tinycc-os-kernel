@@ -29,3 +29,5 @@ upstreamable/0027-JavaScript-Window-events-uncaught-errors-timer-ids-a.patch
 features/0028-JavaScript-web-APIs-for-Web-Components-polyfills-NET.patch
 upstreamable/0029-JavaScript-DOM-fixes-found-by-YouTube-s-Polymer-app.patch
 features/0030-JavaScript-template-cloning-and-handleEvent-listener.patch
+upstreamable/0031-JavaScript-honour-the-script_timeout-option.patch
+features/0032-JavaScript-element-style-on-HTMLElement-and-Element-.patch

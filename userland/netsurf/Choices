@@ -2,8 +2,12 @@
 # /usr/share/netsurf/Choices: NetSurf's system settings (scripts/build.sh, step netsurf).
 # NetSurf reads the first Choices on its resource path, so ~/.netsurf/Choices replaces this
 # file as a whole (the browser writes it when its settings change).
-# JavaScript on (Duktape; NetSurf's default is off)
+# JavaScript on (QuickJS; NetSurf's default is off)
 enable_javascript:1
+# how long one script may run, in seconds (NetSurf's default is 10; YouTube's 10 MB app
+# script needs longer than that on a slow machine, and a stopped script leaves its page
+# half set up; 0 is no limit)
+script_timeout:120
 # the start page: DuckDuckGo's HTML search, as for links (Google Search needs more JavaScript
 # than NetSurf runs)
 homepage_url:https://html.duckduckgo.com/html/
