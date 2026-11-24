@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 17:06:19 +0200
+Subject: [PATCH] JavaScript: a larger stack for scripts, createElementNS not
+ reentrant
+
+Each JavaScript call takes about 7.5 KB of C stack with tcc's frames, so
+the 8 MB allowed for scripts was about 900 nested calls; the soft stack
+limit is now raised to 64 MB when a heap is made and scripts get up to
+48 MB (about 6700 calls).  createElementNS in the HTML namespace calls the
+createElement there was at start, not this.createElement, which a page
+may have replaced (a Custom Elements polyfill's own createElementNS went
+back into it).
+---
+ .../handlers/javascript/duktape/duk_quickjs.c | 20 +++++++++++++++++--
+ .../handlers/javascript/duktape/webapi.js     |  8 ++++++--
+ 2 files changed, 24 insertions(+), 4 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+index aefd2dc..4f60f6b 100644
+--- a/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
++++ b/netsurf/content/handlers/javascript/duktape/duk_quickjs.c
+@@ -697,17 +697,33 @@ duk_context *duk_create_heap(duk_alloc_function alloc_func,
+ 	 * of mixins, create their children from their constructors: "stack
+ 	 * overflow").  Allow the process's stack less a margin for NetSurf's
+ 	 * own frames, at most 8 MB */
++	/* With tcc's large C frames each JavaScript call takes ~7.5 KB of
++	 * stack, so 8 MB is about 800 nested calls: YouTube's component
++	 * constructors, under the Custom Elements polyfill, nest 40 deep at
++	 * ~21 calls each when a search page is built ("stack overflow").
++	 * The process's soft stack limit is raised to 64 MB (within the hard
++	 * limit; the main thread's stack grows up to the limit in force when
++	 * it grows), and scripts get it less the margin, at most 48 MB */
+ 	{
+ 		struct rlimit rl;
+ 		size_t want = 8u << 20;
++		const rlim_t big = (rlim_t) 64 << 20;
++		if (getrlimit(RLIMIT_STACK, &rl) == 0 &&
++				rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < big &&
++				(rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= big)) {
++			rl.rlim_cur = big;
++			setrlimit(RLIMIT_STACK, &rl);
++		}
+ 		if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+ 			if (rl.rlim_cur > (3u << 19) + JS_DEFAULT_STACK_SIZE)
+ 				want = (size_t)rl.rlim_cur - (3u << 19);
+ 			else
+ 				want = JS_DEFAULT_STACK_SIZE;
+-			if (want > (8u << 20))
+-				want = 8u << 20;
++		} else if (getrlimit(RLIMIT_STACK, &rl) == 0) {
++			want = 48u << 20;
+ 		}
++		if (want > (48u << 20))
++			want = 48u << 20;
+ 		JS_SetMaxStackSize(heap->rt, want);
+ 	}
+ 	if (duk_obj_class_id == 0)
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index df85a56..693b978 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -848,13 +848,17 @@ nodeCtor("DocumentFragment", function () { return doc().createDocumentFragment()
+     }
+ })();
+ 
+-/* createElementNS in the HTML namespace makes HTML elements */
++/* createElementNS in the HTML namespace makes HTML elements, through the
++ * createElement there was at start: not this.createElement, which a page
++ * may replace (the Custom Elements polyfill's calls createElementNS, which
++ * went back into it: "stack overflow" on YouTube) */
+ var XHTML = "http://www.w3.org/1999/xhtml";
+ wrap(DocumentP, "createElementNS", function (native) {
++    var createElement = DocumentP.createElement;
+     return function (ns, qname) {
+         if ((ns === XHTML || ns === null || ns === undefined || ns === "") &&
+             String(qname).indexOf(":") < 0) {
+-            return this.createElement(qname);
++            return createElement.call(this, qname);
+         }
+         return native.apply(this, arguments);
+     };

@@ -2031,6 +2031,19 @@ C72. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0058), the body's overf
     was a scroll box one screen tall: the window never scrolled and scripts saw a one-screen document.
     Verification: YouTube's scrollHeight (632 before, 6012 now); scroll.html.
 
+C73. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0060, 0061, features/0062), reported by the
+    user: searching from YouTube's home page in the host browser (tests/netsurf/browse.sh) showed
+    garbage, with "InternalError: stack overflow" logged thirty times. The search navigated to a new
+    results page, and the browser window's single JavaScript heap kept the interface prototypes,
+    which belong to the heap, across pages. The new page's Custom Elements polyfill took the old
+    polyfill's createElement for the native one, and each constructor created the next element
+    without end (40 levels before the 8 MB limit, unbounded after it). Each page now gets its own
+    heap (0060). Found on the way: script elements ran again when inserted again (libdom's
+    "already started" flag was never used, 0061); scripts may now use up to 48 MB of stack
+    (~6700 calls, was ~900); and our createElementNS wrapper could reenter a page's createElement
+    (0062). Verification: realm-1-set/realm-2-check (failed before); YouTube search from the home
+    page, 20 results and no overflow.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

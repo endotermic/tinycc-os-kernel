@@ -499,6 +499,11 @@ for a signed-out visitor, the "history is off" notice (feedNudgeRenderer), is no
 title links have no href (Polymer's href$= attribute bindings are not applied, though property
 bindings are; clicks work through the router); the description's "more" overlaps its last line.
 
+Searching from the home page (2026-11-24, found in the host browser): each page now has its own
+JavaScript heap, because the prototypes leaked from page to page (upstreamable/0060, C73). Script
+elements run once (0061), and scripts have a larger stack (features/0062). The search now
+navigates within the page, as in browsers, and the results show.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

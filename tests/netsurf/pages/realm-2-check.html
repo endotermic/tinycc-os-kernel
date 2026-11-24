@@ -1,0 +1,10 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>realm-2-check</title><script src="harness.js"></script></head><body>
+<script>
+// opened by realm-1-set (or on its own): the prototypes are this page's
+T.eq("Document.prototype from another page", Document.prototype.__realmLeak, undefined);
+T.eq("Element.prototype from another page", Element.prototype.__realmLeak, undefined);
+T.eq("createElement is the native one", Document.prototype.createElement.toString().indexOf("native") >= 0, true);
+T.done();
+</script></body></html>

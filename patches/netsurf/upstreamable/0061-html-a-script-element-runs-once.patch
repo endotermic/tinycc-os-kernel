@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 17:06:19 +0200
+Subject: [PATCH] html: a script element runs once
+
+libdom had the "already started" flag of script elements but nothing
+set or read it: a script element inserted again (or a clone of one that
+had run) ran again.  html_process_script marks the element and does not
+run one that is marked, and a clone keeps the mark (HTML's cloning
+steps).
+---
+ libdom/src/html/html_script_element.c  |  5 +++++
+ netsurf/content/handlers/html/script.c | 15 +++++++++++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/libdom/src/html/html_script_element.c b/libdom/src/html/html_script_element.c
+index 9acbf29..66a355d 100644
+--- a/libdom/src/html/html_script_element.c
++++ b/libdom/src/html/html_script_element.c
+@@ -143,6 +143,11 @@ dom_exception _dom_html_script_element_copy_internal(
+ 		return err;
+ 	}
+ 
++	/* a clone of a script that has run is one that has run (HTML's
++	 * cloning steps copy "already started") */
++	if (old->flags & DOM_HTML_SCRIPT_ELEMENT_FLAG_ALREADY_STARTED)
++		new->flags |= DOM_HTML_SCRIPT_ELEMENT_FLAG_ALREADY_STARTED;
++
+ 	return DOM_NO_ERR;
+ }
+ 
+diff --git a/netsurf/content/handlers/html/script.c b/netsurf/content/handlers/html/script.c
+index 2f2723f..4f79f42 100644
+--- a/netsurf/content/handlers/html/script.c
++++ b/netsurf/content/handlers/html/script.c
+@@ -626,6 +626,21 @@ html_process_script(void *ctx, dom_node *node)
+ 	NSLOG(netsurf, INFO, "content %p parser %p node %p", c, c->parser,
+ 	      node);
+ 
++	/* a script element runs once: mark it ("already started"), so
++	 * that inserting it again, or a clone of it, does not run it again */
++	{
++		dom_html_script_element_flags flags;
++		if (dom_html_script_element_get_flags(
++				(dom_html_script_element *) node, &flags) ==
++				DOM_NO_ERR) {
++			if (flags & DOM_HTML_SCRIPT_ELEMENT_FLAG_ALREADY_STARTED)
++				return DOM_HUBBUB_OK;
++			dom_html_script_element_set_flags(
++				(dom_html_script_element *) node, flags |
++				DOM_HTML_SCRIPT_ELEMENT_FLAG_ALREADY_STARTED);
++		}
++	}
++
+ 	exc = dom_element_get_attribute(node, corestring_dom_type, &mimetype);
+ 	if (exc != DOM_NO_ERR || mimetype == NULL) {
+ 		mimetype = dom_string_ref(corestring_dom_text_javascript);

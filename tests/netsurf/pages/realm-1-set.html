@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>realm-1-set</title></head><body>
+<script>
+// each page has its own interface objects: what this page puts on the prototypes must not be seen
+// by the next page in the window (realm-2-check); a Custom Elements polyfill took the last page's
+// createElement for the native one and recursed until the stack ran out
+Document.prototype.__realmLeak = "realm-1";
+Element.prototype.__realmLeak = "realm-1";
+const native = Document.prototype.createElement;
+Document.prototype.createElement = function (n) { return native.call(this, n); };
+setTimeout(() => { location.href = "realm-2-check.html"; }, 100);
+</script></body></html>

@@ -47,7 +47,8 @@ Categories:
   libsvgtiny's arc flags without separators; bindings that check this is of their interface;
   stretched flex items definite for percentages, inline flex items blockified;
   stale selection data freed; rgba alpha rounded; translucent colours blended on the framebuffer;
-  inline-flex boxes on their line; the body's overflow on the viewport)
+  inline-flex boxes on their line; the body's overflow on the viewport; a JavaScript heap
+  per page; script elements run once)
   and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
@@ -59,7 +60,7 @@ Categories:
   libcss; CSS.supports answered by libcss;
   mask-image in libcss, drawn in the background colour;
   SVG elements as SVGElements, style off Element.prototype; history.pushState moving the
-  location, BroadcastChannel; the rebox walk once per box; scrolling from scripts;
+  location, BroadcastChannel; the rebox walk once per box; scrolling from scripts; a larger script stack;
   an Origin header on fetch and XMLHttpRequest; inline SVG drawn as an image; :is() and :where())
 
 A future kernel gets its own directory, e.g. `openbsd/workarounds/`, and patches to tcc

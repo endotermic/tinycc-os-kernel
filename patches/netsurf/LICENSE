@@ -25,8 +25,8 @@ under MIT, 0039 (libdom, Document.bnd) under MIT, 0041 under GPL-2.0-only (webap
 (Window.bnd), 0043 (libcss) under MIT, 0045 under
 GPL-2.0-only (dukky.c, corestringlist.h, webapi.js) and MIT (SVGElement.bnd, netsurf.bnd; its
 four-line WebIDL hunk is in the copy of the CSSOM specification's IDL), 0046 (libsvgtiny) and 0049
-(libcss) under MIT, 0050 under GPL-2.0-only (dukky.c, dukky.h) and MIT (nsgenbind), 0053 (libcss) under MIT, 0056
-and 0059 under GPL-2.0-only (webapi.js, gui.c) and MIT (Window.bnd, Location.bnd), the others under
+(libcss) under MIT, 0050 under GPL-2.0-only (dukky.c, dukky.h) and MIT (nsgenbind), 0053 (libcss) under MIT, 0061 under GPL-2.0-only
+(script.c) and MIT (libdom), 0056 and 0059 under GPL-2.0-only (webapi.js, gui.c) and MIT (Window.bnd, Location.bnd), the others under
 GPL-2.0-only
 (../../LICENSES/GPL-2.0-only.txt); 0006 adds GPL-2.0-only files to NetSurf's JavaScript
 directory, and its three-line hunk in Duktape's duktape.h (MIT) is under MIT as well.  They

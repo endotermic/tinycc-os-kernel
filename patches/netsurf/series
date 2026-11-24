@@ -58,3 +58,6 @@ features/0056-JavaScript-history-sets-the-location-BroadcastChanne.patch
 features/0057-html-the-rebox-walk-visits-each-box-once.patch
 upstreamable/0058-html-the-body-s-overflow-is-the-viewport-s.patch
 features/0059-JavaScript-scrolling-from-scripts-moves-the-window.patch
+upstreamable/0060-desktop-each-page-gets-a-JavaScript-heap-of-its-own.patch
+upstreamable/0061-html-a-script-element-runs-once.patch
+features/0062-JavaScript-a-larger-stack-for-scripts-createElementN.patch

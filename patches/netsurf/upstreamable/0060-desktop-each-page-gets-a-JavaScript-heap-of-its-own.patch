@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 17:06:19 +0200
+Subject: [PATCH] desktop: each page gets a JavaScript heap of its own
+
+The browser window had one JavaScript heap and every page in it a thread
+of that heap.  The interface prototypes (Document.prototype, ...) belong
+to the heap, so what one page's scripts put on them stayed for the next
+page.  On YouTube a search from the home page loaded the results page,
+whose Custom Elements polyfill took the last page's replaced
+createElement for the native one and recursed until the stack ran out
+("stack overflow" thirty times, an unusable page).  Each page now gets
+a new heap, freed with its thread.
+---
+ netsurf/desktop/browser_window.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/netsurf/desktop/browser_window.c b/netsurf/desktop/browser_window.c
+index c70db7c..d276128 100644
+--- a/netsurf/desktop/browser_window.c
++++ b/netsurf/desktop/browser_window.c
+@@ -1602,9 +1602,23 @@ browser_window_callback(hlcache_handle *c, const hlcache_event *event, void *pw)
+ 			 * window requires a new javascript thread object
+ 			 */
+ 			jsthread *thread;
++			jsheap *heap = NULL;
+ 			assert(bw->loading_content == c);
+ 
+-			if (js_newthread(bw->jsheap,
++			/* each page gets a heap of its own: the interface
++			 * prototypes (Document.prototype, ...) belong to the
++			 * heap, and with one heap per window what a page's
++			 * scripts put on them stayed for the next page (a
++			 * Custom Elements polyfill took the last page's
++			 * createElement for the native one and recursed until
++			 * the stack ran out).  The heap goes with the thread:
++			 * one marked for destruction goes when its last thread
++			 * does. */
++			if (js_newheap(nsoption_int(script_timeout),
++					&heap) != NSERROR_OK)
++				heap = NULL;
++
++			if (js_newthread(heap != NULL ? heap : bw->jsheap,
+ 					 bw,
+ 					 hlcache_handle_get_content(c),
+ 					 &thread) == NSERROR_OK) {
+@@ -1614,6 +1628,8 @@ browser_window_callback(hlcache_handle *c, const hlcache_event *event, void *pw)
+ 				 */
+ 				*(event->data.jsthread) = thread;
+ 			}
++			if (heap != NULL)
++				js_destroyheap(heap);
+ 		}
+ 		break;
+ 
