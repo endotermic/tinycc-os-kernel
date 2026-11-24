@@ -76,7 +76,9 @@ for name; do
     dir=$SRC/$name
     case $commit in sha256:*) fetch_tarball "$name" "${commit#sha256:}" "$ref"; continue;; esac
     sparse=$(sparse_patterns "$name")
-    if [ -d "$dir/.git" ] && git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
+    # GIT_NO_LAZY_FETCH: in a partial clone whose first fetch was cut short, the check would
+    # make git fetch the missing commit from the promisor remote with all of its history
+    if [ -d "$dir/.git" ] && GIT_NO_LAZY_FETCH=1 git -C "$dir" cat-file -e "$commit^{commit}" 2>/dev/null; then
         if [ -n "$sparse" ] && [ "$(git -C "$dir" sparse-checkout list)" != "$sparse" ]; then
             msg "$name: at $commit, checking out the changed sparse set"
             echo "$sparse" | git -C "$dir" sparse-checkout set --no-cone --stdin \

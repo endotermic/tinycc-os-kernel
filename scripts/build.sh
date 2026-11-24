@@ -1338,11 +1338,11 @@ EOF
     # libraries' own -I/-D additions); every host tool of the build (nsgenbind, which
     # generates the JavaScript bindings; NetSurf's xxd, split-messages, convert_image,
     # convert_font) is compiled by musl-tcc too and runs on the host as a static binary
-    # (BUILD_CC; convert_image takes libpng from $XP); ar is tcc's; pkg-config is
-    # scripts/pkg-config.sh under both names the makefiles use.  JavaScript is QuickJS
-    # (ES2023) through the bindings written for Duktape, images PNG/JPEG/GIF/BMP/SVG, TLS
-    # through libcurl.
-    set -- TARGET=framebuffer CC="$MUSL_TCC" BUILD_CC="$MUSL_TCC" toolchain=gcc AR="$TCC -ar" ARFLAGS=rcs \
+    # (BUILD_CC; convert_image takes libpng from $XP); ar is the target tcc's (the host
+    # tcc's rejects i386 objects); pkg-config is scripts/pkg-config.sh under both names the
+    # makefiles use.  JavaScript is QuickJS (ES2023) through the bindings written for
+    # Duktape, images PNG/JPEG/GIF/BMP/SVG, TLS through libcurl.
+    set -- TARGET=framebuffer CC="$MUSL_TCC" BUILD_CC="$MUSL_TCC" toolchain=gcc AR="$TCC_TARGET -ar" ARFLAGS=rcs \
         PKGCONFIG="$PKG_CONFIG" PKG_CONFIG="$PKG_CONFIG" \
         BUILD_CFLAGS="-O2 -I$XP/include" BUILD_LDFLAGS="-L$XP/lib" BUILD_LIBPNG_LDFLAGS="-lpng16 -lz -lm" Q=@
     : >"$LOGS/netsurf.log"
