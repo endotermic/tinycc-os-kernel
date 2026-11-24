@@ -475,6 +475,20 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 
 ## Releases
 
+The release is in the image's `/etc/os-release`, and the boot banner prints it.
+
+* **v1.0 "Teleios"** (2026-11-24): a complete small system. On top of v0.1:
+  * **Targets:** i386 next to x86_64, both self-hosting, the kernel built from vanilla Linux with no
+    kernel patches (the real objtool built by tcc against `tools/libelf`).
+  * **Desktop:** a graphical session (TinyX with Composite, JWM, the xdm login, the mlterm terminal,
+    wallpapers, xedit).
+  * **Real hardware:** drivers in seven groups (ACPI, storage and RTC; Wi-Fi with wpa_supplicant;
+    GPU; touchpads; Ethernet, PCIe and USB4; sound and EFI; power, IOMMU and NTFS). It boots to the
+    desktop on a real laptop (an Acer Aspire); `install.sh` writes the ISO to a USB stick.
+  * **Browsers:** links with a CSS subset, and NetSurf 3.11 with JavaScript on QuickJS. NetSurf
+    renders YouTube's home, search and video pages; 63 NetSurf patches; `tests/netsurf/` holds
+    30 test pages.
+  * **Compiler:** 162 tcc patches, recorded in `docs/FIX-LOG.md`.
 * **v0.1 "Protoktistos"** (2026-10-22): the first bootable state. Linux x86_64 built entirely
   by tcc (no gcc, no binutils: tcc assembles, `tools/tld` links), booting into a tcc-built
   musl/busybox userland with tcc in the guest, self-hosting (the guest rebuilds its kernel),

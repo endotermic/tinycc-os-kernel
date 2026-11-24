@@ -1,0 +1,7 @@
+NAME="tinycc-os-kernel"
+ID=tinycc-os-kernel
+VERSION="1.0 (Teleios)"
+VERSION_ID=1.0
+VERSION_CODENAME=teleios
+PRETTY_NAME="tinycc-os-kernel 1.0 (Teleios)"
+HOME_URL="https://github.com/endotermic/tinycc-os-kernel"

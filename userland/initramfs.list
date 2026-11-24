@@ -46,6 +46,8 @@ file  /etc/shadow  ${ETC}/shadow 0600 0 0
 file  /etc/securetty ${ETC}/securetty 0644 0 0
 # the setuid rules of busybox (halt, poweroff, reboot for every user; JWM menu entries)
 file  /etc/busybox.conf ${ETC}/busybox.conf 0644 0 0
+# the release (NAME, VERSION, VERSION_CODENAME, ...; the boot banner prints PRETTY_NAME)
+file  /etc/os-release ${ETC}/os-release 0644 0 0
 dir   /home        0755 0 0
 dir   /home/ada    0755 1000 1000
 dir   /home/grace  0755 1001 1001

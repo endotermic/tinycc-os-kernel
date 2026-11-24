@@ -337,6 +337,15 @@ static void banner(FILE *out)
         bb_build = "static, unknown toolchain";
     free(s);
     fprintf(out, "\n*** tinycc-os-kernel: %s %s %s, %s\n", u.sysname, u.release, u.machine, u.version);
+    /* the release, from /etc/os-release's PRETTY_NAME */
+    {
+        char *rel = read_file("/etc/os-release", &len), *q, *e;
+        if (rel && (q = strstr(rel, "PRETTY_NAME=\"")) && (e = strchr(q + 13, '"'))) {
+            *e = 0;
+            fprintf(out, "*** release: %s\n", q + 13);
+        }
+        free(rel);
+    }
     fprintf(out, "*** every file of this kernel was compiled, assembled and linked by tinycc (tcc, tld)\n");
     /* "BusyBox v1.38.0 (date) multi-call binary." -> the first two words */
     s = capture_line((char *[]){ "/bin/busybox", NULL });
