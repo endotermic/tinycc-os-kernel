@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>translucent</title><script src="harness.js"></script>
+<style>
+.row { height: 40px; margin: 6px 0; }
+#a { background: rgba(0, 0, 0, 0.05); }
+#b { background: rgb(0, 0, 255); }
+#b div { width: 120px; height: 40px; background: rgba(255, 255, 255, 0.5); }
+#c { color: rgba(0, 0, 0, 0.5); font-size: 20px; }
+#d { border-bottom: 4px solid rgba(255, 0, 0, 0.3); height: 20px; }
+#e { background: rgba(255, 0, 0, 0); }
+</style></head><body>
+<div class="row" id="a">a</div>
+<div class="row" id="b"><div></div></div>
+<div class="row" id="c">half black text</div>
+<div id="d"></div>
+<div class="row" id="e">e</div>
+<script>
+// translucent colours: browsers blend them; checked here is what scripts see, and by eye
+// (tests/netsurf/browse.sh): a is a very light grey bar (it was black), b is blue with a light blue
+// square at its left, c is mid-grey text, d has a light red underline, e has no background.
+window.addEventListener("load", () => setTimeout(() => {
+    T.eq("computed translucent background", getComputedStyle(document.getElementById("a")).backgroundColor, "rgba(0, 0, 0, 0.05)");
+    T.eq("computed translucent colour", getComputedStyle(document.getElementById("c")).color, "rgba(0, 0, 0, 0.5)");
+    T.done();
+}, 100));
+</script></body></html>

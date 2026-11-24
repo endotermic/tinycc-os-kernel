@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:06:48 +0200
+Subject: [PATCH] html: inline-flex boxes placed on their line
+
+The last pass of line layout positioned replaced inlines and inline
+blocks but left inline-flex boxes out: they kept their unplaced x and y
+and the line was not made as tall as them (0px for a line holding only
+one).  YouTube's logo fell out of the masthead.
+---
+ netsurf/content/handlers/html/layout.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/layout.c b/netsurf/content/handlers/html/layout.c
+index 09d3db1..f3ae4db 100644
+--- a/netsurf/content/handlers/html/layout.c
++++ b/netsurf/content/handlers/html/layout.c
+@@ -3405,8 +3405,11 @@ layout_line(struct box *first,
+ 				used_height = d->height;
+ 			}
+ 		} else if ((d->type == BOX_INLINE) ||
+-				d->type == BOX_INLINE_BLOCK) {
+-			/* replaced inlines and inline-blocks */
++				d->type == BOX_INLINE_BLOCK ||
++				d->type == BOX_INLINE_FLEX) {
++			/* replaced inlines, inline-blocks and inline-flexes
++			 * (inline-flexes were left out: not placed on the
++			 * line, and the line not as tall as them) */
+ 			d->x += x0;
+ 			d->y = *y + d->border[TOP].width + d->margin[TOP];
+ 			h = d->margin[TOP] + d->border[TOP].width +

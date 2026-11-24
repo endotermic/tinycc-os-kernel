@@ -48,6 +48,16 @@ sessionStorage.setItem("s", "1");
 T.eq("sessionStorage", sessionStorage.getItem("s"), "1");
 history.pushState({ p: 1 }, "", "#p");
 T.eq("history.pushState", history.state.p + "," + history.length, "1,2");
+// the URL given becomes location's (single-page sites read it back); another origin is refused
+T.eq("pushState changes location", location.hash, "#p");
+history.replaceState(null, "", "?x=1#y");
+T.eq("replaceState changes location", location.search + location.hash, "?x=1#y");
+T.eq("pushState to another origin", (() => { try { history.pushState(null, "", "http://example.com/"); return "allowed"; } catch (e) { return e.name; } })(), "SecurityError");
+// BroadcastChannel: to the page's other channels of the name, not to the sender
+const bcA = new BroadcastChannel("t"), bcB = new BroadcastChannel("t"), bcGot = [];
+bcB.onmessage = e => bcGot.push("B:" + e.data.v);
+bcA.onmessage = e => bcGot.push("A:" + e.data.v);
+bcA.postMessage({ v: 1 });
 // microtasks, animation frames
 const order = [];
 queueMicrotask(() => order.push("micro"));
@@ -58,6 +68,7 @@ requestAnimationFrame(t => { rafArg = t; order.push("raf"); });
 setTimeout(() => {
     T.eq("queueMicrotask and requestAnimationFrame", order.join(), "micro,raf");
     T.eq("requestAnimationFrame time", typeof rafArg, "number");
+    T.eq("BroadcastChannel", bcGot.join(), "B:1");
     T.done();
 }, 100);
 </script></body></html>

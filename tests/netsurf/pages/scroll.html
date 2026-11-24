@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html><head><title>scroll</title><script src="harness.js"></script></head>
+<body style="margin: 0">
+<div style="height: 3000px">tall</div><div id="t" style="height: 50px">target</div><div style="height: 1000px"></div>
+<script>
+// scrolling from script moves the browser window (window.scrollTo/By, scrollIntoView, the root's scrollTop),
+// the root's scrollHeight is the document's, and scroll events reach the document and the window
+let docEvents = 0, winEvents = 0;
+document.addEventListener("scroll", () => docEvents++);
+window.addEventListener("scroll", () => winEvents++);
+window.addEventListener("load", () => setTimeout(() => {
+    T.ok("document scrollHeight", document.documentElement.scrollHeight > 4000 && innerHeight < 4000);
+    window.scrollTo(0, 500);
+    T.eq("scrollTo", scrollY + "," + document.documentElement.scrollTop, "500,500");
+    window.scrollBy({ top: 100 });
+    T.eq("scrollBy", scrollY, 600);
+    document.getElementById("t").scrollIntoView();
+    T.eq("scrollIntoView", Math.round(document.getElementById("t").getBoundingClientRect().top), 0);
+    document.documentElement.scrollTop = 0;
+    T.eq("scrollTop set", scrollY, 0);
+    setTimeout(() => {
+        T.ok("scroll events at the document and the window", docEvents > 0 && winEvents > 0);
+        T.done();
+    }, 600);
+}, 200));
+</script></body></html>

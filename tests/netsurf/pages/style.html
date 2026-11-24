@@ -18,11 +18,13 @@ section :is(.iw-b, .iw-c) span { width: 31px; }
 .fx-wrap { width: 100%; }
 .fx-cont { display: flex; height: 100%; }
 .fx-cont button { width: 64px; margin: 0; border: 1px solid; padding: 0; }
+.ifx { display: inline-flex; width: 30px; height: 20px; padding: 10px 0; }
 </style></head><body>
 <div id="w">w</div><div id="g" class="gone">g</div><span id="sp">sp</span>
 <div class="iw-a" id="iw1"></div><section><div class="iw-b"><span id="iw2"></span></div><div class="iw-c"><span id="iw3"></span></div><div><span id="iw4"></span></div></section>
 <div class="iw-d iw-e" id="iw5"></div><div class="iw-d" id="iw6" style="height:5px"></div><div class="iw-f iw-g" id="iw7"></div>
 <div class="fx-host"><div class="fx-wrap"><div class="fx-cont" id="fx-cont"><span id="fx-span">s</span><button id="fx-btn">B</button></div></div></div>
+<div id="ifx-line" style="width: 200px"><span><span class="ifx">i</span></span></div>
 <div id="fx-wrap"><div><div id="fx"><div></div></div><div id="fx-next"></div></div></div>
 <script>
 // inline style, computed style, geometry, matchMedia (webapi.js + Window.bnd natives)
@@ -102,6 +104,8 @@ window.addEventListener("load", () => setTimeout(async () => {
     const fh = id => Math.round(document.getElementById(id).getBoundingClientRect().height);
     T.eq("height: 100% in a stretched flex item", fh("fx-cont"), 40);
     T.eq("span and button flex items stretch", fh("fx-span") + "," + fh("fx-btn"), "40,40");
+    // an inline-flex box makes its line as tall as it is (the line was 0px: YouTube's logo fell out of the masthead)
+    T.eq("line with an inline-flex box", fh("ifx-line"), 40);
     // a fixed box before a block with a top margin: the margin is not lost inside it
     T.eq("margin after a fixed sibling", Math.round(document.getElementById("fx-next").getBoundingClientRect().top), 356);
     // <style> elements made by scripts (text set before or after insertion) apply

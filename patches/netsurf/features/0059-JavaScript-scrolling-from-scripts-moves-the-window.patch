@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:53:54 +0200
+Subject: [PATCH] JavaScript: scrolling from scripts moves the window
+
+window.scrollTo, scroll and scrollBy, Element.scrollIntoView and the
+root element's scrollTop and scrollLeft scroll the browser window (they
+did nothing), the root's scrollHeight and scrollWidth are the
+document's, and scroll events reach the document and the window when the
+position changes (checked from a timer).  The framebuffer front end's
+get_scroll includes a scroll it has queued, so scripts read back what
+they set.
+---
+ .../handlers/javascript/duktape/Window.bnd    | 42 ++++++++-
+ .../handlers/javascript/duktape/webapi.js     | 85 ++++++++++++++++---
+ netsurf/frontends/framebuffer/gui.c           |  6 +-
+ 3 files changed, 117 insertions(+), 16 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index d455406..1b4e7f5 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -118,16 +118,24 @@ static duk_ret_t native_box_geometry(duk_context *ctx)
+ 	return 1;
+ }
+ 
+-/* viewport(): [width, height, scrollX, scrollY] of the browser window */
++/* viewport(): [width, height, scrollX, scrollY, document width, document
++ * height] of the browser window */
+ static duk_ret_t native_viewport(duk_context *ctx)
+ {
+ 	window_private_t *w = native_window(ctx);
+-	int width = 1024, height = 768, sx = 0, sy = 0;
++	int width = 1024, height = 768, sx = 0, sy = 0, dw = 0, dh = 0;
+ 	if (w != NULL && w->win != NULL) {
+ 		browser_window_get_dimensions(w->win, &width, &height);
+ 		if (w->win->window != NULL && guit->window->get_scroll != NULL)
+ 			guit->window->get_scroll(w->win->window, &sx, &sy);
++		if (browser_window_get_extents(w->win, false, &dw, &dh) !=
++				NSERROR_OK)
++			dw = dh = 0;
+ 	}
++	if (dw < width)
++		dw = width;
++	if (dh < height)
++		dh = height;
+ 	duk_push_array(ctx);
+ 	duk_push_int(ctx, width);
+ 	duk_put_prop_index(ctx, -2, 0);
+@@ -137,9 +145,38 @@ static duk_ret_t native_viewport(duk_context *ctx)
+ 	duk_put_prop_index(ctx, -2, 2);
+ 	duk_push_int(ctx, sy);
+ 	duk_put_prop_index(ctx, -2, 3);
++	duk_push_int(ctx, dw);
++	duk_put_prop_index(ctx, -2, 4);
++	duk_push_int(ctx, dh);
++	duk_put_prop_index(ctx, -2, 5);
+ 	return 1;
+ }
+ 
++/* scrollTo(x, y): scroll the browser window (kept within the document) */
++static duk_ret_t native_scroll_to(duk_context *ctx)
++{
++	window_private_t *w = native_window(ctx);
++	struct rect r;
++	int width = 0, height = 0, dw = 0, dh = 0;
++
++	if (w == NULL || w->win == NULL || w->win->window == NULL ||
++			guit->window->set_scroll == NULL)
++		return 0;
++	browser_window_get_dimensions(w->win, &width, &height);
++	if (browser_window_get_extents(w->win, false, &dw, &dh) != NSERROR_OK)
++		dw = dh = 0;
++	r.x0 = duk_to_int(ctx, 0);
++	r.y0 = duk_to_int(ctx, 1);
++	if (r.x0 > dw - width) r.x0 = dw - width;
++	if (r.y0 > dh - height) r.y0 = dh - height;
++	if (r.x0 < 0) r.x0 = 0;
++	if (r.y0 < 0) r.y0 = 0;
++	r.x1 = r.x0 + width;
++	r.y1 = r.y0 + height;
++	guit->window->set_scroll(w->win->window, &r);
++	return 0;
++}
++
+ static void native_put_colour(duk_context *ctx, const char *name, css_color c)
+ {
+ 	char buf[48];
+@@ -1299,6 +1336,7 @@ prototype Window()
+ 	native_put(ctx, "imageState", native_image_state, 1);
+ 	native_put(ctx, "cssDeclaration", native_css_declaration, 1);
+ 	native_put(ctx, "setLocation", native_set_location, 1);
++	native_put(ctx, "scrollTo", native_scroll_to, 2);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index fe11133..df85a56 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -240,7 +240,41 @@ def(WindowP, "getSelection", function () {
+ 
+ /* geometry of the window */
+ function viewport() {
+-    return N.viewport ? N.viewport() : [1024, 768, 0, 0];
++    return N.viewport ? N.viewport() : [1024, 768, 0, 0, 1024, 768];
++}
++/* scrolling the browser window: (x, y) or ({ left, top }); a missing
++ * coordinate keeps the current one */
++function scrollTarget(a, b, v, rel) {
++    var x, y;
++    if (a !== null && typeof a === "object") {
++        x = a.left === undefined ? (rel ? 0 : v[2]) : +a.left;
++        y = a.top === undefined ? (rel ? 0 : v[3]) : +a.top;
++    } else {
++        x = a === undefined ? (rel ? 0 : v[2]) : +a;
++        y = b === undefined ? (rel ? 0 : v[3]) : +b;
++    }
++    if (rel) { x += v[2]; y += v[3]; }
++    return [isFinite(x) ? x : v[2], isFinite(y) ? y : v[3]];
++}
++function scrollWindow(a, b, rel) {
++    if (!N.scrollTo) return;
++    var t = scrollTarget(a, b, viewport(), rel);
++    N.scrollTo(t[0], t[1]);
++    scrollCheck();
++}
++/* a scroll event at the window and document when the position changed
++ * (by the user or a script), checked from a timer */
++var lastScroll = null;
++function scrollCheck() {
++    var v = viewport(), key = v[2] + "," + v[3];
++    if (lastScroll === null) { lastScroll = key; return; }
++    if (key === lastScroll) return;
++    lastScroll = key;
++    if (G.document) {
++        try { G.document.dispatchEvent(makeEvent("scroll", { bubbles: true })); } catch (x) { report(x); }
++    }
++    /* (the document's events do not go on to the window here) */
++    try { G.dispatchEvent(makeEvent("scroll", {})); } catch (x) { report(x); }
+ }
+ acc(WindowP, "innerWidth", function () { return viewport()[0]; });
+ acc(WindowP, "innerHeight", function () { return viewport()[1]; });
+@@ -255,9 +289,10 @@ acc(WindowP, "screenY", function () { return 0; });
+ acc(WindowP, "screenLeft", function () { return 0; });
+ acc(WindowP, "screenTop", function () { return 0; });
+ acc(WindowP, "devicePixelRatio", function () { return 1; });
+-def(WindowP, "scrollTo", function () {});
+-def(WindowP, "scrollBy", function () {});
+-def(WindowP, "scroll", function () {});
++def(WindowP, "scrollTo", function (a, b) { scrollWindow(a, b, false); });
++def(WindowP, "scroll", function (a, b) { scrollWindow(a, b, false); });
++def(WindowP, "scrollBy", function (a, b) { scrollWindow(a, b, true); });
++nInterval(scrollCheck, 250);
+ def(WindowP, "moveTo", function () {});
+ def(WindowP, "resizeTo", function () {});
+ acc(WindowP, "screen", function () {
+@@ -1525,10 +1560,28 @@ if (ElementP) {
+         this.insertAdjacentHTML("afterend", html);
+         nRemove(p, this);
+     });
+-    def(ElementP, "scrollIntoView", function () {});
+-    def(ElementP, "scrollTo", function () {});
+-    def(ElementP, "scrollBy", function () {});
+-    def(ElementP, "scroll", function () {});
++    /* the root element's scrolling is the window's; other elements do not
++     * scroll here */
++    var isViewportElement = function (el) {
++        var d = el.ownerDocument;
++        return d && (el === d.documentElement || el === d.body);
++    };
++    def(ElementP, "scrollIntoView", function (arg) {
++        var b = boxOf(this), v = viewport(), block = "start", y;
++        if (!b) return;
++        if (arg === false) block = "end";
++        else if (arg && typeof arg === "object" && arg.block) block = String(arg.block);
++        if (block === "end") y = b[1] + b[3] - v[1];
++        else if (block === "center") y = b[1] + b[3] / 2 - v[1] / 2;
++        else if (block === "nearest") {
++            if (b[1] >= v[3] && b[1] + b[3] <= v[3] + v[1]) return;
++            y = b[1] < v[3] ? b[1] : b[1] + b[3] - v[1];
++        } else y = b[1];
++        scrollWindow(v[2], y, false);
++    });
++    def(ElementP, "scrollTo", function (a, b) { if (isViewportElement(this)) scrollWindow(a, b, false); });
++    def(ElementP, "scroll", function (a, b) { if (isViewportElement(this)) scrollWindow(a, b, false); });
++    def(ElementP, "scrollBy", function (a, b) { if (isViewportElement(this)) scrollWindow(a, b, true); });
+     def(ElementP, "setPointerCapture", function () {});
+     def(ElementP, "releasePointerCapture", function () {});
+     def(ElementP, "hasPointerCapture", function () { return false; });
+@@ -1835,10 +1888,18 @@ if (ElementP) {
+     acc(ElementP, "clientHeight", function () { var b = boxOf(this); return b ? b[5] : 0; });
+     acc(ElementP, "clientTop", function () { var b = boxOf(this); return b ? Math.round((b[3] - b[5]) / 2) : 0; });
+     acc(ElementP, "clientLeft", function () { var b = boxOf(this); return b ? Math.round((b[2] - b[4]) / 2) : 0; });
+-    acc(ElementP, "scrollWidth", function () { var b = boxOf(this); return b ? b[4] : 0; });
+-    acc(ElementP, "scrollHeight", function () { var b = boxOf(this); return b ? b[5] : 0; });
+-    acc(ElementP, "scrollTop", function () { return 0; }, function () {});
+-    acc(ElementP, "scrollLeft", function () { return 0; }, function () {});
++    acc(ElementP, "scrollWidth", function () {
++        if (isViewportElement(this)) return viewport()[4];
++        var b = boxOf(this); return b ? b[4] : 0;
++    });
++    acc(ElementP, "scrollHeight", function () {
++        if (isViewportElement(this)) return viewport()[5];
++        var b = boxOf(this); return b ? b[5] : 0;
++    });
++    acc(ElementP, "scrollTop", function () { return isViewportElement(this) ? viewport()[3] : 0; },
++        function (y) { if (isViewportElement(this)) scrollWindow(undefined, y, false); });
++    acc(ElementP, "scrollLeft", function () { return isViewportElement(this) ? viewport()[2] : 0; },
++        function (x) { if (isViewportElement(this)) scrollWindow(x, undefined, false); });
+ }
+ if (HTMLElementP) {
+     acc(HTMLElementP, "offsetWidth", function () { var b = boxOf(this); return b ? b[2] : 0; });
+diff --git a/netsurf/frontends/framebuffer/gui.c b/netsurf/frontends/framebuffer/gui.c
+index 1715e47..2114e24 100644
+--- a/netsurf/frontends/framebuffer/gui.c
++++ b/netsurf/frontends/framebuffer/gui.c
+@@ -1890,8 +1890,10 @@ gui_window_get_scroll(struct gui_window *g, int *sx, int *sy)
+ {
+ 	struct browser_widget_s *bwidget = fbtk_get_userpw(g->browser);
+ 
+-	*sx = bwidget->scrollx;
+-	*sy = bwidget->scrolly;
++	/* with a scroll queued (set_scroll pans at the next redraw), the
++	 * position it goes to: scripts read back what they set */
++	*sx = bwidget->scrollx + bwidget->panx;
++	*sy = bwidget->scrolly + bwidget->pany;
+ 
+ 	return true;
+ }

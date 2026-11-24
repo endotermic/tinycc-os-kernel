@@ -2003,6 +2003,34 @@ C66. 2026-11-23, COMMITTED (patches/netsurf/upstreamable/0051), found because Yo
     style.html (two checks failed before); YouTube's search and filter buttons in the guest;
     DuckDuckGo unchanged.
 
+C67. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0052), found on YouTube's watch page in the
+    guest: "Assertion failed: old_node_data == NULL" in set_libcss_node_data. A node can be selected
+    twice while the box tree is made in slices (a script moves it after it was selected). The stale
+    data is freed. Release builds crashed there instead (a segfault on the watch page).
+
+C68. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0053), libcss truncated rgba() alpha to a
+    byte (0.05 became 12, 0.5 became 127). It now rounds, as browsers do. Verification: translucent.html.
+
+C69. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0054), translucent colours were drawn
+    opaque on the framebuffer (YouTube's rgba(0,0,0,0.05) overlays were black boxes). libnsfb
+    ignores the 255-alpha byte of NetSurf's colours. Fills are blended with the screen; one-colour
+    plots get the colour over white (text over its background); the toolkit's 0xff colours stay
+    opaque; translucent fills knock nothing out (desktop/knockout.c). Verification: translucent.html
+    by eye in the guest; YouTube's watch page buttons.
+
+C70. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0055), inline-flex boxes were not placed on
+    their line in the last pass of line layout, and the line was not made as tall as them (YouTube's
+    logo fell out of the masthead). Verification: style.html ("line with an inline-flex box", 0 before).
+
+C71. 2026-11-24, COMMITTED (patches/netsurf/features/0057), html_rebox_walk (features/0009) walked each
+    sibling list n squared times. Rebuilding YouTube's watch page box tree took 14-18 s on the host,
+    now 0.8 s. Found by sampling backtraces under gdb (user-space perf is not allowed on this host).
+
+C72. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0058), the body's overflow was not
+    propagated to the viewport (CSS 2.1 11.1.1). With body { overflow-y: scroll } (YouTube) the body
+    was a scroll box one screen tall: the window never scrolled and scripts saw a one-screen document.
+    Verification: YouTube's scrollHeight (632 before, 6012 now); scroll.html.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

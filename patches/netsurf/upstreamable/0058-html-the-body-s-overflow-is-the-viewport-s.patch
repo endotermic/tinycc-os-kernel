@@ -1,0 +1,216 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:53:53 +0200
+Subject: [PATCH] html: the body's overflow is the viewport's
+
+When the root element's overflow is visible, the body's applies to the
+viewport and the body's own is visible (CSS 2.1 11.1.1).  NetSurf made
+the body a scroll box of its own, one screen tall, for a page with
+body { overflow-y: scroll } (YouTube): the window never scrolled, its
+scroll position stayed 0 and the document was one screen tall to
+scripts.  Such a body box is marked OVERFLOW_VIEWPORT, and layout and
+redraw read overflow through box_overflow_x/y, visible for it.
+---
+ netsurf/content/handlers/html/box.h         | 16 ++++++++++-
+ netsurf/content/handlers/html/box_inspect.c |  4 +--
+ netsurf/content/handlers/html/box_special.c | 15 +++++++++++
+ netsurf/content/handlers/html/layout.c      | 30 ++++++++++-----------
+ netsurf/content/handlers/html/redraw.c      |  4 +--
+ 5 files changed, 49 insertions(+), 20 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/box.h b/netsurf/content/handlers/html/box.h
+index 7fc2811..72960af 100644
+--- a/netsurf/content/handlers/html/box.h
++++ b/netsurf/content/handlers/html/box.h
+@@ -33,6 +33,18 @@
+ 
+ #include "content/handlers/css/utils.h"
+ 
++/**
++ * The overflow of a box as layout and redraw use it: the body element's
++ * overflow applies to the viewport when the root element's is visible
++ * (CSS 2.1 11.1.1), and the body's own is then visible.  Without this a
++ * page with body { overflow-y: scroll } scrolled inside a body one screen
++ * tall, and the window never scrolled.
++ */
++#define box_overflow_x(b) (((b)->flags & OVERFLOW_VIEWPORT) ? \
++		CSS_OVERFLOW_VISIBLE : css_computed_overflow_x((b)->style))
++#define box_overflow_y(b) (((b)->flags & OVERFLOW_VIEWPORT) ? \
++		CSS_OVERFLOW_VISIBLE : css_computed_overflow_y((b)->style))
++
+ struct content;
+ struct box;
+ struct browser_window;
+@@ -89,8 +101,10 @@ typedef enum {
+ 	IFRAME      = 1 << 10,	/* box contains an iframe */
+ 	CONVERT_CHILDREN = 1 << 11,  /* wanted children converting */
+ 	IS_REPLACED = 1 << 12,	/* box is a replaced element */
+-	DEFINITE_HEIGHT = 1 << 13 /* height is definite though auto (a
++	DEFINITE_HEIGHT = 1 << 13, /* height is definite though auto (a
+ 				   * stretched flex item being laid out) */
++	OVERFLOW_VIEWPORT = 1 << 14 /* body whose overflow is the
++				     * viewport's: its own is visible */
+ } box_flags;
+ 
+ 
+diff --git a/netsurf/content/handlers/html/box_inspect.c b/netsurf/content/handlers/html/box_inspect.c
+index 181f58c..cb00b56 100644
+--- a/netsurf/content/handlers/html/box_inspect.c
++++ b/netsurf/content/handlers/html/box_inspect.c
+@@ -166,7 +166,7 @@ box_contains_point(const css_unit_ctx *unit_len_ctx,
+ 		*physically = true;
+ 		return true;
+ 	}
+-	if ((box->style && css_computed_overflow_x(box->style) ==
++	if ((box->style && box_overflow_x(box) ==
+ 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
+ 		if (box->descendant_x0 <= x &&
+ 		    x < box->descendant_x1) {
+@@ -174,7 +174,7 @@ box_contains_point(const css_unit_ctx *unit_len_ctx,
+ 			return true;
+ 		}
+ 	}
+-	if ((box->style && css_computed_overflow_y(box->style) ==
++	if ((box->style && box_overflow_y(box) ==
+ 	     CSS_OVERFLOW_VISIBLE) || !box->style) {
+ 		if (box->descendant_y0 <= y &&
+ 		    y < box->descendant_y1) {
+diff --git a/netsurf/content/handlers/html/box_special.c b/netsurf/content/handlers/html/box_special.c
+index a64d4a5..aa40d4c 100644
+--- a/netsurf/content/handlers/html/box_special.c
++++ b/netsurf/content/handlers/html/box_special.c
+@@ -768,6 +768,21 @@ box_body(dom_node *n,
+ 	 bool *convert_children)
+ {
+ 	css_color color;
++	dom_node *parent = NULL;
++
++	/* the root element's overflow visible: the body's is the viewport's */
++	if (dom_node_get_parent_node(n, &parent) == DOM_NO_ERR &&
++			parent != NULL) {
++		struct box *root = box_for_node(parent);
++		if (root != NULL && root->parent == NULL &&
++				root->style != NULL &&
++				css_computed_overflow_x(root->style) ==
++					CSS_OVERFLOW_VISIBLE &&
++				css_computed_overflow_y(root->style) ==
++					CSS_OVERFLOW_VISIBLE)
++			box->flags |= OVERFLOW_VIEWPORT;
++		dom_node_unref(parent);
++	}
+ 
+ 	css_computed_background_color(box->style, &color);
+ 	if (nscss_color_is_transparent(color)) {
+diff --git a/netsurf/content/handlers/html/layout.c b/netsurf/content/handlers/html/layout.c
+index f3ae4db..00a42ba 100644
+--- a/netsurf/content/handlers/html/layout.c
++++ b/netsurf/content/handlers/html/layout.c
+@@ -1197,7 +1197,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 					box->border[TOP].width ||
+ 					box->padding[TOP] ||
+ 					(box->style &&
+-					css_computed_overflow_y(box->style) !=
++					box_overflow_y(box) !=
+ 					CSS_OVERFLOW_VISIBLE) ||
+ 					(box->type == BOX_INLINE_CONTAINER &&
+ 					!box_is_first_child(box))) {
+@@ -1215,7 +1215,7 @@ layout_next_margin_block(const css_unit_ctx *unit_len_ctx,
+ 		if (box->type == BOX_BLOCK && !box->object && box->children &&
+ 				box->style &&
+ 				!layout_box_out_of_flow(box) &&
+-				css_computed_overflow_y(box->style) ==
++				box_overflow_y(box) ==
+ 				CSS_OVERFLOW_VISIBLE) {
+ 			/* Down into children. */
+ 			box = box->children;
+@@ -1561,8 +1561,8 @@ static void layout_block_add_scrollbar(struct box *box, int which)
+ 	if (box->style == NULL)
+ 		return;
+ 
+-	overflow_x = css_computed_overflow_x(box->style);
+-	overflow_y = css_computed_overflow_y(box->style);
++	overflow_x = box_overflow_x(box);
++	overflow_y = box_overflow_y(box);
+ 
+ 	if (which == BOTTOM &&
+ 			(overflow_x == CSS_OVERFLOW_SCROLL ||
+@@ -1691,8 +1691,8 @@ bool layout_table(
+ 						c->style, 0, 0, 0, 0, 0, 0,
+ 						0, c->padding, c->border);
+ 
+-				overflow_x = css_computed_overflow_x(c->style);
+-				overflow_y = css_computed_overflow_y(c->style);
++				overflow_x = box_overflow_x(c);
++				overflow_y = box_overflow_y(c);
+ 
+ 				if (overflow_x == CSS_OVERFLOW_SCROLL ||
+ 						overflow_x ==
+@@ -2477,8 +2477,8 @@ layout_float_find_dimensions(
+ 	int *margin = box->margin;
+ 	int *padding = box->padding;
+ 	struct box_border *border = box->border;
+-	enum css_overflow_e overflow_x = css_computed_overflow_x(style);
+-	enum css_overflow_e overflow_y = css_computed_overflow_y(style);
++	enum css_overflow_e overflow_x = box_overflow_x(box);
++	enum css_overflow_e overflow_y = box_overflow_y(box);
+ 	int scrollbar_width_x =
+ 			(overflow_x == CSS_OVERFLOW_SCROLL ||
+ 			 overflow_x == CSS_OVERFLOW_AUTO) ?
+@@ -3681,8 +3681,8 @@ bool layout_block_context(
+ 
+ 		/* Find box's overflow properties */
+ 		if (box->style) {
+-			overflow_x = css_computed_overflow_x(box->style);
+-			overflow_y = css_computed_overflow_y(box->style);
++			overflow_x = box_overflow_x(box);
++			overflow_y = box_overflow_y(box);
+ 		}
+ 
+ 		/* Blocks establishing a block formatting context get minimum
+@@ -5250,7 +5250,7 @@ layout_get_box_bbox(
+ 	/* To stop the top of text getting clipped when css line-height is
+ 	 * reduced, we increase the top of the descendant bbox. */
+ 	if (box->type == BOX_BLOCK && box->style != NULL &&
+-			css_computed_overflow_y(box->style) ==
++			box_overflow_y(box) ==
+ 					CSS_OVERFLOW_VISIBLE &&
+ 			box->object == NULL) {
+ 		css_fixed font_size = 0;
+@@ -5296,8 +5296,8 @@ layout_update_descendant_bbox(
+ 	enum css_overflow_e overflow_y = CSS_OVERFLOW_VISIBLE;
+ 
+ 	if (child->style != NULL) {
+-		overflow_x = css_computed_overflow_x(child->style);
+-		overflow_y = css_computed_overflow_y(child->style);
++		overflow_x = box_overflow_x(child);
++		overflow_y = box_overflow_y(child);
+ 	}
+ 
+ 	/* Get child's border edge */
+@@ -5407,9 +5407,9 @@ static void layout_calculate_descendant_bboxes(
+ 
+ 		layout_calculate_descendant_bboxes(unit_len_ctx, child);
+ 
+-		if (box->style && css_computed_overflow_x(box->style) ==
++		if (box->style && box_overflow_x(box) ==
+ 				CSS_OVERFLOW_HIDDEN &&
+-				css_computed_overflow_y(box->style) ==
++				box_overflow_y(box) ==
+ 				CSS_OVERFLOW_HIDDEN)
+ 			continue;
+ 
+diff --git a/netsurf/content/handlers/html/redraw.c b/netsurf/content/handlers/html/redraw.c
+index c0dd256..b6e17f0 100644
+--- a/netsurf/content/handlers/html/redraw.c
++++ b/netsurf/content/handlers/html/redraw.c
+@@ -1466,8 +1466,8 @@ bool html_redraw_box(const html_content *html, struct box *box,
+ 	}
+ 
+ 	if (box->style != NULL) {
+-		overflow_x = css_computed_overflow_x(box->style);
+-		overflow_y = css_computed_overflow_y(box->style);
++		overflow_x = box_overflow_x(box);
++		overflow_y = box_overflow_y(box);
+ 	}
+ 
+ 	/* avoid trivial FP maths */

@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:53:53 +0200
+Subject: [PATCH] html: the rebox walk visits each box once
+
+html_rebox_walk walked a box and its following siblings, and called
+itself for every child, each call walking that child's following
+siblings again: each sibling list n squared times, compounding with
+depth.  Rebuilding the box tree of YouTube's watch page took 14 to 18 s
+on the host (about a minute in the guest); now 0.8 s.
+---
+ netsurf/content/handlers/html/html.c | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/netsurf/content/handlers/html/html.c b/netsurf/content/handlers/html/html.c
+index 022ded0..2988a3e 100644
+--- a/netsurf/content/handlers/html/html.c
++++ b/netsurf/content/handlers/html/html.c
+@@ -1168,8 +1168,9 @@ void html__redraw_a_box(struct html_content *html, struct box *box)
+  */
+ static void html_rebox_walk(struct box *box, bool relink)
+ {
+-	struct box *child;
+-
++	/* (box and its following siblings, each once: the children are one
++	 * call, which walks their siblings; calling it for every child walked
++	 * each list over again, n squared per level) */
+ 	for (; box != NULL; box = box->next) {
+ 		if (box->node != NULL) {
+ 			void *old = NULL;
+@@ -1186,9 +1187,7 @@ static void html_rebox_walk(struct box *box, bool relink)
+ 		if (relink && box->gadget != NULL) {
+ 			box->gadget->box = box;
+ 		}
+-		for (child = box->children; child != NULL; child = child->next) {
+-			html_rebox_walk(child, relink);
+-		}
++		html_rebox_walk(box->children, relink);
+ 	}
+ }
+ 

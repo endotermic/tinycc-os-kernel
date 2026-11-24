@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:06:48 +0200
+Subject: [PATCH] framebuffer: translucent colours blended
+
+NetSurf's colours carry 255 - alpha in their top byte, which libnsfb's
+plotters ignore, so every translucent colour was drawn opaque: the light
+grey overlays sites use (rgba(0, 0, 0, 0.05)) were black boxes.  Fills
+are blended with the screen; strokes, lines, polygons, arcs and text,
+which libnsfb draws in one colour, get the colour over white (text over
+its background).  The toolkit's colours, with 0xff there for opaque, stay
+opaque.  The knockout plotter no longer lets a translucent fill knock out
+what is under it.
+---
+ netsurf/desktop/knockout.c                  |   7 +-
+ netsurf/frontends/framebuffer/framebuffer.c | 102 +++++++++++++++++---
+ 2 files changed, 94 insertions(+), 15 deletions(-)
+
+diff --git a/netsurf/desktop/knockout.c b/netsurf/desktop/knockout.c
+index 127a48c..50c676d 100644
+--- a/netsurf/desktop/knockout.c
++++ b/netsurf/desktop/knockout.c
+@@ -543,8 +543,11 @@ knockout_plot_rectangle(const struct redraw_context *ctx,
+ 			return NSERROR_OK;
+ 		}
+ 
+-		/* fills both knock out and get knocked out */
+-		knockout_calculate(ctx, kx0, ky0, kx1, ky1, NULL);
++		/* fills both knock out and get knocked out; a translucent
++		 * fill (255 - alpha in the colour's top byte) shows what is
++		 * under it, so it knocks nothing out */
++		if ((pstyle->fill_colour & 0xff000000) == 0)
++			knockout_calculate(ctx, kx0, ky0, kx1, ky1, NULL);
+ 		knockout_boxes[knockout_box_cur].bbox = *rect;
+ 		knockout_boxes[knockout_box_cur].deleted = false;
+ 		knockout_boxes[knockout_box_cur].child = NULL;
+diff --git a/netsurf/frontends/framebuffer/framebuffer.c b/netsurf/frontends/framebuffer/framebuffer.c
+index fc45128..18558e1 100644
+--- a/netsurf/frontends/framebuffer/framebuffer.c
++++ b/netsurf/frontends/framebuffer/framebuffer.c
+@@ -87,12 +87,88 @@ framebuffer_plot_clip(const struct redraw_context *ctx, const struct rect *clip)
+  * \param angle2 The finish angle of the arc.
+  * \return NSERROR_OK on success else error code.
+  */
++/*
++ * Translucent colours.  NetSurf's colours carry 255 - alpha in their top
++ * byte (rgba(0, 0, 0, 0.05) is 0xf2000000); libnsfb's plotters ignore that
++ * byte, so every translucent colour was drawn opaque (black boxes for the
++ * light grey overlays sites use).  The toolkit's own colours, which have
++ * 0xff there for opaque, are drawn opaque.  Fills are blended with what is on the
++ * screen; strokes, lines, polygons and text, which libnsfb draws in one
++ * colour, are given the colour over white (or over the text's background).
++ */
++static inline int fb_alpha(colour c)
++{
++	int top = (int) ((c >> 24) & 0xff);
++
++	/* the toolkit's widgets (fbtk) give opaque colours libnsfb's way,
++	 * with 0xff in the top byte; the page never draws a colour that
++	 * is wholly transparent, so 0xff is opaque in both */
++	if (top == 0xff)
++		return 255;
++	return 255 - top;
++}
++
++/** c over the opaque colour bg */
++static colour fb_over(colour c, colour bg)
++{
++	int a = fb_alpha(c), i;
++	colour out = 0;
++
++	if (a >= 255 || c == NS_TRANSPARENT)
++		return c & 0xffffff;
++	for (i = 0; i < 24; i += 8) {
++		int f = (c >> i) & 0xff, b = (bg >> i) & 0xff;
++		out |= (colour) ((f * a + b * (255 - a)) / 255) << i;
++	}
++	return out;
++}
++
++/** the colour libnsfb draws for c in one colour: over white */
++static inline colour fb_solid(colour c)
++{
++	return fb_over(c, 0xffffff);
++}
++
++/** fill a rectangle with c, blended when translucent */
++static void fb_fill(nsfb_bbox_t *rect, colour c)
++{
++	int a = fb_alpha(c), x, y;
++	nsfb_bbox_t clip;
++	nsfb_colour_t px;
++
++	if (c == NS_TRANSPARENT || a <= 0)
++		return;
++	if (a >= 255) {
++		nsfb_plot_rectangle_fill(nsfb, rect, c & 0xffffff);
++		return;
++	}
++	nsfb_plot_get_clip(nsfb, &clip);
++	px = ((nsfb_colour_t) a << 24) | (c & 0xffffff);
++	for (y = rect->y0 > clip.y0 ? rect->y0 : clip.y0;
++			y < rect->y1 && y < clip.y1; y++)
++		for (x = rect->x0 > clip.x0 ? rect->x0 : clip.x0;
++				x < rect->x1 && x < clip.x1; x++)
++			nsfb_plot_point(nsfb, x, y, px);
++}
++
++/** the text colour: over its background when translucent */
++static colour fb_text_colour(const plot_font_style_t *fstyle)
++{
++	colour bg = fstyle->background;
++
++	if (fb_alpha(fstyle->foreground) >= 255)
++		return fstyle->foreground & 0xffffff;
++	if (bg == NS_TRANSPARENT || fb_alpha(bg) < 255)
++		bg = 0xffffff;
++	return fb_over(fstyle->foreground, bg);
++}
++
+ static nserror
+ framebuffer_plot_arc(const struct redraw_context *ctx,
+ 	       const plot_style_t *style,
+ 	       int x, int y, int radius, int angle1, int angle2)
+ {
+-	if (!nsfb_plot_arc(nsfb, x, y, radius, angle1, angle2, style->fill_colour)) {
++	if (!nsfb_plot_arc(nsfb, x, y, radius, angle1, angle2, fb_solid(style->fill_colour))) {
+ 		return NSERROR_INVALID;
+ 	}
+ 	return NSERROR_OK;
+@@ -123,11 +199,11 @@ framebuffer_plot_disc(const struct redraw_context *ctx,
+ 	ellipse.y1 = y + radius;
+ 
+ 	if (style->fill_type != PLOT_OP_TYPE_NONE) {
+-		nsfb_plot_ellipse_fill(nsfb, &ellipse, style->fill_colour);
++		nsfb_plot_ellipse_fill(nsfb, &ellipse, fb_solid(style->fill_colour));
+ 	}
+ 
+ 	if (style->stroke_type != PLOT_OP_TYPE_NONE) {
+-		nsfb_plot_ellipse(nsfb, &ellipse, style->stroke_colour);
++		nsfb_plot_ellipse(nsfb, &ellipse, fb_solid(style->stroke_colour));
+ 	}
+ 	return NSERROR_OK;
+ }
+@@ -169,7 +245,7 @@ framebuffer_plot_line(const struct redraw_context *ctx,
+ 			pen.stroke_type = NFSB_PLOT_OPTYPE_SOLID;
+ 		}
+ 
+-		pen.stroke_colour = style->stroke_colour;
++		pen.stroke_colour = fb_solid(style->stroke_colour);
+ 		pen.stroke_width = plot_style_fixed_to_int(style->stroke_width);
+ 		nsfb_plot_line(nsfb, &rect, &pen);
+ 	}
+@@ -206,7 +282,7 @@ framebuffer_plot_rectangle(const struct redraw_context *ctx,
+ 	rect.y1 = nsrect->y1;
+ 
+ 	if (style->fill_type != PLOT_OP_TYPE_NONE) {
+-		nsfb_plot_rectangle_fill(nsfb, &rect, style->fill_colour);
++		fb_fill(&rect, style->fill_colour);
+ 	}
+ 
+ 	if (style->stroke_type != PLOT_OP_TYPE_NONE) {
+@@ -220,7 +296,7 @@ framebuffer_plot_rectangle(const struct redraw_context *ctx,
+ 
+ 		nsfb_plot_rectangle(nsfb, &rect,
+ 				plot_style_fixed_to_int(style->stroke_width),
+-				style->stroke_colour, dotted, dashed);
++				fb_solid(style->stroke_colour), dotted, dashed);
+ 	}
+ 	return NSERROR_OK;
+ }
+@@ -246,7 +322,7 @@ framebuffer_plot_polygon(const struct redraw_context *ctx,
+ 		   const int *p,
+ 		   unsigned int n)
+ {
+-	if (!nsfb_plot_polygon(nsfb, p, n, style->fill_colour)) {
++	if (!nsfb_plot_polygon(nsfb, p, n, fb_solid(style->fill_colour))) {
+ 		return NSERROR_INVALID;
+ 	}
+ 	return NSERROR_OK;
+@@ -402,8 +478,8 @@ static void fb_path_fill(struct fb_path *fp, nsfb_colour_t colour)
+ 			span.x0 = xa;
+ 			span.y0 = y;
+ 			span.x1 = xb;
+-			span.y1 = y;
+-			nsfb_plot_line(nsfb, &span, &pen);
++			span.y1 = y + 1;
++			fb_fill(&span, colour);
+ 		}
+ 	}
+ 
+@@ -509,7 +585,7 @@ framebuffer_plot_path(const struct redraw_context *ctx,
+ 		memset(&pen, 0, sizeof(pen));
+ 		pen.stroke_type = NFSB_PLOT_OPTYPE_SOLID;
+ 		pen.stroke_width = w > 0 ? w : 1;
+-		pen.stroke_colour = pstyle->stroke_colour;
++		pen.stroke_colour = fb_solid(pstyle->stroke_colour);
+ 		for (i = 0; i < fp.n; i++) {
+ 			line.x0 = (int) (fp.edge[i].x0 + 0.5f);
+ 			line.y0 = (int) (fp.edge[i].y0 + 0.5f);
+@@ -694,13 +770,13 @@ framebuffer_plot_text(const struct redraw_context *ctx,
+ 					     &loc,
+ 					     bglyph->bitmap.buffer,
+ 					     bglyph->bitmap.pitch,
+-					     fstyle->foreground);
++					     fb_text_colour(fstyle));
+ 			} else {
+ 			    nsfb_plot_glyph8(nsfb,
+ 					     &loc,
+ 					     bglyph->bitmap.buffer,
+ 					     bglyph->bitmap.pitch,
+-					     fstyle->foreground);
++					     fb_text_colour(fstyle));
+ 			}
+ 		}
+ 		x += glyph->advance.x >> 16;
+@@ -759,7 +835,7 @@ framebuffer_plot_text(const struct redraw_context *ctx,
+ 	loc.y1 = loc.y0 + h;
+ 
+ 	chrp = fb_get_glyph(ucs4, style, size);
+-	nsfb_plot_glyph1(nsfb, &loc, chrp, p, fstyle->foreground);
++	nsfb_plot_glyph1(nsfb, &loc, chrp, p, fb_text_colour(fstyle));
+ 
+ 	x += w;
+ 

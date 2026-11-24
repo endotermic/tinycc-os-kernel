@@ -482,6 +482,23 @@ The search button: flex items stretched to their line are now definite for perce
 inside them, and inline flex items (spans, buttons) are blockified (upstreamable/0051, C66). The
 button is 40 px with its magnifier; the filter button and its icon show too.
 
+The video page (2026-11-24): clicking a result runs YouTube's router, and history.pushState now
+moves the location (features/0056, with location.search and hash fixed and BroadcastChannel for the
+player). The watch page shows the title, channel with avatar, subscribe and like/share/save
+buttons, description and related videos. Fixed on the way:
+- a crash when a node is selected twice (0052, C67);
+- translucent colours drawn opaque, the black boxes (0053, 0054, C68, C69);
+- inline-flex boxes off their line, so the logo fell out of the masthead (0055, C70);
+- a quadratic walk that made each box tree rebuild of the watch page take 14-18 s (0057, C71);
+- the body's overflow not given to the viewport, so the window never scrolled (0058, C72);
+- script scrolling (scrollTo, scrollIntoView, root scrollTop, scroll events) was a no-op (0059).
+
+New pages `translucent` and `scroll`. Still open: the comments are an engagement panel in the
+layout YouTube serves us, opened by a click rather than by scrolling; the home page's only content
+for a signed-out visitor, the "history is off" notice (feedNudgeRenderer), is not rendered; the
+title links have no href (Polymer's href$= attribute bindings are not applied, though property
+bindings are; clicks work through the router); the description's "more" overlaps its last line.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

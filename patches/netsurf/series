@@ -50,3 +50,11 @@ features/0048-html-inline-SVG-drawn-as-an-image-of-its-markup.patch
 features/0049-libcss-is-and-where-as-plain-selectors.patch
 upstreamable/0050-JavaScript-bindings-check-that-this-is-of-their-inte.patch
 upstreamable/0051-html-stretched-flex-items-are-definite-inline-flex-i.patch
+upstreamable/0052-css-a-node-selected-again-frees-its-stale-selection-.patch
+upstreamable/0053-libcss-colour-alpha-rounded-to-the-nearest-byte.patch
+upstreamable/0054-framebuffer-translucent-colours-blended.patch
+upstreamable/0055-html-inline-flex-boxes-placed-on-their-line.patch
+features/0056-JavaScript-history-sets-the-location-BroadcastChanne.patch
+features/0057-html-the-rebox-walk-visits-each-box-once.patch
+upstreamable/0058-html-the-body-s-overflow-is-the-viewport-s.patch
+features/0059-JavaScript-scrolling-from-scripts-moves-the-window.patch

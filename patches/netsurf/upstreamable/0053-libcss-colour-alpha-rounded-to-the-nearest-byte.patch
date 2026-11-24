@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:06:48 +0200
+Subject: [PATCH] libcss: colour alpha rounded to the nearest byte
+
+rgba() and hsla() alpha values were truncated when converted to a byte
+(0.05 became 12, 0.5 became 127); browsers round (13, 128), so computed
+colours read back as rgba(0, 0, 0, 0.047).
+---
+ libcss/src/parse/properties/utils.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/libcss/src/parse/properties/utils.c b/libcss/src/parse/properties/utils.c
+index e6ab872..4c6daab 100644
+--- a/libcss/src/parse/properties/utils.c
++++ b/libcss/src/parse/properties/utils.c
+@@ -502,9 +502,11 @@ css_error css__parse_colour_specifier(css_language *c,
+ 
+ 				if (valid == CSS_TOKEN_NUMBER) {
+ 					if (i == 3) {
+-						/* alpha channel */
++						/* alpha channel, rounded to the
++						 * nearest byte as browsers do
++						 * (0.05 is 13, 0.5 is 128) */
+ 						intval = FIXTOINT(
+-							FMUL(num, F_255));
++							FMUL(num, F_255) + F_0_5);
+ 					} else {
+ 						/* colour channels */
+ 						intval = FIXTOINT(num);
+@@ -632,7 +634,8 @@ css_error css__parse_colour_specifier(css_language *c,
+ 				if (consumed != lwc_string_length(token->idata))
+ 					goto invalid; /* failed to consume the whole string as a number */
+ 
+-				alpha = FIXTOINT(FMUL(alpha, F_255));
++				/* rounded to the nearest byte */
++				alpha = FIXTOINT(FMUL(alpha, F_255) + F_0_5);
+ 
+ 				consumeWhitespace(vector, ctx);
+ 

@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:06:48 +0200
+Subject: [PATCH] css: a node selected again frees its stale selection data
+
+set_libcss_node_data asserted that a node had no libcss node data, but a
+node can be selected twice while the box tree is made in slices: a script
+moves it after it was selected where it was.  YouTube's watch page aborted
+the browser this way in the guest.  The old data is freed instead.
+---
+ netsurf/content/handlers/css/select.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/netsurf/content/handlers/css/select.c b/netsurf/content/handlers/css/select.c
+index fc8cca9..c39671d 100644
+--- a/netsurf/content/handlers/css/select.c
++++ b/netsurf/content/handlers/css/select.c
+@@ -1744,7 +1744,14 @@ css_error set_libcss_node_data(void *pw, void *node, void *libcss_node_data)
+ 		return CSS_NOMEM;
+ 	}
+ 
+-	assert(old_node_data == NULL);
++	/* A node selected again before its data was reset (a script moved
++	 * it while the box tree was being made in slices, after it had been
++	 * selected where it was): the old data is stale, so free it rather
++	 * than abort (this was an assertion) */
++	if (old_node_data != NULL) {
++		css_libcss_node_data_handler(&selection_handler,
++				CSS_NODE_DELETED, NULL, n, NULL, old_node_data);
++	}
+ 
+ 	return CSS_OK;
+ }

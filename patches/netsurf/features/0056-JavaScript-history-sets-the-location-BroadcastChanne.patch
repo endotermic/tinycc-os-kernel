@@ -1,0 +1,225 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 13:06:48 +0200
+Subject: [PATCH] JavaScript: history sets the location, BroadcastChannel,
+ alpha strings
+
+history.pushState and replaceState with a URL now change the document's
+location (resolved against it, same origin only, SecurityError
+otherwise), and traversal sets it back; YouTube's router navigated to a
+video and the location stayed on the search page.  location.search and
+hash have their ? and #.  BroadcastChannel (to the page's other channels
+of the same name) for YouTube's player.  Computed colours write their
+alpha as browsers do (0.05, not 0.0470588).
+---
+ .../handlers/javascript/duktape/Location.bnd  | 28 +++++++---
+ .../handlers/javascript/duktape/Window.bnd    | 45 +++++++++++++++-
+ .../handlers/javascript/duktape/webapi.js     | 54 ++++++++++++++++++-
+ 3 files changed, 115 insertions(+), 12 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Location.bnd b/netsurf/content/handlers/javascript/duktape/Location.bnd
+index a731730..328d0aa 100644
+--- a/netsurf/content/handlers/javascript/duktape/Location.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Location.bnd
+@@ -318,10 +318,16 @@ getter Location::search()
+ 
+ 	nsurl_get(priv->url, NSURL_QUERY, &url_s, &url_l);
+ 
+-	/* if url_s is NULL duk_push_lstring pushes an empty string
+-	 * which is correct for this API
+-	 */
+-	duk_push_lstring(ctx, url_s, url_l);
++	/* "" without one, else with its "?" (nsurl may give it without) */
++	if (url_s == NULL || url_l == 0) {
++		duk_push_string(ctx, "");
++	} else if (url_s[0] == '?') {
++		duk_push_lstring(ctx, url_s, url_l);
++	} else {
++		duk_push_string(ctx, "?");
++		duk_push_lstring(ctx, url_s, url_l);
++		duk_concat(ctx, 2);
++	}
+ 
+ 	if (url_s != NULL) {
+ 		free(url_s);
+@@ -338,10 +344,16 @@ getter Location::hash()
+ 
+ 	nsurl_get(priv->url, NSURL_FRAGMENT, &url_s, &url_l);
+ 
+-	/* if url_s is NULL duk_push_lstring pushes an empty string
+-	 * which is correct for this API
+-	 */
+-	duk_push_lstring(ctx, url_s, url_l);
++	/* "" without one, else with its "#" (nsurl may give it without) */
++	if (url_s == NULL || url_l == 0) {
++		duk_push_string(ctx, "");
++	} else if (url_s[0] == '#') {
++		duk_push_lstring(ctx, url_s, url_l);
++	} else {
++		duk_push_string(ctx, "#");
++		duk_push_lstring(ctx, url_s, url_l);
++		duk_concat(ctx, 2);
++	}
+ 
+ 	if (url_s != NULL) {
+ 		free(url_s);
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index f164153..d455406 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -148,10 +148,17 @@ static void native_put_colour(duk_context *ctx, const char *name, css_color c)
+ 		snprintf(buf, sizeof buf, "rgb(%u, %u, %u)",
+ 			 (unsigned)(c >> 16) & 0xff, (unsigned)(c >> 8) & 0xff,
+ 			 (unsigned)c & 0xff);
+-	else
++	else {
++		/* the alpha as browsers write it: the shortest decimal (2,
++		 * else 3 places) that gives the same byte back (0.05, not
++		 * 0.0470588) */
++		double v = a / 255.0, r = (int) (v * 100 + 0.5) / 100.0;
++		if ((unsigned) (r * 255 + 0.5) != a)
++			r = (int) (v * 1000 + 0.5) / 1000.0;
+ 		snprintf(buf, sizeof buf, "rgba(%u, %u, %u, %g)",
+ 			 (unsigned)(c >> 16) & 0xff, (unsigned)(c >> 8) & 0xff,
+-			 (unsigned)c & 0xff, a / 255.0);
++			 (unsigned)c & 0xff, r);
++	}
+ 	duk_push_string(ctx, buf);
+ 	duk_put_prop_string(ctx, -2, name);
+ }
+@@ -819,6 +826,39 @@ static size_t native_css_size(const char *text, size_t len)
+ 	return size;
+ }
+ 
++/* setLocation(url) -> the new location.href: history.pushState and
++ * replaceState change the document's URL without loading anything; the URL
++ * is resolved against the current one and must have its origin
++ * (throws otherwise) */
++static duk_ret_t native_set_location(duk_context *ctx)
++{
++	const char *s = duk_safe_to_string(ctx, 0);
++	location_private_t *lp;
++	nsurl *joined;
++
++	duk_push_global_object(ctx);
++	duk_get_prop_string(ctx, -1, "location");
++	duk_get_prop_string(ctx, -1, PRIVATE_MAGIC);
++	lp = duk_get_pointer(ctx, -1);
++	duk_pop_3(ctx);
++	if (lp == NULL || lp->url == NULL)
++		return 0;
++
++	if (nsurl_join(lp->url, s, &joined) != NSERROR_OK)
++		return duk_error(ctx, DUK_ERR_TYPE_ERROR,
++				"history: invalid URL");
++	if (nsurl_compare(lp->url, joined,
++			NSURL_SCHEME | NSURL_HOST | NSURL_PORT) == false) {
++		nsurl_unref(joined);
++		return duk_error(ctx, DUK_ERR_ERROR,
++				"SecurityError: history state URL of another origin");
++	}
++	nsurl_unref(lp->url);
++	lp->url = joined;
++	duk_push_string(ctx, nsurl_access(joined));
++	return 1;
++}
++
+ static duk_ret_t native_css_declaration(duk_context *ctx)
+ {
+ 	duk_size_t len;
+@@ -1258,6 +1298,7 @@ prototype Window()
+ 	native_put(ctx, "markHTMLDDA", native_mark_htmldda, 1);
+ 	native_put(ctx, "imageState", native_image_state, 1);
+ 	native_put(ctx, "cssDeclaration", native_css_declaration, 1);
++	native_put(ctx, "setLocation", native_set_location, 1);
+ 	duk_def_prop(ctx, -3,
+ 		     DUK_DEFPROP_HAVE_VALUE |
+ 		     DUK_DEFPROP_HAVE_WRITABLE |
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 2faf900..fe11133 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -2129,17 +2129,29 @@ acc(WindowP, "history", function () {
+     var s = state(this), win = this;
+     if (!s.history) {
+         var entries = [{ state: null, url: win.location ? win.location.href : "" }], index = 0;
++        var setURL = function (url) {
++            if (!N.setLocation) return String(url);
++            try {
++                return N.setLocation(String(url));
++            } catch (e) {
++                throw domError("SecurityError", e.message);
++            }
++        };
+         s.history = {
+             get length() { return entries.length; },
+             get state() { return entries[index].state; },
+             scrollRestoration: "auto",
++            /* the URL, if given, becomes the document's (location),
++             * as in browsers: single-page sites read it back */
+             pushState: function (st, title, url) {
++                var href = url === undefined || url === null ? entries[index].url : setURL(url);
+                 entries.length = index + 1;
+-                entries.push({ state: clone(st, new Map()), url: url });
++                entries.push({ state: clone(st, new Map()), url: href });
+                 index = entries.length - 1;
+             },
+             replaceState: function (st, title, url) {
+-                entries[index] = { state: clone(st, new Map()), url: url };
++                var href = url === undefined || url === null ? entries[index].url : setURL(url);
++                entries[index] = { state: clone(st, new Map()), url: href };
+             },
+             back: function () { this.go(-1); },
+             forward: function () { this.go(1); },
+@@ -2149,6 +2161,7 @@ acc(WindowP, "history", function () {
+                 var to = index + delta;
+                 if (to < 0 || to >= entries.length) return;
+                 index = to;
++                if (entries[index].url) setURL(entries[index].url);
+                 nTimeout(function () {
+                     var e = makeEvent("popstate", {}, eventProtos.PopStateEvent, { state: entries[index].state });
+                     win.dispatchEvent(e);
+@@ -3700,6 +3713,43 @@ function MessageChannel() {
+ G.MessageChannel = MessageChannel;
+ G.MessagePort = MessagePort;
+ 
++/* BroadcastChannel: the page is the only browsing context, so a message
++ * goes to the page's other open channels of the same name (a clone, from a
++ * 0 ms timer), never to the sender */
++var broadcastChannels = [];
++function BroadcastChannel(name) {
++    if (!new.target) throw new TypeError("Constructor BroadcastChannel requires 'new'");
++    if (arguments.length < 1) throw new TypeError("BroadcastChannel: a name is required");
++    def(this, "_name", String(name));
++    def(this, "_closed", false);
++    def(this, "_handler", null);
++    broadcastChannels.push(this);
++}
++BroadcastChannel.prototype = Object.create(JsEventTarget.prototype);
++def(BroadcastChannel.prototype, "constructor", BroadcastChannel);
++acc(BroadcastChannel.prototype, "name", function () { return this._name; });
++def(BroadcastChannel.prototype, "postMessage", function (data) {
++    if (this._closed) throw domError("InvalidStateError", "BroadcastChannel is closed");
++    var self = this, copy = clone(data, new Map());
++    broadcastChannels.forEach(function (c) {
++        if (c === self || c._closed || c._name !== self._name) return;
++        nTimeout(function () {
++            if (c._closed) return;
++            c.dispatchEvent(makeEvent("message", { data: clone(copy, new Map()) },
++                MessageEventProto(), eventTypes.MessageEvent));
++        }, 0);
++    });
++});
++def(BroadcastChannel.prototype, "close", function () {
++    this._closed = true;
++    var i = broadcastChannels.indexOf(this);
++    if (i >= 0) broadcastChannels.splice(i, 1);
++});
++acc(BroadcastChannel.prototype, "onmessage", function () { return this._handler; },
++    function (h) { this._handler = typeof h === "function" ? h : null; });
++acc(BroadcastChannel.prototype, "onmessageerror", function () { return null; }, function () {});
++G.BroadcastChannel = BroadcastChannel;
++
+ /* ------------------------------------------------------------------ */
+ /* Interface objects: constructor links, missing names, template       */
+ 
