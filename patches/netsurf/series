@@ -61,3 +61,4 @@ features/0059-JavaScript-scrolling-from-scripts-moves-the-window.patch
 upstreamable/0060-desktop-each-page-gets-a-JavaScript-heap-of-its-own.patch
 upstreamable/0061-html-a-script-element-runs-once.patch
 features/0062-JavaScript-a-larger-stack-for-scripts-createElementN.patch
+upstreamable/0063-libdom-attribute-names-as-the-HTML-parser-makes-them.patch

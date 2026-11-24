@@ -504,6 +504,12 @@ JavaScript heap, because the prototypes leaked from page to page (upstreamable/0
 elements run once (0061), and scripts have a larger stack (features/0062). The search now
 navigates within the page, as in browsers, and the results show.
 
+Attribute bindings (2026-11-24): libdom dropped attribute names that are not XML names, so all of
+Polymer's href$=, title$= and aria-label$= bindings were lost. The names are now kept
+(upstreamable/0063, C74). The result links have their href, and the home page shows what a
+browser shows a signed-out visitor, the "history is off" notice. Still open: the comments panel
+(opened by a click) and the description's "more" overlapping its last line.
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)

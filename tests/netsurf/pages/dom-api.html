@@ -72,6 +72,14 @@ T.eq("methods check their object", [
     illegal(() => Element.prototype.getAttribute.call(document, "x"))].join(","),
     "TypeError,TypeError,TypeError,TypeError");
 T.eq("methods still work on their own objects", Document.prototype.createElement.call(document, "b").tagName, "B");
+// attribute names the HTML parser makes ("href$" in Polymer templates) are kept, and setAttribute
+// takes them (the XML Name rule dropped them: every Polymer attribute binding was lost)
+const tplA = document.createElement("template");
+tplA.innerHTML = '<a href$="[[u]]" title$="[[v]]">a</a>';
+T.eq("attribute names with $", [...tplA.content.firstChild.attributes].map(a => a.name).join(","), "href$,title$");
+const setA = document.createElement("a");
+setA.setAttribute("aria-label$", "x");
+T.eq("setAttribute of such a name", setA.getAttribute("aria-label$"), "x");
 // document
 T.eq("title", document.title, "dom-api");
 document.title = "changed";

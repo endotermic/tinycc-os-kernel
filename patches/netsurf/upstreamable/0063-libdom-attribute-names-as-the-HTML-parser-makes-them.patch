@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Tue, 24 Nov 2026 17:27:55 +0200
+Subject: [PATCH] libdom: attribute names as the HTML parser makes them
+
+Attribute names were checked against XML's Name rule, so the parser's
+attributes with other characters were dropped and setAttribute refused
+them: Polymer templates bind attributes with names such as href$= and
+title$=, and every such binding on YouTube was lost (links without
+href, the home page's history notice never shown).  Attribute names are
+now valid as the DOM standard has them: at least one character and no
+ASCII whitespace, NUL, /, = or >.
+---
+ libdom/src/core/document.c  |  2 +-
+ libdom/src/core/element.c   |  2 +-
+ libdom/src/utils/validate.c | 33 +++++++++++++++++++++++++++++++++
+ libdom/src/utils/validate.h |  1 +
+ 4 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/libdom/src/core/document.c b/libdom/src/core/document.c
+index 40d4cd9..13a1416 100644
+--- a/libdom/src/core/document.c
++++ b/libdom/src/core/document.c
+@@ -606,7 +606,7 @@ dom_exception _dom_document_create_processing_instruction(
+ dom_exception _dom_document_create_attribute(dom_document *doc,
+ 		dom_string *name, dom_attr **result)
+ {
+-	if (_dom_validate_name(name) == false)
++	if (_dom_validate_attribute_name(name) == false)
+ 		return DOM_INVALID_CHARACTER_ERR;
+ 
+ 	return _dom_attr_create(doc, name, NULL, NULL, true, result);
+diff --git a/libdom/src/core/element.c b/libdom/src/core/element.c
+index 389babb..c7c8da8 100644
+--- a/libdom/src/core/element.c
++++ b/libdom/src/core/element.c
+@@ -1650,7 +1650,7 @@ dom_exception _dom_element_set_attr(struct dom_element *element,
+ 	dom_node_internal *e = (dom_node_internal *) element;
+ 	dom_exception err;
+ 
+-	if (_dom_validate_name(name) == false)
++	if (_dom_validate_attribute_name(name) == false)
+ 		return DOM_INVALID_CHARACTER_ERR;
+ 
+ 	/* Ensure element can be written */
+diff --git a/libdom/src/utils/validate.c b/libdom/src/utils/validate.c
+index 4fd7d6d..63a183e 100644
+--- a/libdom/src/utils/validate.c
++++ b/libdom/src/utils/validate.c
+@@ -97,6 +97,39 @@ static bool is_name_char(uint32_t ch)
+  * \param name  The name need to be tested
+  * \return true if ::name is valid, false otherwise.
+  */
++/**
++ * Test whether a name is a valid attribute name: one that the HTML parser
++ * can make (DOM: "valid attribute local name"), at least one character and
++ * no ASCII whitespace, NUL, '/', '=' or '>'.  Names such as "href$" and
++ * "[x]" are valid; templates of frameworks (Polymer's "href$=" attribute
++ * bindings) use them, and the XML Name rule dropped them.
++ *
++ * \param name  The name to test
++ * \return true if ::name is valid, false otherwise.
++ */
++bool _dom_validate_attribute_name(dom_string *name)
++{
++	const char *s;
++	size_t i, len;
++
++	if (name == NULL)
++		return false;
++	len = dom_string_byte_length(name);
++	if (len == 0)
++		return false;
++	s = dom_string_data(name);
++	for (i = 0; i < len; i++) {
++		switch (s[i]) {
++		case '\0': case '\t': case '\n': case '\f': case '\r':
++		case ' ': case '/': case '=': case '>':
++			return false;
++		default:
++			break;
++		}
++	}
++	return true;
++}
++
+ bool _dom_validate_name(dom_string *name)
+ {
+ 	uint32_t ch;
+diff --git a/libdom/src/utils/validate.h b/libdom/src/utils/validate.h
+index 7318653..a11fd66 100644
+--- a/libdom/src/utils/validate.h
++++ b/libdom/src/utils/validate.h
+@@ -19,6 +19,7 @@
+ #include <dom/core/string.h>
+ 
+ bool _dom_validate_name(dom_string *name);
++bool _dom_validate_attribute_name(dom_string *name);
+ bool _dom_validate_ncname(dom_string *name);
+ 
+ #endif

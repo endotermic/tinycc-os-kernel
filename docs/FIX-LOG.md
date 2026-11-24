@@ -2044,6 +2044,14 @@ C73. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0060, 0061, features/00
     (0062). Verification: realm-1-set/realm-2-check (failed before); YouTube search from the home
     page, 20 results and no overflow.
 
+C74. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0063), found because YouTube's result links had
+    no href and the home page showed nothing: libdom checked attribute names against XML's Name rule,
+    so the HTML parser's attributes with other characters were dropped and setAttribute refused
+    them. Polymer templates bind attributes with names such as href$= and title$=, so every
+    attribute binding was lost. Names are now valid as the DOM standard has them (no whitespace,
+    NUL, /, = or >). Verification: dom-api.html (two checks failed before); links with href went
+    from 58 to 159 on the search page; the home page shows its history-off notice in the guest.
+
 ## The device drivers (2026-10-26)
 
 `kernels/linux/drivers.config` (PCI, TCP/IP with Ethernet, Wi-Fi, Bluetooth, sound, USB, mouse,

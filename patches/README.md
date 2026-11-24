@@ -48,7 +48,7 @@ Categories:
   stretched flex items definite for percentages, inline flex items blockified;
   stale selection data freed; rgba alpha rounded; translucent colours blended on the framebuffer;
   inline-flex boxes on their line; the body's overflow on the viewport; a JavaScript heap
-  per page; script elements run once)
+  per page; script elements run once; attribute names as the HTML parser makes them)
   and `netsurf/features` (the JavaScript bindings' Duktape C API implemented on
   QuickJS: ES2023 instead of ES5.1; DOM changes made after load drawn by rebuilding the box tree;
   NETSURF_JS_TRACE, which names the unimplemented WebIDL members a page uses; webapi.js, the web
