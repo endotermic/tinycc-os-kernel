@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autarkeia OS News</title>
+<link rel="icon" type="image/png" href="img/logo-512.png">
+<link rel="alternate" type="application/atom+xml" title="Autarkeia OS news" href="feed.xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <nav class="wrap">
+    <a class="brand" href="./"><img src="img/logo-512.png" alt="" width="28" height="28"> Autarkeia OS</a>
+    <ul>
+      <li><a href="./#download">Download</a></li>
+      <li><a href="./#screenshots">Screenshots</a></li>
+      <li><a href="./#docs">Documentation</a></li>
+      <li><a href="./#support">Support</a></li>
+      <li><a href="news.html">News</a></li>
+    </ul>
+  </nav>
+</header>
+<main class="wrap">
+  <h1>News</h1>
+  <p>New releases are announced here and in the <a href="feed.xml">Atom feed</a>.</p>
+
+  <article class="post" id="v1.1">
+    <h2>Autarkeia OS 1.1 "Teleios" released</h2>
+    <p><time datetime="2026-11-25">2026-11-25</time></p>
+    <p>The system built by the tinycc-os-kernel project now has a name, <strong>Autarkeia OS</strong>
+      (Greek for self-sufficiency), and 1.1 is its first release with ISO images to download, for
+      x86_64 and i386. Everything in them, from the Linux 7.3 kernel to the X server and the NetSurf
+      browser, is compiled by a patched Tiny C Compiler, with no GCC and no binutils.</p>
+    <ul>
+      <li>The name in <code>/etc/os-release</code>, the boot banner, the GRUB menu, the xdm login and the logo.</li>
+      <li>A package list for every release (<code>scripts/package-list.sh</code>): 68 components, 162 tcc patches.</li>
+      <li>NetSurf: <code>scrollWidth</code> and <code>scrollHeight</code> count content that overflows.</li>
+    </ul>
+    <p>Version 1.1 contains everything in 1.0 "Teleios" (2026-11-24): i386 next to x86_64, both
+      self-hosting; the kernel built from vanilla Linux with no kernel patches; the graphical session
+      (TinyX with Composite, JWM, xdm, mlterm, xedit); drivers for real hardware in seven groups; and
+      NetSurf 3.11 with JavaScript on QuickJS.</p>
+    <p><a href="./#download">Download</a> &middot;
+      <a href="https://github.com/endotermic/tinycc-os-kernel/releases/tag/v1.1">Release notes</a></p>
+  </article>
+</main>
+<footer class="wrap">
+  <p>Autarkeia OS is built by the <a href="https://github.com/endotermic/tinycc-os-kernel">tinycc-os-kernel</a> project.</p>
+</footer>
+</body>
+</html>
