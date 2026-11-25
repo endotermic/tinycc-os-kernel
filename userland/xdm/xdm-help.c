@@ -23,7 +23,7 @@
 #include <X11/Xft/Xft.h>
 
 static const char *lines[] = {
-    "tinycc-os-kernel: graphical login.  xdm's greeter on TinyX (Xfbdev), both compiled by tcc,",
+    "Autarkeia OS: graphical login.  xdm's greeter on TinyX (Xfbdev), both compiled by tcc,",
     "like the kernel, musl, busybox and everything else on this screen.",
     "",
     "Proof-of-concept accounts (name / password):   ada / lovelace     grace / hopper     dennis / ritchie",

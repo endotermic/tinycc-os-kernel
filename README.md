@@ -1,4 +1,7 @@
-# tinycc-os-kernel
+# Autarkeia OS
+
+**Autarkeia OS** (Greek *autarkeia*, "self-sufficiency") is the system this repository,
+`tinycc-os-kernel`, builds and releases.
 
 Build an operating system kernel with the [Tiny C Compiler](https://repo.or.cz/tinycc.git)
 instead of GCC, and boot it with a userland that tcc compiled as well.
@@ -251,7 +254,7 @@ been tried on real hardware yet.
 The boot ends with:
 
 ```
-*** tinycc-os-kernel: Linux 7.3.0+ x86_64, #1 SMP PREEMPT ...
+*** Autarkeia OS: Linux 7.3.0+ x86_64, #1 SMP PREEMPT ...
 *** every file of this kernel was compiled, assembled and linked by tinycc (tcc, tld)
 *** BusyBox v1.38.0 (static, musl -- compiled and linked by tinycc as well)
 *** tcc version 0.9.28rc e23dabe+114p (x86_64 Linux) is installed, static, musl libc:  try  tcc -run hello.c
@@ -304,8 +307,8 @@ KERNEL=out/<arch>/selfhost/bzImage ./run.sh        # boots the guest-built kerne
 ```
 
 The build number counts the generations: the host build is `#1`, a kernel built inside it
-`#2` (`KBUILD_BUILD_VERSION`; the banner says "generation 2: this kernel was built inside a
-tinycc-os-kernel guest (tcc@tinycc-os-guest)"), and the image works the same inside #2.
+`#2` (`KBUILD_BUILD_VERSION`; the banner says "generation 2: this kernel was built inside an
+Autarkeia OS guest (tcc@tinycc-os-guest)"), and the image works the same inside #2.
 `scripts/selfhost-test.sh` runs it unattended: `host` builds the pruned tree on the host with
 the image's toolchain (49 s on 8 cores, a bzImage of the reference's size), `qemu` boots
 `./run.sh --selfhost --auto` (the guest runs `build-kernel` and `send-file` itself and shuts

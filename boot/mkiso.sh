@@ -8,14 +8,14 @@
 # xdm, whose greeter on the TinyX X server lists the accounts and runs links -g as the
 # session), the second into the graphical mode without a login (tcc.startx); the text
 # console entries follow.
-# Usage: boot/mkiso.sh [out.iso]      (default: out/<arch>/tcc-linux-<arch>.iso)
+# Usage: boot/mkiso.sh [out.iso]      (default: out/<arch>/autarkeia-<arch>.iso)
 # Env: ARCH (x86_64, i386), OUT, BUILD (the directories, see scripts/lib.sh)
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/lib.sh"
 case ${1:-} in -h|--help) usage;; -*) usage 2;; esac
 ARCH=${ARCH:-x86_64}
-O=$OUT/$ARCH; ISO=${1:-$O/tcc-linux-$ARCH.iso}
+O=$OUT/$ARCH; ISO=${1:-$O/autarkeia-$ARCH.iso}
 # grub-mkrescue puts a boot image on the ISO for every GRUB platform under /usr/lib/grub; both
 # are needed for the hybrid image: without i386-pc the ISO is UEFI-only and SeaBIOS (QEMU's
 # default firmware, ./run.sh --iso) fails with "Could not read from CDROM (code 0009)"
@@ -64,7 +64,7 @@ fi
 # server (TinyX's Xfbdev on the framebuffer, tty5), its greeter with the helper text that
 # lists the accounts and passwords, and the links browser in graphics mode as the session;
 # the shell stays on the serial console.  tcc.startx is the same screen without a login.
-menuentry "tinycc-os-kernel: graphical login (xdm on the TinyX X server, links as the session), all compiled by tinycc" {
+menuentry "Autarkeia OS: graphical login (xdm on the TinyX X server, links as the session), all compiled by tinycc" {
     linux /boot/bzImage console=ttyS0 console=tty0 rootfstype=ramfs tcc.xdm
     initrd /boot/initramfs.cpio.gz
 }

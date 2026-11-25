@@ -1,4 +1,4 @@
-tinycc-os-kernel: the self-hosting image
+Autarkeia OS: the self-hosting image
 =========================================
 
 This system was compiled, assembled and linked by the Tiny C Compiler (tcc) and the

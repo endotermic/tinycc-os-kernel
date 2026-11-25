@@ -27,7 +27,7 @@
 ! contrasts.  The helper text with the accounts is a window of its own (xdm-help,
 ! Xsetup_0), on the same glass.
 xlogin*backgroundProperty: _WALLPAPER_FROSTED_PMAP_ID
-xlogin*greeting:        Log in to tinycc-os-kernel
+xlogin*greeting:        Log in to Autarkeia OS
 xlogin*namePrompt:      name:\040
 xlogin*passwdPrompt:    password:\040
 xlogin*fail:            wrong name or password: see the text below

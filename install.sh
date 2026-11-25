@@ -19,7 +19,7 @@
 #                     [--bs SIZE] [--yes] [--no-verify]
 #        ./install.sh --list
 #   --iso     the image to write (default: a menu of every out/*/*.iso)
-#   --arch    shorthand for --iso out/ARCH/tcc-linux-ARCH.iso (x86_64, i386)
+#   --arch    shorthand for --iso out/ARCH/autarkeia-ARCH.iso (x86_64, i386)
 #   --mode    raw or files, see above (default: asked on a terminal, else raw)
 #   --label   files: the FAT32 volume label (up to 11 of A-Z 0-9 _ -; default TCCOS)
 #   --device  the whole drive to write, e.g. /dev/sdb (not a partition such as /dev/sdb1).
@@ -170,7 +170,7 @@ fi
 
 # ---- choose the ISO ------------------------------------------------------------------
 [ -z "$arch" ] || [ -z "$iso" ] || die "--iso and --arch exclude each other"
-[ -z "$arch" ] || iso=$OUT/$arch/tcc-linux-$arch.iso
+[ -z "$arch" ] || iso=$OUT/$arch/autarkeia-$arch.iso
 if [ -z "$iso" ]; then
     l=$(isos); [ -n "$l" ] || die "no ISO in $OUT/*/ - build one with: ./build.sh --output iso"
     [ -n "$tty" ] || die "no terminal to ask on: pass --iso PATH or --arch ARCH"

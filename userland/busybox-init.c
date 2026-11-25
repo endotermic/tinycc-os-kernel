@@ -336,7 +336,7 @@ static void banner(FILE *out)
     else
         bb_build = "static, unknown toolchain";
     free(s);
-    fprintf(out, "\n*** tinycc-os-kernel: %s %s %s, %s\n", u.sysname, u.release, u.machine, u.version);
+    fprintf(out, "\n*** Autarkeia OS: %s %s %s, %s\n", u.sysname, u.release, u.machine, u.version);
     /* the release, from /etc/os-release's PRETTY_NAME */
     {
         char *rel = read_file("/etc/os-release", &len), *q, *e;
@@ -390,7 +390,7 @@ static void banner(FILE *out)
             char gen[16] = "?";
             if (u.version[0] == '#')
                 snprintf(gen, sizeof gen, "%ld", strtol(u.version + 1, NULL, 10));
-            fprintf(out, "*** generation %s: this kernel was built inside a tinycc-os-kernel guest (%s), with the guest's own tcc, tld and make\n", gen, p);
+            fprintf(out, "*** generation %s: this kernel was built inside an Autarkeia OS guest (%s), with the guest's own tcc, tld and make\n", gen, p);
         }
     }
     free(s);

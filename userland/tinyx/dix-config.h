@@ -9,8 +9,8 @@
 #ifndef _DIX_CONFIG_H_
 #define _DIX_CONFIG_H_
 
-#define BUILDERADDR "tinycc-os-kernel"
-#define OSNAME "Linux (tinycc-os-kernel)"
+#define BUILDERADDR "Autarkeia OS"
+#define OSNAME "Linux (Autarkeia OS)"
 /* libXfont's compiled-in fonts (fixed, cursor): no font files in the image */
 #define COMPILEDDEFAULTFONTPATH "built-ins"
 #define DPMSExtension 1
@@ -63,7 +63,7 @@
 #define XORG_DATE "22 Sep 2015"
 #define XResExtension 1
 #define DBE 1
-#define XVENDORNAME "tinycc-os-kernel (TinyX)"
+#define XVENDORNAME "Autarkeia OS (TinyX)"
 #define X_BYTE_ORDER X_LITTLE_ENDIAN
 #define MONOTONIC_CLOCK 1
 /* a kdrive server: dix/dixfonts.c registers libXfont's built-in fonts (the "built-ins"

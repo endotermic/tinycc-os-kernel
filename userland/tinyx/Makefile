@@ -13,7 +13,7 @@ O ?= .
 CC ?= tcc
 CFLAGS ?= -O2
 HERE := $(dir $(lastword $(MAKEFILE_LIST)))
-VENDOR ?= tinycc-os-kernel
+VENDOR ?= Autarkeia OS
 
 # every directory a server source includes from (the Makefile.am AM_CFLAGS/INCS of the tree)
 INCS = -I$(HERE) -I$(SRC)/include -I$(SRC)/Xext -I$(SRC)/damageext -I$(SRC)/composite -I$(SRC)/miext/cw -I$(SRC)/xfixes -I$(SRC)/mi \

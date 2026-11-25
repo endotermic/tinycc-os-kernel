@@ -108,7 +108,7 @@ done
 ARCHES="x86_64 i386"; FORMS="shell nolibc selfhost iso"
 needs() { # needs ARCH FORM: the files, one per line
     case $2 in
-        iso) echo "$OUT/$1/tcc-linux-$1.iso";;
+        iso) echo "$OUT/$1/autarkeia-$1.iso";;
         *) echo "${KERNEL:-$OUT/$1/bzImage}"
            case $2 in nolibc) echo "$OUT/$1/initramfs-nolibc.cpio";; selfhost) echo "$OUT/$1/initramfs-selfhost.cpio";; *) echo "$OUT/$1/initramfs.cpio.gz";; esac;;
     esac
@@ -233,7 +233,7 @@ if [ -n "$selfhost" ]; then
 fi
 KERNEL=${KERNEL:-$O/bzImage}
 if [ -n "$iso" ]; then
-    set -- -cdrom "$O/tcc-linux-$ARCH.iso" -boot d "$@"
+    set -- -cdrom "$O/autarkeia-$ARCH.iso" -boot d "$@"
     # one OEM string, space-separated words that grub.cfg parses: the gfxpayload, and with
     # --selfhost the menu entry to boot plus the extra kernel parameters (",," is a literal
     # comma in a QEMU option value; GRUB's "smbios --get-string 4" returns the string whose

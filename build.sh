@@ -114,7 +114,7 @@ fi
 need_done
 export ARCH=$arch JOBS=$jobs
 if [ "$build" = tcc ]; then
-    msg "tinycc-os-kernel: the patched tcc only ($arch), $jobs jobs"
+    msg "Autarkeia OS: the patched tcc only ($arch), $jobs jobs"
     overall_begin "$BUILD/$arch/step-times" fetch patch host-tcc ${test:+tcc-test} tcc-archive
     overall_step fetch; "$ROOT/scripts/fetch.sh" tinycc
     overall_step patch; "$ROOT/scripts/patch.sh" tinycc
@@ -130,7 +130,7 @@ if [ "$build" = tcc ]; then
 fi
 case $parallel in ''|0) ;; [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) die "--parallel=N needs a number from 1 to 999";; esac
 [ "$parallel" != 0 ] || parallel=$jobs
-msg "tinycc-os-kernel: distro, arch $arch, output $output${selfhost:+ + self-hosting image}${parallel:+, one dependency graph with up to $parallel jobs at once}${parallel:-, $jobs jobs}"
+msg "Autarkeia OS: distro, arch $arch, output $output${selfhost:+ + self-hosting image}${parallel:+, one dependency graph with up to $parallel jobs at once}${parallel:-, $jobs jobs}"
 steps="tld libelf kernel musl kernel-headers busybox ncurses nnn libressl zlib libpng xlibs tinyx xdm jwm mlterm xfiles xedit wallpapers links curl netsurf libnl wifi firmware guest-tcc initramfs"
 iso=; case $output in iso|all) iso=iso;; esac
 if [ -n "$parallel" ]; then
