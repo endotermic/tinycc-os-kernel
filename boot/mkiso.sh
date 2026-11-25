@@ -29,12 +29,39 @@ cp "$O/initramfs-nolibc.cpio" "$R/boot/initramfs-nolibc.cpio"
 # the self-hosting image (scripts/build.sh selfhost) when it exists: its own menu entries
 selfhost=
 [ ! -f "$O/initramfs-selfhost.cpio" ] || { cp "$O/initramfs-selfhost.cpio" "$R/boot/"; selfhost=1; }
-# the firmware of the drivers (scripts/build.sh firmware: Wi-Fi, Bluetooth, Realtek Ethernet)
-# when it exists: a second initrd of the busybox entries, which the kernel unpacks into the
-# same root (/lib/firmware) after the first (130 MB of RAM; not on the self-hosting entries,
-# whose kernel build needs the memory)
-firmware=
-[ ! -f "$O/firmware.cpio.gz" ] || { cp "$O/firmware.cpio.gz" "$R/boot/"; firmware=1; }
+# the firmware of the drivers (scripts/build.sh firmware: Wi-Fi, Bluetooth, GPUs, sound,
+# Realtek Ethernet) when it exists: the ISO's /firmware directory, every file xz-compressed
+# (the kernel's FW_LOADER_COMPRESS_XZ), not an initrd.  GRUB reads initrds through the BIOS or
+# UEFI disk calls, ~15 MB/s in QEMU: of the 12.6 s of black screen before the kernel started,
+# the 123 MB firmware image took 7.4 s (SeaBIOS; on OVMF minutes).  /init mounts the medium instead (userland/firmware-medium.c), finds it
+# by its /firmware/.id, which every entry's tcc.firmware= names, hands the directory to the
+# firmware loader and probes again the devices that missed their files; it costs no RAM, so
+# the self-hosting entries have it too.  Made once per firmware image (its checksum is the
+# ID), in $BUILD/<arch>/firmware-iso; symlinks to files become NAME.xz -> TARGET.xz, as the
+# loader asks for NAME.xz.
+fwid=
+if [ -f "$O/firmware.cpio.gz" ]; then
+    need_reset; need_tool xz:xz-utils cpio; need_done
+    fwid=$(sha256sum "$O/firmware.cpio.gz" | cut -c1-16)
+    FWT=$BUILD/$ARCH/firmware-iso
+    if [ "$(cat "$FWT/firmware/.id" 2>/dev/null)" != "$fwid" ]; then
+        echo "   firmware: unpacking $O/firmware.cpio.gz into the ISO's /firmware, xz-compressed (once per firmware image)"
+        rm -rf "$FWT"; mkdir -p "$FWT/unpack"
+        (cd "$FWT/unpack" && gzip -dc "$O/firmware.cpio.gz" | cpio -id --quiet) || die "cannot unpack $O/firmware.cpio.gz"
+        F=$FWT/unpack/lib/firmware
+        find "$F" -type l | while IFS= read -r l; do
+            [ -f "$l" ] || continue     # a link to a directory stays (intel/sof-ace-tplg)
+            t=$(readlink "$l"); rm "$l"; ln -s "$t.xz" "$l.xz"
+        done
+        # -C crc32: the kernel's xz decoder checks CRC32 (or none), not xz's default CRC64;
+        # 4 at a time: xz -6 takes ~100 MB each
+        find "$F" -type f -print0 | xargs -0 -n 8 -P 4 xz -C crc32 -6 -q || die "xz failed"
+        mv "$F" "$FWT/firmware" && rm -rf "$FWT/unpack"
+        echo "$fwid" > "$FWT/firmware/.id"
+    fi
+    cp -al "$FWT/firmware" "$R/firmware"
+    echo "   firmware: $(find "$R/firmware" -type f | wc -l) files, $(du -sm "$R/firmware" | cut -f1) MB on the ISO (ID $fwid)"
+fi
 cat > "$R/boot/grub/grub.cfg" <<'CFG'
 serial --unit=0 --speed=115200
 terminal_input serial console
@@ -103,7 +130,9 @@ menuentry "self-hosting, screen first" {
     initrd /boot/initramfs-selfhost.cpio
 }
 CFG
-[ -z "$firmware" ] || sed -i -E 's#^(    initrd /boot/initramfs\.cpio\.gz)$#\1 /boot/firmware.cpio.gz#' "$R/boot/grub/grub.cfg"
+# every entry: a line on the screen while GRUB reads the files (nothing else shows there
+# until the kernel's console starts), and the firmware's ID for /init
+sed -i -E 's#^(    linux /boot/bzImage .*)$#    echo "Loading Linux and the system image ..."\n\1'"${fwid:+ tcc.firmware=$fwid}"'#' "$R/boot/grub/grub.cfg"
 # every GRUB platform installed under /usr/lib/grub is included: i386-pc (BIOS), x86_64-efi,
 # and i386-efi when grub-efi-ia32-bin is installed (32-bit UEFI: Bay Trail tablets and 2-in-1s)
 grub-mkrescue -o "$ISO" "$R" >"$BUILD/$ARCH/logs/iso.log" 2>&1 || { tail -5 "$BUILD/$ARCH/logs/iso.log"; die "grub-mkrescue failed"; }

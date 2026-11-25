@@ -13,7 +13,7 @@
  *   -i IFACE (before the command): another interface than the first wlan*
  *
  * Needs root (su): it configures the interface.  The firmware of the card comes from the
- * ISO's firmware image (/lib/firmware); dmesg names a missing file.
+ * ISO's /firmware (the boot medium, mounted by /init: firmware-medium); dmesg names a missing file.
  */
 #include <stdio.h>
 #include <stdlib.h>

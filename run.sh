@@ -49,8 +49,8 @@
 #             test suite on it, no kernel: the logs come back); scripts/selfhost-test.sh
 #             drives the first two
 #   --firmware  the direct boot of the busybox image with out/<arch>/firmware.cpio.gz appended
-#             to the initrd, as the ISO's entries load it (scripts/build.sh firmware: the
-#             firmware files of the kernel's drivers in /lib/firmware, 260 MB; MEM 1G); QEMU
+#             to the initrd (scripts/build.sh firmware: the firmware files of the kernel's
+#             drivers in /lib/firmware, 320 MB; MEM 1G; the ISO has them on the medium); QEMU
 #             emulates none of those cards, but cfg80211 loads its regulatory.db from there
 #   --        end of run.sh's options; everything after it goes to QEMU as it is
 #   -h, --help  this text
@@ -59,7 +59,7 @@
 # with the GPU drivers takes 60 MB of code (2026-11-17: 256M left 59 MB available), and the
 # graphical session needs the rest, 256M ran out of memory when links rescaled a photograph
 # during a window resize, 2026-11-17; 128M panicked at boot since the file manager,
-# 2026-11-03; 1G with --firmware and with an --iso that has the firmware image, 1536M with
+# 2026-11-03; 1G with --firmware, 1536M with
 # --selfhost: the x86_64 guest's link of vmlinux was OOM-killed at 1G on 2026-11-18, ld
 # alone takes 677 MB next to the 205 MB of ramfs), BUILD_DISK (--selfhost: the size of the sparse build disk image
 # out/<arch>/selfhost/build.img, made fresh for every boot, default 8G; BUILD_DISK=0 or empty:
@@ -177,11 +177,12 @@ if [ -z "$TIMEOUT" ]; then if [ -t 0 ]; then TIMEOUT=0; else TIMEOUT=30; fi; fi
 # ramfs root holds about 97 MB that cannot be paged out, and the X server, the desktop and a
 # browser rescaling a 1920x1200 photograph on every step of a window resize need most of the
 # rest: on 256 MB the OOM killer ended links or the whole session (2026-11-17)
-# the firmware image (--firmware, and the ISO's busybox entries when the ISO has it) unpacks
-# to about 260 MB more of ramfs (Wi-Fi 130 MB, GPUs 130 MB), and its 104 MB packed are held
-# until the unpacking is done: 512 MB ran out of memory in populate_rootfs (2026-11-17).  This
-# is checked first: the 512 MB of the graphical mode and the ISO would otherwise win
-if [ -z "$MEM" ] && { [ -n "$firmware" ] || { [ -n "$iso" ] && [ -f "$O/firmware.cpio.gz" ]; }; }; then MEM=1G; fi
+# the firmware image (--firmware) unpacks to about 320 MB more of ramfs (Wi-Fi, GPUs, sound),
+# and its 123 MB packed are held until the unpacking is done: 512 MB ran out of memory in
+# populate_rootfs (2026-11-17).  The ISO keeps the files on the medium (/firmware, which /init
+# mounts: userland/firmware-medium.c) and needs no more than without them.  This is checked
+# first: the 640 MB of the graphical mode would otherwise win
+if [ -z "$MEM" ] && [ -n "$firmware" ]; then MEM=1G; fi
 if [ -z "$MEM" ] && { [ -n "$xdm" ] || [ -n "$startx" ] || [ -n "$iso" ]; }; then MEM=640M; fi
 if [ -n "$efi" ]; then
     # a combined image works with -bios; a split CODE image needs pflash with a VARS copy

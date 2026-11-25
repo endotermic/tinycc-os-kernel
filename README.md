@@ -188,9 +188,9 @@ every kernel command line): the tmpfs the kernel would use is capped at half of 
 memory, which the image has outgrown. The image is a gzip-compressed cpio
 (`out/<arch>/initramfs.cpio.gz`, 42 MB; it unpacks to about 100 MB of ramfs). `run.sh`
 gives the guest 384 MB for the console, 640 MB for the graphical boots `--xdm`, `--startx`
-and `--iso`, and 1 GB when the firmware image comes along (`--firmware`, or an ISO that has
-it: its 104 MB packed and 257 MB unpacked come on top, and 512 MB ran out of memory while
-unpacking); the x86_64 kernel with the GPU drivers takes 60 MB of code itself (2026-11-17).
+and `--iso`, and 1 GB when the firmware image comes along in the initrd (`--firmware`: its
+123 MB packed and 320 MB unpacked come on top, and 512 MB ran out of memory while unpacking;
+the ISO keeps the firmware on the medium instead and needs no more for it); the x86_64 kernel with the GPU drivers takes 60 MB of code itself (2026-11-17).
 A real machine or another VM should have that much too: at 128 MB the kernel ran out of
 memory while unpacking (2026-11-03), and on 256 MB links rescaling a photograph during a window
 resize ran the memory out. The screen is a KMS display at the native resolution
@@ -232,8 +232,13 @@ SD card readers, exFAT and ISO 9660, the CMOS clock, hwmon; the Wi-Fi cards of l
 about 2013 (Intel iwlwifi, Realtek rtw88/rtw89, MediaTek MT7921/MT7922/MT7925, Qualcomm
 ath10k/ath11k/ath12k, Broadcom brcmfmac on PCIe) with their firmware: `scripts/build.sh firmware`
 copies the files the kernel's drivers request from linux-firmware (and `regulatory.db`) into
-`out/<arch>/firmware.cpio.gz`, which the ISO's entries load as a second initrd into
-`/lib/firmware` (`run.sh --firmware` does the same for the direct boot). In the guest,
+`out/<arch>/firmware.cpio.gz`. The ISO carries them in its `/firmware` directory,
+xz-compressed, not as an initrd: GRUB reads initrds through the BIOS or UEFI disk calls, and
+the firmware image alone kept the screen black for 7 s before the kernel started. `/init`
+mounts the boot medium (the CD, or the USB stick the ISO was written to), hands `/firmware` to
+the kernel's firmware loader and probes again the devices that asked for their files before
+it was there (`userland/firmware-medium.c`); i915's files and `regulatory.db` are in the
+initramfs itself. `run.sh --firmware` appends the image to the initrd of the direct boot. In the guest,
 `su -c 'wifi scan'` lists the networks in range and `su -c 'wifi connect NAME PASSWORD'` joins
 one (WPA2 or WPA3, then DHCP); `wifi` alone shows the state, `wifi off` leaves. The GPUs:
 Intel i915 and xe, AMD amdgpu (with its DC display engine) and radeon, NVIDIA nouveau

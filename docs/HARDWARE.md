@@ -212,6 +212,38 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   x86_64 15 min 46 s).  Not tested: real laptops' S3/s2idle
   (firmware and drivers decide), the platform drivers, MCE reports.
 
+## Firmware from the boot medium (2026-11-25)
+
+- The ISO's busybox entries loaded the firmware image (`out/<arch>/firmware.cpio.gz`, 123 MB
+  packed on x86_64) as a second initrd.  GRUB reads initrds through the BIOS or UEFI disk
+  calls: in QEMU (SeaBIOS, IDE CD) 190 MB took 12.6 s of black screen between the menu and
+  the kernel's first line, the kernel's own decompression 0.5 s of it; on OVMF more than two
+  minutes.  The kernel then unpacked 320 MB into the ramfs (1 GB of RAM needed).
+- Now the ISO has a `/firmware` directory instead (boot/mkiso.sh: the image unpacked, every
+  file xz-compressed with CRC32, links to files renamed NAME.xz -> TARGET.xz; 105 MB, made
+  once per image in `build/<arch>/firmware-iso`), and every entry's command line names it by
+  `tcc.firmware=ID` (the image's checksum, also in `/firmware/.id`).  The kernel gets
+  `BLK_DEV_SR` (CDs, QEMU's IDE CD) and `FW_LOADER_COMPRESS_XZ`.  `/init` runs
+  `/usr/sbin/firmware-medium` (userland/firmware-medium.c) before the network: it mounts
+  every `sr*`/`sd*` as iso9660 on `/run/boot-medium` until one has the ID (up to 20 s: a USB
+  stick enumerates after `/init` starts), writes the directory to
+  `/sys/module/firmware_class/parameters/path`, and probes again the devices that missed
+  their files, since the drivers are built in and probe before `/init`: every unbound PCI
+  device and USB interface, and every device that logged a warning about firmware
+  (`/dev/kmsg` records with a `DEVICE=`) is unbound and probed again; not storage or USB
+  controllers, bridges, hubs or USB disks, and not a display driver that drives the screen.
+  i915's files (4.5 MB packed) and `regulatory.db` stay in the initramfs for that reason
+  (`build/<arch>/firmware/early`, the firmware step).
+- Measured in QEMU, x86_64: menu to the kernel's first line 12.6 s -> 5.2 s (SeaBIOS) and
+  more than 120 s -> 49 s (OVMF), `/init` at 21.6 s -> 10.9 s after power-on, the ISO
+  207 -> 199 MB, RAM for the ISO back to 640 MB (543 MB total, 388 MB available at the
+  prompt).  Verified: the CD found as `/dev/sr0`; the ISO as a USB stick found as `/dev/sda`
+  0.9 s after `/init`; a firmware file loaded from the medium through the xz decoder (`iw reg
+  reload` with `/lib/firmware/regulatory.db` removed: works, fails with the path cleared);
+  the kmsg scan.  Not tested: the probing again with a real card (QEMU emulates none whose
+  driver needs firmware; its ati-vga with radeon dies in radeon's bandwidth code, a divide
+  error, before /init).
+
 ## Real hardware reports
 
 - 2026-11-19, Acer Aspire laptop, x86_64 ISO (commit 37af92b): boots; the desktop (xdm

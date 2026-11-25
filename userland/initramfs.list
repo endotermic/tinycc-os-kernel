@@ -6,7 +6,7 @@
 # without a password and the three proof-of-concept users ada, grace and dennis with the
 # passwords the login manager's helper text shows; the consoles log in as ada with login -f,
 # getty offers a login on tty2-tty4, xdm a graphical one) and their homes.  ${BUSYBOX}, ${BUSYBOX_INIT},
-# ${UDHCPC_SCRIPT}, ${DEVICES_TEST}, ${ETC} and ${HELLO} are expanded by gen_init_cpio from the
+# ${UDHCPC_SCRIPT}, ${DEVICES_TEST}, ${FIRMWARE_MEDIUM}, ${ETC} and ${HELLO} are expanded by gen_init_cpio from the
 # environment (scripts/build.sh exports them).  /dev/console must
 # exist before devtmpfs is mounted so that PID 1 gets stdio.  scripts/build.sh appends the
 # guest compiler tree and the staging trees of nnn, LibreSSL and links (userland/dir2list.sh)
@@ -37,6 +37,10 @@ file  /init         ${BUSYBOX_INIT} 0755 0 0
 # the DHCP client's event script (udhcpc runs it; C, see udhcpc-script.c) and the device test
 file  /usr/share/udhcpc/default.script ${UDHCPC_SCRIPT} 0755 0 0
 file  /usr/bin/devices-test ${DEVICES_TEST} 0755 0 0
+# the firmware files from the boot medium (C, see firmware-medium.c; /init runs it): it mounts
+# the ISO on /run/boot-medium
+file  /usr/sbin/firmware-medium ${FIRMWARE_MEDIUM} 0755 0 0
+dir   /run         0755 0 0
 # the accounts: root (no password) and ada, grace, dennis (UID 1000-1002; passwords in
 # shadow: lovelace, hopper, ritchie); login, su and xdm's greeter read them
 file  /etc/passwd  ${ETC}/passwd 0644 0 0

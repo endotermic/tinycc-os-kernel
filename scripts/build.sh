@@ -82,8 +82,9 @@
 #               on that libnl and LibreSSL (WPA2/WPA3, EAP), and the guest's wifi command
 #               (userland/wifi/wifi.c) -> /usr/sbin, /usr/bin/wifi in the images
 #   firmware    the firmware files the kernel's drivers request (Wi-Fi, Bluetooth, Realtek
-#               Ethernet, regulatory.db), from linux-firmware -> out/<arch>/firmware.cpio.gz,
-#               the ISO's second initrd (loaded into /lib/firmware)
+#               Ethernet, regulatory.db), from linux-firmware -> out/<arch>/firmware.cpio.gz
+#               (run.sh --firmware's second initrd; the ISO's /firmware directory, which /init
+#               mounts from the boot medium, see boot/mkiso.sh)
 #   guest-tcc   tcc itself (+ i386-tcc), static, musl, for the initramfs (/usr/bin/tcc in the guest)
 #   guest-make  GNU make, static, musl, compiled by the host tcc (the guest's make for self-hosting)
 #   initramfs   the libc-free init + the two cpio images (initramfs-nolibc.cpio, initramfs.cpio.gz) -> out/<arch>/
@@ -1439,8 +1440,9 @@ step_wifi() {
 
 # the firmware files the kernel's drivers ask for (MODULE_FIRMWARE, modules.builtin.modinfo of
 # the kernel build), from the pinned linux-firmware checkout and wireless-regdb ->
-# out/<arch>/firmware.cpio.gz, a second initrd (boot/mkiso.sh) whose /lib/firmware the kernel
-# loads them from; scripts/firmware-select.py resolves WHENCE's links, the globs and the
+# out/<arch>/firmware.cpio.gz (boot/mkiso.sh unpacks it into the ISO's /firmware, xz-compressed,
+# which /init hands to the firmware loader: userland/firmware-medium.c; run.sh --firmware
+# appends it to the initrd of the direct boot); scripts/firmware-select.py resolves WHENCE's links, the globs and the
 # versioned names (an older API version when the newest one the driver names is not out).
 # Left out: the firmware of access-point chips (QCA988X/QCA9887, QCN9074, QCN9274) and of AMD's
 # datacenter accelerators (MI100 arcturus, MI200 aldebaran, MI300/MI350: GC 9.4.3/9.4.4/9.5.0
@@ -1480,6 +1482,15 @@ step_firmware() {
     # brcmfmac's names include its SDIO and USB parts, which the PCIe-only kernel never loads
     grep -v -e '-sdio' -e '-usb' "$FW/missing.txt" > "$FW/missing-pcie.txt" || true
     (cd "$STAGE" && find . -mindepth 1 | LC_ALL=C sort | cpio -o -H newc -R 0:0 --quiet) | gzip -6 -n > "$O/firmware.cpio.gz"
+    # the part the initramfs carries itself ($FW/early, step_initramfs): the ISO's firmware is
+    # on the boot medium, which /init mounts after the built-in drivers have probed
+    # (userland/firmware-medium.c probes those again), but a display driver that already
+    # drives the screen is not unbound: i915's files (DMC power saving, GuC, HuC; 4.5 MB
+    # packed), and cfg80211's regulatory.db, which it reads once at boot
+    rm -rf "$FW/early"; mkdir -p "$FW/early/lib/firmware"
+    for f in i915 regulatory.db regulatory.db.p7s; do
+        [ ! -e "$STAGE/lib/firmware/$f" ] || cp -a "$STAGE/lib/firmware/$f" "$FW/early/lib/firmware/"
+    done
     echo "   $(wc -l < "$FW/missing-pcie.txt") PCIe names not in linux-firmware ($FW/missing-pcie.txt: chips announced before their firmware); $(ls -l "$O/firmware.cpio.gz" | awk '{print $5}') bytes firmware.cpio.gz"
 }
 
@@ -1669,7 +1680,7 @@ step_selfhost() {
     # 5. the image: the busybox image's manifest + the guest tcc tree + this tree
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
+    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
       stage_lists
@@ -1688,7 +1699,7 @@ step_initramfs() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
-    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
+    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
     # the busybox image's /init is a C script that /usr/bin/tcc runs (-run): it needs the guest tcc
     if [ ! -x "$BUSYBOX" ]; then
@@ -1699,6 +1710,8 @@ step_initramfs() {
         { cat "$ROOT/userland/initramfs.list"
           "$ROOT/userland/dir2list.sh" "$B/tcc-guest/stage"
           stage_lists
+          # i915's firmware and regulatory.db (the firmware step; the rest is on the ISO)
+          [ ! -d "$B/firmware/early" ] || "$ROOT/userland/dir2list.sh" "$B/firmware/early"
         } > "$B/initramfs.gen.list"
         # gzip-compressed (CONFIG_RD_GZIP): the kernel reserves the image as loaded until it
         # has unpacked it, so an uncompressed image costs its size twice at boot; the 60 MB

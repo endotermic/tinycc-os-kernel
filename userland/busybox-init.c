@@ -7,7 +7,8 @@
  * system is C run this way; there are no shell scripts in the image.
  *
  * It mounts the API filesystems (only /bin/busybox and /bin/sh exist in the cpio, so the
- * applets are called through busybox until --install has made the links), brings the
+ * applets are called through busybox until --install has made the links), mounts the boot
+ * medium for its firmware files (firmware-medium, booted from the ISO only), brings the
  * network up (DHCP on every Ethernet interface, udhcpc with the C script
  * /usr/share/udhcpc/default.script), prints the banner with the devices found, keeps a
  * getty on tty2-tty4, then runs an interactive shell on PID 1's console as the unprivileged
@@ -599,6 +600,11 @@ int main(void)
     setenv("NNN_OPTS", "c", 0);
     chdir("/root");
     catch_shutdown_signals();
+    /* the ISO's firmware files (tcc.firmware= on GRUB's command line): mount the boot medium,
+     * hand its /firmware to the firmware loader and probe again the devices that missed it,
+     * before the network comes up (r8169 loads its files when the interface goes up) */
+    if (is_exec("/usr/sbin/firmware-medium"))
+        runl("/usr/sbin/firmware-medium", NULL);
     network_up();
     /* A shell on the screen (tty1, keyboard) too, when there is one and /dev/console is
      * another device (the last "console=" of the command line, listed last in
