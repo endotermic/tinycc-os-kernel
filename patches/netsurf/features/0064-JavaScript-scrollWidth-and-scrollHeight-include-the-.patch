@@ -1,0 +1,121 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Wed, 25 Nov 2026 13:10:39 +0200
+Subject: [PATCH] JavaScript: scrollWidth and scrollHeight include the content
+ that overflows
+
+scrollWidth and scrollHeight returned the padding box, so content that
+overflows an element, also content the element clips, never showed in
+them.  Scripts compare scrollHeight with clientHeight or offsetHeight to
+find text cut off by max-height and overflow: hidden (YouTube's video
+description, which then shortens the text and places its "...more").
+
+N.box returns the scroll size as entries 10 and 11: the padding box
+extended to the far edges of the children's border boxes and of what
+overflows them visibly (their descendant boxes), with the end padding
+after the content.  The children are walked because the layout's
+descendant box of a box that clips both ways stops at its border.
+---
+ .../handlers/javascript/duktape/Window.bnd    | 53 ++++++++++++++++++-
+ .../handlers/javascript/duktape/webapi.js     |  7 ++-
+ 2 files changed, 56 insertions(+), 4 deletions(-)
+
+diff --git a/netsurf/content/handlers/javascript/duktape/Window.bnd b/netsurf/content/handlers/javascript/duktape/Window.bnd
+index 1b4e7f5..cf45959 100644
+--- a/netsurf/content/handlers/javascript/duktape/Window.bnd
++++ b/netsurf/content/handlers/javascript/duktape/Window.bnd
+@@ -80,13 +80,57 @@ static struct box *native_box(duk_context *ctx, duk_idx_t idx)
+ 	return box;
+ }
+ 
++/* the scroll size of a box: its padding box (pw x ph) extended to the
++ * bottom right edge of what it contains, the children's border boxes and
++ * whatever overflows them visibly (their descendant boxes), whether or not
++ * the box itself clips it.  The layout's own descendant box of a box that
++ * hides its overflow stops at its border, so the children are walked here;
++ * like browsers, the end padding is kept after the content */
++static void native_scroll_size(struct box *box, int pw, int ph,
++		int *sw, int *sh)
++{
++	struct box *c;
++	int x1 = pw, y1 = ph;
++	int pass;
++	for (pass = 0; pass < 2; pass++) {
++		c = pass == 0 ? box->children : box->float_children;
++		for (; c != NULL; c = pass == 0 ? c->next : c->next_float) {
++			int cx1, cy1;
++			if (pass == 0 && (c->type == BOX_FLOAT_LEFT ||
++					c->type == BOX_FLOAT_RIGHT))
++				continue;
++			cx1 = c->padding[LEFT] + c->width + c->padding[RIGHT] +
++					c->border[RIGHT].width;
++			cy1 = c->padding[TOP] + c->height + c->padding[BOTTOM] +
++					c->border[BOTTOM].width;
++			if (c->style == NULL ||
++					box_overflow_x(c) == CSS_OVERFLOW_VISIBLE)
++				cx1 = c->descendant_x1 > cx1 ?
++						c->descendant_x1 : cx1;
++			if (c->style == NULL ||
++					box_overflow_y(c) == CSS_OVERFLOW_VISIBLE)
++				cy1 = c->descendant_y1 > cy1 ?
++						c->descendant_y1 : cy1;
++			cx1 += c->x + box->padding[RIGHT];
++			cy1 += c->y + box->padding[BOTTOM];
++			if (cx1 > x1)
++				x1 = cx1;
++			if (cy1 > y1)
++				y1 = cy1;
++		}
++	}
++	*sw = x1;
++	*sh = y1;
++}
++
+ /* box(el): [x, y, width, height] of the border box in page coordinates,
+  * then [width, height] of the padding box, [width, height] of the content
+- * box and the left and top padding, or null without a box */
++ * box, the left and top padding and [width, height] of the scroll area
++ * (scrollWidth, scrollHeight), or null without a box */
+ static duk_ret_t native_box_geometry(duk_context *ctx)
+ {
+ 	struct box *box = native_box(ctx, 0);
+-	int x, y, pw, ph;
++	int x, y, pw, ph, sw, sh;
+ 	if (box == NULL) {
+ 		duk_push_null(ctx);
+ 		return 1;
+@@ -115,6 +159,11 @@ static duk_ret_t native_box_geometry(duk_context *ctx)
+ 	duk_put_prop_index(ctx, -2, 8);
+ 	duk_push_int(ctx, box->padding[TOP]);
+ 	duk_put_prop_index(ctx, -2, 9);
++	native_scroll_size(box, pw, ph, &sw, &sh);
++	duk_push_int(ctx, sw);
++	duk_put_prop_index(ctx, -2, 10);
++	duk_push_int(ctx, sh);
++	duk_put_prop_index(ctx, -2, 11);
+ 	return 1;
+ }
+ 
+diff --git a/netsurf/content/handlers/javascript/duktape/webapi.js b/netsurf/content/handlers/javascript/duktape/webapi.js
+index 693b978..4921819 100644
+--- a/netsurf/content/handlers/javascript/duktape/webapi.js
++++ b/netsurf/content/handlers/javascript/duktape/webapi.js
+@@ -1892,13 +1892,16 @@ if (ElementP) {
+     acc(ElementP, "clientHeight", function () { var b = boxOf(this); return b ? b[5] : 0; });
+     acc(ElementP, "clientTop", function () { var b = boxOf(this); return b ? Math.round((b[3] - b[5]) / 2) : 0; });
+     acc(ElementP, "clientLeft", function () { var b = boxOf(this); return b ? Math.round((b[2] - b[4]) / 2) : 0; });
++    /* the padding box extended by the content that overflows it (also
++     * when the element clips it): scrollHeight > clientHeight is how
++     * scripts find text cut off by max-height (YouTube's description) */
+     acc(ElementP, "scrollWidth", function () {
+         if (isViewportElement(this)) return viewport()[4];
+-        var b = boxOf(this); return b ? b[4] : 0;
++        var b = boxOf(this); return b ? (b[10] !== undefined ? b[10] : b[4]) : 0;
+     });
+     acc(ElementP, "scrollHeight", function () {
+         if (isViewportElement(this)) return viewport()[5];
+-        var b = boxOf(this); return b ? b[5] : 0;
++        var b = boxOf(this); return b ? (b[11] !== undefined ? b[11] : b[5]) : 0;
+     });
+     acc(ElementP, "scrollTop", function () { return isViewportElement(this) ? viewport()[3] : 0; },
+         function (y) { if (isViewportElement(this)) scrollWindow(undefined, y, false); });

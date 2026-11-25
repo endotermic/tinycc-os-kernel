@@ -2,15 +2,22 @@
 <!-- SPDX-License-Identifier: BSD-2-Clause -->
 <html><head><title>scroll</title><script src="harness.js"></script></head>
 <body style="margin: 0">
+<div id="clip" style="width: 200px; height: 40px; padding: 5px; overflow: hidden"><div style="height: 300px; width: 500px">clipped</div></div>
+<div id="fits" style="height: 40px; padding: 5px"><div style="height: 10px">fits</div></div>
 <div style="height: 3000px">tall</div><div id="t" style="height: 50px">target</div><div style="height: 1000px"></div>
 <script>
 // scrolling from script moves the browser window (window.scrollTo/By, scrollIntoView, the root's scrollTop),
-// the root's scrollHeight is the document's, and scroll events reach the document and the window
+// the root's scrollHeight is the document's, and scroll events reach the document and the window;
+// an element's scrollHeight/scrollWidth include the content it clips (how scripts find cut-off text)
 let docEvents = 0, winEvents = 0;
 document.addEventListener("scroll", () => docEvents++);
 window.addEventListener("scroll", () => winEvents++);
 window.addEventListener("load", () => setTimeout(() => {
     T.ok("document scrollHeight", document.documentElement.scrollHeight > 4000 && innerHeight < 4000);
+    const clip = document.getElementById("clip"), fits = document.getElementById("fits");
+    T.eq("clipped content: scrollHeight, clientHeight", clip.scrollHeight + "," + clip.clientHeight, "310,50");
+    T.eq("clipped content: scrollWidth, clientWidth", clip.scrollWidth + "," + clip.clientWidth, "510,210");
+    T.eq("content that fits: scrollHeight is clientHeight", fits.scrollHeight + "," + fits.clientHeight, "50,50");
     window.scrollTo(0, 500);
     T.eq("scrollTo", scrollY + "," + document.documentElement.scrollTop, "500,500");
     window.scrollBy({ top: 100 });

@@ -510,6 +510,28 @@ Polymer's href$=, title$= and aria-label$= bindings were lost. The names are now
 browser shows a signed-out visitor, the "history is off" notice. Still open: the comments panel
 (opened by a click) and the description's "more" overlapping its last line.
 
+The description's "more" (2026-11-25): YouTube cuts the description to its lines itself. The
+snippet gets `max-height` and `overflow: hidden`. A binary search over the text length, one step
+per MutationObserver callback, looks for the longest text with `scrollHeight - offsetHeight` of 5 px
+or less. "...more" then goes to where an invisible copy of it (`#expand-sizer`) ends up after the
+cut text. Our `scrollHeight` was the padding box, so the text never looked too long and was not
+cut. `max-height` hid the extra lines, and "...more" was placed after the end of the whole text:
+x 649 on the line at y 1320, over the last visible line. `scrollWidth` and `scrollHeight` now
+include the content that overflows, also content the element clips (features/0064). Page `scroll`
+checks them.
+
+That alone does not fix the overlap. Each step of the search changes the text and measures it in
+the same task. NetSurf only lays out again in the scheduled rebuild of the box tree, so the
+measurements are of the old layout. A test build that rebuilt the box tree whenever a script read
+geometry after a DOM change was too slow:
+- 16 forced rebuilds took the watch page's rebuild time from 3.3 s to 7.7 s (one rebuild is about
+  330 ms);
+- the rebuild still has to wait until the page's images have loaded, and YouTube runs the search
+  before that, so it was still not cut.
+
+The fix needs a relayout that is cheap enough to run on demand, without rebuilding the box tree
+(phase 6, relayout cost).
+
 The plan as written before the work:
 
 ### Phase 5 plan (2026-11-21)
