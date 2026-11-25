@@ -46,6 +46,14 @@ set timeout=3
 # firmware reports one (VBE/DDC on BIOS, GOP on UEFI), else a sane default.
 insmod all_video
 set gfxpayload=auto
+# VirtualBox's and VMware's firmware report no EDID, and "auto" falls back to 640x480 there,
+# too small for the login screen: on those machines (the SMBIOS system manufacturer, type 1
+# offset 4) ask for a desktop mode first.  Real machines keep their EDID mode.
+if smbios --type 1 --get-string 4 --set sysvendor; then
+    if regexp '^(innotek GmbH|Oracle Corporation|VMware, Inc\.)$' "$sysvendor"; then
+        set gfxpayload=1280x800,1280x1024,1024x768,auto
+    fi
+fi
 # A virtual machine may ask for a mode through SMBIOS OEM string 1 ("gfxpayload=<modes>");
 # run.sh does that with -smbios type=11, since QEMU's display has no monitor to read EDID from.
 # The same string may carry, space-separated, "menu=selfhost" (run.sh --iso --selfhost: boot

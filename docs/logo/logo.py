@@ -168,6 +168,6 @@ print(f'''<?xml version="1.0" encoding="UTF-8"?>
   <g font-family="'DejaVu Sans Mono', 'Liberation Mono', monospace" text-anchor="middle" fill="{C}">
     <text x="256" y="261" font-size="74" font-weight="bold" filter="url(#glow)">tcc</text>
     <text x="256" y="452" font-size="27" letter-spacing="4">AUTARKEIA OS</text>
-    <text x="256" y="482" font-size="15" letter-spacing="6" fill-opacity="0.75">1.0 TELEIOS</text>
+    <text x="256" y="482" font-size="15" letter-spacing="6" fill-opacity="0.75">1.1 TELEIOS</text>
   </g>
 </svg>''')

@@ -480,6 +480,15 @@ kernels would get `kernels/<name>/` and `patches/<name>/`.
 
 The release is in the image's `/etc/os-release`, and the boot banner prints it.
 
+* **v1.1 "Teleios"** (2026-11-25): the first public release with ISOs to download, under the
+  system's name **Autarkeia OS** (`/etc/os-release`, the boot banner, the GRUB menu, the xdm
+  login, the logo). The ISOs are `autarkeia-<arch>.iso`; the release lists every package
+  (`scripts/package-list.sh`); the website is `site/`, served by GitHub Pages from the `gh-pages` branch
+  (`git push origin $(git subtree split --prefix site HEAD):refs/heads/gh-pages`). Tested in VirtualBox (BIOS
+  and EFI, VBoxVGA and VMSVGA): GRUB now asks for a desktop video mode on VirtualBox and VMware,
+  whose firmware reports no EDID (it was 640x480, which cut off the login screen). mlterm gets 2
+  px between lines (DejaVu Sans Mono's underscore was clipped). NetSurf's
+  `scrollWidth`/`scrollHeight` count the content that overflows.
 * **v1.0 "Teleios"** (2026-11-24): a complete small system. On top of v0.1:
   * **Targets:** i386 next to x86_64, both self-hosting, the kernel built from vanilla Linux with no
     kernel patches (the real objtool built by tcc against `tools/libelf`).

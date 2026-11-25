@@ -1,0 +1,137 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autarkeia OS</title>
+<meta name="description" content="Autarkeia OS: a Linux system whose kernel, libc, userland, X server and browsers are all compiled by the Tiny C Compiler, with no GCC and no binutils, and which rebuilds itself.">
+<link rel="icon" type="image/png" href="img/logo-512.png">
+<link rel="alternate" type="application/atom+xml" title="Autarkeia OS news" href="feed.xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <nav class="wrap">
+    <a class="brand" href="./"><img src="img/logo-512.png" alt="" width="28" height="28"> Autarkeia OS</a>
+    <ul>
+      <li><a href="#download">Download</a></li>
+      <li><a href="#screenshots">Screenshots</a></li>
+      <li><a href="#docs">Documentation</a></li>
+      <li><a href="#support">Support</a></li>
+      <li><a href="news.html">News</a></li>
+    </ul>
+  </nav>
+</header>
+
+<main>
+<section class="hero wrap">
+  <img class="logo" src="img/logo-512.png" alt="The Autarkeia OS logo: a horned viper biting its own tail around the letters tcc" width="200" height="200">
+  <div>
+    <h1>Autarkeia OS</h1>
+    <p class="lead">A Linux system built entirely by the <a href="https://repo.or.cz/tinycc.git">Tiny C Compiler</a>:
+      the kernel, musl, BusyBox, the X server, the desktop and the web browsers are compiled,
+      assembled and linked by a patched tcc, with no GCC and no binutils. And it can rebuild
+      itself: inside the running system, tcc compiles the kernel and tcc again.</p>
+    <p class="meta">Latest release: <strong>1.1 "Teleios"</strong>, 2026-11-25 &middot; x86_64 and i386 &middot; live ISO, BIOS and UEFI</p>
+    <p><a class="button" href="#download">Download 1.1</a> <a class="button ghost" href="https://github.com/endotermic/tinycc-os-kernel">Source on GitHub</a></p>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2 id="about">About</h2>
+  <p><em>Autarkeia</em> is Greek for self-sufficiency. The project's goal is a complete, usable
+    operating system produced by one small compiler, to find out how far tcc can be taken and to
+    fix it where it falls short. Every compiler fix is recorded and kept as a patch series
+    against upstream tinycc.</p>
+  <p>Autarkeia OS is an independent system, not based on another distribution. Its components
+    are pinned upstream sources (<code>sources.lock</code>), built from source by the project's
+    scripts.</p>
+  <div class="cards">
+    <div class="card"><h3>No GCC, no binutils</h3><p>tcc compiles every C and <code>.S</code> file of the kernel, including the
+      16-bit boot code; <code>tld</code>, the project's small linker, links it. The kernel is vanilla Linux 7.3 with no kernel patches.</p></div>
+    <div class="card"><h3>Self-hosting</h3><p>The self-hosting image carries the kernel, tcc, tld and GNU make sources. <code>build-kernel</code>
+      inside the guest builds a kernel that boots as "generation 2".</p></div>
+    <div class="card"><h3>A desktop</h3><p>The TinyX X server with Composite, the JWM window manager, an xdm login, the mlterm terminal,
+      the xfiles file manager and the xedit editor.</p></div>
+    <div class="card"><h3>Web browsers</h3><p>NetSurf 3.11 with JavaScript on QuickJS, and links in text and graphics mode,
+      both with TLS from LibreSSL.</p></div>
+    <div class="card"><h3>Real hardware</h3><p>Drivers for ACPI, storage, Wi-Fi (wpa_supplicant), GPUs, touchpads, Ethernet, USB, sound and EFI.
+      It boots to the desktop on a laptop; <code>install.sh</code> writes the ISO to a USB stick.</p></div>
+    <div class="card"><h3>Two architectures</h3><p>x86_64 and i386 (the 32-bit x86 kernel), both self-hosting. arm64 and other kernels
+      (OpenBSD, FreeBSD, Hurd) are planned.</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2 id="download">Download</h2>
+  <div class="warn">
+    <strong>Experimental research software.</strong> The whole system is built by a heavily patched
+    compiler, so miscompilation is possible. It is insecure by design: fixed accounts with published
+    passwords, a <code>root</code> without a password, setuid-root programs and no security updates.
+    Run it in a virtual machine, or on a machine that holds nothing of value, and not on a network you do not control.
+  </div>
+  <table class="downloads">
+    <thead><tr><th>Image</th><th>Size</th><th>For</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://github.com/endotermic/tinycc-os-kernel/releases/download/v1.1/autarkeia-1.1-x86_64.iso">autarkeia-1.1-x86_64.iso</a></td><td>208 MB</td><td>64-bit x86 PCs</td></tr>
+      <tr><td><a href="https://github.com/endotermic/tinycc-os-kernel/releases/download/v1.1/autarkeia-1.1-i386.iso">autarkeia-1.1-i386.iso</a></td><td>160 MB</td><td>32-bit x86 PCs (i686)</td></tr>
+    </tbody>
+  </table>
+  <p>Checksums: <a href="https://github.com/endotermic/tinycc-os-kernel/releases/download/v1.1/SHA256SUMS">SHA256SUMS</a>
+    (<code>sha256sum -c SHA256SUMS</code>). Package list:
+    <a href="https://github.com/endotermic/tinycc-os-kernel/releases/download/v1.1/PACKAGES.md">PACKAGES.md</a>.
+    All releases: <a href="https://github.com/endotermic/tinycc-os-kernel/releases">GitHub releases</a>.</p>
+  <h3>Requirements</h3>
+  <ul>
+    <li>An x86_64 or i686 machine or virtual machine, BIOS or UEFI.</li>
+    <li>1 GB of RAM: the system runs from memory, and the ISO loads the hardware firmware too. Nothing is saved across a reboot.</li>
+    <li>For a virtual machine: QEMU (<code>qemu-system-x86_64 -m 1G -cdrom autarkeia-1.1-x86_64.iso</code>) or VirtualBox (type "Linux, Other Linux (64-bit)", 1 GB, boot from the ISO).</li>
+    <li>For a USB stick: <code>./install.sh</code> from the source repository, or <code>dd if=autarkeia-1.1-x86_64.iso of=/dev/sdX bs=4M</code> (this overwrites the whole drive).</li>
+  </ul>
+  <h3>Logging in</h3>
+  <p>The default boot entry is a graphical login. The accounts are
+    <code>ada</code> / <code>lovelace</code>, <code>grace</code> / <code>hopper</code> and
+    <code>dennis</code> / <code>ritchie</code>; <code>su</code> in a terminal gives root. The boot menu also
+    has a text console, a serial console and the self-hosting mode.</p>
+</section>
+
+<section class="wrap">
+  <h2 id="screenshots">Screenshots</h2>
+  <div class="shots">
+    <figure><a href="img/login.png"><img src="img/login.png" alt="The xdm login screen: Log in to Autarkeia OS, over a photo of a pine branch" loading="lazy"></a><figcaption>The xdm login on TinyX</figcaption></figure>
+    <figure><a href="img/desktop.png"><img src="img/desktop.png" alt="The JWM desktop with the mlterm terminal open" loading="lazy"></a><figcaption>JWM and the mlterm terminal</figcaption></figure>
+    <figure><a href="img/netsurf.png"><img src="img/netsurf.png" alt="The NetSurf browser showing the Wikipedia article on the Tiny C Compiler" loading="lazy"></a><figcaption>NetSurf with JavaScript on QuickJS (the page: <a href="https://en.wikipedia.org/wiki/Tiny_C_Compiler">Wikipedia</a>, CC BY-SA 4.0)</figcaption></figure>
+    <figure><a href="img/console.png"><img src="img/console.png" alt="The text console with the boot banner of Autarkeia OS" loading="lazy"></a><figcaption>The console: every file compiled by tcc</figcaption></figure>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2 id="docs">Documentation</h2>
+  <ul>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel#readme">README</a>: building from source, running it, the desktop, self-hosting, targets and pinned versions.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: how the build works.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/blob/main/docs/PORT-NOTES.md">PORT-NOTES.md</a>: what it took to build Linux with tcc.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/blob/main/docs/FIX-LOG.md">FIX-LOG.md</a>: every tcc fix, with its test.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/blob/main/docs/HARDWARE.md">HARDWARE.md</a>: drivers for real PCs and laptops.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/blob/main/docs/NETSURF-JS.md">NETSURF-JS.md</a>: JavaScript in NetSurf on QuickJS.</li>
+  </ul>
+</section>
+
+<section class="wrap">
+  <h2 id="support">Support</h2>
+  <ul>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/discussions">Discussions</a>: questions, ideas, reports of what works on your hardware.</li>
+    <li><a href="https://github.com/endotermic/tinycc-os-kernel/issues">Issues</a>: bugs in the system, the build or the compiler patches.</li>
+    <li><a href="news.html">News</a> and its <a href="feed.xml">Atom feed</a>: new releases.</li>
+  </ul>
+</section>
+</main>
+
+<footer class="wrap">
+  <p>Autarkeia OS is built by the <a href="https://github.com/endotermic/tinycc-os-kernel">tinycc-os-kernel</a> project.
+    Original parts under the BSD-2-Clause license; the components and their patches under their own licenses.
+    Provided "as is", without warranty of any kind.</p>
+</footer>
+</body>
+</html>

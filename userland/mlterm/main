@@ -17,6 +17,9 @@ type_engine = xft
 use_anti_alias = true
 only_use_unicode_font = true
 fontsize = 14
+# two pixels between the lines: without them DejaVu Sans Mono's underscore at 14 px falls
+# below the cell and is cut off, so "VERSION_ID" read as "VERSION ID"
+line_space = 2
 geometry = 80x25
 
 # The scrollbar on the right, the built-in "simple" view (the others are plugins, which

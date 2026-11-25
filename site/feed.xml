@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Autarkeia OS news</title>
+  <link href="https://endotermic.github.io/tinycc-os-kernel/news.html"/>
+  <link rel="self" href="https://endotermic.github.io/tinycc-os-kernel/feed.xml"/>
+  <id>https://endotermic.github.io/tinycc-os-kernel/</id>
+  <updated>2026-11-25T12:00:00Z</updated>
+  <author><name>The tinycc-os-kernel project</name></author>
+  <entry>
+    <title>Autarkeia OS 1.1 "Teleios" released</title>
+    <link href="https://endotermic.github.io/tinycc-os-kernel/news.html#v1.1"/>
+    <id>https://endotermic.github.io/tinycc-os-kernel/news.html#v1.1</id>
+    <updated>2026-11-25T12:00:00Z</updated>
+    <summary>The first release of Autarkeia OS with ISO images for x86_64 and i386: a Linux system compiled entirely by a patched Tiny C Compiler, with no GCC and no binutils, that rebuilds itself.</summary>
+  </entry>
+</feed>

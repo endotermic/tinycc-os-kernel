@@ -22,9 +22,3 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-This license covers the original parts of tinycc-os-kernel: the build scripts,
-tools/tld, kernels/, userland/, boot/ and the documentation.  The patches under
-patches/<component>/ modify that component's code and are licensed under its
-license (see patches/<component>/LICENSE and LICENSES/); REUSE.toml maps every
-path to its SPDX identifier.

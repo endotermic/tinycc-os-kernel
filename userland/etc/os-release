@@ -1,7 +1,10 @@
 NAME="Autarkeia OS"
 ID=autarkeia
-VERSION="1.0 (Teleios)"
-VERSION_ID=1.0
+VERSION="1.1 (Teleios)"
+VERSION_ID=1.1
 VERSION_CODENAME=teleios
-PRETTY_NAME="Autarkeia OS 1.0 (Teleios)"
-HOME_URL="https://github.com/endotermic/tinycc-os-kernel"
+PRETTY_NAME="Autarkeia OS 1.1 (Teleios)"
+HOME_URL="https://endotermic.github.io/tinycc-os-kernel/"
+DOCUMENTATION_URL="https://github.com/endotermic/tinycc-os-kernel#readme"
+SUPPORT_URL="https://github.com/endotermic/tinycc-os-kernel/discussions"
+BUG_REPORT_URL="https://github.com/endotermic/tinycc-os-kernel/issues"
