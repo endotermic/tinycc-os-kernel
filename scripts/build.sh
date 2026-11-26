@@ -1680,7 +1680,7 @@ step_selfhost() {
     # 5. the image: the busybox image's manifest + the guest tcc tree + this tree
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
-    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
+    export BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c VBOX_DISPLAY=$ROOT/userland/vbox-display.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     { cat "$ROOT/userland/initramfs.list"
       "$ROOT/userland/dir2list.sh" "$STAGE_TCC"
       stage_lists
@@ -1699,7 +1699,7 @@ step_initramfs() {
     TOOLS=$B/tools; mkdir -p "$TOOLS"
     [ -x "$TOOLS/gen_init_cpio" ] || gcc -O2 -o "$TOOLS/gen_init_cpio" "$LINUX/usr/gen_init_cpio.c"
     "$TCC_TARGET" -B"$TCCSRC" -I"$TCCSRC/include" -nostdlib -static -o "$B/init" "$ROOT/userland/init.c"
-    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
+    export INIT=$B/init BUSYBOX_INIT=$ROOT/userland/busybox-init.c BUSYBOX=$B/busybox/busybox UDHCPC_SCRIPT=$ROOT/userland/udhcpc-script.c DEVICES_TEST=$ROOT/userland/devices-test.c FIRMWARE_MEDIUM=$ROOT/userland/firmware-medium.c VBOX_DISPLAY=$ROOT/userland/vbox-display.c ETC=$ROOT/userland/etc HELLO=$ROOT/userland/hello.c
     "$TOOLS/gen_init_cpio" "$ROOT/userland/initramfs-nolibc.list" > "$O/initramfs-nolibc.cpio"
     # the busybox image's /init is a C script that /usr/bin/tcc runs (-run): it needs the guest tcc
     if [ ! -x "$BUSYBOX" ]; then

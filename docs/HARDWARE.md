@@ -262,8 +262,8 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   recommends VMSVGA for Linux.  QEMU's `-vga vmware`: vmwgfx refuses it ("Hardware has no
   pitchlock", probe error -38), an upstream limit of the driver on QEMU's SVGA II; use
   QEMU's standard VGA (bochs-drm) or virtio there.  Not tested: VMware Workstation/ESXi
-  themselves, resizing the VM window (TinyX does not follow a mode change); mouse
-  integration came the same day, below.
+  themselves; mouse integration and the screen following the VM window came the same
+  day, below.
 - Mouse integration (2026-11-26): the pointer follows the host's without being captured.
   `drivers.config` gets `MOUSE_PS2_VMMOUSE` (VMware's absolute pointer through the PS/2 port)
   and `VIRT_DRIVERS` + `VBOXGUEST` (whose "VirtualBox mouse integration" input device
@@ -283,6 +283,43 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   menu through vmmouse and the tablet.  Not tested: VMware itself, VirtualBox's USB tablet
   setting.
   Regressions after it: devices-test 18/18, selfhost-test all on both arches, `make test`.
+- The screen follows the VM window (2026-11-26).  The DRM drivers' fbdev emulation keeps its
+  boot size, so X had to leave it: on vboxvideo, vmwgfx and virtio_gpu Xfbdev now runs in KMS
+  mode (patches/tinyx/features/0010; `-kms`/`-nokms`), its screen a DRM dumb buffer of the
+  connector's preferred mode, drawn through the shadow in RAM and `DIRTYFB`; on a DRM hotplug
+  uevent it takes the new preferred mode, a new buffer and resizes the screen through RandR.
+  VirtualBox sends the window's size only to a guest that says it can change its screen size:
+  `/usr/sbin/vbox-display` (userland/vbox-display.c, a C script `/init` starts when
+  `/dev/vboxguest` exists) sets that capability and, on VMSVGA, passes each requested size to
+  vmwgfx (`DRM_IOCTL_VMW_UPDATE_LAYOUT` on the render node); vboxvideo takes the size itself.
+  The session had to follow too: TinyX's `fbCopyWindow` copied in screen instead of pixmap
+  coordinates for Composite-redirected windows (upstreamable/0009: JWM's tray crashed the
+  server in fbBlt after a resize), xcompmgr repaints everything and names the windows'
+  pixmaps again after a root resize (patches/xcompmgr, new), xfiles' desktop resizes itself
+  and reloads the wallpaper (features/0006), and JWM keeps Xlib's screen size in step for its
+  restart (upstreamable/0004).  Real hardware keeps the frame buffer device.
+- Verified in VirtualBox 7.2 with `VBoxManage controlvm setvideomodehint` and screenshots:
+  1280x1024 (VBoxVGA: 1024x768) -> 1600x900 -> 1024x768 -> 1920x1080 -> 800x600 -> 1440x900
+  in the logged-in session (JWM, xcompmgr, xfiles' desktop), every picture complete: x86_64 on
+  VMSVGA and VBoxVGA, i386 on VMSVGA; mouse integration still exact after a resize.
+- The login screen follows too: xdm-help (userland/xdm/xdm-help.c) runs `wallpaper --greeter`
+  again for a new size, moves its band to the new bottom edge with a new piece of the frosted
+  wallpaper and publishes the band's top in the root's `_XDM_HELP_TOP`; the greeter's box
+  (patches/xdm/upstreamable/0007) goes back to the middle, a third of the way down, above
+  that band (in the middle of the space above it on small screens) and cuts its frosted
+  background again.  The help text is never dropped: it is wrapped to the screen's width (on
+  large screens as written) at the largest size, 10.5 points down to 5.5, that leaves 200
+  pixels for the box above it (10.5 points down to 640x480, 9.5 at 640x400, 8 at 640x360;
+  xdm-help logs its choice in xdm's log).  The clients that keep the screen's size (xdm-help,
+  the greeter, JWM) scale its size in millimetres with it, as the server does, from the values
+  at start: Xft takes its DPI from them, and the text shrank at every resize before.  Verified
+  on the greeter through 1600x900, 1024x768, 1920x1080, 800x600, 800x480, 640x480, 640x400,
+  640x360 and 1440x900 (x86_64 VMSVGA and VBoxVGA, i386 VMSVGA), and greeter -> session -> end of the session -> greeter with resizes at each
+  step (x86_64 and i386, VMSVGA): the server reset after a session gave a black screen first
+  (fbdevCardInit's private data was not zeroed, and the card is made anew on every reset).  QEMU's virtio-gpu (`-vga virtio`)
+  draws through the KMS mode (no resize there: QEMU sends no new size headless).  Not tested:
+  VMware itself (open-vm-tools' resolution handling is not ported: on VMware the screen keeps
+  its boot size), VBoxSVGA, the text console (fbcon keeps the boot size).
 - Regressions: devices-test 18/18 and selfhost-test all on both arches (the guest's tcc
   builds the kernel with both drivers; x86_64 17 min, i386 11 min), tcc `make test`.
 

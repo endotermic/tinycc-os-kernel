@@ -56,7 +56,7 @@ COMPOSITE = compalloc compext compinit compwindow
 CW = cw cw_ops cw_render
 KDRIVE = kcmap kdrive kinfo kinput kmap kmode kshadow
 LINUX = keyboard linux mouse
-FBDEV = fbdev fbinit
+FBDEV = fbdev fbinit kms
 
 SRCS = $(DIX:%=dix/%.c) $(FB:%=fb/%.c) $(MI:%=mi/%.c) $(XEXT:%=Xext/%.c) \
        miext/damage/damage.c $(SHADOW:%=miext/shadow/%.c) $(OS:%=os/%.c) $(RANDR:%=randr/%.c) \

@@ -7,3 +7,5 @@ upstreamable/0005-colormap-opaque-alpha-in-colours-allocated-on-32-bit.patch
 features/0006-os-keep-the-server-out-of-the-OOM-killer-s-choice-on.patch
 features/0007-kdrive-fbdev-a-shadow-framebuffer-in-RAM-when-readin.patch
 features/0008-kdrive-linux-absolute-pointers-from-evdev-tablets-VM.patch
+upstreamable/0009-fb-fbCopyWindow-copies-in-the-window-pixmap-s-coordi.patch
+features/0010-kdrive-fbdev-KMS-mode-the-screen-follows-the-display.patch

@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:16:13 +0200
+Subject: [PATCH] fb: fbCopyWindow copies in the window pixmap's coordinates
+ (Composite)
+
+A redirected window's pixmap covers only the window, placed at screen_x,
+screen_y; fbCopyWindow passed the window's border clip in screen
+coordinates to fbCopyRegion on that pixmap, so moving a child window of a
+redirected window copied rows of the wrong place, past the pixmap's end
+for a window low on the screen (JWM's tray after the screen grew: a
+segfault in fbBlt).  The region is translated by -screen_x, -screen_y,
+as X.Org's fbCopyWindow does under COMPOSITE.
+---
+ fb/fbwindow.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/fb/fbwindow.c b/fb/fbwindow.c
+index d687481..44c9762 100644
+--- a/fb/fbwindow.c
++++ b/fb/fbwindow.c
+@@ -127,7 +127,12 @@ fbCopyWindow(WindowPtr pWin, DDXPointRec ptOldOrg, RegionPtr prgnSrc)
+ 
+     REGION_INTERSECT(&rgnDst, &pWin->borderClip,
+                      prgnSrc);
+-
++#ifdef COMPOSITE
++    /* a redirected window's pixmap covers only the window, at screen_x,
++       screen_y: the copy is in the pixmap's coordinates (as in X.Org) */
++    if (pPixmap->screen_x || pPixmap->screen_y)
++        REGION_TRANSLATE(&rgnDst, -pPixmap->screen_x, -pPixmap->screen_y);
++#endif
+ 
+     fbCopyRegion(pDrawable, pDrawable,
+                  0, &rgnDst, dx, dy, fbCopyWindowProc, 0, 0);

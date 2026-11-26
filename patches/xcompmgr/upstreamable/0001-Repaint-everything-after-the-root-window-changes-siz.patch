@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:07:36 +0200
+Subject: [PATCH] Repaint everything after the root window changes size
+
+configure_win() dropped the back buffer and took the new root size, but
+added no damage: paint_all() then created the new buffer, painted only the
+damaged parts into it and copied all of it to the root, so the rest showed
+whatever the new pixmap's memory held.  The whole new screen is damaged
+now, and the windows' named pixmaps, pictures and shadows and the root's
+background tile are dropped, so that paint_all() makes them anew: the
+window manager and the desktop resize and recreate their windows around a
+new screen size, and an old name kept showing the old pixmap (the desktop's
+old picture at the old size).
+---
+ xcompmgr.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/xcompmgr.c b/xcompmgr.c
+index f28e4e6..70e6a6a 100644
+--- a/xcompmgr.c
++++ b/xcompmgr.c
+@@ -1557,6 +1557,42 @@ configure_win (Display *dpy, XConfigureEvent *ce)
+ 	    }
+ 	    root_width = ce->width;
+ 	    root_height = ce->height;
++	    /* the new buffer is painted only where there is damage and then
++	       copied whole to the screen: all of it is damaged, or the rest
++	       shows whatever the new pixmap's memory held.  The windows'
++	       pixmaps and pictures are named again too (the window manager
++	       and the desktop resize and recreate their windows around a
++	       new screen size; a stale name keeps showing the old pixmap),
++	       and the root's background is read again; paint_all() makes
++	       them all anew. */
++	    for (win *w2 = list; w2; w2 = w2->next)
++	    {
++#if HAS_NAME_WINDOW_PIXMAP
++		if (w2->pixmap)
++		{
++		    XFreePixmap (dpy, w2->pixmap);
++		    w2->pixmap = None;
++		}
++#endif
++		if (w2->picture)
++		{
++		    XRenderFreePicture (dpy, w2->picture);
++		    w2->picture = None;
++		}
++		if (w2->shadow)
++		{
++		    XRenderFreePicture (dpy, w2->shadow);
++		    w2->shadow = None;
++		}
++	    }
++	    if (rootTile)
++	    {
++		XRenderFreePicture (dpy, rootTile);
++		rootTile = None;
++	    }
++	    clipChanged = True;
++	    XRectangle r = { 0, 0, root_width, root_height };
++	    add_damage (dpy, XFixesCreateRegion (dpy, &r, 1));
+ 	}
+ 	return;
+     }

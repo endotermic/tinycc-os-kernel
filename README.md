@@ -202,7 +202,9 @@ the framebuffer the firmware set up (UEFI GOP: the panel's native mode; on BIOS,
 top (DRM fbdev emulation). In VirtualBox and VMware the virtual GPU's own driver sets the mode
 (2026-11-26): vmwgfx for VMware's SVGA II and VirtualBox's VMSVGA (its default for Linux
 guests), vboxvideo for VirtualBox's VBoxVGA; with mouse integration (vmmouse, vboxguest),
-and X follows absolute pointers (QEMU's USB tablet too). The tcc build leaves the real-mode video mode setting out
+and X follows absolute pointers (QEMU's USB tablet too). There the screen also follows the
+size of the VM window: X runs on a DRM dumb buffer (KMS mode) and resizes on the driver's
+hotplug event; in VirtualBox `/usr/sbin/vbox-display` asks for and passes on the window's size. The tcc build leaves the real-mode video mode setting out
 (`kernels/linux/tcc.config`), so `vga=` has no effect. The ISO's first menu entry makes
 the screen the primary console, the second the serial port.
 

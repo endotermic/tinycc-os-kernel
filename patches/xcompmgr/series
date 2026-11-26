@@ -1,0 +1,2 @@
+# patches/xcompmgr: apply order (scripts/patch.sh); regenerate with scripts/export-patches.sh
+upstreamable/0001-Repaint-everything-after-the-root-window-changes-siz.patch

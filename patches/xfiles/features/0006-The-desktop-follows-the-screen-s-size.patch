@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:16:26 +0200
+Subject: [PATCH] The desktop follows the screen's size
+
+With RandR (the X server follows a virtual machine's window) the desktop
+window kept the size of the screen at start.  It now selects
+StructureNotify on the root and on a new root size resizes itself to it;
+JWM restarts on a new root size and may drop that request, so the
+desktop's idle tick checks the window's real size (XGetWindowAttributes,
+not the last ConfigureNotify, which can be JWM's synthetic one) and asks
+again until it matches, then reloads the wallpaper and redraws the icon
+layer, whose pieces of the wallpaper were cut from the old one.
+---
+ widget.c | 43 ++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/widget.c b/widget.c
+index b59642b..ba7d7f4 100644
+--- a/widget.c
++++ b/widget.c
+@@ -286,6 +286,7 @@ struct Widget {
+ 	 */
+ 	int w, h;                       /* icon area size */
+ 	int winw, winh;                 /* window size */
++	int rootw, rooth;               /* the desktop: the screen size it must cover (0: not known) */
+ 	int pixw, pixh;                 /* pixmap size */
+ 	int itemw, itemh;               /* size of a item (margin + icon + label) */
+ 	int ydiff;                      /* how much the pixmap is scrolled up */
+@@ -2719,6 +2720,18 @@ close:
+ 		ev->type = CloseNotify;
+ 		return False;
+ 	case ConfigureNotify:
++		if (ev->xconfigure.window == widget->root && widget->desktop) {
++			/* the screen changed size (RandR; the X server follows a
++			   virtual machine's window): the desktop covers it again.
++			   JWM restarts on a new root size and may drop the request
++			   meanwhile, so mainevent() repeats it until the size is right */
++			widget->rootw = ev->xconfigure.width;
++			widget->rooth = ev->xconfigure.height;
++			if (widget->rootw != widget->winw || widget->rooth != widget->winh)
++				XMoveResizeWindow(widget->display, widget->window, 0, 0,
++				                  widget->rootw, widget->rooth);
++			break;
++		}
+ 		if (ev->xconfigure.window != widget->window)
+ 			break;
+ 		if (calcsize(widget, ev->xconfigure.width, ev->xconfigure.height)) {
+@@ -3051,6 +3064,32 @@ mainevent(Widget *widget, XEvent *ev, struct timespec *lastev)
+ 
+ 	for (;;) {
+ 		type = nextevent(widget, ev, widget->desktop ? 500 : 0);
++		/* the desktop after a change of the screen size (filter_event):
++		   the window's real size, not the one the last ConfigureNotify
++		   gave (JWM restarts on a new root size and its synthetic
++		   events can tell a size the window does not have yet) */
++		if (type == TimeoutNotify && widget->rootw) {
++			XWindowAttributes wa;
++
++			if (!XGetWindowAttributes(widget->display, widget->window, &wa))
++				widget->rootw = 0;
++			else if (wa.width != widget->rootw || wa.height != widget->rooth)
++				XMoveResizeWindow(widget->display, widget->window, 0, 0,
++				                  widget->rootw, widget->rooth);
++			else {
++				/* done: the wallpaper of the new size (the root's
++				   pixmap now; a later one comes as a PropertyNotify)
++				   under the whole window, the icon layer's pieces of it
++				   too (on a 24-bit visual they were cut from the old one) */
++				widget->rootw = 0;
++				if (calcsize(widget, wa.width, wa.height))
++					setrow(widget, 0);
++				loadwallpaper(widget);
++				drawitems(widget);
++				drawstatusbar(widget);
++				widget->redraw = True;
++			}
++		}
+ 		if (type != TimeoutNotify) {
+ 			(void)clock_gettime(CLOCK_MONOTONIC, lastev);
+ 			return type;
+@@ -3572,7 +3611,9 @@ initmisc(Widget *widget, struct Options *options)
+ 	/*
+ 	 * Detect property changes on root to watch X Resources.
+ 	 */
+-	(void)XSelectInput(widget->display, widget->root, PropertyChangeMask);
++	/* the desktop also follows the screen's size (ConfigureNotify of the root) */
++	(void)XSelectInput(widget->display, widget->root, PropertyChangeMask |
++	                   (widget->desktop ? StructureNotifyMask : 0));
+ 
+ 	/*
+ 	 * The desktop's wallpaper, read after the selection above so that a

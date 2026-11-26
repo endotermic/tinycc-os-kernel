@@ -1,0 +1,744 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:16:13 +0200
+Subject: [PATCH] kdrive/fbdev: KMS mode, the screen follows the display's size
+
+The DRM drivers' fbdev emulation keeps the size it had at boot, so a
+virtual machine's screen could not follow its window.  With -kms (the
+default on vboxvideo, vmwgfx and virtio_gpu; -nokms turns it off) Xfbdev
+takes /dev/dri/card0: the first connected connector's preferred mode, a
+dumb buffer of that size on a CRTC (kms.c).  The fbdev fields the rest of
+fbdev.c reads are filled from the buffer; the server draws in the shadow in
+RAM and passes the damaged rectangles, clipped to the buffer, to
+DRM_IOCTL_MODE_DIRTYFB.  A DRM hotplug uevent (the netlink socket) makes it
+read the preferred mode again: a new size gets a new buffer and the screen
+is resized through fbdevRandRSetConfig, RRGetInfo and RRScreenSizeNotify
+(ConfigureNotify on the root, RRScreenChangeNotify), the size in
+millimetres scaled from the first one, so that the resolution stays; the whole buffer is
+marked dirty again 0.3 s and 1.5 s later (vboxvideo drops updates while
+VirtualBox has VBVA off around the mode change).  Leaving the VT or
+exiting drops DRM master, so the console gets the display back.  Real
+hardware keeps the frame buffer device.
+---
+ kdrive/fbdev/fbdev.c  |  48 ++++-
+ kdrive/fbdev/fbdev.h  |  18 ++
+ kdrive/fbdev/fbinit.c |  15 ++
+ kdrive/fbdev/kms.c    | 483 ++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 561 insertions(+), 3 deletions(-)
+ create mode 100644 kdrive/fbdev/kms.c
+
+diff --git a/kdrive/fbdev/fbdev.c b/kdrive/fbdev/fbdev.c
+index cce940f..21692d0 100644
+--- a/kdrive/fbdev/fbdev.c
++++ b/kdrive/fbdev/fbdev.c
+@@ -83,6 +83,12 @@ static Bool fbdevInitialize(KdCardInfo * card, FbdevPriv * priv)
+ {
+ 	unsigned long off;
+ 
++	/* a virtual GPU (or -kms): the screen in a DRM dumb buffer, which can
++	   change size (kms.c); always the shadow in RAM then */
++	if (kmsInitialize(priv)) {
++		fbdevShadow = TRUE;
++		return TRUE;
++	}
+ 	if (fbdevDevicePath == NULL)
+ 		fbdevDevicePath = "/dev/fb0";
+ 
+@@ -130,7 +136,8 @@ Bool fbdevCardInit(KdCardInfo * card)
+ {
+ 	FbdevPriv *priv;
+ 
+-	priv = malloc(sizeof(FbdevPriv));
++	/* zeroed: the KMS fields (kms.c) must start cleared, also on a server reset */
++	priv = calloc(1, sizeof(FbdevPriv));
+ 	if (!priv)
+ 		return FALSE;
+ 
+@@ -199,6 +206,16 @@ static Bool fbdevScreenInitialize(KdScreenInfo * screen, FbdevScrPriv * scrpriv)
+ 	const KdMonitorTiming *t;
+ 	int k;
+ 
++	if (priv->kms) {
++		/* the mode is the connector's preferred one (kms.c) */
++		screen->width = priv->var.xres;
++		screen->height = priv->var.yres;
++		screen->rate = 60;
++		screen->fb.depth = priv->var.bits_per_pixel;
++		depth = priv->var.bits_per_pixel;
++		gray = 0;
++		goto have_mode;
++	}
+ 	k = ioctl(priv->fd, FBIOGET_VSCREENINFO, &var);
+ 
+ 	if (!screen->width || !screen->height) {
+@@ -251,6 +268,7 @@ static Bool fbdevScreenInitialize(KdScreenInfo * screen, FbdevScrPriv * scrpriv)
+ 	depth = priv->var.bits_per_pixel;
+ 	gray = priv->var.grayscale;
+ 
++ have_mode:
+ 	/* Calculate fix.line_length if it's zero */
+ 	if (!priv->fix.line_length)
+ 		priv->fix.line_length = (priv->var.xres_virtual * depth + 7) / 8;
+@@ -478,6 +496,10 @@ static Bool fbdevSetShadow(ScreenPtr pScreen)
+ 			update = shadowUpdateRotatePacked;
+ 	else
+ 		update = shadowUpdatePacked;
++	/* KMS: the damage to the dumb buffer and DIRTYFB (kms.c; RandR offers no
++	   rotation there, and scrpriv->randr is RR_Rotate_0 = 1, not 0) */
++	if (priv->kms)
++		update = kmsUpdateProc();
+ 	return KdShadowSet(pScreen, scrpriv->randr, update, window);
+ }
+ 
+@@ -491,6 +513,8 @@ static Bool fbdevRandRGetInfo(ScreenPtr pScreen, Rotation * rotations)
+ 	int n;
+ 
+ 	*rotations = RR_Rotate_All | RR_Reflect_All;
++	if (((FbdevPriv *) pScreenPriv->card->driver)->kms)
++		*rotations = RR_Rotate_0;	/* DIRTYFB takes unrotated rectangles */
+ 
+ 	for (n = 0; n < pScreen->numDepths; n++)
+ 		if (pScreen->allowedDepths[n].numVids)
+@@ -510,7 +534,7 @@ static Bool fbdevRandRGetInfo(ScreenPtr pScreen, Rotation * rotations)
+ 	return TRUE;
+ }
+ 
+-static Bool
++Bool
+ fbdevRandRSetConfig(ScreenPtr pScreen,
+ 		    Rotation randr, int rate, RRScreenSizePtr pSize)
+ {
+@@ -663,6 +687,7 @@ Bool fbdevFinishInitScreen(ScreenPtr pScreen)
+ 	if (!fbdevRandRInit(pScreen))
+ 		return FALSE;
+ 
++	kmsWatch(pScreen);	/* KMS: follow the display's size */
+ 	return TRUE;
+ }
+ 
+@@ -695,6 +720,8 @@ Bool fbdevEnable(ScreenPtr pScreen)
+ 	FbdevPriv *priv = pScreenPriv->card->driver;
+ 	int k;
+ 
++	if (priv->kms)
++		return kmsShow(priv);
+ 	priv->var.activate = FB_ACTIVATE_NOW | FB_CHANGE_CMAP_VBL;
+ 
+ 	/* display it on the LCD */
+@@ -730,7 +757,7 @@ Bool fbdevDPMS(ScreenPtr pScreen, int mode)
+ 	FbdevPriv *priv = pScreenPriv->card->driver;
+ 	static int oldmode = -1;
+ 
+-	if (mode == oldmode)
++	if (mode == oldmode || priv->kms)
+ 		return TRUE;
+ #ifdef FBIOPUT_POWERMODE
+ 	if (ioctl(priv->fd, FBIOPUT_POWERMODE, &mode) >= 0) {
+@@ -753,6 +780,10 @@ void fbdevDisable(ScreenPtr pScreen)
+ 
+ void fbdevRestore(KdCardInfo * card)
+ {
++	FbdevPriv *priv = card->driver;
++
++	if (priv->kms)
++		kmsHide(priv);	/* the console gets the display back */
+ }
+ 
+ void fbdevScreenFini(KdScreenInfo * screen)
+@@ -764,6 +795,13 @@ void fbdevCardFini(KdCardInfo * card)
+ 	FbdevPriv *priv = card->driver;
+ 
+ 	munmap(priv->fb_base, priv->fix.smem_len);
++	if (priv->kms) {
++		kmsFini();
++		if (priv->uevent >= 0) {
++			RemoveEnabledDevice(priv->uevent);
++			close(priv->uevent);
++		}
++	}
+ 	close(priv->fd);
+ 	free(priv);
+ }
+@@ -781,6 +819,8 @@ void fbdevGetColors(ScreenPtr pScreen, int n, xColorItem * pdefs)
+ 	int k;
+ 	int min, max;
+ 
++	if (priv->kms)
++		return;
+ 	min = 256;
+ 	max = 0;
+ 	for (k = 0; k < n; k++) {
+@@ -819,6 +859,8 @@ void fbdevPutColors(ScreenPtr pScreen, int n, xColorItem * pdefs)
+ 	int p;
+ 	int min, max;
+ 
++	if (priv->kms)
++		return;
+ 	min = 256;
+ 	max = 0;
+ 	while (n--) {
+diff --git a/kdrive/fbdev/fbdev.h b/kdrive/fbdev/fbdev.h
+index aa3dc11..d099026 100644
+--- a/kdrive/fbdev/fbdev.h
++++ b/kdrive/fbdev/fbdev.h
+@@ -25,6 +25,8 @@
+ #define _FBDEV_H_
+ #include <stdio.h>
+ #include <linux/fb.h>
++#include <stdint.h>
++#include <drm/drm_mode.h>
+ #include <unistd.h>
+ #include <sys/mman.h>
+ #include "kdrive.h"
+@@ -40,6 +42,12 @@ typedef struct _fbdevPriv {
+ 	int fd;
+ 	char *fb;
+ 	char *fb_base;
++	/* KMS mode (kms.c): fd is /dev/dri/card0, fb the dumb buffer */
++	Bool kms;
++	Bool nodirty;		/* the driver has no DIRTYFB */
++	int uevent;		/* the uevent socket for hotplug events */
++	uint32_t connector, crtc, fb_id, handle;
++	struct drm_mode_modeinfo mode;
+ } FbdevPriv;
+ 
+ typedef struct _fbdevScrPriv {
+@@ -49,6 +57,16 @@ typedef struct _fbdevScrPriv {
+ 
+ extern const char *fbdevDevicePath;
+ extern int fbdevShadow;
++extern int fbdevKms;
++
++#include "shadow.h"
++Bool kmsInitialize(FbdevPriv * priv);
++Bool kmsShow(FbdevPriv * priv);
++void kmsHide(FbdevPriv * priv);
++void kmsWatch(ScreenPtr pScreen);
++void kmsFini(void);
++ShadowUpdateProc kmsUpdateProc(void);
++Bool fbdevRandRSetConfig(ScreenPtr pScreen, Rotation randr, int rate, RRScreenSizePtr pSize);
+ 
+ Bool fbdevCardInit(KdCardInfo * card);
+ 
+diff --git a/kdrive/fbdev/fbinit.c b/kdrive/fbdev/fbinit.c
+index 8f678ad..d0fa937 100644
+--- a/kdrive/fbdev/fbinit.c
++++ b/kdrive/fbdev/fbinit.c
+@@ -81,6 +81,11 @@ void ddxUseMsg(void)
+ 	     "                 reading the framebuffer is slow: real video memory)\n");
+ 	ErrorF
+ 	    ("-noshadow        Draw into the framebuffer directly\n");
++	ErrorF
++	    ("-kms             The screen in a DRM dumb buffer on /dev/dri/card0, which follows\n"
++	     "                 the display's size (default on vboxvideo, vmwgfx, virtio_gpu)\n");
++	ErrorF
++	    ("-nokms           The frame buffer device always\n");
+ 	ErrorF("\n");
+ }
+ 
+@@ -97,6 +102,16 @@ int ddxProcessArgument(int argc, char **argv, int i)
+ 		return 1;
+ 	}
+ 
++	if (!strcmp(argv[i], "-kms")) {
++		fbdevKms = TRUE;
++		return 1;
++	}
++
++	if (!strcmp(argv[i], "-nokms")) {
++		fbdevKms = FALSE;
++		return 1;
++	}
++
+ 	if (!strcmp(argv[i], "-noshadow")) {
+ 		fbdevShadow = FALSE;
+ 		return 1;
+diff --git a/kdrive/fbdev/kms.c b/kdrive/fbdev/kms.c
+new file mode 100644
+index 0000000..17309e0
+--- /dev/null
++++ b/kdrive/fbdev/kms.c
+@@ -0,0 +1,483 @@
++/*
++ * Xfbdev on a KMS device: the screen in a DRM dumb buffer instead of the
++ * fbdev emulation's frame buffer, so that it can change size.
++ *
++ * The fbdev emulation of the DRM drivers keeps the size it had at boot
++ * (drm_fb_helper_check_var() refuses a larger mode), so a virtual machine's
++ * screen could not follow its window.  With -kms (by default on the
++ * virtual GPUs whose size follows the host's window: vboxvideo, vmwgfx,
++ * virtio_gpu) the server takes /dev/dri/card0 instead: the first connected
++ * connector, its preferred mode, a dumb buffer of that size shown on a
++ * CRTC.  The FbdevPriv fields that the fbdev code reads (var, fix, fb) are
++ * filled from the buffer, the server always draws in the shadow in RAM and
++ * copies the damage to the buffer, and the damaged rectangles go to the
++ * driver (DRM_IOCTL_MODE_DIRTYFB), which the virtual GPUs need to update
++ * the host's window.
++ *
++ * On a hotplug uevent of the DRM device (the host asked for another size:
++ * vboxvideo reports it itself, vmwgfx after the guest's helper passed it on
++ * with DRM_IOCTL_VMW_UPDATE_LAYOUT) the server reads the preferred mode
++ * again and, when its size changed, puts a new buffer of that size on the
++ * CRTC and resizes the screen through the RandR code (clients get
++ * ConfigureNotify on the root window and RRScreenChangeNotify).
++ *
++ * Copyright 2026 the Autarkeia OS authors; same terms as the rest of kdrive.
++ */
++#ifdef HAVE_CONFIG_H
++#include <kdrive-config.h>
++#endif
++#include <errno.h>
++#include <fcntl.h>
++#include <string.h>
++#include <stdlib.h>
++#include <sys/ioctl.h>
++#include <sys/select.h>
++#include <sys/socket.h>
++#include <linux/netlink.h>
++#include <drm/drm.h>
++#include <drm/drm_mode.h>
++#include "fbdev.h"
++#include "shadow.h"
++#include "dixstruct.h"
++
++int fbdevKms = -1;		/* -kms: 1, -nokms: 0, -1: by the driver */
++
++static const char *const kmsDrivers[] = { "vboxvideo", "vmwgfx", "virtio_gpu" };
++
++static int kmsIoctl(int fd, unsigned long req, void *arg)
++{
++	int r;
++
++	do
++		r = ioctl(fd, req, arg);
++	while (r < 0 && (errno == EINTR || errno == EAGAIN));
++	return r;
++}
++
++/* the first connected connector with modes, its preferred mode (the first
++   one when none is marked), and a CRTC for it */
++static Bool kmsFindOutput(FbdevPriv * priv)
++{
++	struct drm_mode_card_res res;
++	struct drm_mode_get_connector conn;
++	struct drm_mode_get_encoder enc;
++	uint32_t conns[16], crtcs[16], encs[16];
++	struct drm_mode_modeinfo *modes;
++	unsigned int i, j, n;
++
++	memset(&res, 0, sizeof res);
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0)
++		return FALSE;
++	if (res.count_connectors > 16)
++		res.count_connectors = 16;
++	if (res.count_crtcs > 16)
++		res.count_crtcs = 16;
++	res.count_fbs = 0;
++	res.count_encoders = 0;
++	res.connector_id_ptr = (uintptr_t) conns;
++	res.crtc_id_ptr = (uintptr_t) crtcs;
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_GETRESOURCES, &res) < 0 || !res.count_crtcs)
++		return FALSE;
++
++	for (i = 0; i < res.count_connectors; i++) {
++		memset(&conn, 0, sizeof conn);
++		conn.connector_id = conns[i];
++		/* count_modes 0: the kernel probes the connector again */
++		if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) < 0)
++			continue;
++		if (conn.connection != 1 || !conn.count_modes)
++			continue;
++		n = conn.count_modes;
++		modes = calloc(n, sizeof *modes);
++		if (!modes)
++			return FALSE;
++		conn.modes_ptr = (uintptr_t) modes;
++		conn.count_props = 0;
++		conn.count_encoders = conn.count_encoders > 16 ? 16 : conn.count_encoders;
++		conn.encoders_ptr = (uintptr_t) encs;
++		if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) < 0) {
++			free(modes);
++			continue;
++		}
++		if (conn.count_modes < n)
++			n = conn.count_modes;
++		for (j = 0; j < n; j++)
++			if (modes[j].type & DRM_MODE_TYPE_PREFERRED)
++				break;
++		priv->mode = modes[j < n ? j : 0];
++		free(modes);
++		priv->connector = conns[i];
++
++		/* the CRTC: the encoder's current one, else the first one it can use */
++		priv->crtc = 0;
++		memset(&enc, 0, sizeof enc);
++		enc.encoder_id = conn.encoder_id ? conn.encoder_id :
++			(conn.count_encoders ? encs[0] : 0);
++		if (enc.encoder_id && kmsIoctl(priv->fd, DRM_IOCTL_MODE_GETENCODER, &enc) >= 0) {
++			if (enc.crtc_id)
++				priv->crtc = enc.crtc_id;
++			else
++				for (j = 0; j < res.count_crtcs; j++)
++					if (enc.possible_crtcs & (1u << j)) {
++						priv->crtc = crtcs[j];
++						break;
++					}
++		}
++		if (!priv->crtc)
++			priv->crtc = crtcs[0];
++		return TRUE;
++	}
++	return FALSE;
++}
++
++/* a dumb buffer of priv->mode's size, its framebuffer object, mapped; the
++   fbdev fields filled from it */
++static Bool kmsCreateBuffer(FbdevPriv * priv)
++{
++	struct drm_mode_create_dumb cd;
++	struct drm_mode_fb_cmd fb;
++	struct drm_mode_map_dumb md;
++	struct drm_mode_destroy_dumb dd;
++	void *map;
++
++	memset(&cd, 0, sizeof cd);
++	cd.width = priv->mode.hdisplay;
++	cd.height = priv->mode.vdisplay;
++	cd.bpp = 32;
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd) < 0) {
++		ErrorF("Xfbdev: DRM_IOCTL_MODE_CREATE_DUMB %ux%u: %s\n",
++		       cd.width, cd.height, strerror(errno));
++		return FALSE;
++	}
++	memset(&fb, 0, sizeof fb);
++	fb.width = cd.width;
++	fb.height = cd.height;
++	fb.pitch = cd.pitch;
++	fb.bpp = 32;
++	fb.depth = 24;
++	fb.handle = cd.handle;
++	memset(&md, 0, sizeof md);
++	md.handle = cd.handle;
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_ADDFB, &fb) < 0)
++		goto fail;
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_MAP_DUMB, &md) < 0) {
++		kmsIoctl(priv->fd, DRM_IOCTL_MODE_RMFB, &fb.fb_id);
++		goto fail;
++	}
++	map = mmap(NULL, cd.size, PROT_READ | PROT_WRITE, MAP_SHARED, priv->fd, md.offset);
++	if (map == MAP_FAILED) {
++		kmsIoctl(priv->fd, DRM_IOCTL_MODE_RMFB, &fb.fb_id);
++		goto fail;
++	}
++	memset(map, 0, cd.size);
++	priv->handle = cd.handle;
++	priv->fb_id = fb.fb_id;
++	priv->fb_base = priv->fb = map;
++
++	memset(&priv->var, 0, sizeof priv->var);
++	priv->var.xres = priv->var.xres_virtual = cd.width;
++	priv->var.yres = priv->var.yres_virtual = cd.height;
++	priv->var.bits_per_pixel = 32;
++	priv->var.red.offset = 16;
++	priv->var.red.length = 8;
++	priv->var.green.offset = 8;
++	priv->var.green.length = 8;
++	priv->var.blue.offset = 0;
++	priv->var.blue.length = 8;
++	memset(&priv->fix, 0, sizeof priv->fix);
++	priv->fix.type = FB_TYPE_PACKED_PIXELS;
++	priv->fix.visual = FB_VISUAL_TRUECOLOR;
++	priv->fix.line_length = cd.pitch;
++	priv->fix.smem_len = cd.size;
++	return TRUE;
++
++ fail:
++	ErrorF("Xfbdev: no framebuffer for the dumb buffer: %s\n", strerror(errno));
++	memset(&dd, 0, sizeof dd);
++	dd.handle = cd.handle;
++	kmsIoctl(priv->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dd);
++	return FALSE;
++}
++
++static void kmsDestroyBuffer(int fd, uint32_t fb_id, uint32_t handle, void *map, size_t size)
++{
++	struct drm_mode_destroy_dumb dd;
++
++	munmap(map, size);
++	kmsIoctl(fd, DRM_IOCTL_MODE_RMFB, &fb_id);
++	memset(&dd, 0, sizeof dd);
++	dd.handle = handle;
++	kmsIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dd);
++}
++
++/* show the buffer: become DRM master again (after a VT switch) and set the CRTC */
++Bool kmsShow(FbdevPriv * priv)
++{
++	struct drm_mode_crtc crtc;
++
++	kmsIoctl(priv->fd, DRM_IOCTL_SET_MASTER, NULL);
++	memset(&crtc, 0, sizeof crtc);
++	crtc.crtc_id = priv->crtc;
++	crtc.fb_id = priv->fb_id;
++	crtc.set_connectors_ptr = (uintptr_t) & priv->connector;
++	crtc.count_connectors = 1;
++	crtc.mode = priv->mode;
++	crtc.mode_valid = 1;
++	if (kmsIoctl(priv->fd, DRM_IOCTL_MODE_SETCRTC, &crtc) < 0) {
++		ErrorF("Xfbdev: DRM_IOCTL_MODE_SETCRTC: %s\n", strerror(errno));
++		return FALSE;
++	}
++	return TRUE;
++}
++
++/* leave the display to the console (VT switch, exit): the fbdev emulation
++   restores its own mode once no one is master */
++void kmsHide(FbdevPriv * priv)
++{
++	kmsIoctl(priv->fd, DRM_IOCTL_DROP_MASTER, NULL);
++}
++
++/* open /dev/dri/card0 when -kms, or when its driver is a virtual GPU */
++Bool kmsInitialize(FbdevPriv * priv)
++{
++	struct drm_version v;
++	char name[32];
++	unsigned int i;
++	int fd;
++
++	priv->kms = FALSE;
++	if (!fbdevKms)
++		return FALSE;
++	fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
++	if (fd < 0)
++		return FALSE;
++	memset(&v, 0, sizeof v);
++	memset(name, 0, sizeof name);
++	v.name = name;
++	v.name_len = sizeof name - 1;
++	if (kmsIoctl(fd, DRM_IOCTL_VERSION, &v) < 0) {
++		close(fd);
++		return FALSE;
++	}
++	if (fbdevKms < 0) {
++		for (i = 0; i < sizeof kmsDrivers / sizeof kmsDrivers[0]; i++)
++			if (!strcmp(name, kmsDrivers[i]))
++				break;
++		if (i == sizeof kmsDrivers / sizeof kmsDrivers[0]) {
++			close(fd);
++			return FALSE;
++		}
++	}
++	priv->fd = fd;
++	priv->uevent = -1;
++	if (!kmsFindOutput(priv) || !kmsCreateBuffer(priv)) {
++		ErrorF("Xfbdev: no usable output on /dev/dri/card0 (%s): the frame buffer device\n", name);
++		close(fd);
++		return FALSE;
++	}
++	priv->kms = TRUE;
++	ErrorF("Xfbdev: KMS on /dev/dri/card0 (%s), %ux%u, the shadow framebuffer in RAM\n",
++	       name, priv->mode.hdisplay, priv->mode.vdisplay);
++	return TRUE;
++}
++
++/* after the shadow's damage went to the buffer: tell the driver which part */
++static void kmsUpdate(ScreenPtr pScreen, shadowBufPtr pBuf)
++{
++	KdScreenPriv(pScreen);
++	FbdevPriv *priv = pScreenPriv->card->driver;
++	RegionPtr damage = shadowDamage(pBuf);
++	struct drm_mode_fb_dirty_cmd dirty;
++	struct drm_clip_rect clips[64];
++	BoxRec screenBox;
++	RegionRec screenReg;
++	BoxPtr box;
++	int n, i;
++
++	/* the damage of a larger screen may still be pending after the screen
++	   shrank (kmsHotplug): only what lies inside the buffer is copied */
++	screenBox.x1 = screenBox.y1 = 0;
++	screenBox.x2 = priv->var.xres;
++	screenBox.y2 = priv->var.yres;
++	REGION_INIT(&screenReg, &screenBox, 1);
++	REGION_INTERSECT(damage, damage, &screenReg);
++	REGION_UNINIT(&screenReg);
++	box = REGION_RECTS(damage);
++	n = REGION_NUM_RECTS(damage);
++	if (!REGION_NOTEMPTY(damage))
++		return;
++
++	shadowUpdatePacked(pScreen, pBuf);
++	if (!n || priv->nodirty)
++		return;
++	if (n > 64) {		/* the bounding box then */
++		box = REGION_EXTENTS(damage);
++		n = 1;
++	}
++	for (i = 0; i < n; i++) {
++		clips[i].x1 = box[i].x1;
++		clips[i].y1 = box[i].y1;
++		clips[i].x2 = box[i].x2;
++		clips[i].y2 = box[i].y2;
++	}
++	memset(&dirty, 0, sizeof dirty);
++	dirty.fb_id = priv->fb_id;
++	dirty.num_clips = n;
++	dirty.clips_ptr = (uintptr_t) clips;
++	i = ioctl(priv->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
++	if (i < 0 && errno == ENOSYS)
++		priv->nodirty = TRUE;	/* the driver scans the buffer out itself */
++}
++
++ShadowUpdateProc kmsUpdateProc(void)
++{
++	return kmsUpdate;
++}
++
++/* the whole buffer dirty again, some time after a resize: vboxvideo drops
++   the updates it gets while VirtualBox has its VBVA channel off around the
++   mode change, which was the repaint of the whole screen; the buffer holds
++   the right picture, the host's copy kept parts of the old one */
++static OsTimerPtr kmsRefreshTimer;
++static int kmsBaseW, kmsBaseH, kmsBaseMmW, kmsBaseMmH;	/* the screen's first size */
++static int kmsRefreshLeft;
++
++static CARD32 kmsRefresh(OsTimerPtr timer, CARD32 now, pointer arg)
++{
++	ScreenPtr pScreen = arg;
++	KdScreenPriv(pScreen);
++	FbdevPriv *priv = pScreenPriv->card->driver;
++	struct drm_mode_fb_dirty_cmd dirty;
++	struct drm_clip_rect clip = { 0, 0, priv->var.xres, priv->var.yres };
++
++	if (pScreenPriv->enabled && !priv->nodirty) {
++		memset(&dirty, 0, sizeof dirty);
++		dirty.fb_id = priv->fb_id;
++		dirty.num_clips = 1;
++		dirty.clips_ptr = (uintptr_t) & clip;
++		ioctl(priv->fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
++	}
++	return --kmsRefreshLeft > 0 ? 1200 : 0;	/* at 0.3 s and 1.5 s */
++}
++
++/* the host changed the display's size: a new buffer of the new preferred
++   mode, the screen resized through RandR */
++static void kmsHotplug(ScreenPtr pScreen)
++{
++	KdScreenPriv(pScreen);
++	KdScreenInfo *screen = pScreenPriv->screen;
++	FbdevScrPriv *scrpriv = screen->driver;
++	FbdevPriv *priv = pScreenPriv->card->driver;
++	FbdevPriv old = *priv;
++	RRScreenSize size;
++	RRScreenRate rate;
++
++	if (!kmsFindOutput(priv)) {
++		*priv = old;
++		return;
++	}
++	if (priv->mode.hdisplay == old.mode.hdisplay && priv->mode.vdisplay == old.mode.vdisplay) {
++		if (pScreenPriv->enabled && memcmp(&priv->mode, &old.mode, sizeof priv->mode))
++			kmsShow(priv);
++		return;
++	}
++	if (!kmsCreateBuffer(priv)) {
++		*priv = old;
++		return;
++	}
++	ErrorF("Xfbdev: the display is now %ux%u\n", priv->mode.hdisplay, priv->mode.vdisplay);
++	memset(&size, 0, sizeof size);
++	size.width = priv->mode.hdisplay;
++	size.height = priv->mode.vdisplay;
++	/* the same pixel size as at start (96 dpi when the server made up one),
++	   from the first size, so that rounding does not add up over resizes */
++	if (!kmsBaseW) {
++		kmsBaseW = pScreen->width;
++		kmsBaseH = pScreen->height;
++		kmsBaseMmW = pScreen->mmWidth;
++		kmsBaseMmH = pScreen->mmHeight;
++	}
++	size.mmWidth = (int)((long)kmsBaseMmW * size.width / (kmsBaseW ? kmsBaseW : 1));
++	size.mmHeight = (int)((long)kmsBaseMmH * size.height / (kmsBaseH ? kmsBaseH : 1));
++	rate.rate = 60;
++	size.nRates = 1;
++	size.pRates = &rate;
++	/* fbdevRandRSetConfig maps the new buffer (the window proc reads priv->fb)
++	   and shows it (KdEnableScreen -> fbdevEnable -> kmsShow) */
++	if (!fbdevRandRSetConfig(pScreen, KdSubRotation(scrpriv->randr, screen->randr),
++				 60, &size)) {
++		kmsDestroyBuffer(priv->fd, priv->fb_id, priv->handle, priv->fb_base,
++				 priv->fix.smem_len);
++		*priv = old;
++		return;
++	}
++	kmsDestroyBuffer(old.fd, old.fb_id, old.handle, old.fb_base, old.fix.smem_len);
++	RRGetInfo(pScreen);		/* the new size becomes RandR's current one */
++	RRScreenSizeNotify(pScreen);	/* ConfigureNotify, RRScreenChangeNotify */
++	kmsRefreshLeft = 2;
++	kmsRefreshTimer = TimerSet(kmsRefreshTimer, 0, 300, kmsRefresh, pScreen);
++}
++
++static void kmsBlock(pointer data, OSTimePtr timeout, pointer readmask)
++{
++}
++
++static void kmsWakeup(pointer data, int result, pointer readmask)
++{
++	ScreenPtr pScreen = data;
++	KdScreenPriv(pScreen);
++	FbdevPriv *priv = pScreenPriv->card->driver;
++	char buf[4096];
++	int n, i, drm, hotplug;
++
++	if (result <= 0 || priv->uevent < 0 || !FD_ISSET(priv->uevent, (fd_set *) readmask))
++		return;
++	drm = hotplug = 0;
++	while ((n = recv(priv->uevent, buf, sizeof buf - 1, MSG_DONTWAIT)) > 0) {
++		buf[n] = 0;
++		/* "change@/devices/.../drm/card0\0ACTION=change\0...\0HOTPLUG=1\0" */
++		for (i = 0; i < n; i += strlen(buf + i) + 1) {
++			if (!strcmp(buf + i, "SUBSYSTEM=drm"))
++				drm = 1;
++			else if (!strcmp(buf + i, "HOTPLUG=1"))
++				hotplug = 1;
++		}
++	}
++	if (drm && hotplug)
++		kmsHotplug(pScreen);
++}
++
++/* the card is closed (server reset or exit): no refresh for a screen that is gone */
++void kmsFini(void)
++{
++	if (kmsRefreshTimer) {
++		TimerFree(kmsRefreshTimer);
++		kmsRefreshTimer = NULL;
++	}
++}
++
++/* listen to the kernel's uevents for the DRM device's hotplug events */
++void kmsWatch(ScreenPtr pScreen)
++{
++	KdScreenPriv(pScreen);
++	FbdevPriv *priv = pScreenPriv->card->driver;
++	struct sockaddr_nl nl;
++	int fd;
++
++	if (!priv->kms || priv->uevent >= 0)
++		return;
++	fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
++		    NETLINK_KOBJECT_UEVENT);
++	if (fd < 0)
++		return;
++	memset(&nl, 0, sizeof nl);
++	nl.nl_family = AF_NETLINK;
++	nl.nl_groups = 1;	/* the kernel's uevents */
++	if (bind(fd, (struct sockaddr *)&nl, sizeof nl) < 0) {
++		close(fd);
++		return;
++	}
++	priv->uevent = fd;
++	AddEnabledDevice(fd);
++	RegisterBlockAndWakeupHandlers(kmsBlock, kmsWakeup, pScreen);
++}

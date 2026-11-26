@@ -1,0 +1,188 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:45:40 +0200
+Subject: [PATCH] greeter: the box follows the screen's size
+
+With RandR (the X server follows a virtual machine's window) the login box
+stayed where Initialize placed it for the screen at start.  The root
+window is registered as one of the widget's drawables and watched for
+ConfigureNotify and PropertyNotify: on a new screen size (Xlib's Screen
+gets it too) the box goes back to the middle, a third of the way down, and
+on a new frosted wallpaper (backgroundProperty) it cuts its background
+again.  It also stays above the helper band along the bottom edge, whose
+top xdm-help publishes in the root window's _XDM_HELP_TOP: in the middle of
+the space above it when the usual place would overlap (small screens).  The screen's size in millimetres is scaled with the
+pixel size from the values at start, as the server does, since Xft takes
+its DPI from them (the text would shrink at every resize otherwise).
+---
+ greeter/Login.c | 130 +++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 129 insertions(+), 1 deletion(-)
+
+diff --git a/greeter/Login.c b/greeter/Login.c
+index fb92ac4..667b010 100644
+--- a/greeter/Login.c
++++ b/greeter/Login.c
+@@ -2335,6 +2335,114 @@ SkipXpmLoad:
+ }
+ 
+ 
++static void SetBackgroundFromProperty (LoginWidget w);
++
++/*
++ * The box's place for the screen's current size: centred, a third of the way
++ * down, but above the helper band along the bottom edge (xdm-help publishes
++ * its top in the root window's _XDM_HELP_TOP): when that would overlap, in the
++ * middle of the space above the band, and at the top when even that is
++ * short.  Returns whether the box moved.
++ */
++static Boolean
++PlaceBox (LoginWidget w)
++{
++    Display *dpy = XtDisplay (w);
++    Screen *scr = XtScreen (w);
++    Atom prop = XInternAtom (dpy, "_XDM_HELP_TOP", True), type;
++    int format, x, y, top = HeightOfScreen (scr);
++    unsigned long n, after;
++    unsigned char *data = NULL;
++    Arg position[2];
++
++    if (prop != None &&
++	XGetWindowProperty (dpy, RootWindowOfScreen (scr), prop, 0, 1, False,
++			    XA_CARDINAL, &type, &format, &n, &after, &data) == Success &&
++	type == XA_CARDINAL && format == 32 && n == 1)
++	top = (int) *(long *) data;
++    if (data)
++	XFree (data);
++    if (top > HeightOfScreen (scr) || top <= 0)
++	top = HeightOfScreen (scr);
++    x = (int)(WidthOfScreen (scr) - w->core.width) / 2;
++    y = (int)(HeightOfScreen (scr) - w->core.height) / 3;
++    if (y + (int) w->core.height + 8 > top)
++	y = (top - (int) w->core.height) / 2;
++    if (x < 0)
++	x = 0;
++    if (y < 0)
++	y = 0;
++    if (x == XtParent (w)->core.x && y == XtParent (w)->core.y)
++	return False;
++    XtSetArg (position[0], XtNx, x);
++    XtSetArg (position[1], XtNy, y);
++    XtSetValues (XtParent (w), position, (Cardinal) 2);
++    return True;
++}
++
++/*
++ * The screen changed size (RandR: the X server follows a virtual machine's
++ * window): the box goes back to the middle, a third of the way down, as
++ * Initialize placed it, and takes a new piece of the frosted wallpaper
++ * when that is published again (xdm-help runs "wallpaper --greeter" for the
++ * new size).  The root window is registered as one of the widget's
++ * drawables, so that Xt hands its events to this handler.
++ */
++static void
++RootEvent (Widget gw, XtPointer closure, XEvent *event, Boolean *cont)
++{
++    LoginWidget w = (LoginWidget) gw;
++    Display *dpy = XtDisplay (w);
++    Screen *scr = XtScreen (w);
++    Atom prop;
++
++    if (event->type == ConfigureNotify &&
++	event->xconfigure.window == RootWindowOfScreen (scr) &&
++	(event->xconfigure.width != WidthOfScreen (scr) ||
++	 event->xconfigure.height != HeightOfScreen (scr)))
++    {
++	/* Xlib keeps the size from the connection's start otherwise; the
++	   millimetres in proportion (the server keeps the resolution, and Xft
++	   takes its DPI from them) */
++	{   /* from the size at start: no rounding adds up */
++	    static int w0, h0, mw0, mh0;
++	    if (!w0) {
++		w0 = scr->width; h0 = scr->height;
++		mw0 = scr->mwidth; mh0 = scr->mheight;
++	    }
++	    if (w0 > 0 && h0 > 0) {
++		scr->mwidth = (int)((long)mw0 * event->xconfigure.width / w0);
++		scr->mheight = (int)((long)mh0 * event->xconfigure.height / h0);
++	    }
++	}
++	scr->width = event->xconfigure.width;
++	scr->height = event->xconfigure.height;
++	if (PlaceBox (w) && w->login.backgroundPixmap != None)
++	{   /* the old piece is in the wrong place now */
++	    SetBackgroundFromProperty (w);
++	    XClearArea (dpy, XtWindow (w), 0, 0, 0, 0, True);
++	}
++    }
++    else if (event->type == PropertyNotify &&
++	     event->xproperty.atom == XInternAtom (dpy, "_XDM_HELP_TOP", True))
++    {
++	if (PlaceBox (w) && w->login.backgroundPixmap != None)
++	{
++	    SetBackgroundFromProperty (w);
++	    XClearArea (dpy, XtWindow (w), 0, 0, 0, 0, True);
++	}
++    }
++    else if (event->type == PropertyNotify &&
++	     event->xproperty.state == PropertyNewValue &&
++	     w->login.backgroundProperty && w->login.backgroundProperty[0] &&
++	     (prop = XInternAtom (dpy, w->login.backgroundProperty, True)) != None &&
++	     event->xproperty.atom == prop)
++    {
++	SetBackgroundFromProperty (w);
++	XClearArea (dpy, XtWindow (w), 0, 0, 0, 0, True);
++    }
++}
++
+ static void Realize (
+      Widget gw,
+      XtValueMask *valueMask,
+@@ -2402,11 +2510,27 @@ static void Realize (
+         XMapWindow(XtDisplay(w), w->login.logoWindow);
+     }
+ #endif /* XPM */
++
++    /* the root window's size and properties (RootEvent) */
++    {
++	Display *dpy = XtDisplay (gw);
++	Window root = RootWindowOfScreen (XtScreen (gw));
++	XWindowAttributes ra;
++
++	XtRegisterDrawable (dpy, root, gw);
++	XtAddRawEventHandler (gw, StructureNotifyMask | PropertyChangeMask, False,
++			      RootEvent, NULL);
++	if (XGetWindowAttributes (dpy, root, &ra))
++	    XSelectInput (dpy, root, ra.your_event_mask |
++			  StructureNotifyMask | PropertyChangeMask);
++    }
+ }
+ 
+ static void Destroy (Widget gw)
+ {
+     LoginWidget w = (LoginWidget)gw;
++    if (XtIsRealized (gw))
++	XtUnregisterDrawable (XtDisplay (gw), RootWindowOfScreen (XtScreen (gw)));
+     bzero (w->login.data.name, NAME_LEN);
+     bzero (w->login.data.passwd, PASSWORD_LEN);
+ 
+@@ -2521,6 +2645,8 @@ SetBackgroundFromProperty (LoginWidget w)
+ 	    XFreePixmap (dpy, pix);
+ 	return;
+     }
++    if (w->login.backgroundPixmap != None)	/* a piece cut before a resize */
++	XFreePixmap (dpy, w->login.backgroundPixmap);
+     w->login.backgroundPixmap = pix;
+     XSetWindowBackgroundPixmap (dpy, XtWindow (w), pix);
+     XClearWindow (dpy, XtWindow (w));
+@@ -2534,8 +2660,10 @@ static void Redisplay(
+ {
+     LoginWidget w = (LoginWidget) gw;
+ 
+-    if (!w->login.backgroundTried)
++    if (!w->login.backgroundTried) {
++	PlaceBox (w);	/* above xdm-help's band, also on a small screen at start */
+ 	SetBackgroundFromProperty (w);
++    }
+     draw_it (w);
+ }
+ 

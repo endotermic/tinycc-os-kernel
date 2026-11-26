@@ -62,6 +62,12 @@ SPDX-FileCopyrightText = ["Lucas de Sena", "2026 Nikolajs Agafonovs"]
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = ["patches/xcompmgr/**/*.patch"]
+precedence = "override"
+SPDX-FileCopyrightText = ["Keith Packard and the xcompmgr authors", "2026 Nikolajs Agafonovs"]
+SPDX-License-Identifier = "HPND-sell-variant"
+
+[[annotations]]
 path = ["patches/xmenu/**/*.patch"]
 precedence = "override"
 SPDX-FileCopyrightText = ["Lucas de Sena", "2026 Nikolajs Agafonovs"]

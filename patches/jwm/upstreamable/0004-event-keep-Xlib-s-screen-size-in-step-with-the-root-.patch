@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 15:16:26 +0200
+Subject: [PATCH] event: keep Xlib's screen size in step with the root window's
+
+JWM restarts in place on the same connection when the root window changes
+size, and the restart takes the size from DisplayWidth/DisplayHeight,
+which Xlib keeps from the time the connection was opened.  So after a
+resize and back to the size of that time JWM saw no change: no restart, the
+tray and the background command left as they were.  The Screen structure
+gets the new size from the ConfigureNotify, as XRRUpdateConfiguration does; the size in millimetres in
+proportion, from the values at start, since Xft takes its DPI from it.
+---
+ src/event.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/event.c b/src/event.c
+index 04335a5..d4530dc 100644
+--- a/src/event.c
++++ b/src/event.c
+@@ -903,6 +903,28 @@ char HandleConfigureNotify(const XConfigureEvent *event)
+       return 0;
+    }
+    if(rootWidth != event->width || rootHeight != event->height) {
++      /* Xlib's screen size too (as XRRUpdateConfiguration does): the restart
++       * below reads it with DisplayWidth/DisplayHeight on this connection,
++       * which otherwise keeps the size of the time it was opened, and the next
++       * change back to that size would go unnoticed (no restart, no new
++       * background from the background command). */
++      Screen *sp = ScreenOfDisplay(display, rootScreen);
++      static int w0, h0, mw0, mh0;
++      if(!w0) {
++         w0 = sp->width;
++         h0 = sp->height;
++         mw0 = sp->mwidth;
++         mh0 = sp->mheight;
++      }
++      if(w0 > 0 && h0 > 0) {
++         /* the millimetres in proportion, from the size at start (no rounding
++          * adds up): the server keeps the resolution, and Xft takes its DPI
++          * from them */
++         sp->mwidth = (int)((long)mw0 * event->width / w0);
++         sp->mheight = (int)((long)mh0 * event->height / h0);
++      }
++      sp->width = event->width;
++      sp->height = event->height;
+       rootWidth = event->width;
+       rootHeight = event->height;
+       shouldRestart = 1;

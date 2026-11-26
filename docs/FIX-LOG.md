@@ -2067,6 +2067,44 @@ C75. 2026-11-26, COMMITTED (patches/tinyx/features/0008), TinyX `kdrive/linux/mo
     Verification: QEMU's USB tablet and vmmouse (x86_64), VirtualBox's integration device (x86_64
     and i386): the cursor within 2 px of each of four points set from the host; right click opens
     JWM's menu; relative PS/2 motion still moves the pointer.
+C76. 2026-11-26, COMMITTED (patches/tinyx/upstreamable/0009), TinyX `fb/fbwindow.c`
+    (fbCopyWindow): the Composite port left out X.Org's translation of the copy region by the
+    window pixmap's -screen_x, -screen_y, so moving a child of a redirected window copied the
+    wrong rows (past the pixmap's end low on the screen: JWM's tray re-laid out after a resize,
+    a segfault in fbBlt found with a frame-pointer backtrace and a CopyWindow log). Not a tcc
+    matter. Verification: the session through six resizes with xcompmgr, no crash.
+C77. 2026-11-26, COMMITTED (patches/tinyx/features/0010), TinyX `kdrive/fbdev/kms.c` (new),
+    `fbdev.c`, `fbdev.h`, `fbinit.c`: KMS mode, so that the screen can change size (the fbdev
+    emulation cannot grow). Two bugs on the way: the KMS update function was never chosen,
+    because `scrpriv->randr` is RR_Rotate_0 = 1 and the rotation branch took it (no DIRTYFB:
+    a black screen); after a shrink, damage of the larger screen still pending was copied past
+    the new buffer (now clipped to it). vboxvideo drops VBVA updates around a mode change, so
+    the whole buffer is marked dirty again 0.3 s and 1.5 s after a resize. Not a tcc matter.
+C78. 2026-11-26, COMMITTED (patches/xcompmgr/upstreamable/0001, the component's first patch),
+    xcompmgr `configure_win()`: after a root resize the new back buffer was painted only where
+    damaged and then copied whole to the screen, and the windows' named pixmaps kept showing
+    the old ones (the desktop's picture at the old size); now the whole screen is damaged and
+    the pixmaps, pictures, shadows and the root tile are made anew. Not a tcc matter.
+C79. 2026-11-26, COMMITTED (patches/xfiles/features/0006), xfiles `widget.c`: the desktop window
+    follows the root's size (StructureNotify on the root; the idle tick checks the real size,
+    JWM's restart may drop the request) and reloads the wallpaper, whose pieces in the icon
+    layer were cut from the old one. Not a tcc matter.
+C80. 2026-11-26, COMMITTED (patches/jwm/upstreamable/0004), JWM `src/event.c`
+    (HandleConfigureNotify): JWM restarts in place on a new root size and then reads
+    DisplayWidth/DisplayHeight, which Xlib keeps from the connection's start, so a later change
+    back to that size went unnoticed; the Screen structure gets the new size. Not a tcc matter.
+C81. 2026-11-26, COMMITTED (patches/xdm/upstreamable/0007), xdm `greeter/Login.c` (RootEvent,
+    PlaceBox, Realize, Destroy, SetBackgroundFromProperty) and userland/xdm/xdm-help.c: the login
+    screen follows the screen's size. The greeter watches the root (XtRegisterDrawable + a raw
+    event handler): a new size re-centres the box, above xdm-help's band (_XDM_HELP_TOP), a new
+    frosted wallpaper is cut again; xdm-help redraws the greeter's wallpaper for the new size and
+    moves its band, its text wrapped to the screen's width at the largest size (10.5 to 5.5
+    points) that leaves room for the box, so that none of it is lost on a small screen. Xft's
+    DPI comes from the screen's size in millimetres, which Xlib keeps from the connection's
+    start: xdm-help, the greeter and JWM scale it with the pixel size from the values at
+    start (and the server from its first size), or the text shrank with every resize. Not a
+    tcc matter. Verification: nine sizes down to 640x360 and a session round trip in
+    VirtualBox, both arches, the greeter on QEMU's standard VGA unchanged.
 
 ## The device drivers (2026-10-26)
 

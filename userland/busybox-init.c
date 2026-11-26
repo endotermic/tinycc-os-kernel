@@ -605,6 +605,16 @@ int main(void)
      * before the network comes up (r8169 loads its files when the interface goes up) */
     if (is_exec("/usr/sbin/firmware-medium"))
         runl("/usr/sbin/firmware-medium", NULL);
+    /* VirtualBox: the screen follows the window (vbox-display.c), in the background for as
+     * long as the machine runs; its vboxguest session is what tells VirtualBox that the
+     * guest can change its screen size */
+    if (exists("/dev/vboxguest") && is_exec("/usr/sbin/vbox-display")) {
+        pid_t vd = fork();
+        if (vd == 0) {
+            execl("/usr/sbin/vbox-display", "vbox-display", (char *)NULL);
+            _exit(127);
+        }
+    }
     network_up();
     /* A shell on the screen (tty1, keyboard) too, when there is one and /dev/console is
      * another device (the last "console=" of the command line, listed last in
