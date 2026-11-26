@@ -199,7 +199,9 @@ sets the mode the card's EDID prefers, which `run.sh` makes `RES` (XGA, 1024x768
 default; `RES=1280x1024 ./run.sh` for another one), on real hardware simpledrm takes over
 the framebuffer the firmware set up (UEFI GOP: the panel's native mode; on BIOS, GRUB's
 `gfxpayload=auto` in `boot/mkiso.sh` picks the EDID-preferred mode), and fbcon runs on
-top (DRM fbdev emulation). The tcc build leaves the real-mode video mode setting out
+top (DRM fbdev emulation). In VirtualBox and VMware the virtual GPU's own driver sets the mode
+(2026-11-26): vmwgfx for VMware's SVGA II and VirtualBox's VMSVGA (its default for Linux
+guests), vboxvideo for VirtualBox's VBoxVGA. The tcc build leaves the real-mode video mode setting out
 (`kernels/linux/tcc.config`), so `vga=` has no effect. The ISO's first menu entry makes
 the screen the primary console, the second the serial port.
 
@@ -290,7 +292,7 @@ gcc, binutils, flex or bison:
 | In the guest | What |
 |------|------|
 | `/usr/src/linux-7.3.0.tar.gz` (25 MB, 10 620 files with the drivers and objtool) | the kernel source pruned to what this configuration builds: every file the host build read (from the `.*.cmd` dependency lists of `build/x86_64/linux`), all Makefile/Kbuild/Kconfig files, Kbuild's scripts, the generic, uapi and x86 headers, arch/x86's boot code and tools, the `*_shipped` sources; with the kernel patches applied |
-| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 162 patches, the linker suite, the libelf subset objtool links against, GNU make |
+| `/usr/src/tinycc.tar.gz`, `tld.tar.gz`, `libelf.tar.gz`, `make-4.4.1.tar.gz` | tcc with the 164 patches, the linker suite, the libelf subset objtool links against, GNU make |
 | `/usr/bin/tcc`, `i386-tcc` | the compiler and the i386 cross compiler `tcc -m16` execs for the real-mode code (static, musl); the i386 image ships only `tcc`, which is that compiler |
 | `/usr/bin/tld` (`ld nm objcopy readelf ar strip`), `/usr/bin/make` | the linker suite and GNU make 4.4.1, static musl binaries compiled by tcc |
 | `/usr/bin/tcc-kcc`, `tcc-hostcc`, `flex`, `bison` | the Kbuild wrappers (the sources of `kernels/linux/*.c`, which the host build compiles; here C scripts; objtool is built in the guest by Kbuild itself, with `tcc-hostcc` against `/usr/lib/libelf.a`); `flex`/`bison` copy the Kconfig lexer and parser generated on the host (`/usr/share/tinycc-os-kernel/kconfig/`) |
@@ -362,7 +364,7 @@ seventh menu entries (`./run.sh --iso --selfhost` selects them).
 | `scripts/selfhost-test.sh`, `scripts/recv-file.sh` | the self-hosting loop unattended (host check, guest build, boot of the result); files sent by the guest cut out of the ttyS1 capture |
 | `scripts/export-patches.sh` | regenerates `patches/<name>/` from the commits of `src/<name>` |
 | `./build.sh`, `run.sh` | the user-facing selector (tcc only as a tar.gz, or the distro; `--clean`, `--clean-all`) and the QEMU boot |
-| `patches/tinycc/` | 162 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
+| `patches/tinycc/` | 164 tcc patches in `bugfixes/`, `compatibility/`, `features/` (see below); the kernel needs none |
 | `kernels/linux/` | Kconfig fragments (`minimal.config`, `tcc.config`), `tcc-kcc.c` (CC) and `tcc-hostcc.c` (HOSTCC) wrappers for Kbuild, `tcc-canary.h` (the seqlock canary stub, given to every kernel compile through `KCFLAGS=-include`); C programs, compiled by `build.sh` into `build/<arch>/kcc/` for the host build and run as `tcc -run` scripts in the guest |
 | `tools/tld/` | the linker suite that replaces binutils for the kernel: `ld` (GNU linker scripts, `-r`, `-pie`, `-shared`), `nm`, `objcopy`, `readelf -r`, `ar`; its own test suite |
 | `tests/netsurf/` | `run.sh`, which opens the self-checking pages in `pages/` (checks through `harness.js`) with the built NetSurf on the host (`-f ram`, no window) and reports each page, the known gaps (`todo:`) and the unimplemented WebIDL members it used; it measures a URL too (uncaught script errors and where they were thrown; `--probe JS` runs a script of yours in the page to report its state); `mirror.py` saves a page with its scripts for such offline runs; `server.py` is the HTTP server of the network test pages (run.sh starts it). `browse.sh` opens the built browser on the host in an X window, for trying pages by hand (its own profile in `build/<arch>/netsurf/browse/`). The plan these serve is `docs/NETSURF-JS.md` |

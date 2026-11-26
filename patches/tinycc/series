@@ -161,3 +161,5 @@ compatibility/0159-tccgen-an-inlined-function-s-parameter-that-the-body.patch
 compatibility/0160-tests-182_inline_unused_param-the-case-of-the-previo.patch
 compatibility/0161-tccasm-.p2align-.balign-.align-with-an-empty-fill-va.patch
 compatibility/0162-tests-183_asm_align_max-the-case-of-the-previous-com.patch
+compatibility/0163-i386-asm-dx-as-the-port-operand-of-in-out-as-GNU-as-.patch
+compatibility/0164-tests-184_asm_dx_port_vmmcall-the-case-of-the-previo.patch

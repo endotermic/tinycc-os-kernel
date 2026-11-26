@@ -244,6 +244,29 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   driver needs firmware; its ati-vga with radeon dies in radeon's bandwidth code, a divide
   error, before /init).
 
+## Virtual machines: VirtualBox and VMware displays (2026-11-26)
+
+- `drivers.config` gets `DRM_VMWGFX` (VMware's SVGA II adapter; VirtualBox's VMSVGA, the
+  default graphics controller of its Linux guests) and `DRM_VBOXVIDEO` (VirtualBox's VBoxVGA
+  and VBoxSVGA), with `HYPERVISOR_GUEST`, which vmwgfx depends on (the hypervisor detection
+  of `arch/x86/kernel/cpu/`, including VMware's hypercall in `vmware.c`; `PARAVIRT` stays
+  off).  Before, these machines had simpledrm at the mode the firmware or GRUB set.  Both
+  arches; one tcc fix (144: `(%dx)` as the port operand of `in`/`out`, and `vmmcall`, both in
+  VMware's hypercall).  bzImage x86_64 21.5 -> 21.6 MB, i386 15.1 -> 15.3 MB.
+- Verified in VirtualBox 7.2 (BIOS, the ISO on an IDE CD, a throwaway VM), both arches:
+  VMSVGA -> `fb0: vmwgfxdrmfb` (Screen Target display unit, command buffers) and the xdm login
+  on it at 1280x1024; VBoxVGA -> `fb0: vboxvideodrmfb` and the login at 1024x768.  vmwgfx logs
+  "running on an unsupported hypervisor" in VirtualBox, as with any distribution's kernel.
+  VBoxSVGA (meant for Windows guests): vboxvideo binds and the login shows, but it logs
+  `vbva_enable failed` and `hgsmi_get_mode_hints failed: -5`; not looked into, VirtualBox
+  recommends VMSVGA for Linux.  QEMU's `-vga vmware`: vmwgfx refuses it ("Hardware has no
+  pitchlock", probe error -38), an upstream limit of the driver on QEMU's SVGA II; use
+  QEMU's standard VGA (bochs-drm) or virtio there.  Not tested: VMware Workstation/ESXi
+  themselves, resizing the VM window (TinyX does not follow a mode change), mouse
+  integration (needs vmmouse/vboxguest and an X driver; the USB tablet works).
+- Regressions: devices-test 18/18 and selfhost-test all on both arches (the guest's tcc
+  builds the kernel with both drivers; x86_64 17 min, i386 11 min), tcc `make test`.
+
 ## Real hardware reports
 
 - 2026-11-19, Acer Aspire laptop, x86_64 ISO (commit 37af92b): boots; the desktop (xdm

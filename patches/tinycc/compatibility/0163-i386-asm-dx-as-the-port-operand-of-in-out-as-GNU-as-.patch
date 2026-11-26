@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 11:48:11 +0200
+Subject: [PATCH] i386-asm: "(%dx)" as the port operand of in/out, as GNU as,
+ and AMD's vmmcall (0f 01 d9) (Linux VMware hypercall, asm/vmware.h: "inl
+ (%%dx), %%eax" and vmmcall in an ALTERNATIVE_2)
+
+---
+ i386-asm.c   | 15 +++++++++++++++
+ x86_64-asm.h |  1 +
+ 2 files changed, 16 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 5774cd7..a0e6cca 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -355,6 +355,11 @@ static int asm_parse_reg(unsigned int *type)
+         reg = tok - TOK_ASM_rax;
+ 	*type = OP_REG64;
+         check_reg64(tok);
++    } else if (tok == TOK_ASM_dx) {
++        /* "(%dx)": GAS's spelling of the port operand of in/out
++           ("inl (%dx), %eax"); parse_operand() turns it into %dx */
++        reg = TREG_XDX;
++        *type = OP_REG16;
+     } else if (tok == TOK_ASM_rip) {
+         reg = -2; /* Probably should use different escape code. */
+ 	*type = OP_REG64;
+@@ -556,10 +561,20 @@ static void parse_operand(TCCState *s1, Operand *op)
+ 	    if (type & OP_REG32)
+ 	        op->type |= OP_EA32;
+             skip(')');
++            if (type == OP_REG16) {
++                if (op->reg != TREG_XDX || op->reg2 != -1 || op->e.v || op->e.sym)
++                    expect("register");
++                /* OP_DX alone, not OP_REG16: only the port operand of
++                   in/out/ins/outs matches ("movl (%dx), %eax" stays an error) */
++                op->type = OP_DX;
++                op->reg = TREG_XDX;
++                goto done;
++            }
+         }
+         if (op->reg == -1 && op->reg2 == -1)
+             op->type |= OP_ADDR;
+     }
++ done:
+     op->type |= indir;
+ }
+ 
+diff --git a/x86_64-asm.h b/x86_64-asm.h
+index 1f09b27..18a0913 100644
+--- a/x86_64-asm.h
++++ b/x86_64-asm.h
+@@ -57,6 +57,7 @@
+     DEF_ASM_OP0L(vmlaunch, 0xc2, 0, OPC_0F01)
+     DEF_ASM_OP0L(vmresume, 0xc3, 0, OPC_0F01)
+     DEF_ASM_OP0L(vmxoff, 0xc4, 0, OPC_0F01)
++    DEF_ASM_OP0L(vmmcall, 0xd9, 0, OPC_0F01)
+     DEF_ASM_OP0L(monitor, 0xc8, 0, OPC_0F01)
+     DEF_ASM_OP0L(mwait, 0xc9, 0, OPC_0F01)
+     DEF_ASM_OP0L(clac, 0xca, 0, OPC_0F01)

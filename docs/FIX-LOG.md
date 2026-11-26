@@ -84,13 +84,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 141 | tinycc 0157 |
 | | | | | 142 | tinycc 0159 |
 | | | | | 143 | tinycc 0161 |
+| | | | | 144 | tinycc 0163 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156, 0158, 0160 and 0162 those of fixes
-136-143.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156, 0158, 0160, 0162 and 0164 those of fixes
+136-144.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -161,6 +162,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/181_inline_const_cond.c` | all (the link fails without the fix) | 141 |
 | `tests/tests2/182_inline_unused_param.c` | all (the link fails without the fix) | 142 |
 | `tests/tests2/183_asm_align_max.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 143 |
+| `tests/tests2/184_asm_dx_port_vmmcall.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 144 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3368,3 +3370,25 @@ needed two tcc fixes.
     maximum, the label offsets as gcc and GNU as give them), a directive file assembled by
     tcc and by GNU as with the same symbol addresses and data bytes (the code padding differs
     only in the NOP encodings), `make test`, the i386 kernel.
+
+## Virtual machines: the VirtualBox and VMware displays (2026-11-26)
+
+vmwgfx and vboxvideo (docs/HARDWARE.md, "Virtual machines") need `CONFIG_HYPERVISOR_GUEST`,
+which brings in VMware's hypercall; its inline assembly needed one tcc fix.
+
+144. 2026-11-26, COMMITTED (patches/tinycc/compatibility/0163, test 0164 =
+    tests2/184_asm_dx_port_vmmcall), `i386-asm.c` (asm_parse_reg(), parse_operand()),
+    `x86_64-asm.h`. Problem: arch/x86/kernel/cpu/vmware.c and asm/vmware.h (vmwgfx_msg.c)
+    stopped tcc's assembler twice: "unknown opcode 'vmmcall'" (AMD's form of vmcall, the
+    hypercall on AMD hosts, in an ALTERNATIVE_2 with the I/O port form and vmcall), and
+    "register expected" for `inl (%dx), %eax`, the port operand written in parentheses,
+    which GNU as takes as `%dx` for in/out (ins/outs too). Fix: `vmmcall` = 0f 01 d9 next to
+    vmcall; asm_parse_reg() accepts `%dx` inside parentheses and parse_operand() makes
+    `(%dx)` with no displacement or index an operand of type OP_DX alone, not OP_REG16, so
+    that only the port operand of in/out matches it (`movl (%dx), %eax` stays an error, as in
+    GNU as; with OP_REG16 it had become `mov %edx, %eax`). Verification:
+    184_asm_dx_port_vmmcall (the bytes of in/out with `(%dx)` and `%dx`, vmcall and vmmcall,
+    as GNU as encodes them), the same instructions through i386-tcc compared with objdump,
+    both kernels, vmwgfx and vboxvideo in VirtualBox, `make test`, devices-test 18/18 and
+    selfhost-test all on both arches.
+
