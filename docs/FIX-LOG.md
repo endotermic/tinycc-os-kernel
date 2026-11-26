@@ -85,13 +85,14 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 142 | tinycc 0159 |
 | | | | | 143 | tinycc 0161 |
 | | | | | 144 | tinycc 0163 |
+| | | | | 145 | tinycc 0165 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
 an addition); 0116, 0118, 0120 and 0123 carry the tests of fixes 119, 120, 121 and 122/123 (the
 last in tests/asmtest.S and the m16-asm snippet lists), 0125 that of fix 124, 0128 that of
-fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156, 0158, 0160, 0162 and 0164 those of fixes
-136-144.
+fix 125, 0131 those of fixes 126 and 127, 0137 that of fix 130, 0139 that of fix 131 (a case in 159_depfile), 0142 that of fix 133, 0144 that of fix 134, 0146 that of fix 135, 0148, 0150, 0152, 0154, 0156, 0158, 0160, 0162, 0164 and 0166 those of fixes
+136-145.
 
 Kernel: K1 = linux 0001, K2 = 0002, K3 = 0003, K4 = 0004, K5 and K6 = 0005 (dropped 2026-11-06:
 kernels/linux/tcc-canary.h through KCFLAGS, see PORT-NOTES), K7 = 0006 (dropped 2026-11-06: fix 129),
@@ -163,6 +164,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/182_inline_unused_param.c` | all (the link fails without the fix) | 142 |
 | `tests/tests2/183_asm_align_max.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 143 |
 | `tests/tests2/184_asm_dx_port_vmmcall.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 144 |
+| `tests/tests2/185_asm_out_reload_clobber.c` | i386, x86_64 (an asm error on i386 without the fix) | 145 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -2053,6 +2055,18 @@ C74. 2026-11-24, COMMITTED (patches/netsurf/upstreamable/0063), found because Yo
     attribute binding was lost. Names are now valid as the DOM standard has them (no whitespace,
     NUL, /, = or >). Verification: dom-api.html (two checks failed before); links with href went
     from 58 to 159 on the search page; the home page shows its history-off notice in the guest.
+C75. 2026-11-26, COMMITTED (patches/tinyx/features/0008), TinyX `kdrive/linux/mouse.c` (MouseInit,
+    EvAbsScan/EvAbsOpen/EvAbsRead): mouse integration in virtual machines. Absolute pointers (QEMU's
+    USB tablet, VMware's vmmouse, VirtualBox's vboxguest "mouse integration" device, tablets,
+    touchscreens) reached Xfbdev only through /dev/input/mice as relative motion, which the
+    server accelerated: the X pointer drifted from the host's (QMP testing had to step the
+    pointer 3 px at a time). Every /dev/input/event* with ABS_X/ABS_Y that is not a touchpad
+    (INPUT_PROP_POINTER, or BTN_TOOL_FINGER without INPUT_PROP_DIRECT), joystick or accelerometer
+    is now grabbed (EVIOCGRAB: mousedev no longer sees it) and moves the pointer to its position
+    scaled to the screen, with its left/middle/right buttons (BTN_TOUCH = left). Not a tcc matter.
+    Verification: QEMU's USB tablet and vmmouse (x86_64), VirtualBox's integration device (x86_64
+    and i386): the cursor within 2 px of each of four points set from the host; right click opens
+    JWM's menu; relative PS/2 motion still moves the pointer.
 
 ## The device drivers (2026-10-26)
 
@@ -3392,3 +3406,17 @@ which brings in VMware's hypercall; its inline assembly needed one tcc fix.
     both kernels, vmwgfx and vboxvideo in VirtualBox, `make test`, devices-test 18/18 and
     selfhost-test all on both arches.
 
+145. 2026-11-26, COMMITTED (patches/tinycc/compatibility/0165, test 0166 =
+    tests2/185_asm_out_reload_clobber), `i386-asm.c` (asm_compute_constraints(): out_reg).
+    Problem: with vmmouse (CONFIG_MOUSE_PS2_VMMOUSE, for mouse integration) the i386 kernel
+    stopped at asm/vmware.h's vmware_hypercall4() with "could not find free output register
+    for reloading": its outputs `"=a"`, `"=b" (*out1)`, `"=c" (*out2)`, `"=d" (*out3)` are stored
+    through pointers after the asm, which needs a register to load each pointer into, and tcc
+    only took a register the asm leaves alone; with eax-edx outputs, esi and edi clobbered and
+    esp/ebp reserved there was none on i386 (x86_64 has r8-r15). gcc uses a clobbered register,
+    whose old value is dead after the asm. Fix: when no untouched register is left, any
+    register that no output occupies (clobbered or input-only; not esp/ebp) is the reload
+    register. Verification: 185_asm_out_reload_clobber (four outputs through pointers, esi and
+    edi clobbered; the stores go through %esi on i386, an error without the fix), the i386
+    kernel with vmmouse (vmmouse tracking the host's pointer in QEMU made to look like VMware),
+    `make test`, devices-test 18/18 and selfhost-test all on both arches.

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 13:02:16 +0200
+Subject: [PATCH] tests: 185_asm_out_reload_clobber, the case of the previous
+ commit
+
+---
+ tests/tests2/185_asm_out_reload_clobber.c     | 31 +++++++++++++++++++
+ .../tests2/185_asm_out_reload_clobber.expect  |  2 ++
+ 2 files changed, 33 insertions(+)
+ create mode 100644 tests/tests2/185_asm_out_reload_clobber.c
+ create mode 100644 tests/tests2/185_asm_out_reload_clobber.expect
+
+diff --git a/tests/tests2/185_asm_out_reload_clobber.c b/tests/tests2/185_asm_out_reload_clobber.c
+new file mode 100644
+index 0000000..185e791
+--- /dev/null
++++ b/tests/tests2/185_asm_out_reload_clobber.c
+@@ -0,0 +1,31 @@
++/* Outputs through pointers in every register that the asm writes, the rest
++   clobbered: after the asm the pointers must be reloaded into a register
++   to store the outputs, and gcc takes a clobbered one, whose old value is
++   dead by then.  The Linux i386 vmware_hypercall4() (asm/vmware.h): "=a",
++   "=b" (*out1), "=c" (*out2), "=d" (*out3) with esi and edi clobbered. */
++#include <stdio.h>
++
++static unsigned long hc4(unsigned long in, unsigned *o1, unsigned *o2, unsigned *o3)
++{
++    unsigned long o0;
++    __asm__ volatile ("movl %4, %%eax\n\t"
++                      "leal 1(%%eax), %%ebx\n\t"
++                      "leal 2(%%eax), %%ecx\n\t"
++                      "leal 3(%%eax), %%edx\n\t"
++                      "movl $0x5a5a5a5a, %%esi\n\t"
++                      "movl $0xa5a5a5a5, %%edi"
++                      : "=a" (o0), "=b" (*o1), "=c" (*o2), "=d" (*o3)
++                      : "g" ((unsigned)in)
++                      : "si", "di", "cc", "memory");
++    return o0;
++}
++
++int main(void)
++{
++    unsigned a = 0, b = 0, c = 0;
++    unsigned long r = hc4(100, &a, &b, &c);
++    printf("%lu %u %u %u\n", r, a, b, c);
++    r = hc4(7, &c, &a, &b);
++    printf("%lu %u %u %u\n", r, a, b, c);
++    return 0;
++}
+diff --git a/tests/tests2/185_asm_out_reload_clobber.expect b/tests/tests2/185_asm_out_reload_clobber.expect
+new file mode 100644
+index 0000000..9c44f68
+--- /dev/null
++++ b/tests/tests2/185_asm_out_reload_clobber.expect
+@@ -0,0 +1,2 @@
++100 101 102 103
++7 9 10 8

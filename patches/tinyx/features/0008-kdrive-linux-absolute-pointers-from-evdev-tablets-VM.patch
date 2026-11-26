@@ -1,0 +1,234 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 13:07:51 +0200
+Subject: [PATCH] kdrive/linux: absolute pointers from evdev (tablets, VM mouse
+ integration)
+
+Absolute pointers report where the pointer is, not how far it moved:
+QEMU's USB tablet, VMware's vmmouse, VirtualBox's "mouse integration"
+device (vboxguest), graphics tablets and touchscreens.  Through
+/dev/input/mice they arrived as relative motion that the server
+accelerated, so the X pointer drifted away from the host's and a virtual
+machine needed the pointer captured.
+
+MouseInit() now scans /dev/input/event* for devices with ABS_X and ABS_Y
+that are not touchpads (INPUT_PROP_POINTER, or BTN_TOOL_FINGER without
+INPUT_PROP_DIRECT), joysticks or accelerometers, grabs each (EVIOCGRAB, so
+that mousedev no longer turns it into relative motion as well) and moves
+the pointer to its position scaled to the screen, with its left, middle
+and right buttons (BTN_TOUCH as the left one).  Relative mice stay on
+/dev/input/mice as before; VirtualBox sends its buttons that way.
+---
+ kdrive/linux/mouse.c | 188 +++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 188 insertions(+)
+
+diff --git a/kdrive/linux/mouse.c b/kdrive/linux/mouse.c
+index 18a8d9c..8ed2851 100644
+--- a/kdrive/linux/mouse.c
++++ b/kdrive/linux/mouse.c
+@@ -865,6 +865,189 @@ static void MouseRead(int mousePort, void *closure)
+ 
+ static int MouseInputType;
+ 
++/*
++ * Absolute pointers on evdev: QEMU's USB tablet, VMware's vmmouse
++ * (psmouse), VirtualBox's "mouse integration" device (vboxguest), graphics
++ * tablets and touchscreens report where the pointer is, not how far it
++ * moved.  Through /dev/input/mice they arrive as relative motion that the
++ * server accelerates, so the X pointer drifts away from the host's.  Every
++ * /dev/input/event* with ABS_X and ABS_Y that is not a touchpad, joystick
++ * or accelerometer is read here instead: grabbed (EVIOCGRAB), so that
++ * mousedev no longer sees it, and its position scaled to the screen.  Its
++ * buttons count too (vmmouse reports them on that device; VirtualBox's come
++ * through the PS/2 mouse, which stays on /dev/input/mice).
++ */
++#include <dirent.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <sys/ioctl.h>
++#include <linux/input.h>
++
++#define EVABS_PROT "evdev-abs"
++#define EVABS_BITS(n) (((n) + 8 * sizeof(long) - 1) / (8 * sizeof(long)))
++#define EVABS_TEST(b, n) (((b)[(n) / (8 * sizeof(long))] >> ((n) % (8 * sizeof(long)))) & 1)
++
++typedef struct {
++	int min[2], max[2];	/* the ranges of ABS_X and ABS_Y */
++	int v[2];		/* the last values */
++	unsigned long buttons;
++	Bool changed;
++} KevAbs;
++
++static int EvAbsUsable(int fd, int min[2], int max[2])
++{
++	unsigned long abs[EVABS_BITS(ABS_CNT)], key[EVABS_BITS(KEY_CNT)];
++	unsigned long props[EVABS_BITS(INPUT_PROP_CNT)];
++	struct input_absinfo ai;
++	int i;
++
++	memset(abs, 0, sizeof abs);
++	memset(key, 0, sizeof key);
++	memset(props, 0, sizeof props);
++	if (ioctl(fd, EVIOCGBIT(EV_ABS, sizeof abs), abs) < 0)
++		return 0;
++	ioctl(fd, EVIOCGBIT(EV_KEY, sizeof key), key);
++	ioctl(fd, EVIOCGPROP(sizeof props), props);
++	if (!EVABS_TEST(abs, ABS_X) || !EVABS_TEST(abs, ABS_Y))
++		return 0;
++	/* touchpads move the pointer relatively (mousedev does that) */
++	if (EVABS_TEST(props, INPUT_PROP_POINTER) ||
++	    EVABS_TEST(props, INPUT_PROP_ACCELEROMETER))
++		return 0;
++	if (EVABS_TEST(key, BTN_TOOL_FINGER) && !EVABS_TEST(props, INPUT_PROP_DIRECT))
++		return 0;
++	/* joysticks and game pads (BTN_JOYSTICK .. BTN_THUMBR) */
++	for (i = BTN_JOYSTICK; i <= BTN_THUMBR; i++)
++		if (EVABS_TEST(key, i))
++			return 0;
++	for (i = 0; i < 2; i++) {
++		if (ioctl(fd, EVIOCGABS(i ? ABS_Y : ABS_X), &ai) < 0 ||
++		    ai.maximum <= ai.minimum)
++			return 0;
++		min[i] = ai.minimum;
++		max[i] = ai.maximum;
++	}
++	return 1;
++}
++
++static void EvAbsRead(int fd, void *closure)
++{
++	KdMouseInfo *mi = closure;
++	KevAbs *ka = mi->driver;
++	struct input_event ev[32];
++	ScreenPtr pScreen;
++	unsigned long bit;
++	int n, i, x, y;
++
++	while ((n = read(fd, ev, sizeof ev)) >= (int)sizeof ev[0]) {
++		for (i = 0; i < n / (int)sizeof ev[0]; i++) {
++			switch (ev[i].type) {
++			case EV_ABS:
++				if (ev[i].code == ABS_X || ev[i].code == ABS_Y) {
++					ka->v[ev[i].code == ABS_Y] = ev[i].value;
++					ka->changed = TRUE;
++				}
++				break;
++			case EV_KEY:
++				switch (ev[i].code) {
++				case BTN_LEFT: case BTN_TOUCH: bit = KD_BUTTON_1; break;
++				case BTN_MIDDLE: bit = KD_BUTTON_2; break;
++				case BTN_RIGHT: bit = KD_BUTTON_3; break;
++				default: bit = 0;
++				}
++				if (bit) {
++					if (ev[i].value)
++						ka->buttons |= bit;
++					else
++						ka->buttons &= ~bit;
++					ka->changed = TRUE;
++				}
++				break;
++			case EV_SYN:
++				if (ev[i].code != SYN_REPORT || !ka->changed)
++					break;
++				ka->changed = FALSE;
++				pScreen = screenInfo.screens[0];
++				x = (int)((long long)(ka->v[0] - ka->min[0]) * (pScreen->width - 1) /
++					  (ka->max[0] - ka->min[0]));
++				y = (int)((long long)(ka->v[1] - ka->min[1]) * (pScreen->height - 1) /
++					  (ka->max[1] - ka->min[1]));
++				KdEnqueueMouseEvent(mi, ka->buttons, x, y);
++				break;
++			}
++		}
++	}
++}
++
++/* open an absolute pointer that EvAbsScan() found (now or on an earlier
++   start of the input), grab it and read it */
++static void EvAbsOpen(KdMouseInfo * mi)
++{
++	KevAbs *ka;
++	int fd, min[2], max[2];
++
++	fd = open(mi->name, O_RDONLY | O_NONBLOCK);
++	if (fd < 0)
++		return;
++	if (!EvAbsUsable(fd, min, max) || ioctl(fd, EVIOCGRAB, (void *)1) < 0 ||
++	    !(ka = calloc(1, sizeof *ka))) {
++		close(fd);
++		return;
++	}
++	memcpy(ka->min, min, sizeof ka->min);
++	memcpy(ka->max, max, sizeof ka->max);
++	ka->v[0] = min[0];
++	ka->v[1] = min[1];
++	mi->driver = ka;
++	mi->inputType = MouseInputType;
++	if (!KdRegisterFd(MouseInputType, fd, EvAbsRead, (void *)mi)) {
++		mi->driver = 0;
++		mi->inputType = 0;
++		free(ka);
++		close(fd);
++	}
++}
++
++/* a KdMouseInfo for every absolute pointer not known yet */
++static void EvAbsScan(void)
++{
++	DIR *d = opendir("/dev/input");
++	struct dirent *e;
++	KdMouseInfo *mi;
++	char path[64];
++	int fd, min[2], max[2], i;
++
++	if (!d)
++		return;
++	while ((e = readdir(d))) {
++		if (strncmp(e->d_name, "event", 5))
++			continue;
++		snprintf(path, sizeof path, "/dev/input/%s", e->d_name);
++		for (mi = kdMouseInfo; mi; mi = mi->next)
++			if (mi->name && !strcmp(mi->name, path))
++				break;
++		if (mi)
++			continue;
++		fd = open(path, O_RDONLY | O_NONBLOCK);
++		if (fd < 0)
++			continue;
++		i = EvAbsUsable(fd, min, max);
++		close(fd);
++		if (!i || !(mi = KdMouseInfoAdd()))
++			continue;
++		mi->name = strdup(path);
++		mi->prot = strdup(EVABS_PROT);
++		mi->emulateMiddleButton = FALSE;
++		mi->transformCoordinates = FALSE;	/* screen coordinates already */
++		mi->nbutton = 3;
++		for (i = 0; i < KD_MAX_BUTTON; i++)
++			mi->map[i] = i + 1;
++		ErrorF("absolute pointer: %s\n", path);
++	}
++	closedir(d);
++}
++
+ const char * const kdefaultMouse[] = {
+ 	"/dev/mouse",
+ 	"/dev/psaux",
+@@ -887,10 +1070,15 @@ static Bool MouseInit(void)
+ 	if (!MouseInputType)
+ 		MouseInputType = KdAllocInputType();
+ 
++	EvAbsScan();
+ 	for (mi = kdMouseInfo; mi; mi = next) {
+ 		next = mi->next;
+ 		if (mi->inputType)
+ 			continue;
++		if (mi->prot && !strcmp(mi->prot, EVABS_PROT)) {
++			EvAbsOpen(mi);
++			continue;
++		}
+ 		if (!mi->name) {
+ 			for (i = 0; i < NUM_DEFAULT_MOUSE; i++) {
+ 				fd = open(kdefaultMouse[i], 2);

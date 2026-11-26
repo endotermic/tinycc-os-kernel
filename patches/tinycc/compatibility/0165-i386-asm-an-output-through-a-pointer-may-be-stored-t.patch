@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Thu, 26 Nov 2026 13:02:16 +0200
+Subject: [PATCH] i386-asm: an output through a pointer may be stored through a
+ clobbered or input-only register when no register is left untouched, as gcc
+ (Linux i386 vmware_hypercall4(): eax, ebx, ecx, edx outputs through pointers,
+ esi and edi clobbered: "could not find free output register for reloading")
+
+---
+ i386-asm.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index a0e6cca..ca79e47 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -2269,6 +2269,23 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+                 if (!(regs_allocated[reg] & REG_OUT_MASK))
+                     goto reg_found2;
+             }
++            /* none untouched: a clobbered or input-only register is dead
++               after the asm too, as gcc uses it (Linux i386
++               vmware_hypercall4(): eax, ebx, ecx, edx outputs through
++               pointers, esi and edi clobbered) */
++            for(reg = 0; reg < NB_ASM_GREGS; reg++) {
++                int k;
++                if (reg == 4 || reg == 5)
++                    continue;
++                for(k = 0; k < nb_outputs; k++) {
++                    ASMOperand *o = &operands[k];
++                    if (o->reg == reg || o->reg2 == reg ||
++                        (o->is_llong && o->reg2 < 0 && reg == TREG_XDX))
++                        break;
++                }
++                if (k == nb_outputs)
++                    goto reg_found2;
++            }
+             tcc_error("could not find free output register for reloading");
+         reg_found2:
+             *pout_reg = reg;

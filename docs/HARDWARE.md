@@ -262,8 +262,27 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   recommends VMSVGA for Linux.  QEMU's `-vga vmware`: vmwgfx refuses it ("Hardware has no
   pitchlock", probe error -38), an upstream limit of the driver on QEMU's SVGA II; use
   QEMU's standard VGA (bochs-drm) or virtio there.  Not tested: VMware Workstation/ESXi
-  themselves, resizing the VM window (TinyX does not follow a mode change), mouse
-  integration (needs vmmouse/vboxguest and an X driver; the USB tablet works).
+  themselves, resizing the VM window (TinyX does not follow a mode change); mouse
+  integration came the same day, below.
+- Mouse integration (2026-11-26): the pointer follows the host's without being captured.
+  `drivers.config` gets `MOUSE_PS2_VMMOUSE` (VMware's absolute pointer through the PS/2 port)
+  and `VIRT_DRIVERS` + `VBOXGUEST` (whose "VirtualBox mouse integration" input device
+  switches VirtualBox to absolute mode when opened); TinyX reads absolute evdev pointers itself
+  (patches/tinyx/features/0008, FIX-LOG C75): before, they came through `/dev/input/mice` as
+  accelerated relative motion and drifted from the host's pointer, QEMU's USB tablet too.  One
+  tcc fix (145, i386: vmmouse's hypercall has four outputs through pointers).  Verified with
+  absolute moves sent from the host and the cursor found in screendumps (within 2 px at four
+  points): VirtualBox 7.2 (x86_64, i386; through its API, PS/2 mouse), QEMU's USB tablet, and
+  vmmouse under QEMU on both arches with the shipped kernels, QEMU made to look like VMware
+  (`-cpu max,-hypervisor -smbios type=1,serial=VMware-56-4d`: the kernel then detects VMware
+  through DMI and the backdoor port that QEMU's vmport answers).  vmmouse only starts on a
+  hypervisor the kernel recognises as VMware or KVM, and KVM detection needs `PARAVIRT`
+  (`KVM_GUEST`), which this kernel leaves off, so in plain QEMU it stays a PS/2 mouse (the USB
+  tablet does the job there); a scratch x86_64 kernel with `KVM_GUEST` worked too, the i386 one
+  hung early in boot (not looked into: not a shipped configuration).  Right click opens JWM's
+  menu through vmmouse and the tablet.  Not tested: VMware itself, VirtualBox's USB tablet
+  setting.
+  Regressions after it: devices-test 18/18, selfhost-test all on both arches, `make test`.
 - Regressions: devices-test 18/18 and selfhost-test all on both arches (the guest's tcc
   builds the kernel with both drivers; x86_64 17 min, i386 11 min), tcc `make test`.
 
