@@ -89,6 +89,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 146 | tinycc 0167 |
 | | | | | 147 | tinycc 0169 |
 | | | | | 148 | tinycc 0171 |
+| | | | | 149 | tinycc 0173 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -171,6 +172,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/186_i386_regparm0_fnptr.c` | i386, with `-mregparm=3` (garbage results without the fix) | 146 |
 | `tests/tests2/187_x86_64_ms_abi.c` | x86_64 ELF (top-level asm callees and caller; a segfault without the fix) | 147 |
 | `tests/tests2/188_asm_small_pcrel.c` | i386, x86_64 (compiled with `-c`, reads its own object; six extra relocations without the fix) | 148 |
+| `tests/tests2/189_asm_pass_code_mode.c` | i386, x86_64 (an assembler error on x86_64, a wrong result on i386 without the fix) | 149 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3561,3 +3563,25 @@ then corrupted memory.
     kernels, the guest tcc and the ISOs were not rebuilt for it. The tcc-built GRUB
     (x86_64-efi, its relocator rebuilt) now boots the x86_64 kernel and initramfs on OVMF to
     the Autarkeia banner.
+
+149. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0173, test 0174 =
+    tests2/189_asm_pass_code_mode), `tccasm.c` (asm_pass_start(), asm_pass_rollback()).
+    Problem: GRUB's relocator32.S, assembled by tcc for x86_64-efi, failed with "register
+    '%rax' is not available in 32-bit code" on a line of its 64-bit part: the file has a
+    forward label difference (`add $(L_cont0 - L_base), %rax`), so it is assembled twice
+    (the passes of fixes 12 and 59), and it switches to `.code32` later. The rollback before
+    the second pass restored the sections and offsets but not the code mode, so the second
+    pass began in the mode the first one ended in. On x86_64 that is an assembler error; on i386 a file
+    starting in 32-bit code and ending in `.code16` had its 32-bit part silently assembled
+    as 16-bit code. Fix: asm_pass_start() records seg_size and code16gcc with the section
+    state, asm_pass_rollback() restores them, for files and inline asm statements alike.
+    Verification: 189_asm_pass_code_mode (a top-level and an inline asm statement with a
+    forward difference that end in the other mode; without the fix: the assembler error on
+    x86_64, f_mode() returning 134479874 instead of 2 on i386) on x86_64 and through
+    build/i386/musl-tcc; `make test` ALL TESTS PASSED; 85, 127, 155, 183, 184, 185, 188
+    through build/i386/musl-tcc. Every assembler object of both kernels (54 on x86_64, 35 on
+    i386) recompiled with its Kbuild command: the same disassembly except the boot/realmode
+    objects fix 148 changes, and those relinked give byte-identical setup.bin, realmode.bin
+    and realmode.relocs on both arches, so nothing was rebuilt. GRUB's trial build without
+    its `.code64` workaround assembles relocator32.S and boots the x86_64 kernel and
+    initramfs on OVMF to the Autarkeia banner.

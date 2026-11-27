@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 16:32:43 +0200
+Subject: [PATCH] tests: 189_asm_pass_code_mode, the case of the previous
+ commit
+
+---
+ tests/tests2/189_asm_pass_code_mode.c      | 59 ++++++++++++++++++++++
+ tests/tests2/189_asm_pass_code_mode.expect |  2 +
+ tests/tests2/Makefile                      |  1 +
+ 3 files changed, 62 insertions(+)
+ create mode 100644 tests/tests2/189_asm_pass_code_mode.c
+ create mode 100644 tests/tests2/189_asm_pass_code_mode.expect
+
+diff --git a/tests/tests2/189_asm_pass_code_mode.c b/tests/tests2/189_asm_pass_code_mode.c
+new file mode 100644
+index 0000000..7c42637
+--- /dev/null
++++ b/tests/tests2/189_asm_pass_code_mode.c
+@@ -0,0 +1,59 @@
++/* i386, x86_64 (tinycc-os-kernel fix 149): a file or statement assembled
++   twice (a difference of labels defined later) starts the second pass in
++   the code mode the first one started in, not in the last .code16/.code32
++   of the file.  GRUB's relocator32.S has 64-bit code, then .code32: the
++   second pass read the 64-bit part as 32-bit code ("register '%rax' is
++   not available in 32-bit code"); on i386 a file ending in .code16 had
++   its 32-bit part silently assembled as 16-bit code.  Each statement
++   below ends in the other mode (an inline asm statement starts in the
++   default mode whatever the last one ended in). */
++#include <stdio.h>
++
++int f_mode(void);
++int f_mode2(void);
++
++__asm__(
++    "  .text\n"
++    "  .globl f_mode\n"
++    "f_mode:\n"
++#ifdef __x86_64__
++    "  mov %rdi, %rsi\n"                 /* 64-bit only */
++#endif
++    "  xorl %eax, %eax\n"
++    "  addl $(L_c - L_a), %eax\n"        /* imm8 or imm32: a second pass */
++    "L_a: nop\n"
++    "  nop\n"
++    "L_c: ret\n"
++    "  .section .text.other,\"ax\"\n"
++#ifdef __x86_64__
++    "  .code32\n"
++#else
++    "  .code16\n"
++#endif
++    "  nop\n");                          /* the statement ends in that mode */
++
++/* the same inside a function, as an inline asm statement */
++int f_mode2(void)
++{
++    int r;
++    __asm__("xorl %0, %0\n"
++            "addl $(2f - 1f), %0\n"
++            "1: nop; nop; nop\n"
++            "2:\n"
++            "  .pushsection .text.other2,\"ax\"\n"
++#ifdef __x86_64__
++            "  .code32\n  nop\n"
++#else
++            "  .code16\n  nop\n"
++#endif
++            "  .popsection\n"
++            : "=r"(r));
++    return r;
++}
++
++int main(void)
++{
++    printf("f_mode %d\n", f_mode());
++    printf("f_mode2 %d\n", f_mode2());
++    return 0;
++}
+diff --git a/tests/tests2/189_asm_pass_code_mode.expect b/tests/tests2/189_asm_pass_code_mode.expect
+new file mode 100644
+index 0000000..e1f1d2b
+--- /dev/null
++++ b/tests/tests2/189_asm_pass_code_mode.expect
+@@ -0,0 +1,2 @@
++f_mode 2
++f_mode2 3
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 2059c52..b403d44 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -26,6 +26,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 155_x86_inline_asm.test # x86 inline asm
+  SKIP += 160_asm_offsets.test # x86 asm text
+  SKIP += 188_asm_small_pcrel.test # x86 asm, ELF objects
++ SKIP += 189_asm_pass_code_mode.test # x86 asm
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test

@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 16:32:43 +0200
+Subject: [PATCH] asm: each pass of a statement or file assembled more than
+ once starts in the code mode the first one started in
+ (.code16/.code32/.code64 and .code16gcc restored with the sections), not in
+ the mode the previous pass ended in (GRUB relocator32.S: 64-bit code, then
+ .code32, and a forward label difference: "register %rax is not available in
+ 32-bit code"; on i386 a file ending in .code16 had its 32-bit part assembled
+ as 16-bit code)
+
+---
+ tccasm.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index 014af19..3933cdc 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -51,6 +51,9 @@ static struct {
+     int nb_pred;
+     /* snapshot for the rollback */
+     unsigned long *offsets;   /* data_offset of each section and of its relocs */
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++    int seg_size, code16gcc;  /* the code mode the statement or file starts in */
++#endif
+     int nb_sections, ind;
+     Section *text, *last_text;
+ } asm_pass;
+@@ -149,6 +152,10 @@ static void asm_pass_start(TCCState *s1)
+     asm_pass.ind = ind;
+     asm_pass.text = cur_text_section;
+     asm_pass.last_text = last_text_section;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++    asm_pass.seg_size = s1->seg_size;
++    asm_pass.code16gcc = s1->code16gcc;
++#endif
+ }
+ 
+ /* discard everything the last pass emitted */
+@@ -173,6 +180,13 @@ static void asm_pass_rollback(TCCState *s1)
+     cur_text_section = asm_pass.text;
+     ind = asm_pass.ind;
+     last_text_section = asm_pass.last_text;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++    /* the next pass starts in the mode this one started in, not in the
++       last .code16/.code32/.code64 of the file (GRUB's relocator32.S:
++       64-bit code, then .code32, assembled twice) */
++    s1->seg_size = asm_pass.seg_size;
++    s1->code16gcc = asm_pass.code16gcc;
++#endif
+     /* labels defined by the pass become undefined again (numeric local
+        labels are simply defined as new symbols by the next pass) */
+     for (i = 0; i < asm_pass.nb_cur; i++) {

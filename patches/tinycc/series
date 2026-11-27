@@ -171,3 +171,5 @@ compatibility/0169-__attribute__-ms_abi-on-x86_64-ELF-is-the-Win64-call.patch
 compatibility/0170-tests-187_x86_64_ms_abi-the-case-of-the-previous-com.patch
 compatibility/0171-asm-an-8-or-16-bit-PC-relative-field-whose-symbol-is.patch
 compatibility/0172-tests-188_asm_small_pcrel-the-case-of-the-previous-c.patch
+compatibility/0173-asm-each-pass-of-a-statement-or-file-assembled-more-.patch
+compatibility/0174-tests-189_asm_pass_code_mode-the-case-of-the-previou.patch
