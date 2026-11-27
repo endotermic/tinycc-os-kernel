@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 17:27:43 +0200
+Subject: [PATCH] asm: "(%base, scale)", a scale without an index register, is
+ accepted and the scale ignored, as with GNU as (a warning when it is not 1);
+ the forms with an index register are unchanged (GRUB relocator_common.S:
+ "(LOCAL(gdt) - LOCAL(base)) (RSI, 1)" stopped with "register expected")
+
+---
+ i386-asm.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index ca79e47..ac4ba5b 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -550,12 +550,20 @@ static void parse_operand(TCCState *s1, Operand *op)
+             }
+             if (tok == ',') {
+                 next();
+-                if (tok != ',') {
+-                    op->reg2 = asm_parse_reg(&type);
+-                }
+-                if (tok == ',') {
+-                    next();
+-                    op->shift = get_reg_shift(s1);
++                if (tok != ',' && tok != '%' && !(tok >= TOK_IDENT && asm_reg_alias(tok))) {
++                    /* "(%base, scale)": a scale without an index register,
++                       which GNU as accepts and ignores (GRUB's relocator
++                       sources: "(RSI, 1)") */
++                    if (get_reg_shift(s1))
++                        tcc_warning("scale factor without an index register ignored");
++                } else {
++                    if (tok != ',') {
++                        op->reg2 = asm_parse_reg(&type);
++                    }
++                    if (tok == ',') {
++                        next();
++                        op->shift = get_reg_shift(s1);
++                    }
+                 }
+             }
+ 	    if (type & OP_REG32)

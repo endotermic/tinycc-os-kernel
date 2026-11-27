@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 17:27:43 +0200
+Subject: [PATCH] tests: 190_asm_base_scale, the case of the previous commit
+
+---
+ tests/tests2/190_asm_base_scale.c      | 63 ++++++++++++++++++++++++++
+ tests/tests2/190_asm_base_scale.expect |  3 ++
+ tests/tests2/Makefile                  |  1 +
+ 3 files changed, 67 insertions(+)
+ create mode 100644 tests/tests2/190_asm_base_scale.c
+ create mode 100644 tests/tests2/190_asm_base_scale.expect
+
+diff --git a/tests/tests2/190_asm_base_scale.c b/tests/tests2/190_asm_base_scale.c
+new file mode 100644
+index 0000000..5c27eb1
+--- /dev/null
++++ b/tests/tests2/190_asm_base_scale.c
+@@ -0,0 +1,63 @@
++/* i386, x86_64 (tinycc-os-kernel fix 150): "(%base, scale)", a scale
++   without an index register, is the base alone, as with GNU as: GRUB's
++   relocator sources write "(LOCAL(gdt) - LOCAL(base)) (RSI, 1)" and tcc
++   stopped with "register expected".  The forms with an index register
++   are unchanged. */
++#include <stdio.h>
++
++int sum_scale(int *p);      /* p[0] + p[1] + p[2] + p[3], read four ways */
++int sum_index(int *p);
++
++__asm__(
++    "  .text\n"
++    "  .globl sum_scale\n"
++    "sum_scale:\n"
++#ifdef __x86_64__
++    "  mov (%rdi, 1), %eax\n"
++    "  add 4(%rdi,1), %eax\n"
++    "  add (L_b - L_a) (%rdi, 1), %eax\n"   /* 8, defined later: two passes */
++    "  add 12(%rdi , 1), %eax\n"
++    "  ret\n"
++#else
++    "  mov 4(%esp), %ecx\n"
++    "  mov (%ecx, 1), %eax\n"
++    "  add 4(%ecx,1), %eax\n"
++    "  add (L_b - L_a) (%ecx, 1), %eax\n"
++    "  add 12(%ecx , 1), %eax\n"
++    "  ret\n"
++#endif
++    "  .globl sum_index\n"
++    "sum_index:\n"
++#ifdef __x86_64__
++    "  xor %esi, %esi\n"
++    "  mov (%rdi,%rsi,1), %eax\n"
++    "  inc %esi\n"
++    "  add (%rdi,%rsi,4), %eax\n"
++    "  add 8(%rdi), %eax\n"
++    "  add 12(,%rdi,1), %eax\n"
++#else
++    "  push %esi\n"
++    "  mov 8(%esp), %ecx\n"
++    "  xor %esi, %esi\n"
++    "  mov (%ecx,%esi,1), %eax\n"
++    "  inc %esi\n"
++    "  add (%ecx,%esi,4), %eax\n"
++    "  add 8(%ecx), %eax\n"
++    "  add 12(,%ecx,1), %eax\n"
++    "  pop %esi\n"
++#endif
++    "  ret\n"
++    "  .data\n"
++    "L_a: .long 0, 0\n"
++    "L_b:\n"
++    "  .text\n");
++
++int main(void)
++{
++    int a[4] = { 1, 20, 300, 4000 }, r;
++    printf("scale %d\n", sum_scale(a));
++    printf("index %d\n", sum_index(a));
++    __asm__("movl 8(%1, 1), %0" : "=r"(r) : "r"(a));
++    printf("inline %d\n", r);
++    return 0;
++}
+diff --git a/tests/tests2/190_asm_base_scale.expect b/tests/tests2/190_asm_base_scale.expect
+new file mode 100644
+index 0000000..bd24d8e
+--- /dev/null
++++ b/tests/tests2/190_asm_base_scale.expect
+@@ -0,0 +1,3 @@
++scale 4321
++index 4321
++inline 300
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index b403d44..713b521 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -27,6 +27,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 160_asm_offsets.test # x86 asm text
+  SKIP += 188_asm_small_pcrel.test # x86 asm, ELF objects
+  SKIP += 189_asm_pass_code_mode.test # x86 asm
++ SKIP += 190_asm_base_scale.test # x86 asm
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test

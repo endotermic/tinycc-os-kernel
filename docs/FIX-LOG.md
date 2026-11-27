@@ -90,6 +90,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 147 | tinycc 0169 |
 | | | | | 148 | tinycc 0171 |
 | | | | | 149 | tinycc 0173 |
+| | | | | 150 | tinycc 0175 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -173,6 +174,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/187_x86_64_ms_abi.c` | x86_64 ELF (top-level asm callees and caller; a segfault without the fix) | 147 |
 | `tests/tests2/188_asm_small_pcrel.c` | i386, x86_64 (compiled with `-c`, reads its own object; six extra relocations without the fix) | 148 |
 | `tests/tests2/189_asm_pass_code_mode.c` | i386, x86_64 (an assembler error on x86_64, a wrong result on i386 without the fix) | 149 |
+| `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3585,3 +3587,26 @@ then corrupted memory.
     and realmode.relocs on both arches, so nothing was rebuilt. GRUB's trial build without
     its `.code64` workaround assembles relocator32.S and boots the x86_64 kernel and
     initramfs on OVMF to the Autarkeia banner.
+
+150. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0175, test 0176 =
+    tests2/190_asm_base_scale), `i386-asm.c` (parse_operand(): the parenthesized base,
+    index, scale). Problem: GRUB's relocator_common.S writes its memory operands as
+    `(LOCAL(gdt) - LOCAL(base)) (RSI, 1)`, a base register and a scale with no index
+    register, and tcc stopped with "register expected" after the comma; the trial build
+    rewrote them to `(RSI)`. GNU as accepts the form, ignores the scale (warning when it
+    is not 1) and encodes the base alone. Fix: after the first comma a token that is not a
+    register (nor a register alias) is read as the scale, checked to be 1, 2, 4 or 8 and
+    ignored, with a warning when it is not 1; the forms with an index register are
+    unchanged. The warning repeats once per assembler pass, like `.warning`. Verification:
+    190_asm_base_scale (`(%rdi, 1)`, `4(%rdi,1)`, `12(%rdi , 1)`, a later label difference
+    as displacement, in inline asm too; `(%rdi,%rsi,4)` and `12(,%rdi,1)` beside them; the
+    same results as gcc + GNU as; "register expected" without the fix) on x86_64 and
+    through build/i386/musl-tcc; the encodings equal GNU as (`mov %eax,0x4(%rsi)`,
+    `lea 0x8(%rsp),%rax`, `mov 0x0(%rbp),%rcx`, `mov (%esp),%eax`); `make test` ALL TESTS
+    PASSED; 85, 127, 155, 183, 184, 185, 189 through build/i386/musl-tcc. Only input that
+    was an error before is read differently: every assembler object of both kernels
+    recompiled is unchanged apart from the objects fix 148 changes, so nothing was rebuilt.
+    GRUB's trial build with its original relocator sources boots the x86_64 kernel and
+    initramfs on OVMF to the Autarkeia banner (that run needed TMPDIR off /tmp: QEMU's
+    read-write vvfat overlay failed under the full /tmp quota, and OVMF reported the
+    boot file "Not Found").

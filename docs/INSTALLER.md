@@ -285,13 +285,13 @@ The installer uses GRUB images made by the host's grub-mkimage (stage 1). On 202
 build of GRUB 2.14 with tcc (compiler) and tld (linker) was made in a scratch directory to see
 how far that is: the x86_64-efi target builds completely (kernel.img and 293 modules), and after
 tcc fixes 147 (`__attribute__((ms_abi))`), 148 (8/16-bit PC-relative fields resolved by the
-assembler) and 149 (the code mode restored for each assembler pass; FIX-LOG.md) the image runs on OVMF and boots the system: it reads grub.cfg from a FAT
+assembler), 149 (the code mode restored for each assembler pass) and 150 (`(%base, scale)`;
+FIX-LOG.md) the image runs on OVMF and boots the system: it reads grub.cfg from a FAT
 partition and loads the x86_64 kernel and initramfs, which come up to the Autarkeia banner. GRUB's
 host tools were still built by gcc, and the trial needed workarounds for these open gaps:
 
 | Gap | Where | Effect on GRUB |
 |---|---|---|
-| `(%rsi, 1)` (base with scale, no index) rejected | tcc assembler | relocator sources |
 | no 16-bit addressing modes (`(%si)`, `(%di)`, `6(%bp)`) | tcc assembler | i386-pc boot code, relocator16.S |
 | forward jumps not relaxed to the short form | tcc assembler | i386-pc boot.S exceeds 512 bytes |
 | no `-S` (assembly output) | tcc | i386-pc `rs_decoder.h` |
