@@ -91,6 +91,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 148 | tinycc 0171 |
 | | | | | 149 | tinycc 0173 |
 | | | | | 150 | tinycc 0175 |
+| | | | | 151 | tinycc 0177 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -175,6 +176,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/188_asm_small_pcrel.c` | i386, x86_64 (compiled with `-c`, reads its own object; six extra relocations without the fix) | 148 |
 | `tests/tests2/189_asm_pass_code_mode.c` | i386, x86_64 (an assembler error on x86_64, a wrong result on i386 without the fix) | 149 |
 | `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
+| `tests/tests2/191_asm_addr16.c` | i386, x86_64 (compiled with `-c`, compares its own bytes with GNU as; an assembler error without the fix) | 151 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3610,3 +3612,33 @@ then corrupted memory.
     initramfs on OVMF to the Autarkeia banner (that run needed TMPDIR off /tmp: QEMU's
     read-write vvfat overlay failed under the full /tmp quota, and OVMF reported the
     boot file "Not Found").
+
+151. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0177, test 0178 =
+    tests2/191_asm_addr16), `i386-asm.c` (asm_parse_reg(), parse_operand(), asm_modrm(),
+    gen_size_prefixes(); Operand.ea16). Problem: tcc's assembler had no 16-bit addressing:
+    a 16-bit register inside an address stopped with "register expected", except `(%dx)`,
+    the port operand of in/out (fix 144). GRUB's relocator16.S (`movb %es:(%di), %al`, five
+    lines the trial replaced by `.byte`) and the i386-pc boot code need it. Fix:
+    asm_parse_reg() takes %ax..%di; parse_operand() keeps `(%dx)` alone as the port operand
+    and checks everything else as a 16-bit address: %bx, %bp, %si or %di alone, or %bx/%bp
+    with %si/%di, scale 1 (other pairs, a scale, mixed 16/32-bit registers and 64-bit code
+    are errors, as with GNU as); asm_modrm() emits the 16-bit ModRM byte (rm 0-7 = bx+si,
+    bx+di, bp+si, bp+di, si, di, bp, bx; mod 00, or 01 with disp8, or 10 with disp16; `(%bp)`
+    as disp8 0, since rm 6 with mod 00 is disp16 alone); gen_size_prefixes() adds 0x67 for a
+    16-bit address outside 16-bit code. Both registers of an address are now looked at for
+    OP_EA32 (before, only the last one parsed). Verification: 1386 instructions (15 kinds:
+    mov/lea/add/inc/jmp*/call*/push and byte ops, `%es:`/`%fs:` overrides; the eight
+    address forms and `(%bx,%si,1)`; eleven displacements from none to 0x1234, -0x7fff and a
+    symbol) in .code16 and in .code32 assemble byte-identical to GNU as, with the same
+    relocation offsets and types; the invalid forms are errors in both; 191_asm_addr16 (16
+    of them, compared with GNU as's bytes from its own object; "register expected" without
+    the fix) on x86_64 and through build/i386/musl-tcc; `make test` ALL TESTS PASSED; 85, 98,
+    127, 155, 183, 184, 185, 188, 189, 190 through build/i386/musl-tcc. Only input that was
+    an error before is read differently: every assembler object of both kernels recompiled
+    is unchanged apart from the objects fix 148 changes, so nothing was rebuilt. GRUB's
+    trial build with relocator16.S and relocator_common.S as GRUB 2.14 ships them boots the
+    x86_64 kernel and initramfs on OVMF to the Autarkeia banner. Seen on the way, both older
+    than this fix and open (docs/INSTALLER.md): tcc keeps a segment override that is the
+    default segment (`%ds:(%si)`, also `%ds:(%eax)`, `%ss:(%ebp)`), which GNU as drops (one
+    byte more, the same effect), and `(,%esi,4)` without a displacement is "bad expression
+    syntax" (`0(,%esi,4)` works).

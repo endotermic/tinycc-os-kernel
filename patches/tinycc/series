@@ -175,3 +175,5 @@ compatibility/0173-asm-each-pass-of-a-statement-or-file-assembled-more-.patch
 compatibility/0174-tests-189_asm_pass_code_mode-the-case-of-the-previou.patch
 compatibility/0175-asm-base-scale-a-scale-without-an-index-register-is-.patch
 compatibility/0176-tests-190_asm_base_scale-the-case-of-the-previous-co.patch
+compatibility/0177-asm-16-bit-addressing-bx-bp-si-di-and-bx-or-bp-with-.patch
+compatibility/0178-tests-191_asm_addr16-the-case-of-the-previous-commit.patch

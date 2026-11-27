@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 18:39:26 +0200
+Subject: [PATCH] tests: 191_asm_addr16, the case of the previous commit
+
+---
+ tests/tests2/191_asm_addr16.c      | 99 ++++++++++++++++++++++++++++++
+ tests/tests2/191_asm_addr16.expect | 16 +++++
+ tests/tests2/Makefile              |  3 +
+ 3 files changed, 118 insertions(+)
+ create mode 100644 tests/tests2/191_asm_addr16.c
+ create mode 100644 tests/tests2/191_asm_addr16.expect
+
+diff --git a/tests/tests2/191_asm_addr16.c b/tests/tests2/191_asm_addr16.c
+new file mode 100644
+index 0000000..920f0bb
+--- /dev/null
++++ b/tests/tests2/191_asm_addr16.c
+@@ -0,0 +1,99 @@
++/* i386, x86_64 (tinycc-os-kernel fix 151): 16-bit addressing, (%bx), (%bp),
++   (%si), (%di) and %bx or %bp with %si or %di, with no, 8- or 16-bit
++   displacement; in .code32 with the 0x67 prefix.  tcc stopped with
++   "register expected" (GRUB's relocator16.S: "movb %es:(%di), %al", the
++   i386-pc boot code).  16-bit code cannot run in a Linux process, so the
++   test is compiled with -c and compares the bytes of its own object with
++   what GNU as makes of the same lines (listed below). */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <elf.h>
++
++#ifdef __x86_64__
++typedef Elf64_Ehdr Ehdr; typedef Elf64_Shdr Shdr;
++#else
++typedef Elf32_Ehdr Ehdr; typedef Elf32_Shdr Shdr;
++#endif
++
++__asm__(
++    "  .section .text16,\"ax\"\n"
++    "  .code16\n"
++    "  movb (%si), %dl\n"
++    "  movb %es:(%di), %al\n"
++    "  movb %dh, (%si)\n"
++    "  movw 6(%bp), %ax\n"
++    "  movw (%bp), %ax\n"
++    "  movw %ax, -2(%bp,%si)\n"
++    "  movw 0x1234(%bx,%di), %cx\n"
++    "  leaw 4(%bx,%si), %si\n"
++    "  addw $5, 128(%bx)\n"
++    "  movl (%di), %edx\n"
++    "  jmp *(%bx)\n"
++    "  call *8(%bp,%di)\n"
++    "  incb %es:(%bx,%si)\n"
++    "  .code32\n"
++    "  movb (%si), %dl\n"
++    "  movw 6(%bp), %ax\n"
++    "  movl 0x1234(%bx,%di), %ecx\n"
++#ifdef __x86_64__
++    "  .code64\n"
++#endif
++    "  .text\n");
++
++static const struct { const char *insn, *gas; } expect[] = {
++    { "movb (%si), %dl", "8a14" },
++    { "movb %es:(%di), %al", "268a05" },
++    { "movb %dh, (%si)", "8834" },
++    { "movw 6(%bp), %ax", "8b4606" },
++    { "movw (%bp), %ax", "8b4600" },
++    { "movw %ax, -2(%bp,%si)", "8942fe" },
++    { "movw 0x1234(%bx,%di), %cx", "8b893412" },
++    { "leaw 4(%bx,%si), %si", "8d7004" },
++    { "addw $5, 128(%bx)", "8387800005" },
++    { "movl (%di), %edx", "668b15" },
++    { "jmp *(%bx)", "ff27" },
++    { "call *8(%bp,%di)", "ff5308" },
++    { "incb %es:(%bx,%si)", "26fe00" },
++    { "movb (%si), %dl", "678a14" },
++    { "movw 6(%bp), %ax", "67668b4606" },
++    { "movl 0x1234(%bx,%di), %ecx", "678b893412" },
++};
++
++int main(int argc, char **argv)
++{
++    FILE *f;
++    long len;
++    unsigned char *obj, *p = NULL;
++    Shdr *sh;
++    int i, j, n, ok = 1;
++    const char *names;
++
++    if (argc < 2 || !(f = fopen(argv[1], "rb")))
++        return printf("usage: %s OBJ\n", argv[0]), 1;
++    fseek(f, 0, SEEK_END);
++    len = ftell(f);
++    rewind(f);
++    obj = malloc(len);
++    if (fread(obj, 1, len, f) != (size_t)len)
++        return 1;
++    fclose(f);
++    sh = (Shdr *)(obj + ((Ehdr *)obj)->e_shoff);
++    names = (char *)obj + sh[((Ehdr *)obj)->e_shstrndx].sh_offset;
++    for (i = 0; i < ((Ehdr *)obj)->e_shnum; i++)
++        if (!strcmp(names + sh[i].sh_name, ".text16"))
++            p = obj + sh[i].sh_offset;
++    if (!p)
++        return printf("no .text16\n"), 1;
++    for (i = 0; i < (int)(sizeof expect / sizeof expect[0]); i++) {
++        char hex[64];
++        n = strlen(expect[i].gas) / 2;
++        for (j = 0; j < n; j++)
++            sprintf(hex + 2 * j, "%02x", p[j]);
++        printf("%-30s %s\n", expect[i].insn, strcmp(hex, expect[i].gas) ? "DIFFERS" : "ok");
++        if (strcmp(hex, expect[i].gas))
++            printf("    tcc %s, GNU as %s\n", hex, expect[i].gas), ok = 0;
++        p += n;
++    }
++    return !ok;
++}
+diff --git a/tests/tests2/191_asm_addr16.expect b/tests/tests2/191_asm_addr16.expect
+new file mode 100644
+index 0000000..3c8c188
+--- /dev/null
++++ b/tests/tests2/191_asm_addr16.expect
+@@ -0,0 +1,16 @@
++movb (%si), %dl                ok
++movb %es:(%di), %al            ok
++movb %dh, (%si)                ok
++movw 6(%bp), %ax               ok
++movw (%bp), %ax                ok
++movw %ax, -2(%bp,%si)          ok
++movw 0x1234(%bx,%di), %cx      ok
++leaw 4(%bx,%si), %si           ok
++addw $5, 128(%bx)              ok
++movl (%di), %edx               ok
++jmp *(%bx)                     ok
++call *8(%bp,%di)               ok
++incb %es:(%bx,%si)             ok
++movb (%si), %dl                ok
++movw 6(%bp), %ax               ok
++movl 0x1234(%bx,%di), %ecx     ok
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 713b521..e05d0ee 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -28,6 +28,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 188_asm_small_pcrel.test # x86 asm, ELF objects
+  SKIP += 189_asm_pass_code_mode.test # x86 asm
+  SKIP += 190_asm_base_scale.test # x86 asm
++ SKIP += 191_asm_addr16.test # x86 asm, ELF objects
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test
+@@ -198,6 +199,8 @@ endif
+ # the asm test reads its own object: compiled with -c first
+ 188_asm_small_pcrel.test: T1 = ( $(TCC) -c $1 -o $*.o && $(TCC) -run $1 $*.o && rm -f $*.o )
+ 188_asm_small_pcrel.test: GEN = $(GEN-TCC)
++191_asm_addr16.test: T1 = ( $(TCC) -c $1 -o $*.o && $(TCC) -run $1 $*.o && rm -f $*.o )
++191_asm_addr16.test: GEN = $(GEN-TCC)
+ 
+ # archives with circular references inside -Wl,--start-group/--end-group:
+ # a and a_helper in one archive (two members), b in another
