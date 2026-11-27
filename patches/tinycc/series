@@ -167,3 +167,5 @@ compatibility/0165-i386-asm-an-output-through-a-pointer-may-be-stored-t.patch
 compatibility/0166-tests-185_asm_out_reload_clobber-the-case-of-the-pre.patch
 compatibility/0167-regparm-0-named-on-a-pointer-to-a-function-is-the-co.patch
 compatibility/0168-tests-186_i386_regparm0_fnptr-the-case-of-the-previo.patch
+compatibility/0169-__attribute__-ms_abi-on-x86_64-ELF-is-the-Win64-call.patch
+compatibility/0170-tests-187_x86_64_ms_abi-the-case-of-the-previous-com.patch

@@ -1,0 +1,228 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 15:51:17 +0200
+Subject: [PATCH] tests: 187_x86_64_ms_abi, the case of the previous commit
+
+---
+ tests/tests2/187_x86_64_ms_abi.c      | 181 ++++++++++++++++++++++++++
+ tests/tests2/187_x86_64_ms_abi.expect |  10 ++
+ tests/tests2/Makefile                 |   1 +
+ 3 files changed, 192 insertions(+)
+ create mode 100644 tests/tests2/187_x86_64_ms_abi.c
+ create mode 100644 tests/tests2/187_x86_64_ms_abi.expect
+
+diff --git a/tests/tests2/187_x86_64_ms_abi.c b/tests/tests2/187_x86_64_ms_abi.c
+new file mode 100644
+index 0000000..c9eb426
+--- /dev/null
++++ b/tests/tests2/187_x86_64_ms_abi.c
+@@ -0,0 +1,181 @@
++/* x86_64 ELF (tinycc-os-kernel fix 147): __attribute__((ms_abi)) is the Win64
++   calling convention, for the calls through such a function type and for the
++   functions defined with it.  UEFI firmware takes its arguments that way: GRUB's
++   __grub_efi_api protocol members, "(__grub_efi_api *raise_tpl) (...)".  tcc
++   ignored the attribute, passed the arguments in %rdi, %rsi, ... and the firmware
++   faulted on the first call.  The callees and the caller below are assembly, so
++   the registers are checked, not tcc against itself. */
++#include <stdio.h>
++#include <string.h>
++
++#define MS __attribute__((ms_abi))
++typedef struct { long a, b; } S16;      /* passed by reference to a copy */
++typedef struct { long a, b, c; } S24;   /* returned through a hidden pointer */
++typedef struct { int a, b; } S8;        /* passed and returned in a register */
++
++long MS ms_sum6(long, long, long, long, long, long);
++double MS ms_mixd(int, double, int, double);
++long MS ms_var_rdx(int, ...);
++long MS ms_var_r8(int, ...);
++S24 MS ms_ret24(long, long);
++long MS ms_s16(S16, long);
++long MS ms_s8(S8);
++long call_ms6(void *fn);        /* SysV, calls fn as ms_abi with live %rsi/%rdi/%xmm6/%xmm15 */
++void clobber(void);             /* SysV: clobbers what Win64 keeps */
++long ms_rsi, ms_rdi, ms_x6, ms_x15, ms_ret;
++int ms_i1, ms_i2;
++double ms_d2;
++
++__asm__(
++    ".text\n"
++    ".globl ms_sum6\n"
++    "ms_sum6:\n"
++    "  movq $-1, 8(%rsp)\n"          /* the home space is the callee's */
++    "  movq $-1, 16(%rsp)\n"
++    "  movq $-1, 24(%rsp)\n"
++    "  movq $-1, 32(%rsp)\n"
++    "  mov %rcx, %rax\n"
++    "  lea (%rax,%rdx,2), %rax\n"
++    "  imul $3, %r8, %r8\n"
++    "  add %r8, %rax\n"
++    "  imul $4, %r9, %r9\n"
++    "  add %r9, %rax\n"
++    "  mov 40(%rsp), %r10\n"
++    "  imul $5, %r10, %r10\n"
++    "  add %r10, %rax\n"
++    "  mov 48(%rsp), %r10\n"
++    "  imul $6, %r10, %r10\n"
++    "  add %r10, %rax\n"
++    "  ret\n"
++    ".globl ms_mixd\n"
++    "ms_mixd:\n"                     /* (int ecx, double xmm1, int r8d, double xmm3): returns xmm1 */
++    "  mov %ecx, ms_i1(%rip)\n"
++    "  mov %r8d, ms_i2(%rip)\n"
++    "  movq %xmm3, %rax\n"          /* tcc's assembler has movq, not addsd */
++    "  mov %rax, ms_d2(%rip)\n"
++    "  movq %xmm1, %rax\n"
++    "  movq %rax, %xmm0\n"
++    "  ret\n"
++    ".globl ms_var_rdx\n"
++    "ms_var_rdx:\n"
++    "  mov %rdx, %rax\n"
++    "  ret\n"
++    ".globl ms_var_r8\n"
++    "ms_var_r8:\n"
++    "  mov %r8, %rax\n"
++    "  ret\n"
++    ".globl ms_ret24\n"
++    "ms_ret24:\n"                    /* hidden pointer in %rcx, then %rdx, %r8 */
++    "  mov %rdx, (%rcx)\n"
++    "  mov %r8, 8(%rcx)\n"
++    "  lea (%rdx,%r8), %rax\n"
++    "  mov %rax, 16(%rcx)\n"
++    "  mov %rcx, %rax\n"
++    "  ret\n"
++    ".globl ms_s16\n"
++    "ms_s16:\n"                      /* %rcx points to a copy of the S16 */
++    "  mov (%rcx), %rax\n"
++    "  imul $10, 8(%rcx), %r10\n"
++    "  add %r10, %rax\n"
++    "  imul $100, %rdx, %rdx\n"
++    "  add %rdx, %rax\n"
++    "  ret\n"
++    ".globl ms_s8\n"
++    "ms_s8:\n"                       /* the S8 itself in %rcx */
++    "  mov %ecx, %eax\n"
++    "  shr $32, %rcx\n"
++    "  imul $10, %ecx, %ecx\n"
++    "  add %ecx, %eax\n"
++    "  cltq\n"
++    "  ret\n"
++    ".globl clobber\n"
++    "clobber:\n"
++    "  xor %esi, %esi\n"
++    "  xor %edi, %edi\n"
++    "  xorps %xmm6, %xmm6\n"
++    "  xorps %xmm15, %xmm15\n"
++    "  ret\n"
++    ".globl call_ms6\n"
++    "call_ms6:\n"
++    "  push %rbx\n"
++    "  sub $48, %rsp\n"              /* home space + 2 stack arguments, aligned */
++    "  mov %rdi, %r11\n"
++    "  mov $1, %ecx\n"
++    "  mov $2, %edx\n"
++    "  mov $3, %r8d\n"
++    "  mov $4, %r9d\n"
++    "  movq $5, 32(%rsp)\n"
++    "  movq $6, 40(%rsp)\n"
++    "  mov $0x1111, %esi\n"
++    "  mov $0x2222, %edi\n"
++    "  movq %rsi, %xmm6\n"
++    "  movq %rdi, %xmm15\n"
++    "  call *%r11\n"
++    "  mov %rax, ms_ret(%rip)\n"
++    "  mov %rsi, ms_rsi(%rip)\n"
++    "  mov %rdi, ms_rdi(%rip)\n"
++    "  movq %xmm6, ms_x6(%rip)\n"
++    "  movq %xmm15, ms_x15(%rip)\n"
++    "  add $48, %rsp\n"
++    "  pop %rbx\n"
++    "  ret\n"
++);
++
++/* defined ms_abi by tcc: its arguments from %rcx, %rdx, %r8, %r9 and the stack, and
++   %rsi, %rdi, %xmm6-15 kept although the SysV clobber() destroys them */
++static long MS t_six(long a, long b, long c, long d, long e, long f)
++{
++    clobber();
++    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f;
++}
++
++static S24 MS t_ret24(long a, long b)
++{
++    S24 s;
++    s.a = a, s.b = b, s.c = a + b;
++    return s;
++}
++
++static long MS t_s16(S16 s, long k) { return s.a + 10 * s.b + 100 * k; }
++
++struct table {   /* UEFI-style: protocol members through pointers */
++    long (MS *sum6)(long, long, long, long, long, long);
++    double (MS *mixd)(int, double, int, double);
++    S24 (MS *ret24)(long, long);
++};
++
++int main(int argc, char **argv)
++{
++    struct table t = { ms_sum6, ms_mixd, ms_ret24 };
++    double half = 0.5;
++    long bits;
++    int n = argc + 2;
++    char vla[n * 16];   /* the argument areas must not land on it */
++    S16 s16 = { 7, 8 };
++    S8 s8 = { 3, 4 };
++    S24 r;
++
++    memset(vla, 0x5a, sizeof vla);
++    printf("sum6 %ld %ld\n", ms_sum6(1, 2, 3, 4, 5, 6), t.sum6(6, 5, 4, 3, 2, 1));
++    printf("mixd %g", ms_mixd(1, 0.5, 20, 300.25));
++    printf(" (%d %d %g)", ms_i1, ms_i2, ms_d2);
++    printf(" %g", t.mixd(2, 0.25, 40, 600.5));
++    printf(" (%d %d %g)\n", ms_i1, ms_i2, ms_d2);
++    memcpy(&bits, &half, sizeof bits);
++    printf("variadic: double also in %%rdx %d, then %%r8 %ld\n",
++           ms_var_rdx(2, 0.5, 9L) == bits, ms_var_r8(2, 0.5, 9L));
++    r = ms_ret24(10, 20);
++    printf("ret24 %ld %ld %ld\n", r.a, r.b, r.c);
++    r = t.ret24(1, 2);
++    printf("ret24 table %ld %ld %ld\n", r.a, r.b, r.c);
++    printf("s16 %ld s8 %ld\n", ms_s16(s16, 9), ms_s8(s8));
++    printf("defined: %ld\n", call_ms6((void *)t_six));
++    printf("kept: rsi %lx rdi %lx xmm6 %lx xmm15 %lx\n", ms_rsi, ms_rdi, ms_x6, ms_x15);
++    r = t_ret24(4, 5);
++    printf("defined ret24 %ld s16 %ld\n", r.c, t_s16(s16, 9));
++    for (n = 0; n < (int)sizeof vla; n++)
++        if (vla[n] != 0x5a)
++            break;
++    printf("vla %s\n", n == (int)sizeof vla ? "intact" : "overwritten");
++    return 0;
++}
+diff --git a/tests/tests2/187_x86_64_ms_abi.expect b/tests/tests2/187_x86_64_ms_abi.expect
+new file mode 100644
+index 0000000..6d241be
+--- /dev/null
++++ b/tests/tests2/187_x86_64_ms_abi.expect
+@@ -0,0 +1,10 @@
++sum6 91 56
++mixd 0.5 (1 20 300.25) 0.25 (2 40 600.5)
++variadic: double also in %rdx 1, then %r8 9
++ret24 10 20 30
++ret24 table 1 2 3
++s16 987 s8 43
++defined: 91
++kept: rsi 1111 rdi 2222 xmm6 1111 xmm15 2222
++defined ret24 9 s16 987
++vla intact
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 6cb5c73..80acfe2 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -18,6 +18,7 @@ ifeq (,$(filter i386,$(ARCH)))
+ endif
+ ifneq (x86_64-,$(ARCH)-$(CONFIG_WIN32))
+  SKIP += 167_int128.test # __int128 is x86-64 SysV only
++ SKIP += 187_x86_64_ms_abi.test # ms_abi beside SysV: x86-64 ELF only
+ endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm

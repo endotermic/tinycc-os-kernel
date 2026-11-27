@@ -1,0 +1,442 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 15:51:17 +0200
+Subject: [PATCH] __attribute__((ms_abi)) on x86_64 ELF is the Win64 calling
+ convention, for the calls through such a function type and for the functions
+ defined with it: arguments in rcx, rdx, r8, r9 (xmm0-3; for a variadic callee
+ also in the integer register) with 32 bytes of home space, larger arguments
+ by reference to a copy, results of 1, 2, 4 or 8 bytes in rax, others through
+ a hidden pointer, rsi, rdi and xmm6-15 kept by a function defined ms_abi; the
+ argument area is taken per call so alloca and VLA space stay intact (GRUB on
+ x86_64-efi: its __grub_efi_api protocol calls passed their arguments in rdi,
+ rsi, ... and the firmware faulted on the first call)
+
+---
+ tcc.h        |   3 +
+ tccgen.c     |  17 +++-
+ tcctok.h     |   2 +
+ x86_64-gen.c | 269 ++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 289 insertions(+), 2 deletions(-)
+
+diff --git a/tcc.h b/tcc.h
+index d25e3c7..790df92 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -628,6 +628,7 @@ typedef struct DLLReference {
+ #define FUNC_FASTCALL3 4 /* first parameter in %eax, %edx, %ecx */
+ #define FUNC_FASTCALLW 5 /* first parameter in %ecx, %edx */
+ #define FUNC_THISCALL  6 /* first param in %ecx */
++#define FUNC_MSABI     7 /* x86_64 ELF: __attribute__((ms_abi)), the Win64 convention */
+ 
+ /* field 'Sym.t' for macros */
+ #define MACRO_OBJ      0 /* object like macro */
+@@ -1511,6 +1512,8 @@ ST_DATA int nocode_wanted; /* true if no code generation wanted for an expressio
+ ST_DATA int global_expr;  /* true if compound literals must be allocated globally (used during initializers parsing */
+ ST_DATA CType func_vt; /* current function return type (used by return instruction) */
+ ST_DATA int func_var; /* true if current function is variadic */
++ST_DATA int func_call_cur; /* calling convention of the current function (func_call) */
++ST_DATA int func_call_sret; /* calling convention gfunc_sret() is asked about */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
+ ST_DATA const char *funcname;
+diff --git a/tccgen.c b/tccgen.c
+index c12d046..5614963 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -72,6 +72,8 @@ ST_DATA int nocode_wanted; /* no code generation wanted */
+ ST_DATA int global_expr;  /* true if compound literals must be allocated globally (used during initializers parsing */
+ ST_DATA CType func_vt; /* current function return type (used by return instruction) */
+ ST_DATA int func_var; /* true if current function is variadic (used by return instruction) */
++ST_DATA int func_call_cur; /* calling convention of the current function (func_call) */
++ST_DATA int func_call_sret; /* calling convention gfunc_sret() is asked about */
+ ST_DATA int func_vc; /* stack address for implicit struct return storage */
+ ST_DATA int func_ind; /* function start address */
+ static int func_old;
+@@ -5563,6 +5565,14 @@ redo:
+             ad->f.func_call = FUNC_THISCALL;
+             break;
+ #endif
++        case TOK_MSABI1:
++        case TOK_MSABI2:
++#if defined TCC_TARGET_X86_64 && !defined TCC_TARGET_PE
++            /* the Win64 convention on the ELF target: UEFI firmware
++               interfaces (GRUB's __grub_efi_api); on PE it is the default */
++            ad->f.func_call = FUNC_MSABI;
++#endif
++            break;
+         case TOK_MODE:
+             skip('(');
+             switch(tok) {
+@@ -8011,6 +8021,7 @@ special_math_val:
+             /* compute first implicit argument if a structure is returned */
+             if ((s->type.t & VT_BTYPE) == VT_STRUCT) {
+                 variadic = (s->f.func_type == FUNC_ELLIPSIS);
++                func_call_sret = s->f.func_call;
+                 ret_nregs = gfunc_sret(&s->type, variadic, &ret.type,
+                                        &ret_align, &regsize);
+                 if (ret_nregs <= 0) {
+@@ -8674,6 +8685,7 @@ static void gfunc_return(CType *func_type)
+     if ((func_type->t & VT_BTYPE) == VT_STRUCT) {
+         CType type, ret_type;
+         int ret_align, ret_nregs, regsize;
++        func_call_sret = func_call_cur;
+         ret_nregs = gfunc_sret(func_type, func_var, &ret_type,
+                                &ret_align, &regsize);
+         if (ret_nregs < 0) {
+@@ -8804,7 +8816,7 @@ static int inline_call(Sym *fs, int nb_args)
+     Sym *saved_glabels, *saved_llabels;
+     struct { int v; Sym *head; } *lsave = NULL;
+     int nlsave = 0, nlocals = 0, np, i, cst, size, align, alive;
+-    int saved_loc, saved_ntlv, saved_func_var, saved_func_old;
++    int saved_loc, saved_ntlv, saved_func_var, saved_func_old, saved_func_call_cur;
+     const char *saved_funcname;
+     CType saved_func_vt;
+     struct scope o, *saved_root, *saved_loop;
+@@ -8999,6 +9011,7 @@ static int inline_call(Sym *fs, int nb_args)
+     saved_funcname = funcname, funcname = get_tok_str(fsym->v, NULL);
+     saved_func_vt = func_vt, func_vt = fs->type;
+     saved_func_var = func_var, func_var = 0;
++    saved_func_call_cur = func_call_cur, func_call_cur = fs->f.func_call;
+     saved_func_old = func_old, func_old = 0;
+     saved_root = root_scope, root_scope = &o;
+     saved_loop = loop_scope, loop_scope = NULL;
+@@ -9041,6 +9054,7 @@ static int inline_call(Sym *fs, int nb_args)
+     loc = saved_loc, nb_temp_local_vars = saved_ntlv;
+     funcname = saved_funcname;
+     func_vt = saved_func_vt, func_var = saved_func_var, func_old = saved_func_old;
++    func_call_cur = saved_func_call_cur;
+     root_scope = saved_root, loop_scope = saved_loop, cur_switch = saved_switch;
+     cur_kbrk = saved_kbrk, cur_kcont = saved_kcont, kinit_sym = saved_kinit;
+     klabs_free();
+@@ -11701,6 +11715,7 @@ static void gen_function(Sym *sym)
+     func_ind = ind;
+     func_vt = sym->type.ref->type;
+     func_var = sym->type.ref->f.func_type == FUNC_ELLIPSIS;
++    func_call_cur = sym->type.ref->f.func_call;
+     func_old = sym->type.ref->f.func_type == FUNC_OLD;
+ 
+     /* NOTE: we patch the symbol size later */
+diff --git a/tcctok.h b/tcctok.h
+index e6c2cd5..5db4d50 100644
+--- a/tcctok.h
++++ b/tcctok.h
+@@ -144,6 +144,8 @@
+      DEF(TOK_THISCALL1, "thiscall")
+      DEF(TOK_THISCALL2, "__thiscall")
+      DEF(TOK_THISCALL3, "__thiscall__")
++     DEF(TOK_MSABI1, "ms_abi")
++     DEF(TOK_MSABI2, "__ms_abi__")
+      DEF(TOK_REGPARM1, "regparm")
+      DEF(TOK_REGPARM2, "__regparm__")
+      DEF(TOK_CLEANUP1, "cleanup")
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index 6934f8b..a26462c 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -1238,9 +1238,22 @@ ST_FUNC int classify_x86_64_va_arg(CType *ty)
+ 
+ /* Return the number of registers needed to return the struct, or 0 if
+    returning via struct pointer. */
++static int ms_using_regs(int size);
++
+ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int *regsize)
+ {
+     int size, align, reg_count;
++    if (func_call_sret == FUNC_MSABI) {
++        /* Win64: 1, 2, 4 or 8 bytes in %rax, anything else through a hidden pointer */
++        *ret_align = 1;
++        *regsize = 8;
++        size = type_size(vt, &align);
++        if (!ms_using_regs(size))
++            return 0;
++        ret->t = size == 8 ? VT_LLONG : size == 4 ? VT_INT : size == 2 ? VT_SHORT : VT_BYTE;
++        ret->ref = NULL;
++        return 1;
++    }
+     if (classify_x86_64_arg(vt, ret, &size, &align, &reg_count) == x86_64_mode_memory)
+         return 0;
+     *ret_align = 1; // Never have to re-align return values for x86-64
+@@ -1248,6 +1261,242 @@ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int
+     return 1;
+ }
+ 
++/* __attribute__((ms_abi)) on the ELF target: the Win64 convention for the calls through
++   such a function type and for the functions defined with it (UEFI firmware interfaces:
++   GRUB's __grub_efi_api, the EFI_STATUS (EFIAPI *)(...) members of its protocol tables;
++   without it the firmware got its arguments in %rdi/%rsi/... and faulted).  The rules are
++   those of the PE target's code above: the first four arguments in %rcx, %rdx, %r8, %r9
++   (floats in %xmm0-3, and for a variadic callee in the integer register as well), 32
++   bytes of home space for them at the bottom of the argument area, every argument in an
++   8-byte slot, larger ones and those not of size 1, 2, 4 or 8 by reference to a copy; a
++   result of 1, 2, 4 or 8 bytes in %rax (or %xmm0), else through a hidden pointer in %rcx.
++   Unlike PE the argument area is taken for each call ("sub $n, %rsp" ... "add $n, %rsp"),
++   so the SysV functions need no scratch area and alloca/VLA space stays intact.  A
++   function defined ms_abi saves %rsi, %rdi and %xmm6-15, which are callee-saved there and
++   which its own (SysV) calls may clobber. */
++#define MS_REGN 4
++static const uint8_t ms_arg_regs[MS_REGN] = {
++    TREG_RCX, TREG_RDX, TREG_R8, TREG_R9
++};
++static int func_ms;     /* the function being generated is ms_abi */
++static int ms_save_loc; /* where its %rsi, %rdi, %xmm6-15 are saved */
++
++static int ms_using_regs(int size)
++{
++    return !(size > 8 || (size & (size - 1)));
++}
++
++static int ms_arg_size(CType *type)
++{
++    int align;
++    if (type->t & (VT_ARRAY|VT_BITFIELD))
++        return 8;
++    return type_size(type, &align);
++}
++
++/* the scratch registers the argument values are prepared in: %rcx and %rdx are set
++   last from %r10 and %r11, which gv() never allocates */
++static int ms_prepare_reg(int idx)
++{
++    return idx == 0 || idx == 1 ? idx + 10 : ms_arg_regs[idx];
++}
++
++/* instruction 'b' (lea 0x8d, mov 0x89, movq 0xd60f66, fstpt 0xdb) with d(%rsp) */
++static void ms_offs_sp(int b, int r, int d)
++{
++    orex(1, 0, r & 0x100 ? 0 : r, b);
++    if (d == (signed char)d) {
++        o(0x2444 | (REG_VALUE(r) << 3));
++        g(d);
++    } else {
++        o(0x2484 | (REG_VALUE(r) << 3));
++        gen_le32(d);
++    }
++}
++
++/* movdqu %xmmN, off(%rbp) (op 0x7f) or movdqu off(%rbp), %xmmN (op 0x6f) */
++static void ms_xmm_rbp(int op, int x, int off)
++{
++    o(0xf3);
++    if (x >= 8)
++        o(0x44);
++    o(0x0f);
++    o(op);
++    o(0x85 | ((x & 7) << 3));
++    gen_le32(off);
++}
++
++static void gfunc_call_ms(int nb_args)
++{
++    int size, r, args_size, i, d, bt, struct_size, area, arg;
++
++#ifdef CONFIG_TCC_BCHECK
++    if (tcc_state->do_bounds_check)
++        gbound_args(nb_args);
++#endif
++    save_regs(nb_args);
++
++    args_size = (nb_args < MS_REGN ? MS_REGN : nb_args) * PTR_SIZE;
++    area = args_size;
++    for (i = 0; i < nb_args; i++) {
++        size = ms_arg_size(&vtop[-i].type);
++        bt = vtop[-i].type.t & VT_BTYPE;
++        if (ms_using_regs(size))
++            continue;
++        if (bt == VT_STRUCT)
++            area += (size + 15) & ~15;
++        else if (bt == VT_LDOUBLE)
++            area += 16;
++    }
++    area = (area + 15) & ~15;
++    oad(0xec8148, area); /* sub $area, %rsp */
++
++    /* the copies of the arguments passed by reference first: their copying
++       may call memcpy, which would clobber prepared registers */
++    struct_size = args_size;
++    for (i = 0; i < nb_args; i++) {
++        SValue *sv = &vtop[-i];
++        bt = sv->type.t & VT_BTYPE;
++        size = ms_arg_size(&sv->type);
++        if (ms_using_regs(size))
++            continue;
++        if (bt == VT_STRUCT) {
++            size = (size + 15) & ~15;
++            r = get_reg(RC_INT);
++            ms_offs_sp(0x8d, r, struct_size);
++            struct_size += size;
++            vset(&sv->type, r | VT_LVAL, 0);
++            vpushv(sv);
++            vstore();
++            --vtop;
++        } else if (bt == VT_LDOUBLE) {
++            gv(RC_ST0);
++            ms_offs_sp(0xdb, 0x107, struct_size);
++            struct_size += 16;
++        }
++    }
++
++    arg = nb_args;
++    struct_size = args_size;
++    for (i = 0; i < nb_args; i++) {
++        --arg;
++        bt = vtop->type.t & VT_BTYPE;
++        size = ms_arg_size(&vtop->type);
++        if (!ms_using_regs(size)) {
++            size = (size + 15) & ~15;
++            if (arg >= MS_REGN) {
++                d = get_reg(RC_INT);
++                ms_offs_sp(0x8d, d, struct_size);
++                ms_offs_sp(0x89, d, arg * 8);
++            } else {
++                d = ms_prepare_reg(arg);
++                ms_offs_sp(0x8d, d, struct_size);
++            }
++            struct_size += size;
++        } else if (bt == VT_FLOAT || bt == VT_DOUBLE) {
++            if (tcc_state->nosse)
++                tcc_error("SSE disabled");
++            if (arg >= MS_REGN) {
++                gv(RC_XMM0);
++                ms_offs_sp(0xd60f66, 0x100, arg * 8); /* movq %xmm0, arg*8(%rsp) */
++            } else {
++                gv(RC_XMM0 << arg);
++                d = ms_prepare_reg(arg);
++                o(0x66); /* movq %xmmN, %rxx: for a variadic callee */
++                orex(1, d, 0, 0x7e0f);
++                o(0xc0 + arg * 8 + REG_VALUE(d));
++            }
++        } else {
++            if (bt == VT_STRUCT) {
++                vtop->type.ref = NULL;
++                vtop->type.t = size > 4 ? VT_LLONG : size > 2 ? VT_INT
++                    : size > 1 ? VT_SHORT : VT_BYTE;
++            }
++            r = gv(RC_INT);
++            if (arg >= MS_REGN) {
++                ms_offs_sp(0x89, r, arg * 8);
++            } else {
++                d = ms_prepare_reg(arg);
++                orex(1, d, r, 0x89); /* mov */
++                o(0xc0 + REG_VALUE(r) * 8 + REG_VALUE(d));
++            }
++        }
++        vtop--;
++    }
++    if (nb_args > 0) {
++        o(0xd1894c); /* mov %r10, %rcx */
++        if (nb_args > 1)
++            o(0xda894c); /* mov %r11, %rdx */
++    }
++    gcall_or_jmp(0);
++    gadd_sp(area);
++    vtop--;
++}
++
++/* the parameters of an ms_abi function: the register ones are stored in the home space
++   the caller provides above the return address, so all are at 16+8*i(%rbp) */
++static void gfunc_prolog_ms(Sym *func_sym)
++{
++    CType *func_type = &func_sym->type;
++    int addr, reg_param_index, bt, size, i;
++    Sym *sym;
++    CType *type;
++
++    if (func_var)
++        tcc_error("variadic ms_abi functions cannot be defined on this target");
++    addr = PTR_SIZE * 2;
++    reg_param_index = 0;
++    sym = func_type->ref;
++    size = ms_arg_size(&func_vt);
++    if (!ms_using_regs(size)) {
++        gen_modrm64(0x89, ms_arg_regs[reg_param_index], VT_LOCAL, NULL, addr);
++        func_vc = addr;
++        reg_param_index++;
++        addr += 8;
++    }
++    while ((sym = sym->next) != NULL) {
++        type = &sym->type;
++        bt = type->t & VT_BTYPE;
++        size = ms_arg_size(type);
++        if (!ms_using_regs(size)) {
++            if (reg_param_index < MS_REGN)
++                gen_modrm64(0x89, ms_arg_regs[reg_param_index], VT_LOCAL, NULL, addr);
++            gfunc_set_param(sym, addr, 1);
++        } else {
++            if (reg_param_index < MS_REGN) {
++                if (bt == VT_FLOAT || bt == VT_DOUBLE) {
++                    if (tcc_state->nosse)
++                        tcc_error("SSE disabled");
++                    gen_modrm32(0xd60f66, reg_param_index, VT_LOCAL, NULL, addr); /* movq */
++                } else {
++                    gen_modrm64(0x89, ms_arg_regs[reg_param_index], VT_LOCAL, NULL, addr);
++                }
++            }
++            gfunc_set_param(sym, addr, 0);
++        }
++        addr += 8;
++        reg_param_index++;
++    }
++    /* %rsi, %rdi, %xmm6-15: callee-saved in the Win64 convention */
++    loc -= 16 + 10 * 16;
++    ms_save_loc = loc;
++    gen_modrm64(0x89, TREG_RSI, VT_LOCAL, NULL, loc);
++    gen_modrm64(0x89, TREG_RDI, VT_LOCAL, NULL, loc + 8);
++    if (!tcc_state->nosse)
++        for (i = 6; i < 16; i++)
++            ms_xmm_rbp(0x7f, i, loc + 16 + (i - 6) * 16);
++}
++
++static void gfunc_epilog_ms(void)
++{
++    int i;
++    gen_modrm64(0x8b, TREG_RSI, VT_LOCAL, NULL, ms_save_loc);
++    gen_modrm64(0x8b, TREG_RDI, VT_LOCAL, NULL, ms_save_loc + 8);
++    if (!tcc_state->nosse)
++        for (i = 6; i < 16; i++)
++            ms_xmm_rbp(0x6f, i, ms_save_loc + 16 + (i - 6) * 16);
++}
++
+ #define REGN 6
+ static const uint8_t arg_regs[REGN] = {
+     TREG_RDI, TREG_RSI, TREG_RDX, TREG_RCX, TREG_R8, TREG_R9
+@@ -1272,7 +1521,14 @@ void gfunc_call(int nb_args)
+     int nb_reg_args = 0;
+     int nb_sse_args = 0;
+     int sse_reg, gen_reg;
+-    char *onstack = tcc_malloc((nb_args + 1) * sizeof (char));
++    char *onstack;
++
++    if ((vtop[-nb_args].type.t & VT_BTYPE) == VT_FUNC
++        && vtop[-nb_args].type.ref->f.func_call == FUNC_MSABI) {
++        gfunc_call_ms(nb_args);
++        return;
++    }
++    onstack = tcc_malloc((nb_args + 1) * sizeof (char));
+ 
+ #ifdef CONFIG_TCC_BCHECK
+     if (tcc_state->do_bounds_check)
+@@ -1486,6 +1742,15 @@ void gfunc_prolog(Sym *func_sym)
+     ind += FUNC_PROLOG_SIZE;
+     func_sub_sp_offset = ind;
+     func_ret_sub = 0;
++    func_ms = func_type->ref->f.func_call == FUNC_MSABI;
++    if (func_ms) {
++        gfunc_prolog_ms(func_sym);
++#ifdef CONFIG_TCC_BCHECK
++        if (tcc_state->do_bounds_check)
++            gen_bounds_prolog();
++#endif
++        return;
++    }
+     ret_mode = classify_x86_64_arg(&func_vt, NULL, &size, &align, &reg_count);
+ 
+     if (func_var) {
+@@ -1631,6 +1896,8 @@ void gfunc_epilog(void)
+     if (tcc_state->do_bounds_check)
+         gen_bounds_epilog();
+ #endif
++    if (func_ms)
++        gfunc_epilog_ms();
+     o(0xc9); /* leave */
+     if (func_ret_sub == 0) {
+         o(0xc3); /* ret */

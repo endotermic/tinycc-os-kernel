@@ -86,6 +86,8 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 143 | tinycc 0161 |
 | | | | | 144 | tinycc 0163 |
 | | | | | 145 | tinycc 0165 |
+| | | | | 146 | tinycc 0167 |
+| | | | | 147 | tinycc 0169 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -165,6 +167,8 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/183_asm_align_max.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 143 |
 | `tests/tests2/184_asm_dx_port_vmmcall.c` | i386, x86_64 (top-level asm; an assembler error without the fix) | 144 |
 | `tests/tests2/185_asm_out_reload_clobber.c` | i386, x86_64 (an asm error on i386 without the fix) | 145 |
+| `tests/tests2/186_i386_regparm0_fnptr.c` | i386, with `-mregparm=3` (garbage results without the fix) | 146 |
+| `tests/tests2/187_x86_64_ms_abi.c` | x86_64 ELF (top-level asm callees and caller; a segfault without the fix) | 147 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3489,3 +3493,43 @@ then corrupted memory.
     EFI runtime services on (efivarfs lists the firmware's 23 variables); both kernels, guest
     tcc, initramfs and ISOs rebuilt, devices-test 18/18 and selfhost-test all on both arches
     (i386 10 min, x86_64 15 min).
+
+147. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0169, test 0170 =
+    tests2/187_x86_64_ms_abi), `x86_64-gen.c` (gfunc_call_ms(), gfunc_prolog_ms(),
+    gfunc_epilog_ms(), the ms_abi branch of gfunc_sret(); the dispatch in gfunc_call(),
+    gfunc_prolog(), gfunc_epilog()), `tccgen.c` (the ms_abi attribute; func_call_cur and
+    func_call_sret, which tell gfunc_sret() the convention of the call or of the function
+    returning, saved across the inliner), `tcc.h` (FUNC_MSABI = 7), `tcctok.h`. Problem: a
+    trial build of GRUB 2.14 for x86_64-efi with tcc (docs/INSTALLER.md; tcc compiles, tld
+    links) went through grub-mkimage, but the image stopped on its first firmware call with a
+    #GP inside an OVMF driver. GRUB declares every UEFI interface `__grub_efi_api` =
+    `__attribute__((ms_abi))`, which tcc's ELF target ignored: the calls passed their
+    arguments in rdi, rsi, rdx, rcx, r8, r9 instead of rcx, rdx, r8, r9, without home space.
+    The kernel never met it: its __efiapi (also ms_abi) pointers are only called through the
+    efi_call asm thunk. Fix: on the ELF target a function type with ms_abi gets FUNC_MSABI,
+    and the backend uses the Win64 rules of its PE code for it beside SysV for the rest. A
+    call: the first four arguments in rcx, rdx, r8, r9 (floats in xmm0-3 and, for a variadic
+    callee, in the integer register too), 32 bytes of home space, 8-byte slots, arguments
+    not of size 1, 2, 4 or 8 by reference to a copy; unlike PE the area is taken for each
+    call (sub/add around it), so SysV functions need no scratch area and alloca and VLA
+    space stay intact. A definition: the parameters from those registers into the home space,
+    and rsi, rdi and xmm6-15 saved in the prolog and restored in the epilog (callee-saved in
+    Win64, clobbered by the function's own SysV calls); variadic ms_abi definitions are an
+    error. Results of 1, 2, 4 or 8 bytes in rax (xmm0), others through a hidden pointer in
+    rcx. On i386 and PE the attribute changes nothing. Verification: 187_x86_64_ms_abi (asm
+    callees check the argument registers, the stack arguments, the home space, a variadic
+    double in xmm1 and rdx, S16 by reference, S8 in a register, S24 through the hidden
+    pointer, calls through a table; an asm caller with live rsi, rdi, xmm6, xmm15 calls a
+    tcc-defined ms_abi function that calls a SysV clobberer; a VLA survives; a segfault with
+    tcc built without the fix); a gcc-compiled peer (gcc's ms_abi callees and callers,
+    __builtin_ms_va_list) agrees in all 14 cases both ways; `make test` ALL TESTS PASSED
+    (cross compilers included); 98, 99, 157 (with and without -fPIC), 162 and 186 through
+    build/i386/musl-tcc with the rebuilt i386-tcc. The x86_64 kernel's EFI objects (arch/x86/
+    platform/efi, drivers/firmware/efi, drivers/acpi/prmt.o, everything that names __efiapi)
+    recompiled with their Kbuild commands disassemble the same as before, so the kernels,
+    the guest tcc and the ISOs were not rebuilt for it. The tcc-built GRUB (x86_64-efi) now
+    runs on OVMF: grub.cfg from a FAT partition, ls of the disks and files, cat, halt. It
+    cannot load the linux module yet: tcc's assembler leaves R_X86_64_PC16 relocations for
+    16-bit branches to labels of the same section (relocator16.S), which GRUB's loader does
+    not implement (GNU as resolves them itself); that and the other gaps of the trial are
+    listed in docs/INSTALLER.md ("GRUB built by tcc"), open.
