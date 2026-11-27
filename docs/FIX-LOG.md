@@ -3458,3 +3458,32 @@ which brings in VMware's hypercall; its inline assembly needed one tcc fix.
     edi clobbered; the stores go through %esi on i386, an error without the fix), the i386
     kernel with vmmouse (vmmouse tracking the host's pointer in QEMU made to look like VMware),
     `make test`, devices-test 18/18 and selfhost-test all on both arches.
+
+## 32-bit UEFI: the EFI runtime services of the i386 kernel (2026-11-27)
+
+The first boot of the i386 ISO on 32-bit UEFI firmware (Debian's ovmf-ia32, docs/HARDWARE.md
+group 6) loaded GRUB through BOOTIA32.EFI and the kernel, whose first EFI runtime call
+then corrupted memory.
+
+146. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0167, test 0168 =
+    tests2/186_i386_regparm0_fnptr), `tccgen.c` (type_decl(): the calling convention named
+    on a pointer to a function). Problem: on 32-bit OVMF the i386 kernel oopsed in the
+    efi_runtime kworker (efi_call_rts) with a page fault in queued_spin_lock_slowpath, a lock
+    word overwritten during the firmware call, and the boot stalled; with `efi=noruntime` it
+    booted. include/linux/efi.h declares the runtime services as
+    `efi_get_time_t __efiapi *get_time`, `__efiapi` = `regparm(0)` on i386 (the kernel is
+    built with -mregparm=3, the firmware takes its arguments on the stack). type_decl() moves
+    a convention named on a function pointer to the function type (fix 117), but only copied
+    `func_call` when it was nonzero, and regparm(0) is FUNC_CDECL = 0 with func_cdecl set: the
+    function type kept the -mregparm default post_type() had given it, so every runtime call
+    passed its arguments in eax/edx/ecx and the firmware wrote through whatever was on the
+    stack. The same for `fn_t * __attribute__((regparm(0))) p` and
+    `int (*p)(int) __attribute__((regparm(0)))`. Besides, the old code changed the pointed-to
+    function type in place, which for a typedef'd function type changed the typedef for every
+    later declaration. Fix: the convention (regparm(0) included) goes on a copy of the
+    function type whenever it differs. Verification: 186_i386_regparm0_fnptr (struct
+    members, globals and locals in every placement, through regparm(0) and default typedefs;
+    with -mregparm=3, garbage results without the fix), 98/99/157 (with and without -fPIC)/162
+    through build/i386/musl-tcc, `make test`; the i386 kernel's efi_call_rts now pushes the
+    arguments; the rebuilt i386 ISO on 32-bit OVMF (q35) boots to the xdm greeter with the
+    EFI runtime services on.

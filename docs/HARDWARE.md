@@ -180,6 +180,19 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   "No EFI runtime due to 32/64-bit mismatch", as any 32-bit kernel there; no 32-bit OVMF
   package in this Ubuntu, so BOOTIA32.EFI itself is untested); selfhost-test all on both
   (i386 10 min 50 s, x86_64 16 min at 1.5 GB).
+- 32-bit UEFI, 2026-11-27: Debian's ovmf-ia32 2025.02-8+deb13u1 (`OVMF32_CODE_4M.fd`, unpacked
+  with dpkg-deb -x, not installed; `OVMF=... ./run.sh --arch i386 --iso --efi`).  BOOTIA32.EFI
+  works: GRUB 2.14 i386-efi shows the menu and loads the kernel, which sees "EFI v2.7" and
+  sets up the runtime services.  The first runtime call oopsed (a page fault in
+  queued_spin_lock_slowpath in the efi_runtime kworker: memory corrupted by the firmware,
+  the boot stalled; `efi=noruntime` booted): tcc passed the arguments of calls through the
+  `regparm(0)` function pointers of the runtime services table in registers under
+  -mregparm=3, tcc fix 146 (docs/FIX-LOG.md).  With it the i386 ISO boots on 32-bit OVMF to
+  the xdm greeter, efivarfs lists the firmware's 23 variables (GetNextVariable), and
+  devices-test passes 18/18 on the rebuilt i386 kernel.  On the default i440fx machine
+  GRUB failed to read the CD in 2 of 3 boots (`failure reading sector ... from cd0`, rescue
+  mode); on q35 (AHCI) it read fine.  QEMU's direct `-kernel` boot does not start on this
+  firmware (no EFI stub in the kernel).
   QEMU emulates no HDMI codec, DSP, SoundWire or amplifier: not tested on real hardware.
 
 ## Group 7: power, the CPU's health, IOMMU, NTFS, laptop keys — DONE (2026-11-19)

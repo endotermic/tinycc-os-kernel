@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 11:47:11 +0200
+Subject: [PATCH] regparm(0) named on a pointer to a function is the convention
+ of the calls through it under -mregparm, as gcc, also on a typedef'd function
+ type, which keeps its own convention: the attribute goes on a copy of the
+ function type (Linux i386 EFI runtime services "efi_get_time_t __efiapi
+ *get_time", __efiapi = regparm(0): the calls passed their arguments in
+ registers and the firmware corrupted memory)
+
+---
+ tccgen.c | 27 ++++++++++++++++++++++-----
+ 1 file changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/tccgen.c b/tccgen.c
+index c86f243..c12d046 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -6885,15 +6885,32 @@ static CType *type_decl(CType *type, AttributeDef *ad, int *v, int td)
+        function belongs to the function type, as with GCC:
+        "void (*process_block)(ctx*) __attribute__((regparm(3),stdcall))"
+        (busybox); it was left on the variable, and calls through the
+-       pointer used the default convention */
++       pointer used the default convention.
++       regparm(0) is FUNC_CDECL == 0 with func_cdecl set: it replaces the
++       -mregparm default the function type got in post_type ("efi_get_time_t
++       __attribute__((regparm(0))) *get_time", Linux i386 EFI runtime calls,
++       which passed their arguments in registers).  The function type can be
++       a typedef's, shared by every declaration using the typedef: the
++       convention goes on a copy */
+     if ((type->t & VT_BTYPE) == VT_PTR
+         && (ad->f.func_call || ad->f.func_stdcall || ad->f.func_cdecl)) {
+         CType *pt = pointed_type(type);
+         if ((pt->t & VT_BTYPE) == VT_FUNC) {
+-            if (ad->f.func_call)
+-                pt->ref->f.func_call = ad->f.func_call;
+-            pt->ref->f.func_stdcall |= ad->f.func_stdcall;
+-            pt->ref->f.func_cdecl |= ad->f.func_cdecl;
++            Sym *f = pt->ref, *s;
++            int fc = ad->f.func_call ? ad->f.func_call
++                   : ad->f.func_cdecl ? FUNC_CDECL : f->f.func_call;
++            if (fc != f->f.func_call
++                || (ad->f.func_stdcall && !f->f.func_stdcall)
++                || (ad->f.func_cdecl && !f->f.func_cdecl)) {
++                s = sym_push(SYM_FIELD, &f->type, f->r, f->c);
++                s->a = f->a;
++                s->f = f->f;
++                s->next = f->next;
++                s->f.func_call = fc;
++                s->f.func_stdcall |= ad->f.func_stdcall;
++                s->f.func_cdecl |= ad->f.func_cdecl;
++                pt->ref = s;
++            }
+         }
+     }
+     type->t |= storage;
