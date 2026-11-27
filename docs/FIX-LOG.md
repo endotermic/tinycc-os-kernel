@@ -92,6 +92,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 149 | tinycc 0173 |
 | | | | | 150 | tinycc 0175 |
 | | | | | 151 | tinycc 0177 |
+| | | | | 152 | tinycc 0179 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -177,6 +178,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/189_asm_pass_code_mode.c` | i386, x86_64 (an assembler error on x86_64, a wrong result on i386 without the fix) | 149 |
 | `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
 | `tests/tests2/191_asm_addr16.c` | i386, x86_64 (compiled with `-c`, compares its own bytes with GNU as; an assembler error without the fix) | 151 |
+| `tests/tests2/192_asm_jump_relax.c` | i386, x86_64 (the sizes are label differences, the code runs; "attempt to .org backwards" without the fix) | 152 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3642,3 +3644,60 @@ then corrupted memory.
     default segment (`%ds:(%si)`, also `%ds:(%eax)`, `%ss:(%ebp)`), which GNU as drops (one
     byte more, the same effect), and `(,%esi,4)` without a displacement is "bad expression
     syntax" (`0(,%esi,4)` works).
+
+152. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0179, test 0180 =
+    tests2/192_asm_jump_relax), `tccasm.c` (asm_pass_jump(), asm_pass_next(),
+    asm_pass_rollback(), asm_new_label1(), .org, .file, tcc_assemble()), `i386-asm.c`
+    (asm_opcode()). Problem: tcc's assembler gave a forward jmp or jcc the 5- or 6-byte form
+    even when its label came a few bytes later; only backward jumps got the 2-byte form.
+    GNU as relaxes them, and GRUB's i386-pc boot sector depends on it: boot.S has
+    `jmp LOCAL(after_BPB); nop` and then `.org GRUB_BOOT_MACHINE_BPB_START` (3), so tcc
+    stopped with "attempt to .org backwards" (the sector also has to fit 512 bytes). Fix: a
+    forward jump to a label that is not defined yet and not global asks for the replay of
+    the file or statement (the multi-pass machinery of the label differences); in the
+    second pass every such jump is short, as GNU as starts them, with a displacement taken
+    from where pass 1 put the label; each later pass computes it from the previous pass,
+    and a jump out of range becomes long for good, which only pushes later labels further,
+    so the passes end at the least code, the layout GNU as gets. The passes go on while a
+    jump changes form, not only while labels move: in the kernel's sha1-avx2-asm.S
+    `.align 32; jmp .L_end; .align 32` keeps every label in place when the jump shrinks,
+    and the first try ended there with a short jump to a wrong target (0x7e instead of
+    0x197e). Jumps of i386 C functions whose code tcc still relaxes itself (fix 130) are
+    left alone, and loop/jcxz keep fix 148. Up to 64 passes. Four older faults of the
+    replay came up and are fixed with it: (1) a `.org` that goes backwards is only an error
+    once the passes have settled (one more pass reports it at its line); (2) `\@` restarts
+    at the same count in each pass, so labels made with it (`.Lskip_rsb_\@` of the kernel's
+    FILL_RETURN_BUFFER) have the same names in every pass and can be predicted; (3) the
+    rollback gives a name that the pass assigned anew (`X=Y`) the value it had before,
+    not "undefined" (tcctest.c's asm_dot_test 4 read 999 instead of 789 once its
+    `jmp p0` caused a replay); (4) the replay reopens the file under its real name, not
+    the one a `.file` directive gave. And `.file` itself left the tokenizer without
+    string parsing, so every `.ascii`/`.asciz` after it was "string constant expected"
+    (boot.S has `.file "boot.S"`; also wrong in a single pass). Verification: GRUB's boot.S
+    and diskboot.S assemble (i386-tcc) to the same instructions as GNU as and, linked by GNU
+    ld at 0x7c00 (tld has no `-Ttext`), to byte-identical 512-byte images (pxeboot.S too,
+    1024 bytes); chains of 3 to 200 jumps where the first fits only once the others are
+    short give GNU as's sizes; 192_asm_jump_relax (sizes as label differences and running
+    code: the chain, the aligned far jump, `.org` after a short jump, `\@` labels, `.file`
+    before strings, 16-bit code, long forms out of range and to other sections; the same
+    output as gcc + GNU as except the global-label jump, see below; "attempt to .org
+    backwards" without the fix) on x86_64 and through build/i386/musl-tcc;
+    188_asm_small_pcrel's `jnz L_mid` is now short, so it jumps to the far label to keep
+    testing the rel16 field; `make test` ALL TESTS PASSED; `make -C tests asmtest` gives the
+    same 6 symbol-name lines as before; the i386 asm tests through build/i386/musl-tcc
+    give the same results as without the fix. Every kernel .S file, preprocessed by tcc and
+    assembled by tcc and by GNU as, compared by section, offset, length and mnemonic of
+    each instruction (nop padding left out): x86_64 48 of 54 the same (25 before), i386 27
+    of 35 (17 before); the i386 real-mode files that still differ in that listing (16-bit
+    code decoded as 32-bit) link with GNU ld to byte-identical images. What still differs
+    is older than this fix: `shr $1` in 3 bytes (GNU as: 2), VEX prefixes in 3 bytes where 2
+    do, a disp8 where GNU as keeps a disp32 for a label difference (head_64.S), multi-byte
+    nops, and a jump to a global label of the same section, which tcc keeps long with its
+    relocation and GNU as resolves (without `-mshared`; the setup header.S, one byte;
+    docs/INSTALLER.md). Both kernels built from scratch with the new tcc (x86_64 text 320
+    bytes smaller, i386 228; objtool's warnings the same as for the old objects) pass
+    scripts/devices-test.sh 18 of 18 on both arches, suspend to RAM included; they are not
+    in out/ (the next kernel build makes them). GRUB's x86_64-efi trial build, rebuilt from
+    clean with the new tcc (293 modules), boots the x86_64 kernel and initramfs on OVMF to
+    the Autarkeia banner (with the FAT drive as `snapshot=on`: the read-write vvfat drive
+    gave "Not Found" again).

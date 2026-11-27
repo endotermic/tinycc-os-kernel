@@ -1,0 +1,343 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 20:45:37 +0200
+Subject: [PATCH] asm: forward jumps relaxed as GNU as does it: a jmp or jcc to
+ a local label of the same section defined later gets the 2-byte form when it
+ fits; every such jump starts short in the second pass and becomes long for
+ good when out of range, the passes go on while a jump changes form (alignment
+ can keep the labels in place), a .org that goes backwards only before the
+ passes settle is not an error, \@ and reassigned symbols are the same in each
+ pass, the file is read again under its real name, and .file no longer stops
+ strings from being parsed (GRUB's i386 boot.S came out over 512 bytes:
+ 'attempt to .org backwards', then 'string constant expected')
+
+---
+ i386-asm.c |  17 +++----
+ tcc.h      |   3 ++
+ tccasm.c   | 136 ++++++++++++++++++++++++++++++++++++++++++++++++-----
+ 3 files changed, 137 insertions(+), 19 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 78f5456..9d647d2 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1649,16 +1649,17 @@ again:
+ 
+         /* see if we can really generate the jump with a byte offset */
+ 	esym = asm_local_sym_here(ops[0].e.sym);
+-        if (!esym) {
+-            if (v >= 0xe0 && v <= 0xe3) {
+-                /* loop/jcxz to another section: an 8-bit relocation */
+-                g(v);
+-                gen_expr_small(&ops[0].e, 1, 1);
+-                return;
+-            }
++        if (esym) {
++            jmp_disp = ops[0].e.v + esym->st_value - ind - 2 - (v >= 0xff);
++        } else if (v >= 0xe0 && v <= 0xe3) {
++            /* loop/jcxz to another section: an 8-bit relocation */
++            g(v);
++            gen_expr_small(&ops[0].e, 1, 1);
++            return;
++        } else if (!asm_pass_jump(ops[0].e.sym, ops[0].e.v, ind + 2 + (v >= 0xff), &jmp_disp)) {
++            /* not a forward jump to a local label within reach */
+             goto no_short_jump;
+         }
+-        jmp_disp = ops[0].e.v + esym->st_value - ind - 2 - (v >= 0xff);
+         if (jmp_disp == (int8_t)jmp_disp) {
+             /* OK to generate jump */
+ 	    ops[0].e.sym = 0;
+diff --git a/tcc.h b/tcc.h
+index 790df92..0c90688 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1849,6 +1849,9 @@ ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess);
+ #ifdef CONFIG_TCC_ASM
+ ST_FUNC int find_constraint(ASMOperand *operands, int nb_operands, const char *name, const char **pp);
+ ST_FUNC Sym* get_asm_sym(int name, Sym *csym);
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++ST_FUNC int asm_pass_jump(Sym *sym, int addend, int end, int *disp);
++#endif
+ ST_FUNC void asm_expr(TCCState *s1, ExprValue *pe);
+ ST_FUNC int asm_int_expr(TCCState *s1);
+ #if PTR_SIZE == 8
+diff --git a/tccasm.c b/tccasm.c
+index 3933cdc..4066ab4 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -38,11 +38,14 @@ static Sym* asm_section_sym(TCCState *s1, Section *sec);
+ typedef struct AsmPassLabel {
+     Sym *sym;
+     int label, is_local, sh_num, value;
++    int old_sh_num, old_value; /* what the name was before (SHN_UNDEF: nothing) */
+ } AsmPassLabel;
+ 
+ static struct {
+     int pass;                 /* 0: single pass, 1: recording, >= 2: replay */
+     int need_more;            /* pass 1 met an unresolvable forward difference */
++    int org_back;             /* a .org of this pass went backwards */
++    int strict;               /* the last pass: .org backwards is an error */
+     AsmPassLabel **defs;      /* label definitions of the previous pass */
+     int nb_defs;
+     AsmPassLabel **cur;       /* label definitions of this pass */
+@@ -55,10 +58,22 @@ static struct {
+     int seg_size, code16gcc;  /* the code mode the statement or file starts in */
+ #endif
+     int nb_sections, ind;
++    int macro_counter;        /* \@ of the first macro of the statement */
+     Section *text, *last_text;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++    unsigned char *jumps;     /* the form each forward jump of the statement got */
++    int nb_jumps, jump_n;
++    int jump_changed;         /* a jump of this pass got another form */
++#endif
+ } asm_pass;
+ 
+-static void asm_pass_record(Sym *sym, int label, int is_local, int sh_num, int value)
++/* the passes allowed in all (a jump made long can make others long) */
++#define ASM_PASS_MAX 64
++
++static int asm_macro_counter;
++
++static void asm_pass_record(Sym *sym, int label, int is_local, int sh_num, int value,
++                            int old_sh_num, int old_value)
+ {
+     AsmPassLabel *d;
+     if (!asm_pass.pass)
+@@ -66,6 +81,7 @@ static void asm_pass_record(Sym *sym, int label, int is_local, int sh_num, int v
+     d = tcc_mallocz(sizeof *d);
+     d->sym = sym, d->label = label, d->is_local = is_local;
+     d->sh_num = sh_num, d->value = value;
++    d->old_sh_num = old_sh_num, d->old_value = old_value;
+     dynarray_add(&asm_pass.cur, &asm_pass.nb_cur, d);
+ }
+ 
+@@ -142,6 +158,7 @@ static void asm_pass_start(TCCState *s1)
+     int i;
+     asm_pass.pass = 1;
+     asm_pass.need_more = 0;
++    asm_pass.org_back = asm_pass.strict = 0;
+     asm_pass.nb_sections = s1->nb_sections;
+     asm_pass.offsets = tcc_malloc(sizeof *asm_pass.offsets * 2 * s1->nb_sections);
+     for (i = 1; i < s1->nb_sections; i++) {
+@@ -150,11 +167,13 @@ static void asm_pass_start(TCCState *s1)
+         asm_pass.offsets[2 * i + 1] = s->reloc ? s->reloc->data_offset : 0;
+     }
+     asm_pass.ind = ind;
++    asm_pass.macro_counter = asm_macro_counter;
+     asm_pass.text = cur_text_section;
+     asm_pass.last_text = last_text_section;
+ #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
+     asm_pass.seg_size = s1->seg_size;
+     asm_pass.code16gcc = s1->code16gcc;
++    asm_pass.jump_n = asm_pass.jump_changed = 0;
+ #endif
+ }
+ 
+@@ -177,6 +196,11 @@ static void asm_pass_rollback(TCCState *s1)
+             s->data_offset = 0; /* section created by the pass */
+         }
+     }
++    asm_pass.org_back = 0;
++    /* each pass expands the macros with the same \@, so that the labels
++       made with it (".Lskip_rsb_\@" of the kernel's FILL_RETURN_BUFFER)
++       are the same names in each pass */
++    asm_macro_counter = asm_pass.macro_counter;
+     cur_text_section = asm_pass.text;
+     ind = asm_pass.ind;
+     last_text_section = asm_pass.last_text;
+@@ -186,20 +210,85 @@ static void asm_pass_rollback(TCCState *s1)
+        64-bit code, then .code32, assembled twice) */
+     s1->seg_size = asm_pass.seg_size;
+     s1->code16gcc = asm_pass.code16gcc;
++    asm_pass.jump_n = asm_pass.jump_changed = 0;
+ #endif
+-    /* labels defined by the pass become undefined again (numeric local
+-       labels are simply defined as new symbols by the next pass) */
+-    for (i = 0; i < asm_pass.nb_cur; i++) {
++    /* labels defined by the pass become undefined again, and a name the
++       pass assigned anew ("mov X(%rip), %eax; X=Y; jmp p0" of tcctest.c)
++       gets back the value it had before, from the last assignment back
++       to the first (numeric local labels are simply defined as new
++       symbols by the next pass) */
++    for (i = asm_pass.nb_cur; --i >= 0;) {
+         AsmPassLabel *d = asm_pass.cur[i];
+         if (d->is_local != 1) {
+             ElfSym *esym = elfsym(d->sym);
+-            if (esym)
+-                esym->st_shndx = SHN_UNDEF;
++            if (esym) {
++                esym->st_shndx = d->old_sh_num;
++                esym->st_value = d->old_value;
++            }
+             d->sym->type.t |= VT_EXTERN;
+         }
+     }
+ }
+ 
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++/* Jump relaxation of forward jumps, as GNU as does it: a jmp or jcc to a
++   local label of the same section defined later in the statement or
++   file gets the 2-byte form when its displacement fits.  Pass 1 cannot
++   know it and asks for a replay.  Like GNU as, every such jump starts
++   short (pass 2, its displacement still wrong) and the following passes
++   compute it from where the previous pass defined the label: a jump out
++   of range becomes long for good, which can only push the labels after
++   it further, so the passes end, with the least code GNU as gets too.
++   A displacement is exact once the labels stop moving and no jump got
++   another form (alignment can keep the labels where they were: the
++   ".align 32; jmp .L_end; .align 32" of the kernel's sha1-avx2-asm.S).
++   'sym' + 'addend' is the target, 'end' the end of the 2-byte form;
++   returns 1 with the displacement in *disp for the short form.  The
++   i386 boot sector of GRUB (boot.S) must fit 512 bytes that way.  A jump
++   to a global label stays long with its relocation (GNU as resolves it
++   too unless -mshared). */
++ST_FUNC int asm_pass_jump(Sym *sym, int addend, int end, int *disp)
++{
++    ElfSym *esym = elfsym(sym);
++    int n, sh, val, d;
++    if (!asm_pass.pass || !sym || !(sym->type.t & VT_STATIC)
++        || (esym && esym->st_shndx != SHN_UNDEF))
++        return 0; /* a defined symbol, a global one or no pass */
++    if (gen_relax_active(cur_text_section->sh_num))
++        return 0; /* C code of i386 being relaxed: labels may still move */
++    if (asm_pass.pass == 1) {
++        asm_pass.need_more = 1;
++        return 0;
++    }
++    n = asm_pass.jump_n++;
++    if (n >= asm_pass.nb_jumps) {
++        int nb = n < 32 ? 64 : 2 * n;
++        asm_pass.jumps = tcc_realloc(asm_pass.jumps, nb);
++        memset(asm_pass.jumps + asm_pass.nb_jumps, 0, nb - asm_pass.nb_jumps);
++        asm_pass.nb_jumps = nb;
++    }
++    /* 0: not seen yet, 1: short, 2: long for good */
++    if (asm_pass.jumps[n] == 2)
++        return 0;
++    if (!asm_pass_lookup(sym, &sh, &val) || sh != cur_text_section->sh_num) {
++        asm_pass.jumps[n] = 2; /* not a label of this section */
++        return 0;
++    }
++    d = val + addend - end;
++    if (asm_pass.jumps[n] == 1 && d != (int8_t)d) {
++        asm_pass.jumps[n] = 2;
++        asm_pass.jump_changed = 1;
++        return 0;
++    }
++    if (asm_pass.jumps[n] == 0)
++        asm_pass.jump_changed = 1; /* its displacement is a guess yet */
++    asm_pass.jumps[n] = 1;
++    gen_relax_asm_fixed(sh);
++    *disp = (int8_t)d;
++    return 1;
++}
++#endif
++
+ #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
+ #ifdef TCC_TARGET_X86_64
+ # define R_ASM_PC16 R_X86_64_PC16
+@@ -322,12 +411,20 @@ static int asm_pass_next(TCCState *s1)
+     } else {
+         /* converged when the labels got the values predicted for them */
+         again = asm_pass.nb_cur != asm_pass.nb_defs;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++        again |= asm_pass.jump_changed;
++#endif
+         for (i = 0; !again && i < asm_pass.nb_cur; i++)
+             again = asm_pass.cur[i]->sh_num != asm_pass.defs[i]->sh_num
+                  || asm_pass.cur[i]->value != asm_pass.defs[i]->value;
+-        if (again && asm_pass.pass >= 8)
++        if (again && asm_pass.pass >= ASM_PASS_MAX)
+             tcc_error("cannot resolve the forward label references");
+     }
++    /* a .org went backwards: maybe only because the jumps were not short
++       yet ("jmp after_BPB; nop; .org 3" of GRUB's boot.S); once the
++       labels are settled, one more pass reports it where it is */
++    if (asm_pass.org_back && !again)
++        again = asm_pass.strict = 1;
+     dynarray_reset(&asm_pass.defs, &asm_pass.nb_defs);
+     dynarray_reset(&asm_pass.pred, &asm_pass.nb_pred);
+     if (again) {
+@@ -341,6 +438,10 @@ static int asm_pass_next(TCCState *s1)
+     dynarray_reset(&asm_pass.cur, &asm_pass.nb_cur);
+     asm_fixup_local_label_relocs(s1);
+     tcc_free(asm_pass.offsets), asm_pass.offsets = NULL;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++    tcc_free(asm_pass.jumps), asm_pass.jumps = NULL;
++    asm_pass.nb_jumps = 0;
++#endif
+     asm_pass.pass = 0;
+     return 0;
+ }
+@@ -835,10 +936,13 @@ static Sym* asm_new_label1(TCCState *s1, int label, int is_local,
+ {
+     Sym *sym;
+     ElfSym *esym;
++    int old_sh_num = SHN_UNDEF, old_value = 0;
+ 
+     sym = asm_label_find(label);
+     if (sym) {
+ 	esym = elfsym(sym);
++        if (esym)
++            old_sh_num = esym->st_shndx, old_value = esym->st_value;
+ 	/* A VT_EXTERN symbol, even if it has a section is considered
+ 	   overridable.  This is how we "define" .set targets.  Real
+ 	   definitions won't have VT_EXTERN set.  */
+@@ -862,7 +966,7 @@ static Sym* asm_new_label1(TCCState *s1, int label, int is_local,
+     esym->st_value = value;
+     if (is_local != 2)
+         sym->type.t &= ~VT_EXTERN;
+-    asm_pass_record(sym, label, is_local, sh_num, value);
++    asm_pass_record(sym, label, is_local, sh_num, value, old_sh_num, old_value);
+     return sym;
+ }
+ 
+@@ -2033,8 +2137,12 @@ static void asm_parse_directive(TCCState *s1, int global)
+ 		  expect("constant or same-section symbol");
+ 		n += esym->st_value;
+ 	    }
+-            if (n < ind)
+-                tcc_error("attempt to .org backwards");
++            if (n < ind) {
++                if (!asm_pass.pass || asm_pass.strict)
++                    tcc_error("attempt to .org backwards");
++                asm_pass.org_back = 1; /* see asm_pass_next() */
++                break;
++            }
+             v = c = 0;
+             size = n - ind;
+             gen_relax_asm_fixed(cur_text_section->sh_num);
+@@ -2126,6 +2234,10 @@ static void asm_parse_directive(TCCState *s1, int global)
+     case TOK_ASMDIR_file:
+         {
+             const char *p;
++            /* the name raw, without escape sequences; the strings after
++               it are parsed again (GRUB's boot.S: '.file "boot.S"', then
++               .asciz "GRUB ": "string constant expected") */
++            int flags = parse_flags;
+             parse_flags &= ~PARSE_FLAG_TOK_STR;
+             next();
+             if (tok == TOK_PPNUM)
+@@ -2136,10 +2248,12 @@ static void asm_parse_directive(TCCState *s1, int global)
+             } else if (tok >= TOK_IDENT) {
+                 p = get_tok_str(tok, &tokc);
+             } else {
++                parse_flags = flags;
+                 skip_to_eol(0);
+                 break;
+             }
+             tccpp_putfile(p);
++            parse_flags = flags;
+             next();
+         }
+         break;
+@@ -2522,7 +2636,7 @@ ST_FUNC int tcc_assemble(TCCState *s1, int do_preprocess)
+         if (!asm_pass_next(s1))
+             break;
+         if (!filename)
+-            filename = tcc_strdup(file->filename);
++            filename = tcc_strdup(file->true_filename);
+         preprocess_restart(s1, do_preprocess ? AFF_TYPE_ASMPP : AFF_TYPE_ASM, defs, filename);
+     }
+     tcc_free(filename);

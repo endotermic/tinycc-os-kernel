@@ -1,0 +1,215 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 20:45:37 +0200
+Subject: [PATCH] tests: 192_asm_jump_relax, the case of the previous commit
+ (188_asm_small_pcrel's jnz now goes to a far label, the near one is a short
+ jump)
+
+---
+ tests/tests2/188_asm_small_pcrel.c      |   4 +-
+ tests/tests2/188_asm_small_pcrel.expect |   2 +-
+ tests/tests2/192_asm_jump_relax.c       | 124 ++++++++++++++++++++++++
+ tests/tests2/192_asm_jump_relax.expect  |  15 +++
+ tests/tests2/Makefile                   |   1 +
+ 5 files changed, 143 insertions(+), 3 deletions(-)
+ create mode 100644 tests/tests2/192_asm_jump_relax.c
+ create mode 100644 tests/tests2/192_asm_jump_relax.expect
+
+diff --git a/tests/tests2/188_asm_small_pcrel.c b/tests/tests2/188_asm_small_pcrel.c
+index 322aa8f..b8369a9 100644
+--- a/tests/tests2/188_asm_small_pcrel.c
++++ b/tests/tests2/188_asm_small_pcrel.c
+@@ -32,7 +32,7 @@ __asm__(
+     "  .globl g16\n"
+     "g16:\n"
+     "s_jmp:   jmp L_done\n"          /* e9 rel16 */
+-    "s_jnz:   jnz L_mid\n"           /* 0f 85 rel16 */
++    "s_jnz:   jnz L_far\n"           /* 0f 85 rel16 (L_mid would be rel8) */
+     "s_call:  call L_far\n"          /* e8 rel16 */
+     "s_loop:  loop L_near\n"         /* e2 rel8 */
+     "  nop\n"
+@@ -137,7 +137,7 @@ int main(int argc, char **argv)
+         }
+     }
+     check("s_jmp", 1, 2, "L_done");
+-    check("s_jnz", 2, 2, "L_mid");
++    check("s_jnz", 2, 2, "L_far");
+     check("s_call", 1, 2, "L_far");
+     check("s_loop", 1, 1, "L_near");
+     check("s_jecxz", 1, 1, "L_end32");
+diff --git a/tests/tests2/188_asm_small_pcrel.expect b/tests/tests2/188_asm_small_pcrel.expect
+index 41a6707..0e27346 100644
+--- a/tests/tests2/188_asm_small_pcrel.expect
++++ b/tests/tests2/188_asm_small_pcrel.expect
+@@ -1,7 +1,7 @@
+ relocation PC16 against ext16
+ relocation PC16 against g16
+ s_jmp     -> L_done   ok
+-s_jnz     -> L_mid    ok
++s_jnz     -> L_far    ok
+ s_call    -> L_far    ok
+ s_loop    -> L_near   ok
+ s_jecxz   -> L_end32  ok
+diff --git a/tests/tests2/192_asm_jump_relax.c b/tests/tests2/192_asm_jump_relax.c
+new file mode 100644
+index 0000000..6380eec
+--- /dev/null
++++ b/tests/tests2/192_asm_jump_relax.c
+@@ -0,0 +1,124 @@
++/* i386, x86_64 (tinycc-os-kernel fix 152): like GNU as, a forward jmp or
++   jcc to a local label of the same section gets the 2-byte form when the
++   displacement fits: tcc kept the 5- or 6-byte form, and GRUB's i386 boot
++   sector (boot.S: "jmp LOCAL(after_BPB); nop; .org 3") did not fit its
++   512 bytes.  The sizes are label differences, so the layout GNU as gets
++   is checked, and the code runs, so the targets are checked too:
++   - a chain where a jump fits only once those after it are short (GNU as
++     starts them all short and makes long only those that do not fit);
++   - ".align 32; jmp L; .align 32", where the alignment keeps the labels
++     in place when the jump shrinks (the kernel's sha1-avx2-asm.S);
++   - a .org right after a short jump, which the first pass sees backwards;
++   - labels made with \@ in a macro, the same in each pass;
++   - .file before strings (a .S file of GRUB: "string constant expected");
++   - jumps to another section and out of range stay long; 16-bit code.
++   A jump to a global label of the section stays long with its relocation
++   (GNU as without -mshared resolves and shortens it; not done here). */
++#include <stdio.h>
++
++int f_chain(void), f_align(void), f_org(void), f_macro(int);
++extern unsigned char sizes[];
++extern char str_after_file[];
++
++__asm__(
++    "  .file \"relax.S\"\n"
++    "  .text\n"
++    "  .globl f_chain, f_align, f_org, f_macro, g_target\n"
++    "f_chain:\n"
++    "  xor %eax, %eax\n"
++    "c_jb: jb c_far\n"                     /* 127: only once the 40 jmps are short */
++    "c_jmp0: jmp c_one\n"
++    "  .rept 39\n"
++    "  jmp c_end\n"
++    "  .endr\n"
++    "c_one: add $1, %eax\n"
++    "  .fill 44, 1, 0x90\n"
++    "c_far: add $1, %eax\n"
++    "c_end: ret\n"
++    "c_long0: jmp c_end2\n"                /* out of range: long */
++    "c_long1: jne c_end2\n"
++    "  .fill 130, 1, 0x90\n"
++    "c_end2: jmp g_target\n"               /* global: long, with its relocation */
++    "c_glob_end: jmp c_other\n"            /* another section: long */
++    "c_other_end:\n"
++    "g_target: ret\n"
++    "\n"
++    "f_align:\n"
++    "  mov $7, %eax\n"
++    "  .align 32\n"
++    "a_jmp: jmp a_end\n"                   /* far: long, after one short pass */
++    "  .align 32\n"
++    "  mov $1, %eax\n"
++    "  .fill 150, 1, 0x90\n"
++    "a_end: ret\n"
++    "\n"
++    "f_org:\n"
++    "o_start: jmp o_after\n"
++    "  nop\n"
++    "  .org o_start + 3\n"                 /* backwards while the jmp is long */
++    "  .byte 0xcc, 0xcc\n"
++    "o_after: mov $3, %eax\n"
++    "  ret\n"
++    "\n"
++    "  .macro SKIP_IF_ZERO reg\n"
++    "  test \\reg, \\reg\n"
++    "  jz .Lskip_\\@\n"
++    "  add $1, %eax\n"
++    "  .Lskip_\\@:\n"
++    "  .endm\n"
++    "f_macro:\n"
++#ifdef __x86_64__
++    "  mov %edi, %ecx\n"
++#else
++    "  mov 4(%esp), %ecx\n"
++#endif
++    "  xor %eax, %eax\n"
++    "m_jz: SKIP_IF_ZERO %ecx\n"
++    "  SKIP_IF_ZERO %ecx\n"
++    "m_end: ret\n"
++    "\n"
++    "  .section .text.other, \"ax\"\n"
++    "c_other: ret\n"
++    "  .code16\n"
++    "s16_jmp: jmp s16_end\n"               /* 16-bit code: 2 bytes too */
++    "s16_jz: jz s16_end\n"
++    "s16_far: jmp s16_end2\n"              /* rel16: 3 bytes */
++    "s16_end: nop\n"
++    "  .fill 200, 1, 0x90\n"
++    "s16_end2: nop\n"
++#ifdef __x86_64__
++    "  .code64\n"
++#else
++    "  .code32\n"
++#endif
++    "\n"
++    "  .data\n"
++    "sizes:\n"
++    "  .byte c_jmp0 - c_jb, c_one - c_jmp0 - 39 * 2, c_far - c_one\n"
++    "  .byte c_long1 - c_long0, c_end2 - c_long1 - 130\n"
++    "  .byte c_glob_end - c_end2, c_other_end - c_glob_end\n"
++    "  .byte a_end - a_jmp\n"
++    "  .byte o_after - o_start\n"
++    "  .byte m_end - m_jz\n"
++    "  .byte s16_jz - s16_jmp, s16_far - s16_jz, s16_end - s16_far\n"
++    "str_after_file: .asciz \"strings after .file\"\n"
++    "  .text\n");
++
++int main(void)
++{
++    static const char *names[] = {
++        "jb over the chain", "jmp over 39 jmps", "code after the chain",
++        "jmp out of range", "jne out of range",
++        "jmp global", "jmp other section",
++        "aligned far jmp + padding", ".org after a short jmp",
++        "two macros with \\@ labels",
++        "16-bit jmp", "16-bit jz", "16-bit far jmp"
++    };
++    int i;
++    for (i = 0; i < 13; i++)
++        printf("%-28s %d\n", names[i], sizes[i]);
++    printf("chain %d align %d org %d macro %d %d %d\n",
++           f_chain(), f_align(), f_org(), f_macro(0), f_macro(5), f_macro(-1));
++    printf("%s\n", str_after_file);
++    return 0;
++}
+diff --git a/tests/tests2/192_asm_jump_relax.expect b/tests/tests2/192_asm_jump_relax.expect
+new file mode 100644
+index 0000000..f14aa53
+--- /dev/null
++++ b/tests/tests2/192_asm_jump_relax.expect
+@@ -0,0 +1,15 @@
++jb over the chain            2
++jmp over 39 jmps             2
++code after the chain         47
++jmp out of range             5
++jne out of range             6
++jmp global                   5
++jmp other section            5
++aligned far jmp + padding    187
++.org after a short jmp       5
++two macros with \@ labels    14
++16-bit jmp                   2
++16-bit jz                    2
++16-bit far jmp               3
++chain 2 align 7 org 3 macro 0 2 2
++strings after .file
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index e05d0ee..06b19c2 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -29,6 +29,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 189_asm_pass_code_mode.test # x86 asm
+  SKIP += 190_asm_base_scale.test # x86 asm
+  SKIP += 191_asm_addr16.test # x86 asm, ELF objects
++ SKIP += 192_asm_jump_relax.test # x86 asm
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test
