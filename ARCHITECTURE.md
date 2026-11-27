@@ -64,6 +64,7 @@ and `out/<arch>/`.
 | `host-tcc` | tcc and the `i386-tcc` cross compiler, built in-tree from `src/tinycc`; `tcc-test` runs its test suite, `tcc-archive` packs the source for the guest | gcc, the only place it is used |
 | `tld` | the project's linker suite in `tools/tld/`, replacing binutils for the kernel: `ld`, `nm`, `objcopy`, `readelf`, `ar`, `strip` | host tcc |
 | `kernel` | `out/<arch>/bzImage` from `src/linux` with `tinyconfig` plus the fragments in `kernels/linux/` (`minimal.config`, `drivers.config`: PCI, networking, Wi-Fi, Bluetooth, sound, USB, mouse, KMS video; the per-architecture and the tcc fragment) | tcc through the Kbuild wrappers, see below |
+| `kernel-android` | opt-in, not in `all` or the images: `out/<arch>/bzImage-android`, the same kernel plus `kernels/linux/android.config` (binder and binderfs, every namespace, cgroup2, PSI, BPF, seccomp filters, FUSE, loop, ext4/erofs/squashfs/overlay, veth/bridge/nftables NAT, uinput, dma-buf heaps: what an Android container needs) in `build/<arch>/linux-android`; `kernels/linux/tcc-btf.h` gives `kernel/bpf/btf.o` weak `__start_BTF`/`__stop_BTF` (no `DEBUG_INFO_BTF`); `tests/android/run.sh` boots it with the C probe `tests/android/probe.c` as its whole initramfs | tcc through the Kbuild wrappers |
 | `musl`, `kernel-headers`, `busybox` | a static musl libc, the Linux UAPI headers the `musl-tcc` wrapper adds (`headers_install`; only busybox, TinyX, ncurses, LibreSSL, mlterm and links need them), and a static busybox linked against it | host tcc |
 | `ncurses`, `nnn`, `libressl`, `links` | the guest's extra programs and their libraries, static against that musl: libncursesw with the consoles' terminfo compiled in and the nnn file manager; LibreSSL's libcrypto/libssl/libtls (no assembly) with its `cert.pem` as the image's `/etc/ssl/cert.pem`, and the links web browser (text mode and, on the X server below, graphics mode; http and https) | host tcc |
 | `xdm` | the graphical login: libICE, libSM, libXext, libXt, libXmu, libXpm and libXaw, then xdm with its greeter linked in (patches/xdm) and linked by hand from make's objects; `/usr/bin/xdm`, `xdm-help` (the helper text window), `/etc/X11/xdm` (configuration, server list, the C scripts Xsession, Xsetup_0, Xstartup) and the greeter's app-defaults in the images (`userland/xdm/`) | host tcc |
@@ -213,6 +214,7 @@ in the loop: every script of the built system is a C program.
 | `./build.sh`, `run.sh`, `install.sh` | entry points (install.sh: write an ISO to a USB drive) |
 | `scripts/` | `fetch.sh`, `patch.sh`, `build.sh`, `lib.sh` (shared helpers, host check), `export-patches.sh`, `recv-file.sh`, `selfhost-test.sh`, `devices-test.sh` |
 | `sources.lock`, `patches/` | pinned upstreams and the patch series |
+| `tests/` | host-side test suites: `netsurf/` (NetSurf's test pages), `android/` (the `kernel-android` probe) |
 | `kernels/linux/` | kernel config fragments and the Kbuild wrapper sources |
 | `tools/tld/` | the linker suite |
 | `userland/` | `init.c`, `busybox-init.c`, `udhcpc-script.c`, `devices-test.c`, `initramfs.list`, `dir2list.sh`, `selfhost/` C scripts |

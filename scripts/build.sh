@@ -15,6 +15,10 @@
 #   tld         tools/tld (ld, nm, objcopy, readelf, ar, strip replacement) compiled by the host tcc
 #   libelf      tools/libelf (the libelf subset the kernel's objtool needs) compiled by the host tcc
 #   kernel      Linux: tinyconfig + kernels/linux/*.config, CC=tcc-kcc (kernels/linux/tcc-kcc.c), LD=tld
+#   kernel-android  opt-in, not in 'all': the same kernel plus kernels/linux/android.config (binder,
+#               namespaces, cgroup2, BPF, seccomp, FUSE, overlay/erofs, ...: what an Android
+#               container needs) in build/<arch>/linux-android -> out/<arch>/bzImage-android;
+#               tests/android/run.sh boots it with a probe of those features
 #   musl        musl libc, static, compiled by tcc (no src/complex: tcc has no _Complex), and
 #               the musl-tcc driver wrapper
 #   kernel-headers  the Linux UAPI headers (headers_install) the musl-tcc wrapper adds; busybox,
@@ -277,22 +281,37 @@ step_libelf() {
     echo "   libelf.a $(ls -l "$LIBELF/lib/libelf.a" | awk '{print $5}') bytes; pkg-config: $("$LIBELF/pkg-config" libelf --cflags --libs)"
 }
 
-step_kernel() {
+# kernel_build NAME TREE IMAGE FRAGMENTS [MAKE-ARGS]: the kernel steps.  NAME names the logs
+# (build/<arch>/logs/NAME.log, NAME-config.log, kcc${NAME#kernel}.log) and the progress total;
+# TREE is the build tree under build/<arch>, IMAGE the bzImage's name in out/<arch>, FRAGMENTS
+# the kernels/linux/*.config merged on tinyconfig in order, MAKE-ARGS extra make arguments
+# (single words)
+step_kernel() { kernel_build kernel linux bzImage "minimal.config drivers.config $ARCH.config tcc.config"; }
+# the opt-in kernel for an Android container (not part of 'all', not in the images): the same
+# fragments plus kernels/linux/android.config in its own tree; tests/android/run.sh boots it.
+# CFLAGS_btf.o: kernel/bpf/btf.c refers to __start_BTF/__stop_BTF, which only a kernel with
+# DEBUG_INFO_BTF (pahole) has; kernels/linux/tcc-btf.h gives that one object weak stand-ins
+step_kernel_android() {
+    kernel_build kernel-android linux-android bzImage-android \
+        "minimal.config drivers.config $ARCH.config tcc.config android.config" \
+        "CFLAGS_btf.o=-include$ROOT/kernels/linux/tcc-btf.h"
+}
+kernel_build() {
+    kname=$1; KB=$B/$2; kimg=$3; KFRAGS=$4; kargs=${5:-}
     need_src linux
     [ -x "$TCC" ] || die "no host tcc: run the host-tcc step first"
     [ -x "$TCCSRC/i386-tcc" ] || die "no $TCCSRC/i386-tcc (the host-tcc step builds it): the real-mode code needs tcc -m16"
-    KFRAGS="minimal.config drivers.config $ARCH.config tcc.config"
     TLD=$B/tld; [ -x "$TLD/ld" ] || die "no $TLD/ld: run the tld step first"
     LIBELF=$B/libelf; [ -x "$LIBELF/pkg-config" ] || die "no $LIBELF/pkg-config: run the libelf step first"
-    KB=$B/linux; mkdir -p "$KB"
-    msg "kernel: ARCH=$KARCH tinyconfig + kernels/linux/{minimal,drivers,$ARCH,tcc}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
+    mkdir -p "$KB"
+    msg "$kname: ARCH=$KARCH tinyconfig + kernels/linux/{$(echo $KFRAGS | sed 's/\.config//g; s/ /,/g')}.config, CC=tcc-kcc ($TCC_TARGET) -> $KB"
     # the Kbuild wrappers are C programs (kernels/linux/*.c; the guest runs the same sources
     # as tcc -run scripts): compiled here by the host tcc for this build
     KCC=$B/kcc; mkdir -p "$KCC"
     for w in tcc-kcc tcc-hostcc; do
         "$TCC" -B"$TCCSRC" -I"$TCCSRC/include" -O2 -o "$KCC/$w" "$ROOT/kernels/linux/$w.c" || die "$w build failed"
     done
-    KCC_LOG=$LOGS/kcc.log
+    KCC_LOG=$LOGS/kcc${kname#kernel}.log
     : >"$KCC_LOG"
     # TCC and KCC_LOG are given to this make only (not exported: GNU make re-exports a
     # variable that came from the environment with its own value, which would break the
@@ -309,16 +328,16 @@ step_kernel() {
     # KCFLAGS: kernels/linux/tcc-canary.h defines the seqlock canary __scoped_seqlock_bug() as
     # the empty stub the kernel uses for GCC 8 (tcc cannot prove the call dead), so the tree
     # needs no patch for it; build-kernel passes the same flag in the guest
-    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc HOSTPKG_CONFIG=$LIBELF/pkg-config HOSTLD=$TLD/ld HOSTAR=$TLD/ar LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1 KCFLAGS=-include$ROOT/kernels/linux/tcc-canary.h"
+    MK="env TCC=$TCC KCC_TCC=$TCC_TARGET KCC_LOG=$KCC_LOG make -C $LINUX O=$KB ARCH=$KARCH CC=$KCC/tcc-kcc HOSTCC=$KCC/tcc-hostcc HOSTPKG_CONFIG=$LIBELF/pkg-config HOSTLD=$TLD/ld HOSTAR=$TLD/ar LD=$TLD/ld NM=$TLD/nm OBJCOPY=$TLD/objcopy READELF=$TLD/readelf AR=$TLD/ar STRIP=$TLD/strip KBUILD_BUILD_VERSION=1 KCFLAGS=-include$ROOT/kernels/linux/tcc-canary.h $kargs"
     if [ ! -f "$KB/.config" ]; then
-        $MK -s tinyconfig >"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "tinyconfig failed"
+        $MK -s tinyconfig >"$LOGS/$kname-config.log" 2>&1 || fail "$LOGS/$kname-config.log" "tinyconfig failed"
     fi
     # the fragments are merged on every run, so that a line added to them reaches an existing
     # build tree too (olddefconfig then resolves the dependencies; Kbuild rebuilds what changed)
     for f in $KFRAGS; do
-        "$LINUX/scripts/kconfig/merge_config.sh" -m -O "$KB" "$KB/.config" "$ROOT/kernels/linux/$f" >>"$LOGS/kernel-config.log" 2>&1
+        "$LINUX/scripts/kconfig/merge_config.sh" -m -O "$KB" "$KB/.config" "$ROOT/kernels/linux/$f" >>"$LOGS/$kname-config.log" 2>&1
     done
-    $MK -s olddefconfig >>"$LOGS/kernel-config.log" 2>&1 || fail "$LOGS/kernel-config.log" "olddefconfig failed"
+    $MK -s olddefconfig >>"$LOGS/$kname-config.log" 2>&1 || fail "$LOGS/$kname-config.log" "olddefconfig failed"
     # every fragment line must survive olddefconfig, unless a later fragment sets the same
     # option (i386.config leaves out drivers.config's amdgpu and xe)
     for f in $KFRAGS; do
@@ -335,16 +354,16 @@ step_kernel() {
             echo "   NOT APPLIED ($f): $line"
         done
     done
-    total=$(cat "$STEPS/kernel" 2>/dev/null || echo "$KERNEL_STEPS_DEFAULT")
+    total=$(cat "$STEPS/$kname" 2>/dev/null || echo "$KERNEL_STEPS_DEFAULT")
     learn=1; [ ! -f "$KB/vmlinux" ] || learn=0   # only a complete build teaches the total
-    : >"$LOGS/kernel.log"
-    PROGRESS_COUNT_FILE=$STEPS/kernel.new
-    run_progress "kernel" "$total" "$LOGS/kernel.log" jrun $MK \
-        || { grep -E ' error: |Error [0-9]|undefined reference' "$LOGS/kernel.log" | head -20 >&2; fail "$LOGS/kernel.log" "kernel build failed"; }
+    : >"$LOGS/$kname.log"
+    PROGRESS_COUNT_FILE=$STEPS/$kname.new
+    run_progress "$kname" "$total" "$LOGS/$kname.log" jrun $MK \
+        || { grep -E ' error: |Error [0-9]|undefined reference' "$LOGS/$kname.log" | head -20 >&2; fail "$LOGS/$kname.log" "$kname build failed"; }
     unset PROGRESS_COUNT_FILE
-    [ $learn = 0 ] || [ "$(cat "$STEPS/kernel.new")" = 0 ] || mv "$STEPS/kernel.new" "$STEPS/kernel"
-    cp "$KB/$KIMG" "$O/bzImage"
-    echo "   $(grep -c '^tcc ' "$KCC_LOG") tcc and $(grep -c '^gcc ' "$KCC_LOG") gcc compiler invocations; $(ls -l "$O/bzImage" | awk '{print $5}') bytes bzImage"
+    [ $learn = 0 ] || [ "$(cat "$STEPS/$kname.new")" = 0 ] || mv "$STEPS/$kname.new" "$STEPS/$kname"
+    cp "$KB/$KIMG" "$O/$kimg"
+    echo "   $(grep -c '^tcc ' "$KCC_LOG") tcc and $(grep -c '^gcc ' "$KCC_LOG") gcc compiler invocations; $(ls -l "$O/$kimg" | awk '{print $5}') bytes $kimg"
 }
 
 # the Linux UAPI headers for musl-tcc (-isystem $KHDR/include): musl ships none.  busybox,
@@ -1809,7 +1828,7 @@ for s; do
         -n|--dry-run) DRY_RUN=1;;
         -h|--help) usage;;
         xlib-*) case " $XLIB_NAMES " in *" ${s#xlib-} "*) set -- "$@" "$s";; *) die "unknown X library step '$s' (xlib- and one of: $XLIB_NAMES)";; esac;;
-        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|kernel-headers|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|xedit|wallpapers|links|curl|netsurf|libnl|wifi|firmware|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
+        all|host-tcc|tcc-test|tcc-archive|tld|libelf|kernel|kernel-android|kernel-headers|musl|busybox|ncurses|nnn|libressl|zlib|libpng|xlibs|tinyx|xdm|jwm|mlterm|xfiles|xedit|wallpapers|links|curl|netsurf|libnl|wifi|firmware|guest-tcc|guest-make|initramfs|selfhost|iso|clean|clean-all|clean-src) set -- "$@" "$s";;
         -*) die "unknown option '$s' (see the header of $0)";;
         *) die "unknown step '$s' (see the header of $0)";;
     esac
