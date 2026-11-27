@@ -16,6 +16,7 @@
 #             display is available ($DISPLAY or $WAYLAND_DISPLAY), since the ISO's default menu
 #             entry boots into the graphical mode on the screen (the X server and links)
 #   --efi     boot with the OVMF UEFI firmware (needs 128M; GRUB's EFI image does not fit in 64M)
+#             on QEMU's q35 machine (the CD on AHCI), unless the QEMU arguments name a -machine
 #   --vga     open QEMU's display window (standard VGA with EDID) for the VGA/framebuffer
 #             console and keyboard; the serial console stays on this terminal
 #   --no-vga  headless (-nographic) even with --iso
@@ -200,6 +201,12 @@ if [ -n "$efi" ]; then
             set -- -drive if=pflash,format=raw,readonly=on,file="$fw" -drive if=pflash,format=raw,file="$tmpvars" "$@";;
         *)  set -- -bios "$fw" "$@";;
     esac
+    # the q35 machine (ICH9, the CD on AHCI) unless the QEMU arguments name one: on the
+    # default i440fx machine the 32-bit OVMF (Debian's ovmf-ia32) fails reading the CD through
+    # its IDE driver, GRUB stopped in rescue mode in 2 of 3 boots (docs/HARDWARE.md, group 6)
+    machine=
+    for a; do case $a in -machine|-machine=*|-M|-M=*) machine=1;; esac; done
+    [ -n "$machine" ] || set -- -machine q35 "$@"
     MEM=${MEM:-384M}
 fi
 # screen resolution of QEMU's VGA: the preferred mode of the VGA's EDID (bochs-drm sets it,

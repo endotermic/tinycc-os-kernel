@@ -191,7 +191,7 @@ real hardware, SD readers (QEMU's `sdhci-pci` is untested).
   the xdm greeter, efivarfs lists the firmware's 23 variables (GetNextVariable), and
   devices-test passes 18/18 on the rebuilt i386 kernel.  On the default i440fx machine
   GRUB failed to read the CD in 2 of 3 boots (`failure reading sector ... from cd0`, rescue
-  mode); on q35 (AHCI) it read fine.  QEMU's direct `-kernel` boot does not start on this
+  mode); on q35 (AHCI) it read fine, so `run.sh --efi` uses q35 unless a `-machine` is given.  QEMU's direct `-kernel` boot does not start on this
   firmware (no EFI stub in the kernel).
   QEMU emulates no HDMI codec, DSP, SoundWire or amplifier: not tested on real hardware.
 
