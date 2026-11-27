@@ -3486,4 +3486,6 @@ then corrupted memory.
     with -mregparm=3, garbage results without the fix), 98/99/157 (with and without -fPIC)/162
     through build/i386/musl-tcc, `make test`; the i386 kernel's efi_call_rts now pushes the
     arguments; the rebuilt i386 ISO on 32-bit OVMF (q35) boots to the xdm greeter with the
-    EFI runtime services on.
+    EFI runtime services on (efivarfs lists the firmware's 23 variables); both kernels, guest
+    tcc, initramfs and ISOs rebuilt, devices-test 18/18 and selfhost-test all on both arches
+    (i386 10 min, x86_64 15 min).
