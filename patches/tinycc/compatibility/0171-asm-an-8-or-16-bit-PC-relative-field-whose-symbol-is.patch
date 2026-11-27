@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Fri, 27 Nov 2026 16:13:30 +0200
+Subject: [PATCH] asm: an 8- or 16-bit PC-relative field whose symbol is a
+ local one of the same section is resolved at the end of the statement or
+ file, also for a forward branch, and keeps no relocation, as with GNU as
+ (GRUB built by tcc: its module loader does not implement R_X86_64_PC16,
+ "relocation 0xd is not implemented yet" for the forward branches of
+ relocator16.S, so the linux module did not load; also forward jecxz/loop on
+ i386)
+
+---
+ tccasm.c | 57 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/tccasm.c b/tccasm.c
+index 079dac3..014af19 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -186,6 +186,60 @@ static void asm_pass_rollback(TCCState *s1)
+     }
+ }
+ 
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++#ifdef TCC_TARGET_X86_64
++# define R_ASM_PC16 R_X86_64_PC16
++# define R_ASM_PC8  R_X86_64_PC8
++#else
++# define R_ASM_PC16 R_386_PC16
++# define R_ASM_PC8  R_386_PC8
++#endif
++/* Like GNU as, an 8- or 16-bit PC-relative field whose symbol turned out to
++   be a local one of the same section gets its displacement now and keeps no
++   relocation: the forward branches of 16-bit code ("jnz L_done" in GRUB's
++   relocator16.S), "jecxz 1f", "loop 1f".  Backward ones are folded when they
++   are assembled (asm_local_sym_here()); a forward one was left with an
++   R_X86_64_PC16/PC8 (R_386_PC16/PC8) that loaders such as GRUB's module
++   loader do not implement.  Only the relocations of the statement or file
++   just assembled, from 'start' on, are looked at. */
++static void asm_resolve_small_pcrel(TCCState *s1, Section *sr, unsigned long start)
++{
++    unsigned long off, w = start;
++    Section *s = s1->sections[sr->sh_info];
++    for (off = start; off < sr->data_offset; off += sizeof(ElfW_Rel)) {
++        ElfW_Rel *rel = (ElfW_Rel *)(sr->data + off);
++        int type = ELFW(R_TYPE)(rel->r_info);
++        ElfSym *esym = &((ElfSym *)symtab_section->data)[ELFW(R_SYM)(rel->r_info)];
++        unsigned char *p = s->data + rel->r_offset;
++        long long a, d;
++        if ((type == R_ASM_PC16 || type == R_ASM_PC8)
++            && esym->st_shndx == sr->sh_info
++            && ELFW(ST_BIND)(esym->st_info) == STB_LOCAL
++            && !gen_relax_active(esym->st_shndx)) {
++#if SHT_RELX == SHT_RELA
++            a = rel->r_addend;
++#else
++            a = type == R_ASM_PC16 ? (long long)(int16_t)read16le(p) : (long long)(int8_t)*p;
++#endif
++            d = (long long)esym->st_value + a - (long long)rel->r_offset;
++            if (type == R_ASM_PC16 && d == (int16_t)d) {
++                write16le(p, d);
++                continue;
++            }
++            if (type == R_ASM_PC8 && d == (int8_t)d) {
++                *p = d;
++                continue;
++            }
++            /* out of range: the relocation stays, the linker reports it */
++        }
++        if (w != off)
++            memcpy(sr->data + w, rel, sizeof(ElfW_Rel));
++        w += sizeof(ElfW_Rel);
++    }
++    sr->data_offset = w;
++}
++#endif
++
+ /* Like GNU as, make the relocations against local labels ("1:", ".L..")
+    that the statement emitted relative to the label's section symbol;
+    tools such as objtool rely on that. */
+@@ -198,6 +252,9 @@ static void asm_fixup_local_label_relocs(TCCState *s1)
+         if (sr->sh_type != SHT_RELX)
+             continue;
+         off = i < asm_pass.nb_sections ? asm_pass.offsets[2 * i] : 0;
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++        asm_resolve_small_pcrel(s1, sr, off);
++#endif
+         for (; off < sr->data_offset; off += sizeof(ElfW_Rel)) {
+             ElfW_Rel *rel = (ElfW_Rel *)(sr->data + off);
+             int symi = ELFW(R_SYM)(rel->r_info);

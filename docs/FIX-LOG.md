@@ -88,6 +88,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 145 | tinycc 0165 |
 | | | | | 146 | tinycc 0167 |
 | | | | | 147 | tinycc 0169 |
+| | | | | 148 | tinycc 0171 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -169,6 +170,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/185_asm_out_reload_clobber.c` | i386, x86_64 (an asm error on i386 without the fix) | 145 |
 | `tests/tests2/186_i386_regparm0_fnptr.c` | i386, with `-mregparm=3` (garbage results without the fix) | 146 |
 | `tests/tests2/187_x86_64_ms_abi.c` | x86_64 ELF (top-level asm callees and caller; a segfault without the fix) | 147 |
+| `tests/tests2/188_asm_small_pcrel.c` | i386, x86_64 (compiled with `-c`, reads its own object; six extra relocations without the fix) | 148 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3533,3 +3535,29 @@ then corrupted memory.
     16-bit branches to labels of the same section (relocator16.S), which GRUB's loader does
     not implement (GNU as resolves them itself); that and the other gaps of the trial are
     listed in docs/INSTALLER.md ("GRUB built by tcc"), open.
+
+148. 2026-11-27, COMMITTED (patches/tinycc/compatibility/0171, test 0172 =
+    tests2/188_asm_small_pcrel), `tccasm.c` (asm_resolve_small_pcrel(), called from
+    asm_fixup_local_label_relocs() at the end of each asm statement and file). Problem: the
+    tcc-built GRUB of fix 147 stopped loading its `linux` module with "relocation 0xd is not
+    implemented yet": relocator16.S's forward branches of 16-bit code (`jnz L_gate_a20_done`
+    etc.) kept R_X86_64_PC16 relocations against their local labels, which GRUB's module
+    loader does not implement. A backward branch to a local label of the same section is
+    folded when it is assembled (asm_local_sym_here()), a forward one could not be: the
+    label was not defined yet. GNU as resolves both. Fix: when a statement or file is done,
+    an R_X86_64_PC16/PC8 (R_386_PC16/PC8) of it whose symbol is a defined local one of the
+    relocated section, and not of the function i386 jump relaxation may still move, gets its
+    displacement written in place (S + A - P, A from r_addend or from the field) and its
+    relocation removed; out of range it stays for the linker to report. Relocations against
+    global symbols, other sections and undefined symbols stay, as with GNU as; 32-bit
+    fields are unchanged. Verification: 188_asm_small_pcrel (.code16 jmp/jnz/call/loop and
+    .code32 jecxz/loop forward to local labels: no relocation left and each lands on its
+    label; the ones to a label of another section and to a global keep theirs; tcc built
+    without the fix leaves six) on x86_64 and through build/i386/musl-tcc; `make test` ALL
+    TESTS PASSED; 85, 98, 99, 127, 155, 162, 183, 184, 185, 186 through build/i386/musl-tcc.
+    The kernels' objects with such relocations (arch/x86/boot and realmode/rm: 8 on x86_64,
+    7 on i386) recompiled with their Kbuild commands and relinked give byte-identical
+    setup.bin, realmode.bin and realmode.relocs on both arches (originals put back), so the
+    kernels, the guest tcc and the ISOs were not rebuilt for it. The tcc-built GRUB
+    (x86_64-efi, its relocator rebuilt) now boots the x86_64 kernel and initramfs on OVMF to
+    the Autarkeia banner.

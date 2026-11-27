@@ -169,3 +169,5 @@ compatibility/0167-regparm-0-named-on-a-pointer-to-a-function-is-the-co.patch
 compatibility/0168-tests-186_i386_regparm0_fnptr-the-case-of-the-previo.patch
 compatibility/0169-__attribute__-ms_abi-on-x86_64-ELF-is-the-Win64-call.patch
 compatibility/0170-tests-187_x86_64_ms_abi-the-case-of-the-previous-com.patch
+compatibility/0171-asm-an-8-or-16-bit-PC-relative-field-whose-symbol-is.patch
+compatibility/0172-tests-188_asm_small_pcrel-the-case-of-the-previous-c.patch

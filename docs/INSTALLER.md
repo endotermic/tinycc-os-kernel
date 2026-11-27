@@ -284,13 +284,13 @@ for a virtual machine:
 The installer uses GRUB images made by the host's grub-mkimage (stage 1). On 2026-11-27 a trial
 build of GRUB 2.14 with tcc (compiler) and tld (linker) was made in a scratch directory to see
 how far that is: the x86_64-efi target builds completely (kernel.img and 293 modules), and after
-tcc fix 147 (`__attribute__((ms_abi))`, FIX-LOG.md) the image runs on OVMF: it reads grub.cfg
-from a FAT partition, lists disks and files, prints a file, halts. GRUB's host tools were still
-built by gcc, and the trial needed workarounds for these open gaps:
+tcc fixes 147 (`__attribute__((ms_abi))`) and 148 (8/16-bit PC-relative fields resolved by the
+assembler; FIX-LOG.md) the image runs on OVMF and boots the system: it reads grub.cfg from a FAT
+partition and loads the x86_64 kernel and initramfs, which come up to the Autarkeia banner. GRUB's
+host tools were still built by gcc, and the trial needed workarounds for these open gaps:
 
 | Gap | Where | Effect on GRUB |
 |---|---|---|
-| R_X86_64_PC16 left for 16-bit branches inside a section (GNU as resolves them) | tcc assembler | the `linux` module (relocator16.S) does not load: no Linux boot yet |
 | multi-pass assembly does not reset `.code16/32/64` between passes | tcc assembler | relocator32.S fails; `.code64` at the top works around it |
 | `(%rsi, 1)` (base with scale, no index) rejected | tcc assembler | relocator sources |
 | no 16-bit addressing modes (`(%si)`, `(%di)`, `6(%bp)`) | tcc assembler | i386-pc boot code, relocator16.S |
