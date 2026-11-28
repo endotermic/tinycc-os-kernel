@@ -93,6 +93,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 150 | tinycc 0175 |
 | | | | | 151 | tinycc 0177 |
 | | | | | 152 | tinycc 0179 |
+| | | | | 153 | tinycc 0181 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -179,6 +180,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
 | `tests/tests2/191_asm_addr16.c` | i386, x86_64 (compiled with `-c`, compares its own bytes with GNU as; an assembler error without the fix) | 151 |
 | `tests/tests2/192_asm_jump_relax.c` | i386, x86_64 (the sizes are label differences, the code runs; "attempt to .org backwards" without the fix) | 152 |
+| `tests/tests2/193_asm_output.c` | i386, x86_64 (compiled with `-S`, run from its .s, then the asm text of the comment printed; only that text without the fix) | 153 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
 | `tests/pp/24.S` | all | 59 |
@@ -3701,3 +3703,53 @@ then corrupted memory.
     clean with the new tcc (293 modules), boots the x86_64 kernel and initramfs on OVMF to
     the Autarkeia banner (with the FAT drive as `snapshot=on`: the read-write vvfat drive
     gave "Not Found" again).
+
+153. 2026-11-28, COMMITTED (patches/tinycc/compatibility/0181, test 0182 =
+    tests2/193_asm_output), `tccelf.c` (tcc_output_asm(), tcc_output_file()), `tccasm.c`,
+    `i386-asm.c` (gen_expr32(), asm_modrm()), `tcc.c`, `libtcc.c`, `tcc.h`. Problem: tcc
+    has no assembly printer, and `-S` wrote only the text of the asm statements (fix 58:
+    all that the kernel's asm-offsets, bounds, rq-offsets and devicetable-offsets read).
+    GRUB's i386-pc build makes rs_decoder.h with `-S` from lib/reed_solomon.c and
+    #includes it in boot/i386/pc/startup_raw.S, so with tcc that file was empty. Fix: `-S`
+    compiles as `-c` does (the asm statements are assembled now) and then writes the
+    object as assembler source: each SHF_ALLOC section with its flags, type and alignment,
+    a label at its start (`.Ltcc.sec.N`, the target of section-relative relocations), the
+    symbols as labels with `.globl`/`.weak`/`.hidden`/`.type` and `.size` after the label
+    (tcc's `.size` needs the symbol), a local name used twice (static variables of two
+    functions) with `.N` appended, the bytes as `.byte` lines, NOBITS as `.zero`, and each
+    relocated field as `.long`/`.quad`/`.word`/`.byte` of its symbol and addend (`-.` for
+    the PC-relative ones, `@GOTPCREL`, `@GOTOFF`, `@GOT` for those); absolute and common
+    symbols at the end. The addend includes the value in place also for RELA, because
+    tcc's own linker adds that and tcc leaves offsets there (each .eh_frame FDE's function:
+    the first version pointed every FDE at the first function, and the GNU ld round trip
+    did not see it, since GNU ld ignores those bytes). A PC-relative field to a global
+    symbol of the same section is written `sym@PLT+addend`: as `sym-.` both assemblers
+    resolve it and drop the relocation. After the object, the asm statements' text, as
+    before, in a `/* */` comment (a `*/` in it gets a space): the kernel's sed takes the
+    `.ascii "->..."` lines wherever they are, and assemblers skip it. tcc.c reaches the
+    printer through tcc_output_file(), since dlltest links tcc.c against the shared
+    libtcc. With it, tcc's assembler gets `sym@GOTPCREL` (x86_64; `.long` and `%rip`
+    operands, R_X86_64_GOTPCREL with the addend GNU as gives; GNU as uses
+    REX_GOTPCRELX for a `mov`, a relaxation hint) and `.long sym@PLT`, now a PC-relative
+    PLT32 on both arches, as with GNU as (before, the suffix was ignored and the field was
+    an absolute address). TLS relocations are not written (an error names the type);
+    `-S` without `-o` still writes to stdout. Verification: an object comparator
+    (per section the bytes with relocated fields blanked, and each relocation as offset,
+    size, PC-relative or not, target and full addend, a local target as section + value)
+    finds the `-S` output assembled by GNU as and by tcc equal to the `-c` object for 174
+    of the 177 tests2 files that compile on x86_64 and 176 of 179 on i386 (the rest: the
+    two TLS tests, and 188's 16-bit jump to a global label, which has no `@PLT` form and
+    gets resolved); GRUB's reed_solomon.c (`-Os -mregparm=3 -DSTANDALONE`, i386) the same
+    with both assemblers; startup_raw.S with that rs_decoder.h #included assembles with
+    tcc and with gcc + GNU as, and the decoder part (grub_reed_solomon_recover up to
+    grub_gate_a20) links byte-identical (elsewhere in startup_raw.S: multi-byte nops and
+    `shl $1` in 3 bytes, older differences); the kernel's 8 `-S` files (asm-offsets,
+    bounds, rq-offsets, devicetable-offsets on both arches) give the same `.ascii` lines in
+    the same order, and asm-offsets.s and devicetable-offsets.s assembled by GNU as and by
+    tcc link to the bytes of the `-c` object; 193_asm_output (two static locals of one
+    name, function pointer table, string, .bss, a 64-bit value, weak and undefined weak,
+    hidden, a jump table, extern data through the GOT, a global asm label, `*/` in asm
+    text, an asm-offsets line; run from its .s with tcc, assembled by GNU as too on both
+    arches; the program output equals gcc's) on x86_64 and through build/i386/musl-tcc;
+    160_asm_offsets now prints the asm text from the comment, unchanged; `make test` ALL
+    TESTS PASSED (cross compilers included); `make -C tests asmtest` the same 6 lines.

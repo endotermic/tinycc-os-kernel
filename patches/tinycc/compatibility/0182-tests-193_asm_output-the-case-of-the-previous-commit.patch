@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 28 Nov 2026 15:25:04 +0200
+Subject: [PATCH] tests: 193_asm_output, the case of the previous commit
+ (160_asm_offsets prints the asm text from the comment, unchanged)
+
+---
+ tests/tests2/160_asm_offsets.c     |  3 +-
+ tests/tests2/193_asm_output.c      | 60 ++++++++++++++++++++++++++++++
+ tests/tests2/193_asm_output.expect |  6 +++
+ tests/tests2/Makefile              |  5 ++-
+ 4 files changed, 72 insertions(+), 2 deletions(-)
+ create mode 100644 tests/tests2/193_asm_output.c
+ create mode 100644 tests/tests2/193_asm_output.expect
+
+diff --git a/tests/tests2/160_asm_offsets.c b/tests/tests2/160_asm_offsets.c
+index 4905500..1e9f90b 100644
+--- a/tests/tests2/160_asm_offsets.c
++++ b/tests/tests2/160_asm_offsets.c
+@@ -1,6 +1,7 @@
+ /* -S writes the asm statements as text: Kbuild generates asm-offsets.h from
+    the .ascii lines of "cc -S" (fix 58 of the tinycc-os-kernel project).  The
+-   Makefile runs tcc -S on this file and prints the output. */
++   Makefile runs tcc -S on this file and prints that text, which since fix 153
++   follows the object (as assembler source) in a comment. */
+ #define DEFINE(sym, val) \
+     asm volatile("\n.ascii \"->" #sym " %0 " #val "\"" : : "i" (val))
+ #define BLANK() asm volatile("\n.ascii \"->\"" : : )
+diff --git a/tests/tests2/193_asm_output.c b/tests/tests2/193_asm_output.c
+new file mode 100644
+index 0000000..abfcf51
+--- /dev/null
++++ b/tests/tests2/193_asm_output.c
+@@ -0,0 +1,60 @@
++/* i386, x86_64 (tinycc-os-kernel fix 153): -S writes the object as
++   assembler source (.byte lines for the code, a .long/.quad with the
++   symbol for each relocated field, the labels with their .globl, .type
++   and .size), then the text of the asm statements in a comment.  tcc had
++   no assembly output: -S wrote only that text (enough for the Linux
++   kernel's asm-offsets), and GRUB's i386-pc rs_decoder.h, made with -S
++   and #included in startup_raw.S, came out empty.  The test is compiled
++   with -S and run from its .s: everything below must survive that.  The
++   comment must keep the asm text for the kernel's sed, which takes the
++   lines '.ascii "->SYM $value"'. */
++#include <stdio.h>
++#include <string.h>
++
++static int counter_a(void) { static int n = 10; return n++; }  /* two locals named n */
++static int counter_b(void) { static int n = 20; return n++; }
++
++int (*const table[])(void) = { counter_a, counter_b };          /* absolute relocations */
++const char *greeting = "relocated string";
++char zeroes[64];                                               /* .bss */
++long long wide = 0x123456789abcdefLL;
++__attribute__((weak)) int weak_value = 7;
++int weak_missing(void) __attribute__((weak));
++__attribute__((visibility("hidden"))) int hidden_value = 3;
++
++static int pick(int k)
++{
++    switch (k) {                        /* a jump table in data */
++    case 0: return 11; case 1: return 22; case 2: return 33;
++    case 3: return 44; case 4: return 55; case 5: return 66;
++    default: return -1;
++    }
++}
++
++/* a "*" "/" in an asm statement must not end the comment */
++__asm__(".data\n.globl asm_word\nasm_word: .long 0x5a5a /* asm */\n.text");
++extern int asm_word;
++
++int main(void)
++{
++    int sum = 0, i;
++    /* the kernel's asm-offsets form, operands substituted (kept out of
++       the code here: this function runs) */
++    __asm__ volatile(".pushsection .rodata\n.ascii \"->TEST_OFFSET %0 offsetof\"\n.popsection"
++                     : : "i" (24));
++    for (i = 0; i < 7; i++)
++        sum += pick(i);
++    i = table[0]();
++    printf("table %d", i);
++    i = table[1]();
++    printf(" %d", i);
++    i = table[0]();
++    printf(" %d", i);
++    i = table[1]();
++    printf(" %d\n", i);
++    printf("%s, %d zero bytes\n", greeting, (int)(64 - strlen(zeroes)));
++    printf("wide %llx weak %d hidden %d missing %s\n", wide, weak_value, hidden_value,
++           weak_missing ? "defined" : "null");
++    printf("switch %d asm 0x%x\n", sum, asm_word);
++    return 0;
++}
+diff --git a/tests/tests2/193_asm_output.expect b/tests/tests2/193_asm_output.expect
+new file mode 100644
+index 0000000..23fe563
+--- /dev/null
++++ b/tests/tests2/193_asm_output.expect
+@@ -0,0 +1,6 @@
++table 10 20 11 21
++relocated string, 64 zero bytes
++wide 123456789abcdef weak 7 hidden 3 missing null
++switch 230 asm 0x5a5a
++asm_word: .long 0x5a5a /* asm * /
++.ascii "->TEST_OFFSET $24 offsetof"
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 06b19c2..017f85d 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -30,6 +30,7 @@ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 190_asm_base_scale.test # x86 asm
+  SKIP += 191_asm_addr16.test # x86 asm, ELF objects
+  SKIP += 192_asm_jump_relax.test # x86 asm
++ SKIP += 193_asm_output.test # x86 -S output
+ endif
+ ifeq ($(CONFIG_backtrace),no)
+  SKIP += 113_btdll.test
+@@ -202,6 +203,8 @@ endif
+ 188_asm_small_pcrel.test: GEN = $(GEN-TCC)
+ 191_asm_addr16.test: T1 = ( $(TCC) -c $1 -o $*.o && $(TCC) -run $1 $*.o && rm -f $*.o )
+ 191_asm_addr16.test: GEN = $(GEN-TCC)
++193_asm_output.test: T1 = ( $(TCC) -S $1 -o $*.s && $(TCC) -run $*.s && grep -e '^\.ascii "->' -e 'asm \* /' $*.s && rm -f $*.s )
++193_asm_output.test: GEN = $(GEN-TCC)
+ 
+ # archives with circular references inside -Wl,--start-group/--end-group:
+ # a and a_helper in one archive (two members), b in another
+@@ -224,7 +227,7 @@ endif
+ 173_sysheader_redef.test: FLAGS += -isystem $(SRC)/173_sysheader -Werror
+ 
+ # -S writes the asm statements as text
+-160_asm_offsets.test: T1 = ( $(TCC) -S $1 -o $*.s && cat $*.s && rm -f $*.s )
++160_asm_offsets.test: T1 = ( $(TCC) -S $1 -o $*.s && sed -n '/^\/\* the text of the asm statements:$$/,/^\*\/$$/p' $*.s | sed '1d;$$d' && rm -f $*.s )
+ 160_asm_offsets.test: GEN = $(T1)
+ 
+ # Filter source directory in warnings/errors (out-of-tree builds)

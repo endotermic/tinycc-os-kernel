@@ -1,0 +1,506 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 28 Nov 2026 15:25:04 +0200
+Subject: [PATCH] -S: the object as assembler source (sections, labels with
+ .globl/.weak/.hidden/.type/.size, the bytes as .byte, each relocated field as
+ .long/.quad/.word/.byte of its symbol and addend, the value in place
+ included; a call to a global symbol of the same section as sym@PLT so that it
+ keeps its relocation), then the text of the asm statements in a comment for
+ the kernel's asm-offsets; the asm statements are now assembled with -S too;
+ tcc's assembler takes sym@GOTPCREL (x86_64, .long and rip operands) and .long
+ sym@PLT as a PC-relative PLT32 (it was an absolute address) (GRUB's i386-pc
+ rs_decoder.h is made with -S and #included in startup_raw.S: tcc wrote only
+ the asm text, an empty file)
+
+---
+ i386-asm.c |  28 +++++-
+ libtcc.c   |   1 +
+ tcc.c      |   3 +
+ tcc.h      |   8 +-
+ tccasm.c   |  33 +++---
+ tccelf.c   | 289 +++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 6 files changed, 346 insertions(+), 16 deletions(-)
+
+diff --git a/i386-asm.c b/i386-asm.c
+index 9d647d2..8d92813 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -629,8 +629,20 @@ ST_FUNC void gen_expr32(ExprValue *pe)
+         /* If PC-relative, always set VT_SYM, even without symbol,
+ 	   so as to force a relocation to be emitted.  */
+ 	gen_addrpc32(VT_SYM, pe->sym, pe->v + (ind + 4));
++    else if (pe->sym && pe->gotoff == 3) {
++        /* .long sym@PLT+addend: PC-relative through the PLT, as GNU as
++           has it (tcc -S writes calls to a global function of the same
++           section that way, so that they keep their relocation) */
++#ifdef TCC_TARGET_X86_64
++        greloca(cur_text_section, pe->sym, ind, R_X86_64_PLT32, pe->v);
++        gen_le32(0);
++#else
++        greloc(cur_text_section, pe->sym, ind, R_386_PLT32);
++        gen_le32(pe->v);
++#endif
++    }
+ #ifndef TCC_TARGET_X86_64
+-    else if (pe->sym && pe->gotoff) {
++    else if (pe->sym && pe->gotoff == 1) {
+         greloc(cur_text_section, pe->sym, ind, R_386_GOTOFF);
+         gen_le32(pe->v);
+     } else if (is_got_sym(pe->sym)) {
+@@ -639,7 +651,11 @@ ST_FUNC void gen_expr32(ExprValue *pe)
+     }
+ #endif
+ #ifdef TCC_TARGET_X86_64
+-    else if (pe->sym && !CODE64) {
++    else if (pe->sym && pe->gotoff == 2) {
++        /* .long sym@GOTPCREL+addend */
++        greloca(cur_text_section, pe->sym, ind, R_X86_64_GOTPCREL, pe->v);
++        gen_le32(0);
++    } else if (pe->sym && !CODE64) {
+         /* 32-bit code in a 64-bit object: a zero-extended address, as
+            GNU as relocates it (the code generator's R_X86_64_32S is the
+            sign-extended one of the kernel code model) */
+@@ -804,6 +820,14 @@ static inline int asm_modrm(int reg, Operand *op)
+     } else if (op->reg == -2) {
+         ExprValue *pe = &op->e;
+         g(0x05 + (reg << 3));
++#ifdef TCC_TARGET_X86_64
++        if (pe->sym && pe->gotoff == 2) {
++            /* sym@GOTPCREL(%rip): the GOT entry; asm_opcode() adjusts the
++               addend for an immediate after it, as for a plain symbol */
++            greloca(cur_text_section, pe->sym, ind, R_X86_64_GOTPCREL, pe->v - 4);
++            gen_le32(0);
++        } else
++#endif
+         gen_addrpc32(pe->sym ? VT_SYM : 0, pe->sym, pe->v);
+         return ind;
+     } else if (op->ea16) {
+diff --git a/libtcc.c b/libtcc.c
+index 0306e7b..c212813 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -950,6 +950,7 @@ LIBTCCAPI void tcc_delete(TCCState *s1)
+     dynarray_reset(&s1->link_argv, &s1->link_argc);
+     cstr_free(&s1->cmdline_defs);
+     cstr_free(&s1->cmdline_incl);
++    cstr_free(&s1->asm_texts);
+     tcc_free(s1->dState);
+ #ifdef TCC_IS_NATIVE
+     /* free runtime memory */
+diff --git a/tcc.c b/tcc.c
+index 64a6565..a37e772 100644
+--- a/tcc.c
++++ b/tcc.c
+@@ -409,6 +409,9 @@ redo:
+         if (0 == ret && s->gen_deps && s->outfile && strcmp(s->outfile, "-"))
+             gen_makedeps(s, s->outfile, s->deps_outfile);
+     } else if (s->asm_text_only) {
++        /* -S: the object as assembler source, to s->ppfp */
++        if (0 == ret)
++            ret = tcc_output_file(s, NULL) ? 1 : 0;
+         if (0 == ret && s->gen_deps && s->outfile)
+             gen_makedeps(s, s->outfile, s->deps_outfile);
+     } else if (0 == ret) {
+diff --git a/tcc.h b/tcc.h
+index 0c90688..3c81a72 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -734,7 +734,7 @@ typedef struct ExprValue {
+     uint64_t v;
+     Sym *sym;
+     int pcrel;
+-    int gotoff; /* 'sym@GOTOFF': GOT-relative (R_386_GOTOFF) */
++    int gotoff; /* 'sym@GOTOFF': GOT-relative (R_386_GOTOFF); 2: 'sym@GOTPCREL' (x86_64); 3: 'sym@PLT' */
+ } ExprValue;
+ 
+ #define MAX_ASM_OPERANDS 30
+@@ -832,7 +832,8 @@ struct TCCState {
+ 
+     unsigned char dflag; /* -dX value */
+     unsigned char Pflag; /* -P switch (LINE_MACRO_OUTPUT_FORMAT) */
+-    unsigned char asm_text_only; /* -S: write the asm statements as text instead of an object (asm-offsets) */
++    unsigned char asm_text_only; /* -S: the object as assembler source, then the asm statements' text */
++    CString asm_texts; /* -S: the text of the asm statements, operands substituted (asm-offsets) */
+ 
+ #ifdef TCC_TARGET_X86_64
+     unsigned char nosse; /* For -mno-sse support. */
+@@ -1647,6 +1648,9 @@ ST_FUNC ssize_t full_read(int fd, void *buf, size_t count);
+ ST_FUNC void *load_data(int fd, unsigned long file_offset, unsigned long size);
+ ST_FUNC int tcc_object_type(int fd, ElfW(Ehdr) *h);
+ ST_FUNC int tcc_load_object_file(TCCState *s1, int fd, unsigned long file_offset);
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++ST_FUNC int tcc_output_asm(TCCState *s1, FILE *f);
++#endif
+ ST_FUNC int tcc_load_archive(TCCState *s1, int fd, int alacarte);
+ PUB_FUNC int tcc_add_group(TCCState *s1, int start, int end);
+ ST_FUNC void add_array(TCCState *s1, const char *sec, int c);
+diff --git a/tccasm.c b/tccasm.c
+index 4066ab4..52103bc 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -702,12 +702,20 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
+                call/jmp already get a PLT-capable relocation, so the
+                suffix only has to be accepted.  'sym@GOTOFF' (the kernel's
+                32-bit decompressor, gcc -fPIE code): GOT-relative value,
+-               R_386_GOTOFF, see gen_expr32(). */
++               R_386_GOTOFF, see gen_expr32().  'sym@GOTPCREL' (x86_64: the
++               GOT entry, PC-relative; what tcc -S writes for the code's
++               accesses to extern data, and gcc -fPIC output): R_X86_64_GOTPCREL. */
+             if (tok == '@') {
+                 next();
+                 if (tok >= TOK_IDENT && !strcmp(get_tok_str(tok, NULL), "GOTOFF"))
+                     pe->gotoff = 1;
+-                else if (tok < TOK_IDENT || strcmp(get_tok_str(tok, NULL), "PLT"))
++#ifdef TCC_TARGET_X86_64
++                else if (tok >= TOK_IDENT && !strcmp(get_tok_str(tok, NULL), "GOTPCREL"))
++                    pe->gotoff = 2;
++#endif
++                else if (tok >= TOK_IDENT && !strcmp(get_tok_str(tok, NULL), "PLT"))
++                    pe->gotoff = 3; /* only .long sym@PLT reads it (gen_expr32()) */
++                else
+                     tcc_error("unsupported symbol suffix '@%s'",
+                               get_tok_str(tok, &tokc));
+                 next();
+@@ -3008,12 +3016,12 @@ ST_FUNC void asm_instr(void)
+        bleed out to surrounding code.  */
+     sec = cur_text_section;
+     if (tcc_state->asm_text_only) {
+-        /* -S: the statement's text, operands substituted */
+-        fprintf(tcc_state->ppfp, "%s\n", (char *)astr.data);
+-    } else {
+-        /* assemble the string with tcc internal assembler */
+-        tcc_assemble_inline(tcc_state, astr.data, astr.size - 1, 0);
++        /* -S: the statement's text, operands substituted, also as text */
++        cstr_cat(&tcc_state->asm_texts, (char *)astr.data, astr.size - 1);
++        cstr_ccat(&tcc_state->asm_texts, '\n');
+     }
++    /* assemble the string with tcc internal assembler */
++    tcc_assemble_inline(tcc_state, astr.data, astr.size - 1, 0);
+     cstr_free_s(&astr);
+     if (sec != cur_text_section) {
+         tcc_warning("inline asm tries to change current section");
+@@ -3055,11 +3063,12 @@ ST_FUNC void asm_global_instr(void)
+     cur_text_section = text_section;
+     ind = cur_text_section->data_offset;
+ 
+-    if (tcc_state->asm_text_only)
+-        fprintf(tcc_state->ppfp, "%s\n", (char *)astr->data);
+-    else
+-        /* assemble the string with tcc internal assembler */
+-        tcc_assemble_inline(tcc_state, astr->data, astr->size - 1, 1);
++    if (tcc_state->asm_text_only) {
++        cstr_cat(&tcc_state->asm_texts, astr->data, astr->size - 1);
++        cstr_ccat(&tcc_state->asm_texts, '\n');
++    }
++    /* assemble the string with tcc internal assembler */
++    tcc_assemble_inline(tcc_state, astr->data, astr->size - 1, 1);
+     
+     cur_text_section->data_offset = ind;
+     gen_sync(); /* the registers and the memory may have changed */
+diff --git a/tccelf.c b/tccelf.c
+index 52b9ae6..2de82a2 100644
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -3305,6 +3305,286 @@ static void alloc_sec_names(TCCState *s1, int is_obj)
+     strsec->sh_size = strsec->data_offset;
+ }
+ 
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++/* -S: the object just compiled, written as assembler source that GNU as
++   and tcc assemble back to the same sections, symbols and relocations
++   (tcc has no assembly printer: the code is .byte lines).  GRUB builds its
++   i386-pc rs_decoder.h with "-S" and #includes it in startup_raw.S. */
++
++typedef struct AsmOutSym { const char *name; int i; } AsmOutSym;
++
++static int asm_out_cmp_name(const void *a, const void *b)
++{
++    int r = strcmp(((AsmOutSym *)a)->name, ((AsmOutSym *)b)->name);
++    return r ? r : ((AsmOutSym *)a)->i - ((AsmOutSym *)b)->i;
++}
++
++static ElfSym *asm_out_syms;
++
++static int asm_out_cmp_value(const void *a, const void *b)
++{
++    addr_t va = asm_out_syms[*(int *)a].st_value, vb = asm_out_syms[*(int *)b].st_value;
++    return va < vb ? -1 : va > vb ? 1 : *(int *)a - *(int *)b;
++}
++
++static ElfW_Rel *asm_out_rels;
++
++static int asm_out_cmp_rel(const void *a, const void *b)
++{
++    addr_t oa = asm_out_rels[*(int *)a].r_offset, ob = asm_out_rels[*(int *)b].r_offset;
++    return oa < ob ? -1 : oa > ob ? 1 : 0;
++}
++
++/* names of the symbols in the output: a section symbol is a label at the
++   start of its section, a local name used twice (static variables of two
++   functions) gets ".N" appended */
++static char **asm_out_names(TCCState *s1, int nsym)
++{
++    ElfSym *sym = (ElfSym *)symtab_section->data;
++    const char *str = (char *)symtab_section->link->data;
++    char **names = tcc_mallocz(nsym * sizeof *names);
++    AsmOutSym *t = tcc_malloc(nsym * sizeof *t);
++    int i, n = 0, k;
++    char buf[300];
++    for (i = 1; i < nsym; i++) {
++        int type = ELFW(ST_TYPE)(sym[i].st_info);
++        if (type == STT_SECTION) {
++            snprintf(buf, sizeof buf, ".Ltcc.sec.%d", sym[i].st_shndx);
++            names[i] = tcc_strdup(buf);
++        } else if (type != STT_FILE && sym[i].st_name) {
++            t[n].name = str + sym[i].st_name, t[n].i = i, n++;
++        }
++    }
++    qsort(t, n, sizeof *t, asm_out_cmp_name);
++    for (i = 0; i < n; i = k) {
++        int nglobal = 0, j = 0;
++        for (k = i; k < n && !strcmp(t[k].name, t[i].name); k++)
++            nglobal += ELFW(ST_BIND)(sym[t[k].i].st_info) != STB_LOCAL;
++        for (; i < k; i++) {
++            const char *name = t[i].name;
++            if (ELFW(ST_BIND)(sym[t[i].i].st_info) == STB_LOCAL && k - i + j + nglobal > 1) {
++                /* not the only symbol of that name */
++                snprintf(buf, sizeof buf, "%s.%d", name, j++);
++                name = buf;
++            }
++            names[t[i].i] = tcc_strdup(name);
++        }
++    }
++    tcc_free(t);
++    return names;
++}
++
++/* a relocated field: its directive, its target and addend */
++static int asm_out_reloc(TCCState *s1, FILE *f, Section *s, ElfW_Rel *rel, char **names)
++{
++    int type = ELFW(R_TYPE)(rel->r_info), size, pc = 0;
++    const char *name = names[ELFW(R_SYM)(rel->r_info)], *suffix = "";
++    unsigned char *p = s->data + rel->r_offset;
++    long long a;
++    switch (type) {
++#ifdef TCC_TARGET_X86_64
++    case R_X86_64_64: size = 8; break;
++    case R_X86_64_PC64: size = 8, pc = 1; break;
++    case R_X86_64_32: case R_X86_64_32S: size = 4; break;
++    case R_X86_64_PC32: case R_X86_64_PLT32: size = 4, pc = 1; break;
++    case R_X86_64_GOTPCREL: case R_X86_64_GOTPCRELX: case R_X86_64_REX_GOTPCRELX:
++        size = 4, suffix = "@GOTPCREL"; break;
++    case R_X86_64_16: size = 2; break;
++    case R_X86_64_PC16: size = 2, pc = 1; break;
++    case R_X86_64_8: size = 1; break;
++    case R_X86_64_PC8: size = 1, pc = 1; break;
++#else
++    case R_386_32: size = 4; break;
++    case R_386_PC32: case R_386_PLT32: size = 4, pc = 1; break;
++    case R_386_GOTOFF: size = 4, suffix = "@GOTOFF"; break;
++    case R_386_GOT32: case R_386_GOT32X: size = 4, suffix = "@GOT"; break;
++    case R_386_GOTPC: size = 4, pc = 1; break;
++    case R_386_16: size = 2; break;
++    case R_386_PC16: size = 2, pc = 1; break;
++    case R_386_8: size = 1; break;
++    case R_386_PC8: size = 1, pc = 1; break;
++#endif
++    default:
++        return tcc_error_noabort("-S: relocation type %d in %s is not supported", type, s->name);
++    }
++    if (!name)
++        return tcc_error_noabort("-S: relocation in %s against a symbol without a name", s->name);
++    if (pc && size == 4 && !*suffix) {
++        /* "sym-." to a global symbol of this section would be resolved by
++           the assembler, without a relocation: "sym@PLT" keeps one (a
++           16-bit field has no such form and gets resolved) */
++        ElfSym *t = &((ElfSym *)symtab_section->data)[ELFW(R_SYM)(rel->r_info)];
++        if (ELFW(ST_BIND)(t->st_info) != STB_LOCAL && t->st_shndx == s->sh_num)
++            suffix = "@PLT", pc = 0;
++    }
++    /* the value in place: the addend of REL; with RELA tcc's own linker
++       adds it to r_addend, and tcc leaves an offset there sometimes (the
++       function of each .eh_frame FDE), so it goes into the addend too */
++    a = size == 8 ? (long long)read64le(p) : size == 4 ? (long long)(int32_t)read32le(p)
++      : size == 2 ? (long long)(int16_t)read16le(p) : (long long)(int8_t)*p;
++#if SHT_RELX == SHT_RELA
++    a += rel->r_addend;
++#endif
++    fprintf(f, "\t%s %s%s", size == 8 ? ".quad" : size == 4 ? ".long" : size == 2 ? ".word" : ".byte",
++            name, suffix);
++    if (a)
++        fprintf(f, "%+lld", a);
++    fputs(pc ? "-.\n" : "\n", f);
++    return size;
++}
++
++/* a symbol's directives and label */
++static void asm_out_label(FILE *f, ElfSym *sym, const char *name)
++{
++    int bind = ELFW(ST_BIND)(sym->st_info), type = ELFW(ST_TYPE)(sym->st_info);
++    int vis = ELFW(ST_VISIBILITY)(sym->st_other);
++    if (bind == STB_GLOBAL)
++        fprintf(f, "\t.globl %s\n", name);
++    else if (bind == STB_WEAK)
++        fprintf(f, "\t.weak %s\n", name);
++    if (vis == STV_HIDDEN)
++        fprintf(f, "\t.hidden %s\n", name);
++    else if (vis == STV_PROTECTED)
++        fprintf(f, "\t.protected %s\n", name);
++    else if (vis == STV_INTERNAL)
++        fprintf(f, "\t.internal %s\n", name);
++    if (type == STT_FUNC || type == STT_OBJECT)
++        fprintf(f, "\t.type %s, @%s\n", name, type == STT_FUNC ? "function" : "object");
++    fprintf(f, "%s:\n", name);
++    if (sym->st_size) /* after the label: tcc's .size needs the symbol */
++        fprintf(f, "\t.size %s, %lu\n", name, (unsigned long)sym->st_size);
++}
++
++ST_FUNC int tcc_output_asm(TCCState *s1, FILE *f)
++{
++    ElfSym *sym = (ElfSym *)symtab_section->data;
++    int nsym = symtab_section->data_offset / sizeof(ElfSym);
++    char **names = asm_out_names(s1, nsym);
++    int *order = tcc_malloc(nsym * sizeof *order), *rorder = NULL, nr_alloc = 0;
++    int i, j, ret = 0;
++
++    fprintf(f, "/* %s compiled by tcc -S: the object as assembler source */\n",
++            s1->files && s1->nb_files ? s1->files[0]->name : "");
++    for (i = 1; i < s1->nb_sections && !ret; i++) {
++        Section *s = s1->sections[i], *sr = s->reloc;
++        int nsyms = 0, nrel = 0, si = 0, ri = 0, nobits = s->sh_type == SHT_NOBITS;
++        unsigned long off = 0, size = s->data_offset, end;
++        char flags[8], *fp = flags;
++        const char *type;
++        if (!(s->sh_flags & SHF_ALLOC))
++            continue;
++        for (j = 1; j < nsym; j++)
++            if (sym[j].st_shndx == i && ELFW(ST_TYPE)(sym[j].st_info) != STT_SECTION && names[j])
++                order[nsyms++] = j;
++        if (!size && !nsyms)
++            continue;
++        asm_out_syms = sym;
++        qsort(order, nsyms, sizeof *order, asm_out_cmp_value);
++        if (sr) {
++            nrel = sr->data_offset / sizeof(ElfW_Rel);
++            if (nrel > nr_alloc)
++                rorder = tcc_realloc(rorder, (nr_alloc = nrel) * sizeof *rorder);
++            for (j = 0; j < nrel; j++)
++                rorder[j] = j;
++            asm_out_rels = (ElfW_Rel *)sr->data;
++            qsort(rorder, nrel, sizeof *rorder, asm_out_cmp_rel);
++        }
++        *fp++ = 'a';
++        if (s->sh_flags & SHF_WRITE) *fp++ = 'w';
++        if (s->sh_flags & SHF_EXECINSTR) *fp++ = 'x';
++        if (s->sh_flags & SHF_TLS) *fp++ = 'T';
++        *fp = 0;
++        type = nobits ? "nobits" : s->sh_type == SHT_INIT_ARRAY ? "init_array"
++             : s->sh_type == SHT_FINI_ARRAY ? "fini_array"
++             : s->sh_type == SHT_PREINIT_ARRAY ? "preinit_array"
++             : s->sh_type == SHT_NOTE ? "note"
++#ifdef TCC_TARGET_X86_64
++             : s->sh_type == SHT_X86_64_UNWIND ? "unwind"
++#endif
++             : "progbits";
++        fprintf(f, "\n\t.section %s,\"%s\",@%s\n", s->name, flags, type);
++        if (s->sh_addralign > 1)
++            fprintf(f, "\t.balign %d\n", (int)s->sh_addralign);
++        fprintf(f, ".Ltcc.sec.%d:\n", i);
++        for (;;) {
++            while (si < nsyms && sym[order[si]].st_value <= off)
++                asm_out_label(f, &sym[order[si]], names[order[si]]), si++;
++            if (off >= size)
++                break;
++            if (ri < nrel && ((ElfW_Rel *)sr->data)[rorder[ri]].r_offset == off) {
++                int n = asm_out_reloc(s1, f, s, &((ElfW_Rel *)sr->data)[rorder[ri++]], names);
++                if (n < 0) {
++                    ret = -1;
++                    break;
++                }
++                off += n;
++                continue;
++            }
++            /* the bytes up to the next label or relocated field */
++            end = size;
++            if (si < nsyms && sym[order[si]].st_value < end)
++                end = sym[order[si]].st_value;
++            if (ri < nrel && ((ElfW_Rel *)sr->data)[rorder[ri]].r_offset < end)
++                end = ((ElfW_Rel *)sr->data)[rorder[ri]].r_offset;
++            if (nobits) {
++                fprintf(f, "\t.zero %lu\n", end - off);
++                off = end;
++                continue;
++            }
++            while (off < end) {
++                int n = end - off > 16 ? 16 : end - off;
++                fputs("\t.byte ", f);
++                for (j = 0; j < n; j++)
++                    fprintf(f, j ? ",0x%02x" : "0x%02x", s->data[off + j]);
++                fputc('\n', f);
++                off += n;
++            }
++        }
++        /* labels past the end (an "end" symbol) */
++        while (si < nsyms)
++            asm_out_label(f, &sym[order[si]], names[order[si]]), si++;
++    }
++    /* absolute and common symbols, and the undefined weak ones */
++    for (j = 1; j < nsym && !ret; j++) {
++        int bind = ELFW(ST_BIND)(sym[j].st_info);
++        const char *name = names[j];
++        if (!name || ELFW(ST_TYPE)(sym[j].st_info) == STT_SECTION)
++            continue;
++        if (sym[j].st_shndx == SHN_ABS) {
++            if (bind != STB_LOCAL)
++                fprintf(f, "\t.%s %s\n", bind == STB_WEAK ? "weak" : "globl", name);
++            fprintf(f, "\t.set %s, %lld\n", name, (long long)sym[j].st_value);
++        } else if (sym[j].st_shndx == SHN_COMMON) {
++            if (bind == STB_LOCAL)
++                fprintf(f, "\t.local %s\n", name);
++            fprintf(f, "\t.comm %s, %lu, %lu\n", name,
++                    (unsigned long)sym[j].st_size, (unsigned long)sym[j].st_value);
++        } else if (sym[j].st_shndx == SHN_UNDEF && bind == STB_WEAK) {
++            fprintf(f, "\t.weak %s\n", name);
++        }
++    }
++    /* the asm statements' text after it, in a comment: what the kernel's
++       asm-offsets and bounds files are made from (sed takes the lines
++       '.ascii "->SYM $value"' wherever they are) */
++    if (!ret && s1->asm_texts.size) {
++        const char *p = s1->asm_texts.data, *e = p + s1->asm_texts.size;
++        fputs("\n/* the text of the asm statements:\n", f);
++        for (; p < e; p++) {
++            fputc(*p, f);
++            if (*p == '*' && p + 1 < e && p[1] == '/')
++                fputc(' ', f); /* no end of the comment inside it */
++        }
++        fputs("*/\n", f);
++    }
++    for (j = 0; j < nsym; j++)
++        tcc_free(names[j]);
++    tcc_free(names);
++    tcc_free(order);
++    tcc_free(rorder);
++    return ret;
++}
++#endif
++
+ /* Output an elf .o file */
+ static int elf_output_obj(TCCState *s1, const char *filename)
+ {
+@@ -3329,6 +3609,15 @@ static int elf_output_obj(TCCState *s1, const char *filename)
+ LIBTCCAPI int tcc_output_file(TCCState *s, const char *filename)
+ {
+     s->nb_errors = 0;
++    if (s->asm_text_only) {
++        /* -S: written to s->ppfp, which tcc.c opened */
++#if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
++        return tcc_output_asm(s, s->ppfp);
++#else
++        TCCState *s1 = s; /* for tcc_error_noabort() */
++        return tcc_error_noabort("-S is not implemented for this target");
++#endif
++    }
+     if (s->test_coverage)
+         tcc_tcov_add_file(s, filename);
+     if (s->output_type == TCC_OUTPUT_OBJ)

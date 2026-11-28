@@ -290,13 +290,13 @@ assembler), 149 (the code mode restored for each assembler pass), 150 (`(%base, 
 on OVMF and boots the system: it reads grub.cfg from a FAT partition and loads the x86_64 kernel
 and initramfs, which come up to the Autarkeia banner. Since fix 152 the i386-pc boot sector
 sources assemble too: boot.S and diskboot.S give 512-byte images byte-identical to GNU as's
-(linked by GNU ld at 0x7c00, since tld has no `-Ttext` yet); the i386-pc target as a whole was
-not built again. GRUB's host tools were still built by gcc, and the trial needed workarounds for
+(linked by GNU ld at 0x7c00, since tld has no `-Ttext` yet). Since fix 153 (`-S`) tcc makes the
+i386-pc rs_decoder.h, and startup_raw.S assembles with it #included; its decoder part links
+byte-identical to gcc + GNU as. The i386-pc target as a whole was not built again. GRUB's host tools were still built by gcc, and the trial needed workarounds for
 these open gaps:
 
 | Gap | Where | Effect on GRUB |
 |---|---|---|
-| no `-S` (assembly output) | tcc | i386-pc `rs_decoder.h` |
 | `-mrtd` ignored silently | tcc | i386-pc ABI (harmless in GRUB 2.14's asm) |
 | `-mcmodel=large` ignored | tcc | cross-module PC32/PLT32, rejected by GRUB's module verifier (the trial let them through; fine below 4 GB) |
 | extern data through GOTPCRELX | tcc | rejected by the verifier; `#pragma GCC visibility push(hidden)` avoids it |
@@ -306,6 +306,7 @@ these open gaps:
 | `(,%esi,4)` without a displacement rejected (`0(,%esi,4)` works) | tcc assembler | none seen in GRUB yet |
 | a jump to a global label of the same section stays long with its relocation; GNU as (without `-mshared`) resolves and shortens it | tcc assembler | none seen in GRUB yet (the kernel's setup header.S: one byte) |
 | `lodsb` with explicit operands (`lodsb (%si), %al`) rejected, plain `lodsb` works | tcc assembler | i386-pc cdboot.S and lnxboot.S |
+| `shl`/`shr`/`sar` by 1 in 3 bytes (`c1 /4 01`), GNU as uses the 2-byte `d1 /4` | tcc assembler | one byte longer, the same effect (i386-pc startup_raw.S) |
 | `asorti` | host awk (no gawk) | genmoddep.awk |
 
 ## Open questions
