@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 28 Nov 2026 15:43:08 +0200
+Subject: [PATCH] tests: 194_i386_mrtd, the case of the previous commit
+
+---
+ tests/tests2/194_i386_mrtd.c      | 108 ++++++++++++++++++++++++++++++
+ tests/tests2/194_i386_mrtd.expect |   9 +++
+ tests/tests2/Makefile             |   4 +-
+ 3 files changed, 120 insertions(+), 1 deletion(-)
+ create mode 100644 tests/tests2/194_i386_mrtd.c
+ create mode 100644 tests/tests2/194_i386_mrtd.expect
+
+diff --git a/tests/tests2/194_i386_mrtd.c b/tests/tests2/194_i386_mrtd.c
+new file mode 100644
+index 0000000..c548fb0
+--- /dev/null
++++ b/tests/tests2/194_i386_mrtd.c
+@@ -0,0 +1,108 @@
++/* i386 (tinycc-os-kernel fix 154): -mrtd, GRUB's i386-pc code model with
++   -mregparm=3 (the Makefile runs this file with both): the callee pops its
++   stack arguments, except in a variadic function and one declared cdecl,
++   as with GCC.  And cdecl only means "the caller pops": the registers of
++   -mregparm or regparm(n) stay ("int grub_setjmp (grub_jmp_buf env)
++   __attribute__ ((cdecl, regparm (3)))"); only regparm(0) puts the
++   arguments on the stack.  tcc ignored -mrtd, and took cdecl for regparm(0).
++   The other side of each call is assembly written for GCC's convention,
++   and the stack pointer is checked around every call. */
++#include <stdio.h>
++
++int five(int a, int b, int c, int d, int e);                    /* eax edx ecx, 2 popped by the callee */
++int cdecl_r3(int a, int b, int c, int d) __attribute__((cdecl, regparm(3)));   /* 1 popped by the caller */
++int __attribute__((cdecl)) cdecl_def(int a, int b, int c, int d);  /* registers of -mregparm too */
++int __attribute__((regparm(0))) r0(int a, int b, int c, int d);    /* the stack, popped by the callee */
++int va_sum(int n, ...);                                            /* the stack, popped by the caller */
++
++/* asm callers of the C functions below, which they get in %eax */
++int call_five(void *fn);
++int call_cdecl4(void *fn);
++int call_r0(void *fn);
++
++__asm__(
++    ".text\n"
++    ".globl five, cdecl_r3, cdecl_def, r0, va_sum, call_five, call_cdecl4, call_r0\n"
++    "five:\n"                           /* a + 2b + 3c + 4d + 5e */
++    "  lea (%eax,%edx,2), %eax\n"
++    "  imul $3, %ecx, %ecx\n"
++    "  add %ecx, %eax\n"
++    "  mov 4(%esp), %ecx\n"
++    "  lea (%eax,%ecx,4), %eax\n"
++    "  mov 8(%esp), %ecx\n"
++    "  imul $5, %ecx, %ecx\n"
++    "  add %ecx, %eax\n"
++    "  ret $8\n"
++    "cdecl_r3:\n"                       /* a*b + c*d */
++    "cdecl_def:\n"
++    "  imul %edx, %eax\n"
++    "  imul 4(%esp), %ecx\n"
++    "  add %ecx, %eax\n"
++    "  ret\n"
++    "r0:\n"                             /* a + b*c - d */
++    "  mov 8(%esp), %eax\n"
++    "  imul 12(%esp), %eax\n"
++    "  add 4(%esp), %eax\n"
++    "  sub 16(%esp), %eax\n"
++    "  ret $16\n"
++    "va_sum:\n"                         /* the n ints after n */
++    "  mov 4(%esp), %ecx\n"
++    "  xor %eax, %eax\n"
++    "  lea 8(%esp), %edx\n"
++    "1: test %ecx, %ecx\n"
++    "  jz 2f\n"
++    "  add (%edx), %eax\n"
++    "  add $4, %edx\n"
++    "  dec %ecx\n"
++    "  jmp 1b\n"
++    "2: ret\n"
++    /* fn(1, 2, 3, 4, 5): -1 if fn did not pop its 2 stack arguments */
++    "call_five:\n"
++    "  push %ebx\n  push %esi\n"
++    "  mov %eax, %ebx\n  mov %esp, %esi\n"
++    "  push $5\n  push $4\n"
++    "  mov $1, %eax\n  mov $2, %edx\n  mov $3, %ecx\n"
++    "  call *%ebx\n"
++    "  cmp %esp, %esi\n  je 1f\n  mov $-1, %eax\n"
++    "1: mov %esi, %esp\n  pop %esi\n  pop %ebx\n  ret\n"
++    /* fn(2, 3, 4, 5) cdecl, regparm(3): -1 if fn popped its stack argument */
++    "call_cdecl4:\n"
++    "  push %ebx\n  push %esi\n"
++    "  mov %eax, %ebx\n  mov %esp, %esi\n"
++    "  push $5\n"
++    "  mov $2, %eax\n  mov $3, %edx\n  mov $4, %ecx\n"
++    "  call *%ebx\n"
++    "  lea 4(%esp), %edx\n  cmp %edx, %esi\n  je 1f\n  mov $-1, %eax\n"
++    "1: mov %esi, %esp\n  pop %esi\n  pop %ebx\n  ret\n"
++    /* fn(1, 2, 3, 4) regparm(0): -1 if fn did not pop its 4 stack arguments */
++    "call_r0:\n"
++    "  push %ebx\n  push %esi\n"
++    "  mov %eax, %ebx\n  mov %esp, %esi\n"
++    "  push $4\n  push $3\n  push $2\n  push $1\n"
++    "  call *%ebx\n"
++    "  cmp %esp, %esi\n  je 1f\n  mov $-1, %eax\n"
++    "1: mov %esi, %esp\n  pop %esi\n  pop %ebx\n  ret\n");
++
++/* the same conventions, defined by tcc */
++static int c_five(int a, int b, int c, int d, int e) { return a + 2 * b + 3 * c + 4 * d + 5 * e; }
++static int __attribute__((cdecl, regparm(3))) c_cdecl4(int a, int b, int c, int d) { return a * b + c * d; }
++static int __attribute__((regparm(0))) c_r0(int a, int b, int c, int d) { return a + b * c - d; }
++
++#define ESP(v) __asm__ volatile("mov %%esp, %0" : "=r"(v))
++#define CHECK(name, expr) do { unsigned long s0, s1; int r; ESP(s0); r = (expr); ESP(s1); \
++    printf("%-10s %d%s\n", name, r, s0 == s1 ? "" : " (stack pointer moved)"); } while (0)
++
++int main(void)
++{
++    int (*fp)(int, int, int, int, int) = five;
++    CHECK("five", five(1, 2, 3, 4, 5));
++    CHECK("cdecl_r3", cdecl_r3(2, 3, 4, 5));
++    CHECK("cdecl_def", cdecl_def(2, 3, 4, 5));
++    CHECK("r0", r0(1, 2, 3, 4));
++    CHECK("va_sum", va_sum(4, 10, 20, 30, 40));
++    CHECK("pointer", fp(5, 4, 3, 2, 1));
++    CHECK("c_five", call_five(c_five));
++    CHECK("c_cdecl4", call_cdecl4(c_cdecl4));
++    CHECK("c_r0", call_r0(c_r0));
++    return 0;
++}
+diff --git a/tests/tests2/194_i386_mrtd.expect b/tests/tests2/194_i386_mrtd.expect
+new file mode 100644
+index 0000000..26c2572
+--- /dev/null
++++ b/tests/tests2/194_i386_mrtd.expect
+@@ -0,0 +1,9 @@
++five       55
++cdecl_r3   26
++cdecl_def  26
++r0         3
++va_sum     100
++pointer    35
++c_five     55
++c_cdecl4   26
++c_r0       3
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 017f85d..9e2ff9c 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -14,7 +14,7 @@ ifeq (-$(CONFIG_arm_eabi)-$(CONFIG_arm_vfp)-,-yes--)
+ endif
+ ifeq (,$(filter i386,$(ARCH)))
+  SKIP += 98_al_ax_extend.test 99_fastcall.test
+- SKIP += 157_i386_regparm_pic.test 162_i386_mregparm.test 186_i386_regparm0_fnptr.test
++ SKIP += 157_i386_regparm_pic.test 162_i386_mregparm.test 186_i386_regparm0_fnptr.test 194_i386_mrtd.test
+ endif
+ ifneq (x86_64-,$(ARCH)-$(CONFIG_WIN32))
+  SKIP += 167_int128.test # __int128 is x86-64 SysV only
+@@ -198,6 +198,8 @@ endif
+ 162_i386_mregparm.test: GEN = $(GEN-TCC)
+ 186_i386_regparm0_fnptr.test: T1 = ( $(TCC) -mregparm=3 -run $1 )
+ 186_i386_regparm0_fnptr.test: GEN = $(GEN-TCC)
++194_i386_mrtd.test: T1 = ( $(TCC) -mrtd -mregparm=3 -run $1 )
++194_i386_mrtd.test: GEN = $(GEN-TCC)
+ # the asm test reads its own object: compiled with -c first
+ 188_asm_small_pcrel.test: T1 = ( $(TCC) -c $1 -o $*.o && $(TCC) -run $1 $*.o && rm -f $*.o )
+ 188_asm_small_pcrel.test: GEN = $(GEN-TCC)

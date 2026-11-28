@@ -181,3 +181,5 @@ compatibility/0179-asm-forward-jumps-relaxed-as-GNU-as-does-it-a-jmp-or.patch
 compatibility/0180-tests-192_asm_jump_relax-the-case-of-the-previous-co.patch
 compatibility/0181-S-the-object-as-assembler-source-sections-labels-wit.patch
 compatibility/0182-tests-193_asm_output-the-case-of-the-previous-commit.patch
+compatibility/0183-i386-mrtd-the-callee-pops-its-stack-arguments-unless.patch
+compatibility/0184-tests-194_i386_mrtd-the-case-of-the-previous-commit.patch

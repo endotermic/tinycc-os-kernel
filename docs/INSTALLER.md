@@ -292,12 +292,13 @@ and initramfs, which come up to the Autarkeia banner. Since fix 152 the i386-pc 
 sources assemble too: boot.S and diskboot.S give 512-byte images byte-identical to GNU as's
 (linked by GNU ld at 0x7c00, since tld has no `-Ttext` yet). Since fix 153 (`-S`) tcc makes the
 i386-pc rs_decoder.h, and startup_raw.S assembles with it #included; its decoder part links
-byte-identical to gcc + GNU as. The i386-pc target as a whole was not built again. GRUB's host tools were still built by gcc, and the trial needed workarounds for
+byte-identical to gcc + GNU as. Since fix 154 tcc has `-mrtd` and GCC's reading of `cdecl`
+(caller pops, registers kept), the i386-pc calling convention. The i386-pc target as a whole was
+not built again. GRUB's host tools were still built by gcc, and the trial needed workarounds for
 these open gaps:
 
 | Gap | Where | Effect on GRUB |
 |---|---|---|
-| `-mrtd` ignored silently | tcc | i386-pc ABI (harmless in GRUB 2.14's asm) |
 | `-mcmodel=large` ignored | tcc | cross-module PC32/PLT32, rejected by GRUB's module verifier (the trial let them through; fine below 4 GB) |
 | extern data through GOTPCRELX | tcc | rejected by the verifier; `#pragma GCC visibility push(hidden)` avoids it |
 | `_Pragma` in `tcc -E`; no `__GNUC__`, `__INT_FAST32_TYPE__`, `__INT_LEAST*`; `.stab` from `-g` | tcc | configure and build steps |

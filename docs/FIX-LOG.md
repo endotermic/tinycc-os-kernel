@@ -94,6 +94,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 151 | tinycc 0177 |
 | | | | | 152 | tinycc 0179 |
 | | | | | 153 | tinycc 0181 |
+| | | | | 154 | tinycc 0183 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -180,6 +181,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
 | `tests/tests2/191_asm_addr16.c` | i386, x86_64 (compiled with `-c`, compares its own bytes with GNU as; an assembler error without the fix) | 151 |
 | `tests/tests2/192_asm_jump_relax.c` | i386, x86_64 (the sizes are label differences, the code runs; "attempt to .org backwards" without the fix) | 152 |
+| `tests/tests2/194_i386_mrtd.c` | i386 (run with `-mrtd -mregparm=3`; assembly callees and callers in GCC's convention, the stack pointer checked around each call; wrong values and a moved stack pointer without the fix) | 154 |
 | `tests/tests2/193_asm_output.c` | i386, x86_64 (compiled with `-S`, run from its .s, then the asm text of the comment printed; only that text without the fix) | 153 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
 | `tests/tests2/160_asm_offsets.c` | i386, x86_64 | 58 |
@@ -3753,3 +3755,42 @@ then corrupted memory.
     arches; the program output equals gcc's) on x86_64 and through build/i386/musl-tcc;
     160_asm_offsets now prints the asm text from the comment, unchanged; `make test` ALL
     TESTS PASSED (cross compilers included); `make -C tests asmtest` the same 6 lines.
+
+154. 2026-11-28, COMMITTED (patches/tinycc/compatibility/0183, test 0184 =
+    tests2/194_i386_mrtd), `tccgen.c` (norm_funcall(), merge_funcattr(),
+    is_compatible_func(), parse_attribute(), post_type(), the pointer case after the
+    declarator), `libtcc.c`, `tcc.h`. Problem: GRUB's i386-pc code is built with
+    `-mrtd -mregparm=3`, and tcc ignored `-mrtd` (an unsupported option): with it the
+    callee pops its stack arguments, which only matters for functions with more than three
+    word-sized arguments, so tcc's callers of GCC-built code (and the reverse) would leave
+    the stack wrong. Looking at it showed a second difference: tcc read `cdecl` like
+    `regparm(0)`, arguments on the stack, while for GCC `cdecl` only means that the caller
+    pops and the registers of `-mregparm` or `regparm(n)` stay; GRUB declares
+    `int grub_setjmp (grub_jmp_buf env) __attribute__ ((cdecl, regparm (3)))` and its
+    assembly reads `env` from %eax, while tcc passed it on the stack. Fix: `-mrtd`
+    (`-mno-rtd`) sets a default, applied with the `-mregparm` one in post_type(): every
+    function that is not variadic and not declared cdecl gets func_stdcall (callee pops,
+    registers kept). The function attributes now keep three facts apart: func_cdecl (an
+    explicit cdecl: the caller pops, beats stdcall and `-mrtd`), func_noregparm (an
+    explicit regparm(0): no registers, beats `-mregparm`; it used to be func_cdecl, for
+    the kernel's asmlinkage of fix 113 and the EFI calls of fix 146) and func_stdcall;
+    norm_funcall() makes the calling convention from them, as GCC combines them, wherever
+    attributes come together (an attribute list, a later declaration, an attribute after
+    the declarator, also of a pointer to a function); a cdecl declaration is compatible
+    with the `-mrtd` default of another one and wins. The code generator was already
+    right for stdcall with regparm(n) (fix 116). Verification: a cross-call matrix (13
+    functions: no arguments, 2 and 5 ints, long long, a structure argument and return
+    value, variadic, cdecl, cdecl with regparm(3), regparm(0), stdcall, grub_setjmp's
+    form, a call through a pointer; callees and callers each compiled by tcc and by gcc,
+    linked together with musl) gives the right values in all four combinations for
+    `-mrtd -mregparm=3`, `-mrtd`, `-mregparm=3`, `-mregparm=2 -mrtd` and no options, tcc's
+    callers see no stack pointer drift, and the tcc callees under gcc's callers give
+    exactly the gcc/gcc output (gcc -O1 defers its stack pops, so its callers show drift
+    for gcc's own callees too); without the fix: wrong values and segfaults with
+    `-mregparm=3`. 194_i386_mrtd through build/i386/musl-tcc (gcc -O0 gives the same
+    output; wrong values and a moved stack pointer without the fix); 157 (both runs), 162,
+    186, 99, 98 as before; `make test` ALL TESTS PASSED (cross compilers included; 82's
+    stdcall declarations needed the merge to keep a later stdcall on non-i386 targets).
+    The i386 kernel (`-mregparm=3`, asmlinkage = regparm(0)) built from scratch with it
+    has a .text byte-identical to the build of the day before, and its .data differs only
+    in the build time and the compiler's version string.
