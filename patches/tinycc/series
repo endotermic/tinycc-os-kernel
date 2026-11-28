@@ -183,3 +183,5 @@ compatibility/0181-S-the-object-as-assembler-source-sections-labels-wit.patch
 compatibility/0182-tests-193_asm_output-the-case-of-the-previous-commit.patch
 compatibility/0183-i386-mrtd-the-callee-pops-its-stack-arguments-unless.patch
 compatibility/0184-tests-194_i386_mrtd-the-case-of-the-previous-commit.patch
+compatibility/0185-x86_64-mcmodel-large-a-symbol-that-may-be-defined-el.patch
+compatibility/0186-tests-195_x86_64_mcmodel_large-the-case-of-the-previ.patch

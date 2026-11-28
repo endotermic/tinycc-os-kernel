@@ -95,6 +95,7 @@ that work, so one patch may hold several entries and one entry may span two patc
 | | | | | 152 | tinycc 0179 |
 | | | | | 153 | tinycc 0181 |
 | | | | | 154 | tinycc 0183 |
+| | | | | 155 | tinycc 0185 |
 
 Tests: tinycc 0083-0091, 0100 and 0105 (see "Tests" below; 0106, 0108 and 0109 carry their
 cases too); 0101 is the asm opcodes of the drivers build (AES-NI, PCLMULQDQ, movntdqa; no fix number,
@@ -181,6 +182,7 @@ both musl guests print ALL TESTS PASSED with them (2026-10-23).
 | `tests/tests2/190_asm_base_scale.c` | i386, x86_64 (an assembler error without the fix) | 150 |
 | `tests/tests2/191_asm_addr16.c` | i386, x86_64 (compiled with `-c`, compares its own bytes with GNU as; an assembler error without the fix) | 151 |
 | `tests/tests2/192_asm_jump_relax.c` | i386, x86_64 (the sizes are label differences, the code runs; "attempt to .org backwards" without the fix) | 152 |
+| `tests/tests2/195_x86_64_mcmodel_large.c` | x86_64 (compiled with `-mcmodel=large -c`, reads its own object: only R_X86_64_64 against the globals, then runs; GOTPCREL and PC32 without the fix) | 155 |
 | `tests/tests2/194_i386_mrtd.c` | i386 (run with `-mrtd -mregparm=3`; assembly callees and callers in GCC's convention, the stack pointer checked around each call; wrong values and a moved stack pointer without the fix) | 154 |
 | `tests/tests2/193_asm_output.c` | i386, x86_64 (compiled with `-S`, run from its .s, then the asm text of the comment printed; only that text without the fix) | 153 |
 | `tests/tests2/159_depfile.c` | all | 3, 68, 131 |
@@ -3794,3 +3796,38 @@ then corrupted memory.
     The i386 kernel (`-mregparm=3`, asmlinkage = regparm(0)) built from scratch with it
     has a .text byte-identical to the build of the day before, and its .data differs only
     in the build time and the compiler's version string.
+
+155. 2026-11-28, COMMITTED (patches/tinycc/compatibility/0185, test 0186 =
+    tests2/195_x86_64_mcmodel_large), `x86_64-gen.c` (sym_is_far(), gen_movabs_sym(),
+    load(), store(), gcall_or_jmp(), gen_opf()), `libtcc.c`, `tcc.h`. Problem: GRUB
+    builds its x86_64-efi kernel and modules with `-mcmodel=large`, which tcc accepted and
+    ignored: calls went out as PLT32, static data as PC32 and extern data through the GOT
+    (GOTPCRELX), and GRUB's module verifier rejects any 32-bit relocation against a symbol
+    of another module ("relocation 0x4 is not module-local"; 290 of the 293 modules in
+    the trial, which a wrapper let through, and the trial's `#pragma GCC visibility
+    push(hidden)` made the extern data PC32 instead of GOTPCRELX). Fix: with
+    `-mcmodel=large` a symbol that is not static (it may be defined in another module)
+    is reached through its 64-bit address, as GCC does it: `movabs $sym+off, %reg`
+    (R_X86_64_64) instead of `lea sym(%rip)` or the GOT load for an address, the address
+    into the result register (an integer register for a float) and the offset as
+    displacement for a load, into %r11 for a store, `call *%r11` for a call, and %r11 for
+    the memory operand of the SSE compare and arithmetic. Static symbols (and tcc's
+    anonymous data) stay PC-relative, which the verifier accepts (GCC makes those 64-bit
+    too). The SSE arithmetic emitted `f2 0f` before the REX prefix that %r11 (or any
+    %r8-%r15 base) needs, an invalid encoding that took the first version's `ext_d * 2.0
+    + ext_d` to 5 instead of 7.5: the REX prefix now comes between the f2/f3 prefix and
+    0f (the bytes without REX are the same). The other code models are accepted as
+    before. Not covered: an inline asm memory operand ("m") of a global prints as
+    `sym(%rip)`; GRUB's modules have none. Verification: an extern-heavy sample gives the
+    same R_X86_64_64 relocations as gcc -mcmodel=large and the same results as the
+    normal model; the tests2 programs with an expect file run with `-mcmodel=large` as
+    without it (139 of 151 match, the other 12 do not without it either), tcctest.c with
+    `-mcmodel=large` equals test.ref; 195_x86_64_mcmodel_large (reads its own object: only
+    R_X86_64_64 against the globals; GOTPCREL and PC32 without the fix); without
+    `-mcmodel`, the .text of all 178 tests2 objects and tcctest.c is byte-identical to the
+    previous tcc's; `make test` ALL TESTS PASSED; asmtest the same 6 lines. GRUB's
+    x86_64-efi trial rebuilt from clean with it, with GRUB's own module verifier (no
+    filter wrapper) and without the visibility pragma: all 293 modules verify, and the
+    image boots the x86_64 kernel and initramfs on OVMF to the Autarkeia banner. The
+    kernel uses `-mcmodel=kernel` (and `small` in the decompressor and EFI stub), so it
+    is not affected.

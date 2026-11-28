@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 28 Nov 2026 16:14:27 +0200
+Subject: [PATCH] tests: 195_x86_64_mcmodel_large, the case of the previous
+ commit
+
+---
+ tests/tests2/195_x86_64_mcmodel_large.c      | 87 ++++++++++++++++++++
+ tests/tests2/195_x86_64_mcmodel_large.expect |  2 +
+ tests/tests2/Makefile                        |  3 +
+ 3 files changed, 92 insertions(+)
+ create mode 100644 tests/tests2/195_x86_64_mcmodel_large.c
+ create mode 100644 tests/tests2/195_x86_64_mcmodel_large.expect
+
+diff --git a/tests/tests2/195_x86_64_mcmodel_large.c b/tests/tests2/195_x86_64_mcmodel_large.c
+new file mode 100644
+index 0000000..115222b
+--- /dev/null
++++ b/tests/tests2/195_x86_64_mcmodel_large.c
+@@ -0,0 +1,87 @@
++/* x86_64 (tinycc-os-kernel fix 155): -mcmodel=large, GRUB's x86_64-efi
++   module model: a symbol that may be defined elsewhere (not static) is
++   reached through its 64-bit address, "movabs $sym, %reg" (R_X86_64_64), as
++   GCC does it: loads, stores, addresses, calls ("call *%r11") and the memory
++   operand of the SSE arithmetic and compares.  tcc ignored -mcmodel=large
++   and used PC32/PLT32 and GOTPCREL, which GRUB's module verifier rejects
++   for a symbol of another module ("relocation 0x4 is not module-local").
++   Static symbols may stay PC-relative.  The test is compiled with
++   -mcmodel=large -c and reads its own object, then runs the same code. */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <elf.h>
++
++struct big { long a[8]; };
++int g_i = 10;
++int g_arr[10] = { 0, 1, 2, 3, 4, 50 };
++double g_d = 2.5;
++float g_f = 1.5f;
++struct big g_big = { { 1, 2, 3, 4, 5, 6, 7, 800 } };
++long g_fn(long x) { return x * 3; }
++static int s_i = 5;
++static long s_fn(long x) { return x + s_i; }
++
++long use(long k)
++{
++    double d = g_d * 2.0 + g_d;         /* addsd with a memory operand */
++    float f = g_f + 1.0f;
++    struct big b = g_big;
++    long (*fp)(long) = g_fn;
++    int *p = &g_arr[5];
++    g_i += 3;
++    g_arr[3] = g_arr[2] + 7;
++    if (g_d < 3.0)                      /* comisd with a memory operand */
++        d += 1;
++    return g_fn(k) + s_fn(k) + fp(1) + *p + (long)d + (long)f + b.a[7] + (g_d > d);
++}
++
++static unsigned char *obj;
++
++int main(int argc, char **argv)
++{
++    FILE *fl;
++    long len;
++    int i, n, count64 = 0, other = 0;
++    Elf64_Ehdr *eh;
++    Elf64_Shdr *sh;
++    Elf64_Sym *syms = NULL;
++    char *str = NULL;
++
++    if (argc < 2 || !(fl = fopen(argv[1], "rb")))
++        return printf("usage: %s OBJ\n", argv[0]), 1;
++    fseek(fl, 0, SEEK_END);
++    len = ftell(fl);
++    rewind(fl);
++    obj = malloc(len);
++    if (fread(obj, 1, len, fl) != (size_t)len)
++        return 1;
++    fclose(fl);
++    eh = (Elf64_Ehdr *)obj;
++    sh = (Elf64_Shdr *)(obj + eh->e_shoff);
++    for (i = 0; i < eh->e_shnum; i++)
++        if (sh[i].sh_type == SHT_SYMTAB) {
++            syms = (Elf64_Sym *)(obj + sh[i].sh_offset);
++            str = (char *)obj + sh[sh[i].sh_link].sh_offset;
++        }
++    /* the relocations of .text against the g_ symbols */
++    for (i = 0; i < eh->e_shnum; i++) {
++        Elf64_Rela *r;
++        if (sh[i].sh_type != SHT_RELA
++            || strcmp((char *)obj + sh[eh->e_shstrndx].sh_offset + sh[sh[i].sh_info].sh_name, ".text"))
++            continue;
++        r = (Elf64_Rela *)(obj + sh[i].sh_offset);
++        for (n = 0; n < (int)(sh[i].sh_size / sizeof *r); n++) {
++            const char *name = str + syms[ELF64_R_SYM(r[n].r_info)].st_name;
++            if (strncmp(name, "g_", 2))
++                continue;
++            if (ELF64_R_TYPE(r[n].r_info) == R_X86_64_64)
++                count64++;
++            else
++                other++, printf("%s: relocation type %d\n", name, (int)ELF64_R_TYPE(r[n].r_info));
++        }
++    }
++    printf("R_X86_64_64 to the globals: %s, other types: %d\n", count64 >= 12 ? "yes" : "too few", other);
++    printf("use %ld g_i %d g_arr[3] %d\n", use(4), g_i, g_arr[3]);
++    return 0;
++}
+diff --git a/tests/tests2/195_x86_64_mcmodel_large.expect b/tests/tests2/195_x86_64_mcmodel_large.expect
+new file mode 100644
+index 0000000..fcbcd8b
+--- /dev/null
++++ b/tests/tests2/195_x86_64_mcmodel_large.expect
+@@ -0,0 +1,2 @@
++R_X86_64_64 to the globals: yes, other types: 0
++use 884 g_i 13 g_arr[3] 9
+diff --git a/tests/tests2/Makefile b/tests/tests2/Makefile
+index 9e2ff9c..a21edad 100644
+--- a/tests/tests2/Makefile
++++ b/tests/tests2/Makefile
+@@ -19,6 +19,7 @@ endif
+ ifneq (x86_64-,$(ARCH)-$(CONFIG_WIN32))
+  SKIP += 167_int128.test # __int128 is x86-64 SysV only
+  SKIP += 187_x86_64_ms_abi.test # ms_abi beside SysV: x86-64 ELF only
++ SKIP += 195_x86_64_mcmodel_large.test # x86-64 ELF only
+ endif
+ ifeq (,$(filter i386 x86_64,$(ARCH)))
+  SKIP += 85_asm-outside-function.test # x86 asm
+@@ -200,6 +201,8 @@ endif
+ 186_i386_regparm0_fnptr.test: GEN = $(GEN-TCC)
+ 194_i386_mrtd.test: T1 = ( $(TCC) -mrtd -mregparm=3 -run $1 )
+ 194_i386_mrtd.test: GEN = $(GEN-TCC)
++195_x86_64_mcmodel_large.test: T1 = ( $(TCC) -mcmodel=large -c $1 -o $*.o && $(TCC) -mcmodel=large -run $1 $*.o && rm -f $*.o )
++195_x86_64_mcmodel_large.test: GEN = $(GEN-TCC)
+ # the asm test reads its own object: compiled with -c first
+ 188_asm_small_pcrel.test: T1 = ( $(TCC) -c $1 -o $*.o && $(TCC) -run $1 $*.o && rm -f $*.o )
+ 188_asm_small_pcrel.test: GEN = $(GEN-TCC)

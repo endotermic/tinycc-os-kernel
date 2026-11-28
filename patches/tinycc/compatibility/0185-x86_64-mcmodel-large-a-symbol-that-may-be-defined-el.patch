@@ -1,0 +1,170 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Nikolajs Agafonovs <nikolajs.agafonovs@gmail.com>
+Date: Sat, 28 Nov 2026 16:14:27 +0200
+Subject: [PATCH] x86_64: -mcmodel=large, a symbol that may be defined
+ elsewhere (not static) is reached through its 64-bit address as with GCC:
+ movabs $sym (R_X86_64_64) for loads, stores and addresses, call *%r11 for
+ calls, and %r11 for the memory operand of the SSE arithmetic and compares,
+ whose REX prefix now comes after the f2/f3 prefix and before 0f (GRUB's
+ x86_64-efi modules are built with -mcmodel=large: tcc ignored it, and its
+ PC32/PLT32 and GOTPCREL relocations against symbols of other modules failed
+ GRUB's module verifier)
+
+---
+ libtcc.c     |  7 ++++++
+ tcc.h        |  1 +
+ x86_64-gen.c | 64 +++++++++++++++++++++++++++++++++++++++++++++++-----
+ 3 files changed, 66 insertions(+), 6 deletions(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index ae52f89..63298f1 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -2179,6 +2179,13 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
+                 s->regparm = x;
+                 break;
+             }
++            if (!strncmp(optarg, "cmodel=", 7)) {
++                /* large: any symbol that may be defined elsewhere is reached
++                   through its 64-bit address (GRUB's x86_64 modules); the
++                   other models need nothing of tcc */
++                s->mcmodel_large = !strcmp(optarg + 7, "large");
++                break;
++            }
+             if (!strcmp(optarg, "rtd") || !strcmp(optarg, "no-rtd")) {
+                 /* -mrtd: stdcall by default (GRUB's i386-pc code) */
+                 s->rtd = optarg[0] == 'r';
+diff --git a/tcc.h b/tcc.h
+index 1b3ee4f..b97abb5 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -856,6 +856,7 @@ struct TCCState {
+     unsigned char m16;      /* -m16: generate 16-bit (.code16gcc) code */
+     unsigned char regparm;  /* -mregparm=N: default calling convention */
+     unsigned char rtd;      /* -mrtd: the callee pops the stack arguments (i386) */
++    unsigned char mcmodel_large; /* -mcmodel=large: other symbols by 64-bit address (x86_64) */
+ #endif
+     unsigned char pic;      /* -fPIC/-fpic (2), -fPIE/-fpie (1): i386 position-independent
+                                code, every symbol addressed sym@GOTOFF(%ebx) (no GOT);
+diff --git a/x86_64-gen.c b/x86_64-gen.c
+index a26462c..d7450f8 100644
+--- a/x86_64-gen.c
++++ b/x86_64-gen.c
+@@ -296,6 +296,27 @@ static int sym_is_local(Sym *s)
+         || s->a.visibility == STV_HIDDEN || s->a.visibility == STV_INTERNAL;
+ }
+ 
++/* -mcmodel=large: a symbol that may be defined elsewhere (not static) is
++   reached through its 64-bit address, "movabs $sym, %reg" (R_X86_64_64), as
++   GCC does it, never PC-relative or through the GOT; GRUB's module verifier
++   rejects a 32-bit relocation against a symbol of another module */
++static int sym_is_far(Sym *s)
++{
++#ifdef TCC_TARGET_PE
++    return 0;
++#else
++    return tcc_state->mcmodel_large && !(s->type.t & (VT_STATIC | VT_TLS));
++#endif
++}
++
++/* movabs $sym+c, %r */
++static void gen_movabs_sym(int r, Sym *sym, int64_t c)
++{
++    orex(1, r, 0, 0xb8 + REG_VALUE(r));
++    greloca(cur_text_section, sym, ind, R_X86_64_64, c);
++    gen_le64(0);
++}
++
+ static void gen_gotpcrel(int r, Sym *sym, int c, int relax)
+ {
+ #ifdef TCC_TARGET_PE
+@@ -404,6 +425,14 @@ void load(int r, SValue *sv)
+       tcc_error("64 bit addend in load");
+ 
+ #ifndef TCC_TARGET_PE
++    if ((fr & (VT_VALMASK|VT_SYM|VT_LVAL)) == (VT_CONST|VT_SYM|VT_LVAL)
++        && sym_is_far(sv->sym)) {
++        /* -mcmodel=large: the address into the result register (an integer
++           one for a float), the offset as displacement */
++        int tr = is_float(ft) ? get_reg(RC_INT) : r;
++        gen_movabs_sym(tr, sv->sym, 0);
++        fr = tr | TREG_MEM | VT_LVAL;
++    } else
+     /* we use indirect access via got */
+     if ((fr & (VT_VALMASK|VT_SYM|VT_LVAL)) == (VT_CONST|VT_SYM|VT_LVAL)
+         && !sym_is_local(sv->sym) && !(sv->sym->type.t & VT_TLS)) {
+@@ -507,6 +536,8 @@ void load(int r, SValue *sv)
+                     /* add $tpoff,r */
+                     orex(1,0,r,0x81), oad(0xC0 | REG_VALUE(r), 0);
+                     greloca(cur_text_section, sv->sym, ind - 4, R_X86_64_TPOFF32, fc);
++                } else if (sym_is_far(sv->sym)) {
++                    gen_movabs_sym(r, sv->sym, fc); /* -mcmodel=large */
+                 } else if (sym_is_local(sv->sym)) {
+                     orex(1,0,r,0x8d);
+                     o(0x05 + REG_VALUE(r) * 8); /* lea xx(%rip), r */
+@@ -608,6 +639,11 @@ void store(int r, SValue *v)
+     bt = v->type.t & VT_BTYPE;
+ 
+ #ifndef TCC_TARGET_PE
++    if ((fr & (VT_VALMASK|VT_SYM)) == (VT_CONST|VT_SYM) && sym_is_far(v->sym)) {
++        /* -mcmodel=large: movabs $sym+c, %r11 */
++        gen_movabs_sym(TREG_R11, v->sym, v->c.i);
++        fr = TREG_R11 | VT_LVAL;
++    } else
+     /* we need to access the variable via got */
+     if ((fr & (VT_VALMASK|VT_SYM)) == (VT_CONST|VT_SYM)
+         && !sym_is_local(v->sym) && !(v->sym->type.t & VT_TLS)) {
+@@ -671,7 +707,8 @@ static void gcall_or_jmp(int is_jmp)
+ {
+     int r;
+     if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST &&
+-	((vtop->r & VT_SYM) && (vtop->c.i-4) == (int)(vtop->c.i-4))) {
++	((vtop->r & VT_SYM) && (vtop->c.i-4) == (int)(vtop->c.i-4))
++        && !sym_is_far(vtop->sym) /* -mcmodel=large: call *%r11 */) {
+         /* constant symbolic case -> simple relocation */
+         greloca(cur_text_section, vtop->sym, ind + 1, R_X86_64_PLT32, (int)(vtop->c.i-4));
+         oad(0xe8 + is_jmp, 0); /* call/jmp im */
+@@ -2310,7 +2347,14 @@ void gen_opf(int op)
+             if ((vtop->type.t & VT_BTYPE) == VT_DOUBLE)
+                 opc = opc << 8 | 0x66;
+ 
+-            gen_modrm32(opc, vtop[-1].r, vtop->r, vtop->sym, fc);
++            r = vtop->r;
++            if ((r & (VT_VALMASK|VT_SYM|VT_LVAL)) == (VT_CONST|VT_SYM|VT_LVAL)
++                && sym_is_far(vtop->sym)) {
++                /* -mcmodel=large: the operand through %r11 */
++                gen_movabs_sym(TREG_R11, vtop->sym, 0);
++                r = TREG_R11 | TREG_MEM | VT_LVAL;
++            }
++            gen_modrm32(opc, vtop[-1].r, r, vtop->sym, fc);
+             vtop--;
+             vset_VT_CMP(op | 0x100);
+             vtop->cmp_r = op;
+@@ -2356,15 +2400,23 @@ void gen_opf(int op)
+                 fc = vtop->c.i; /* bcheck may have saved previous vtop[-1] */
+             }
+             
++            r = vtop->r;
++            if ((r & (VT_VALMASK|VT_SYM|VT_LVAL)) == (VT_CONST|VT_SYM|VT_LVAL)
++                && sym_is_far(vtop->sym)) {
++                /* -mcmodel=large: the operand through %r11 (before the
++                   prefixes of the instruction) */
++                gen_movabs_sym(TREG_R11, vtop->sym, 0);
++                r = TREG_R11 | TREG_MEM | VT_LVAL;
++            }
+             if ((ft & VT_BTYPE) == VT_DOUBLE) {
+                 o(0xf2);
+             } else {
+                 o(0xf3);
+             }
+-            o(0x0f);
+-            opc = 0x58 + a;
+-            
+-            gen_modrm32(opc, vtop[-1].r, vtop->r, vtop->sym, fc);
++            /* 0f 58+a after the REX prefix that %r11 needs */
++            opc = 0x0f | (0x58 + a) << 8;
++
++            gen_modrm32(opc, vtop[-1].r, r, vtop->sym, fc);
+             vtop--;
+         }
+     }
